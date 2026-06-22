@@ -1,0 +1,65 @@
+name: Bug report
+description: Report a reproducible LivingAtlas defect using only public-safe details.
+title: "[Bug]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use synthetic fixtures or redacted examples only. Do not include real graph data, secrets, deployment identifiers, recovery material, mailbox content, CRM content, or personal notes.
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: Describe the defect and the affected behavior.
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Cloudflare Worker
+        - Local control store
+        - Local MCP
+        - Sync agent
+        - Importer
+        - Fixtures or policy
+        - Documentation
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction
+      description: List minimal steps using synthetic fixtures or public-safe configuration.
+      placeholder: |
+        1. Run ...
+        2. Observe ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Public-safe logs or output
+      description: Paste only redacted output. Remove tokens, account IDs, personal paths, and real data.
+      render: shell
+  - type: checkboxes
+    id: public-safety
+    attributes:
+      label: Public-safety confirmation
+      options:
+        - label: I have not included secrets, real graph data, personal content, deployment identifiers, or recovery material.
+          required: true

@@ -1,0 +1,19 @@
+{
+  "name": "@living-atlas/check",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "living-atlas-check": "./src/cli.ts"
+  },
+  "dependencies": {
+    "@living-atlas/contracts": "workspace:*",
+    "@living-atlas/fixtures": "workspace:*",
+    "@living-atlas/leakage": "workspace:*",
+    "@living-atlas/local-control-store": "workspace:*",
+    "@living-atlas/local-mcp": "workspace:*",
+    "@living-atlas/policy": "workspace:*",
+    "@living-atlas/sync-agent": "workspace:*",
+    "@modelcontextprotocol/sdk": "1.29.0"
+  }
+}

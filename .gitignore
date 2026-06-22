@@ -1,0 +1,43 @@
+# dependencies and build output
+node_modules/
+dist/
+build/
+.next/
+.vite/
+
+# local runtime
+.env
+.env.*
+*.local
+*.log
+.DS_Store
+.dev.vars
+wrangler.local.*
+wrangler.personal.*
+.wrangler/
+
+# deployment overlays and infrastructure state
+deploy/personal/
+infra/**/personal/
+*.tfvars
+*.tfvars.json
+*.tfstate
+*.tfstate.*
+.terraform/
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# graph-derived or private data
+fixtures/private/
+generated/
+cache/
+data/
+.living-atlas/
+*.sqlite
+*.sqlite3
+*.duckdb
+*.parquet
