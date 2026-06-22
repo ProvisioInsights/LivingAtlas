@@ -1,10 +1,12 @@
 import { z } from "zod";
 import {
+  AccessModeSchema,
   AccessClassSchema,
   AdminOperations,
   GraphMutationOperations,
   McpProfileSchema,
   OperationSchema,
+  type AccessMode,
   type AccessClass,
   type Operation
 } from "./classification";
@@ -70,8 +72,8 @@ export const ClientRecordSchema = z.object({
     "local-ai": ["local-full", "local-readonly", "local-crud", "local-release"],
     "local-cli": ["local-full", "local-readonly", "local-crud", "local-release"],
     "local-ui": ["local-full", "local-readonly", "local-crud", "local-release"],
-    browser: ["sensitive-keyholding-client", "local-release", "remote-safe"],
-    "remote-provider": ["remote-safe"],
+    browser: ["sensitive-keyholding-client", "local-release", "remote-safe", "remote-cloud-unlock"],
+    "remote-provider": ["remote-safe", "remote-cloud-unlock"],
     "sync-agent": ["sync-device"],
     "admin-cli": ["local-admin"]
   };
@@ -92,8 +94,25 @@ const RemoteForbiddenOperations = new Set<Operation>([
   "grant-capability",
   "enroll-device"
 ]);
+const CloudUnlockAllowedOperations = new Set<Operation>(["read", "search", "traverse", "decrypt", "audit-read"]);
 const SyncAllowedOperations = new Set<Operation>(["sync-read", "sync-write", "audit-read"]);
 const LocalReadonlyAllowedOperations = new Set<Operation>(["read", "search", "traverse", "decrypt", "audit-read"]);
+
+function defaultAccessModeForProfile(profile: z.infer<typeof McpProfileSchema>): AccessMode {
+  switch (profile) {
+    case "remote-cloud-unlock":
+      return "cloud-unlock-session";
+    case "local-full":
+    case "local-readonly":
+    case "local-crud":
+    case "local-admin":
+    case "local-release":
+    case "sensitive-keyholding-client":
+      return "local-keyholding-only";
+    default:
+      return "remote-safe-only";
+  }
+}
 
 export const CapabilityGrantSchema = z
   .object({
@@ -101,13 +120,45 @@ export const CapabilityGrantSchema = z
     authority_id: AuthorityIdSchema,
     client_id: ClientIdSchema,
     profile: McpProfileSchema,
+    access_mode: AccessModeSchema.optional(),
     operations: z.array(OperationSchema).min(1),
     access_classes: z.array(AccessClassSchema).min(1),
     created_at: IsoTimestampSchema,
     expires_at: IsoTimestampSchema.optional(),
     revoked_at: IsoTimestampSchema.optional()
   })
+  .transform((grant) => ({
+    ...grant,
+    access_mode: grant.access_mode ?? defaultAccessModeForProfile(grant.profile)
+  }))
   .superRefine((grant, ctx) => {
+    if (grant.profile === "remote-safe" && grant.access_mode !== "remote-safe-only") {
+      ctx.addIssue({
+        code: "custom",
+        path: ["access_mode"],
+        message: "remote-safe capabilities must use remote-safe-only access mode"
+      });
+    }
+
+    if (grant.profile === "remote-cloud-unlock" && grant.access_mode !== "cloud-unlock-session") {
+      ctx.addIssue({
+        code: "custom",
+        path: ["access_mode"],
+        message: "remote-cloud-unlock capabilities must use cloud-unlock-session access mode"
+      });
+    }
+
+    if (
+      grant.access_mode === "local-keyholding-only" &&
+      (grant.profile === "remote-safe" || grant.profile === "remote-cloud-unlock" || grant.profile === "sync-device")
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["access_mode"],
+        message: "remote and sync profiles cannot claim local-keyholding-only mode"
+      });
+    }
+
     if (grant.profile === "remote-safe") {
       for (const accessClass of grant.access_classes) {
         if (RemoteForbiddenAccessClasses.has(accessClass)) {
@@ -125,6 +176,28 @@ export const CapabilityGrantSchema = z
             code: "custom",
             path: ["operations"],
             message: "remote-safe capabilities cannot decrypt, administer config, grant access, or enroll devices"
+          });
+        }
+      }
+    }
+
+    if (grant.profile === "remote-cloud-unlock") {
+      for (const accessClass of grant.access_classes) {
+        if (accessClass === "quarantine") {
+          ctx.addIssue({
+            code: "custom",
+            path: ["access_classes"],
+            message: "remote-cloud-unlock capabilities cannot include quarantine access"
+          });
+        }
+      }
+
+      for (const operation of grant.operations) {
+        if (!CloudUnlockAllowedOperations.has(operation)) {
+          ctx.addIssue({
+            code: "custom",
+            path: ["operations"],
+            message: "remote-cloud-unlock capabilities are read/decrypt session capabilities only"
           });
         }
       }

@@ -1,4 +1,5 @@
 import { AuthorityIdSchema } from "@living-atlas/contracts";
+import type { AccessMode } from "@living-atlas/contracts";
 import { BootstrapClaimBodySchema, verifyClaimToken, type BootstrapRuntimeConfig } from "./bootstrap";
 import type { BootstrapClaimLockCore } from "./bootstrap-lock";
 import {
@@ -69,7 +70,8 @@ const syncTokenHeader = "x-living-atlas-sync-token";
 const syncClientHeader = "x-living-atlas-sync-client-id";
 const syncCapabilityHeader = "x-living-atlas-sync-capability-id";
 const syncTokenIdHeader = "x-living-atlas-sync-token-id";
-const forbiddenQueryTokenParams = ["token", "claim_token", "bootstrap_claim_token", "sync_token"];
+const cloudUnlockKeyHeader = "x-living-atlas-cloud-unlock-key";
+const forbiddenQueryTokenParams = ["token", "claim_token", "bootstrap_claim_token", "sync_token", "cloud_unlock_key", "decrypt_key", "encryption_key"];
 
 function json(data: unknown, init?: ResponseInit): Response {
   return new Response(JSON.stringify(data), {
@@ -165,6 +167,15 @@ async function hasValidSyncToken(request: Request, env: BootstrapWorkerEnv): Pro
   }
 
   return true;
+}
+
+function cloudUnlockKeyPresented(request: Request): boolean {
+  const value = request.headers.get(cloudUnlockKeyHeader);
+  return typeof value === "string" && value.trim().length >= 16;
+}
+
+function remoteRequestAccessMode(request: Request): AccessMode {
+  return cloudUnlockKeyPresented(request) ? "cloud-unlock-session" : "remote-safe-only";
 }
 
 async function shouldStealthDrop(request: Request, env: BootstrapWorkerEnv): Promise<boolean> {
@@ -572,6 +583,67 @@ function usageReconciliationOptionsFromArgs(args: unknown): UsageReconciliationO
 }
 
 async function callRemoteMcpTool(name: string, args: unknown, request: Request, env: BootstrapWorkerEnv): Promise<unknown> {
+  if (name === "remote_access_modes") {
+    const currentMode = remoteRequestAccessMode(request);
+    return {
+      ok: true,
+      current_mode: currentMode,
+      modes: [
+        {
+          mode: "remote-safe-only",
+          available: true,
+          current: currentMode === "remote-safe-only",
+          host_blind_sensitive_plaintext: true,
+          sensitive_plaintext_available: false,
+          key_persisted_by_cloudflare: false
+        },
+        {
+          mode: "cloud-unlock-session",
+          available: true,
+          current: currentMode === "cloud-unlock-session",
+          host_blind_sensitive_plaintext: false,
+          sensitive_plaintext_available: currentMode === "cloud-unlock-session",
+          key_persisted_by_cloudflare: false,
+          required_header: cloudUnlockKeyHeader
+        },
+        {
+          mode: "local-keyholding-only",
+          available: false,
+          current: false,
+          host_blind_sensitive_plaintext: true,
+          sensitive_plaintext_available: false,
+          key_persisted_by_cloudflare: false,
+          remote_note: "Use local MCP or a keyholding client; Cloudflare receives ciphertext or approved projections only."
+        }
+      ]
+    };
+  }
+
+  if (name === "remote_sensitive_decrypt") {
+    if (!(await hasValidSyncToken(request, env))) {
+      throw new Error("missing-or-invalid-sync-token");
+    }
+
+    if (!cloudUnlockKeyPresented(request)) {
+      return {
+        ok: false,
+        reason: "cloud-unlock-required",
+        current_mode: "remote-safe-only",
+        host_blind_sensitive_plaintext: true
+      };
+    }
+
+    return {
+      ok: false,
+      reason: "cloud-decryptor-not-implemented",
+      current_mode: "cloud-unlock-session",
+      object_id: stringParam(args, "object_id"),
+      key_persisted_by_cloudflare: false,
+      host_blind_sensitive_plaintext: false,
+      note: "The request supplied a transient unlock key, but Cloudflare-side sensitive decryption is not implemented in this scaffold."
+    };
+  }
+
   if (name === "remote_sync_status") {
     const result = await getSyncStatus(
       request.headers.get(syncTokenHeader) ?? undefined,
@@ -674,6 +746,23 @@ async function routeRemoteMcpRequest(request: Request, env: BootstrapWorkerEnv):
   if (body.method === "tools/list") {
     return jsonRpcResult(body.id, {
       tools: [
+        {
+          name: "remote_access_modes",
+          description: "Describe Living Atlas remote-safe, cloud-unlock, and local-keyholding access modes for this request.",
+          inputSchema: { type: "object", additionalProperties: false, properties: {} }
+        },
+        {
+          name: "remote_sensitive_decrypt",
+          description: "Guarded cloud-unlock placeholder for sensitive decrypt. Requires a transient unlock key header and currently does not decrypt.",
+          inputSchema: {
+            type: "object",
+            additionalProperties: false,
+            required: ["object_id"],
+            properties: {
+              object_id: { type: "string" }
+            }
+          }
+        },
         {
           name: "remote_sync_status",
           description: "Read remote sync cursor and counts for the authenticated authority.",

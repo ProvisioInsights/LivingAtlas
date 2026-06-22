@@ -930,6 +930,8 @@ describe("Worker sync batch acceptance", () => {
       result: {
         tools: expect.arrayContaining([
           expect.objectContaining({ name: "remote_sync_envelopes" }),
+          expect.objectContaining({ name: "remote_access_modes" }),
+          expect.objectContaining({ name: "remote_sensitive_decrypt" }),
           expect.objectContaining({ name: "remote_usage_gate" }),
           expect.objectContaining({ name: "remote_usage_reconcile" })
         ])
@@ -975,6 +977,117 @@ describe("Worker sync batch acceptance", () => {
       }
     });
     expect(JSON.stringify(body)).not.toContain(syncToken);
+
+    const modesResponse = await handleBootstrapRequest(new Request("https://living-atlas.example/mcp", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-living-atlas-sync-token": syncToken
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 5,
+        method: "tools/call",
+        params: {
+          name: "remote_access_modes",
+          arguments: {}
+        }
+      })
+    }), env);
+
+    await expect(modesResponse.json()).resolves.toMatchObject({
+      jsonrpc: "2.0",
+      id: 5,
+      result: {
+        structuredContent: {
+          ok: true,
+          current_mode: "remote-safe-only",
+          modes: expect.arrayContaining([
+            expect.objectContaining({
+              mode: "remote-safe-only",
+              host_blind_sensitive_plaintext: true
+            }),
+            expect.objectContaining({
+              mode: "cloud-unlock-session",
+              host_blind_sensitive_plaintext: false,
+              required_header: "x-living-atlas-cloud-unlock-key"
+            }),
+            expect.objectContaining({
+              mode: "local-keyholding-only",
+              host_blind_sensitive_plaintext: true
+            })
+          ])
+        }
+      }
+    });
+
+    const deniedDecryptResponse = await handleBootstrapRequest(new Request("https://living-atlas.example/mcp", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-living-atlas-sync-token": syncToken
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 6,
+        method: "tools/call",
+        params: {
+          name: "remote_sensitive_decrypt",
+          arguments: {
+            object_id: "la_object_worker0001"
+          }
+        }
+      })
+    }), env);
+
+    await expect(deniedDecryptResponse.json()).resolves.toMatchObject({
+      jsonrpc: "2.0",
+      id: 6,
+      result: {
+        structuredContent: {
+          ok: false,
+          reason: "cloud-unlock-required",
+          current_mode: "remote-safe-only"
+        }
+      }
+    });
+
+    const unlockKey = "synthetic-cloud-unlock-key-0001";
+    const unlockedDecryptResponse = await handleBootstrapRequest(new Request("https://living-atlas.example/mcp", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-living-atlas-sync-token": syncToken,
+        "x-living-atlas-cloud-unlock-key": unlockKey
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 7,
+        method: "tools/call",
+        params: {
+          name: "remote_sensitive_decrypt",
+          arguments: {
+            object_id: "la_object_worker0001"
+          }
+        }
+      })
+    }), env);
+
+    const unlockedBody = await unlockedDecryptResponse.json();
+    expect(unlockedBody).toMatchObject({
+      jsonrpc: "2.0",
+      id: 7,
+      result: {
+        structuredContent: {
+          ok: false,
+          reason: "cloud-decryptor-not-implemented",
+          current_mode: "cloud-unlock-session",
+          key_persisted_by_cloudflare: false,
+          host_blind_sensitive_plaintext: false
+        }
+      }
+    });
+    expect(JSON.stringify(unlockedBody)).not.toContain(unlockKey);
 
     const usageGateResponse = await handleBootstrapRequest(new Request("https://living-atlas.example/mcp", {
       method: "POST",
@@ -1087,6 +1200,21 @@ describe("Worker sync batch acceptance", () => {
 
     expect(mcpResponse.status).toBe(400);
     await expect(mcpResponse.json()).resolves.toEqual({
+      jsonrpc: "2.0",
+      error: {
+        code: -32600,
+        message: "tokens must not be sent in the query string"
+      },
+      id: null
+    });
+
+    const cloudUnlockQueryResponse = await handleBootstrapRequest(new Request("https://living-atlas.example/mcp?cloud_unlock_key=synthetic-cloud-unlock-key-0001", {
+      method: "POST",
+      body: JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/list" })
+    }), (await createEnv()).env);
+
+    expect(cloudUnlockQueryResponse.status).toBe(400);
+    await expect(cloudUnlockQueryResponse.json()).resolves.toEqual({
       jsonrpc: "2.0",
       error: {
         code: -32600,

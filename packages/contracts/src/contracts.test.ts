@@ -203,6 +203,42 @@ describe("CapabilityGrantSchema", () => {
     expect(parsed.success).toBe(false);
   });
 
+  it("defaults access modes and rejects unsafe cloud-unlock grants", () => {
+    expect(CapabilityGrantSchema.parse({
+      capability_id: "la_cap_contract0005",
+      authority_id: "la_authority_contract0001",
+      client_id: "la_client_contract0001",
+      profile: "remote-safe",
+      operations: ["read"],
+      access_classes: ["remote-safe"],
+      created_at: timestamp
+    })).toMatchObject({
+      access_mode: "remote-safe-only"
+    });
+
+    expect(CapabilityGrantSchema.safeParse({
+      capability_id: "la_cap_contract0006",
+      authority_id: "la_authority_contract0001",
+      client_id: "la_client_contract0001",
+      profile: "remote-cloud-unlock",
+      access_mode: "remote-safe-only",
+      operations: ["read", "decrypt"],
+      access_classes: ["local-private"],
+      created_at: timestamp
+    }).success).toBe(false);
+
+    expect(CapabilityGrantSchema.safeParse({
+      capability_id: "la_cap_contract0007",
+      authority_id: "la_authority_contract0001",
+      client_id: "la_client_contract0001",
+      profile: "remote-cloud-unlock",
+      access_mode: "cloud-unlock-session",
+      operations: ["read", "update", "decrypt"],
+      access_classes: ["local-private"],
+      created_at: timestamp
+    }).success).toBe(false);
+  });
+
   it("rejects local-readonly mutation grants", () => {
     const parsed = CapabilityGrantSchema.safeParse({
       capability_id: "la_cap_contract0002",

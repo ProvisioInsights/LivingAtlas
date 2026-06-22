@@ -68,7 +68,9 @@ Local MCP should not:
 
 - expose a public inbound network API by default
 - accept remote MCP tool calls
-- allow Cloudflare-held tokens to unlock sensitive data
+- treat Cloudflare-held tokens as sensitive-data unlock keys; any cloud unlock
+  must use the explicit `cloud-unlock-session` mode and a transient key that is
+  never stored by Cloudflare
 - silently release sensitive context
 - make the local device an unobservable dependency for remote answers
 

@@ -42,6 +42,7 @@ docs control what graph facts mean.
 - [100M Scale Plan](docs/architecture/scale-plan-100m.md) - segmented storage, indexes, compaction, and sync design for large graphs.
 - [Offline Sync And Conflict Resolution](docs/architecture/offline-sync-and-conflict-resolution.md) - continuous sync, offline queues, generations, and conflict handling.
 - [Key Management](docs/architecture/key-management.md) - KEK/DEK hierarchy, envelopes, device enrollment, revocation, and release keys.
+- [Access Modes](docs/architecture/access-modes.md) - remote-safe, cloud-unlock session, and local-keyholding security modes.
 - [Identity, Configuration, And Key Control Plane](docs/architecture/identity-configuration-control-plane.md) - user/device/client setup, capability grants, key config, recovery, and admin surfaces.
 - [Event Subsystems](docs/architecture/event-subsystems.md) - sync change log, durable audit ledger, and live activity stream.
 - [Metadata Leakage Budget](docs/architecture/metadata-leakage-budget.md) - Cloudflare-visible metadata and path/index constraints.
@@ -65,6 +66,9 @@ objects, and separate capability surfaces:
 - Remote MCP: Cloudflare-hosted CRUD for remote-readable data.
 - Local replica: complete graph bytes plus local decrypted/indexed views.
 - Local MCP: full authorized graph CRUD with local keys.
+- Cloud-unlock session: optional remote convenience mode where a transient key
+  may unlock sensitive content in the cloud runtime, without key persistence,
+  when runtime-memory exposure is acceptable.
 - Sensitive objects: plaintext CRUD only through keyholding client/local path.
 - Atlas UI: read-oriented exploration surface with visible provenance and
   activity history.

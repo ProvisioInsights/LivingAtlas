@@ -50,6 +50,7 @@ export const McpProfileValues = [
   "local-admin",
   "local-release",
   "remote-safe",
+  "remote-cloud-unlock",
   "sensitive-keyholding-client",
   "sync-device"
 ] as const;
@@ -76,6 +77,15 @@ export const OperationValues = [
 
 export const OperationSchema = z.enum(OperationValues);
 export type Operation = z.infer<typeof OperationSchema>;
+
+export const AccessModeValues = [
+  "remote-safe-only",
+  "cloud-unlock-session",
+  "local-keyholding-only"
+] as const;
+
+export const AccessModeSchema = z.enum(AccessModeValues);
+export type AccessMode = z.infer<typeof AccessModeSchema>;
 
 export const GraphReadOperations = ["read", "search", "traverse"] as const satisfies readonly Operation[];
 export const GraphMutationOperations = ["create", "update", "delete", "restore"] as const satisfies readonly Operation[];

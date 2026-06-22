@@ -1,4 +1,5 @@
 import type {
+  AccessMode,
   AccessClass,
   CapabilityGrant,
   GraphObjectEnvelope,
@@ -16,6 +17,8 @@ export type PolicyRequest = {
   profile: McpProfile;
   operation: Operation;
   actor_id: string;
+  access_mode?: AccessMode;
+  cloud_unlock_active?: boolean;
   now?: string;
   capability?: CapabilityGrant;
 };
@@ -30,6 +33,9 @@ export type PolicyReasonCode =
   | "capability-operation-denied"
   | "capability-access-class-denied"
   | "remote-sensitive-unavailable"
+  | "cloud-unlock-required"
+  | "cloud-unlock-mutation-denied"
+  | "cloud-unlock-quarantine-denied"
   | "release-expired"
   | "quarantine-denied"
   | "readonly-denied"
@@ -84,6 +90,7 @@ const RemoteAllowedOperations = new Set<Operation>([
   "restore",
   "audit-read"
 ]);
+const CloudUnlockAllowedOperations = new Set<Operation>(["read", "search", "traverse", "decrypt", "audit-read"]);
 const LocalReadonlyAllowedOperations = new Set<Operation>(["read", "search", "traverse", "decrypt", "audit-read"]);
 const LocalGraphAllowedOperations = new Set<Operation>([
   "read",
@@ -121,6 +128,16 @@ function allowed(options: Pick<PolicyDecision, "plaintext_allowed" | "requires_c
   };
 }
 
+function requestAccessMode(request: PolicyRequest): AccessMode {
+  return request.access_mode ?? request.capability?.access_mode ?? (
+    request.profile === "remote-cloud-unlock"
+      ? "cloud-unlock-session"
+      : request.profile === "remote-safe" || request.profile === "sync-device"
+        ? "remote-safe-only"
+        : "local-keyholding-only"
+  );
+}
+
 function checkCapability(request: PolicyRequest, object: GraphObjectEnvelope, now: string): PolicyDecision | undefined {
   const { capability } = request;
   if (!capability) {
@@ -140,6 +157,11 @@ function checkCapability(request: PolicyRequest, object: GraphObjectEnvelope, no
   }
 
   if (capability.profile !== request.profile) {
+    return denied("capability-profile-mismatch", "generic-unavailable");
+  }
+
+  const accessMode = requestAccessMode(request);
+  if (capability.access_mode !== accessMode) {
     return denied("capability-profile-mismatch", "generic-unavailable");
   }
 
@@ -191,6 +213,32 @@ export function evaluatePolicy(request: PolicyRequest, object: GraphObjectEnvelo
 
     return allowed({
       plaintext_allowed: object.payload.kind === "plaintext-json",
+      requires_ciphertext: false
+    });
+  }
+
+  if (request.profile === "remote-cloud-unlock") {
+    if (!CloudUnlockAllowedOperations.has(request.operation)) {
+      return denied("cloud-unlock-mutation-denied", "generic-unavailable");
+    }
+
+    if (object.access_class === "quarantine") {
+      return denied("cloud-unlock-quarantine-denied", "generic-unavailable");
+    }
+
+    if (isRemoteReadableAccessClass(object.access_class)) {
+      return allowed({
+        plaintext_allowed: object.payload.kind === "plaintext-json",
+        requires_ciphertext: false
+      });
+    }
+
+    if (requestAccessMode(request) !== "cloud-unlock-session" || !request.cloud_unlock_active) {
+      return denied("cloud-unlock-required", "generic-unavailable");
+    }
+
+    return allowed({
+      plaintext_allowed: true,
       requires_ciphertext: false
     });
   }

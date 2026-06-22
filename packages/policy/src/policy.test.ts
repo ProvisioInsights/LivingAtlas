@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   controlPlaneFixture,
   syntheticGraphObjects,
+  fixtureCloudUnlockClientId,
   fixtureRemoteClientId,
   fixtureLocalClientId
 } from "@living-atlas/fixtures";
@@ -12,6 +13,7 @@ const remoteSafeObject = syntheticGraphObjects.find((object) => object.access_cl
 const quarantineObject = syntheticGraphObjects.find((object) => object.access_class === "quarantine")!;
 const releaseObject = syntheticGraphObjects.find((object) => object.access_class === "release")!;
 const remoteCapability = controlPlaneFixture.capabilities.find((capability) => capability.profile === "remote-safe")!;
+const cloudUnlockCapability = controlPlaneFixture.capabilities.find((capability) => capability.profile === "remote-cloud-unlock")!;
 const localCapability = controlPlaneFixture.capabilities.find((capability) => capability.profile === "local-full")!;
 const syncCapability = controlPlaneFixture.capabilities.find((capability) => capability.profile === "sync-device")!;
 const adminCapability = controlPlaneFixture.capabilities.find((capability) => capability.profile === "local-admin")!;
@@ -49,6 +51,63 @@ describe("evaluatePolicy", () => {
         capability: localCapability
       }, privateObject)
     ).toMatchObject({ allowed: true, plaintext_allowed: true });
+  });
+
+  it("models cloud-unlock as an explicit remote sensitive-read session", () => {
+    expect(
+      evaluatePolicy({
+        profile: "remote-safe",
+        operation: "decrypt",
+        actor_id: fixtureRemoteClientId,
+        capability: remoteCapability,
+        access_mode: "remote-safe-only"
+      }, privateObject)
+    ).toMatchObject({
+      allowed: false,
+      reason_code: "capability-operation-denied"
+    });
+
+    expect(
+      evaluatePolicy({
+        profile: "remote-cloud-unlock",
+        operation: "decrypt",
+        actor_id: fixtureCloudUnlockClientId,
+        capability: cloudUnlockCapability,
+        access_mode: "cloud-unlock-session"
+      }, privateObject)
+    ).toMatchObject({
+      allowed: false,
+      reason_code: "cloud-unlock-required"
+    });
+
+    expect(
+      evaluatePolicy({
+        profile: "remote-cloud-unlock",
+        operation: "decrypt",
+        actor_id: fixtureCloudUnlockClientId,
+        capability: cloudUnlockCapability,
+        access_mode: "cloud-unlock-session",
+        cloud_unlock_active: true
+      }, privateObject)
+    ).toMatchObject({
+      allowed: true,
+      plaintext_allowed: true,
+      requires_ciphertext: false
+    });
+
+    expect(
+      evaluatePolicy({
+        profile: "remote-cloud-unlock",
+        operation: "update",
+        actor_id: fixtureCloudUnlockClientId,
+        capability: cloudUnlockCapability,
+        access_mode: "cloud-unlock-session",
+        cloud_unlock_active: true
+      }, remoteSafeObject)
+    ).toMatchObject({
+      allowed: false,
+      reason_code: "capability-operation-denied"
+    });
   });
 
   it("denies profile-only access without a capability and denies capability actor mismatch", () => {

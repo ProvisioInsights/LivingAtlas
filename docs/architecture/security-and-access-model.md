@@ -41,8 +41,12 @@ Cloud:
 
 ### In Use
 
-- Full graph plaintext exists only on trusted local devices.
-- Remote Workers and remote MCP services do not hold sensitive plaintext keys.
+- Full graph plaintext exists only on trusted local devices by default.
+- Remote Workers and remote MCP services do not hold sensitive plaintext keys in
+  `remote-safe-only` mode.
+- `cloud-unlock-session` is an explicit exception: the operator may supply a
+  transient key for convenience, accepting that Cloudflare runtime memory can
+  observe plaintext while the unlock is active.
 - Remote-safe plaintext may be exposed to remote MCP only by explicit
   classification or trusted bulk rule.
 - Sensitive plaintext semantic CRUD requires a local/keyholding-client path.
@@ -59,7 +63,7 @@ Canonical taxonomy:
 
 | Label | Meaning | Remote Access |
 |---|---|---|
-| `local-private` | Personal or sensitive raw knowledge | Never as plaintext |
+| `local-private` | Personal or sensitive raw knowledge | No plaintext in `remote-safe-only`; optional plaintext during `cloud-unlock-session` |
 | `remote-safe` | Approved for remote provider use | Yes |
 | `shareable` | Safe for export/collaboration | Yes |
 | `quarantine` | Unreviewed or invalid | No |
@@ -110,8 +114,9 @@ Required keys:
 - Data encryption keys: object or segment payload encryption.
 - Device wrapping keys: per trusted device.
 
-No cloud Worker or remote MCP profile may hold keys that decrypt sensitive
-plaintext.
+No cloud Worker or remote MCP profile may persist keys that decrypt sensitive
+plaintext. Only `cloud-unlock-session` may receive a transient request/session
+key, and that mode is not host-blind while active.
 
 See `key-management.md` for hierarchy, object envelopes, rotation, device
 enrollment, revocation, and release expiry.

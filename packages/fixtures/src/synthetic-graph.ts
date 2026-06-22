@@ -19,6 +19,7 @@ export const fixtureAuthorityId = "la_authority_fixture0001";
 export const fixtureUserId = "la_user_fixture0001";
 export const fixtureDeviceId = "la_device_fixture0001";
 export const fixtureRemoteClientId = "la_client_remote0001";
+export const fixtureCloudUnlockClientId = "la_client_cloudunlock0001";
 export const fixtureLocalClientId = "la_client_local0001";
 
 export const sensitiveBaitRegistry: BaitString[] = [
@@ -360,6 +361,14 @@ export const controlPlaneFixture: ControlPlaneSnapshot = {
       allowed_profile: "remote-safe",
       credential_ref: "remote-fixture-credential",
       created_at: now
+    },
+    {
+      client_id: fixtureCloudUnlockClientId,
+      authority_id: fixtureAuthorityId,
+      client_type: "remote-provider",
+      allowed_profile: "remote-cloud-unlock",
+      credential_ref: "cloud-unlock-fixture-credential",
+      created_at: now
     }
   ],
   capabilities: [
@@ -368,6 +377,7 @@ export const controlPlaneFixture: ControlPlaneSnapshot = {
       authority_id: fixtureAuthorityId,
       client_id: fixtureLocalClientId,
       profile: "local-full",
+      access_mode: "local-keyholding-only",
       operations: ["read", "search", "traverse", "create", "update", "delete", "restore", "decrypt", "audit-read"],
       access_classes: ["local-private", "remote-safe", "shareable", "quarantine", "release"],
       created_at: now
@@ -377,8 +387,19 @@ export const controlPlaneFixture: ControlPlaneSnapshot = {
       authority_id: fixtureAuthorityId,
       client_id: fixtureRemoteClientId,
       profile: "remote-safe",
+      access_mode: "remote-safe-only",
       operations: ["read", "search", "traverse", "create", "update", "delete", "restore", "audit-read"],
       access_classes: ["remote-safe", "shareable", "release"],
+      created_at: now
+    },
+    {
+      capability_id: "la_cap_cloudunlock0001",
+      authority_id: fixtureAuthorityId,
+      client_id: fixtureCloudUnlockClientId,
+      profile: "remote-cloud-unlock",
+      access_mode: "cloud-unlock-session",
+      operations: ["read", "search", "traverse", "decrypt", "audit-read"],
+      access_classes: ["local-private", "remote-safe", "shareable", "release"],
       created_at: now
     },
     {
@@ -386,6 +407,7 @@ export const controlPlaneFixture: ControlPlaneSnapshot = {
       authority_id: fixtureAuthorityId,
       client_id: "la_client_sync0001",
       profile: "sync-device",
+      access_mode: "remote-safe-only",
       operations: ["sync-read", "sync-write", "audit-read"],
       access_classes: ["local-private", "remote-safe", "shareable", "quarantine", "release"],
       created_at: now
@@ -395,6 +417,7 @@ export const controlPlaneFixture: ControlPlaneSnapshot = {
       authority_id: fixtureAuthorityId,
       client_id: "la_client_admin0001",
       profile: "local-admin",
+      access_mode: "local-keyholding-only",
       operations: ["read", "search", "traverse", "admin-config", "grant-capability", "enroll-device", "audit-read"],
       access_classes: ["local-private", "remote-safe", "shareable", "quarantine", "release"],
       created_at: now
