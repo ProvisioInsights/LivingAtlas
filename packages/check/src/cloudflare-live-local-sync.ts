@@ -207,6 +207,7 @@ export async function main(): Promise<void> {
       throw new Error(`live local sync apply failed: ${JSON.stringify(applied)}`);
     }
 
+    await store.compact();
     const snapshot = await readFile(join(graphDir, "snapshot.json"), "utf8");
     assertNoSensitiveText("redacted local graph snapshot", snapshot, [syncToken, localPassphrase, localMcpToken]);
 
