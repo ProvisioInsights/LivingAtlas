@@ -3,6 +3,7 @@ import {
   canonicalSyncBatchHashPayload,
   SyncBatchAcceptedSchema,
   SyncBatchSchema,
+  SyncEnvelopePullResponseSchema,
   SyncPullResponseSchema,
   SyncStatusSchema,
   type ClientRecord,
@@ -11,12 +12,15 @@ import {
   type SyncBatch,
   type SyncBatchAccepted,
   type SyncChangeEvent,
+  type SyncEnvelopePullObject,
+  type SyncEnvelopePullResponse,
   type SyncPullCursor,
   type SyncPullRecovery,
   type SyncPullResponse,
   type SyncStatus
 } from "@living-atlas/contracts";
 import { syntheticGraphObjects } from "@living-atlas/fixtures";
+import type { FileLocalGraphStore, LocalGraphMutationConflictReason } from "@living-atlas/local-graph-store";
 import { evaluatePolicy } from "@living-atlas/policy";
 
 export type BuildSyncBatchOptions = {
@@ -99,6 +103,43 @@ export type FetchSyncPullResult =
       status_code: number;
       error: unknown;
     };
+
+export type FetchSyncEnvelopesOptions = FetchSyncPullOptions;
+
+export type FetchSyncEnvelopesResult =
+  | {
+      ok: true;
+      response: SyncEnvelopePullResponse;
+    }
+  | {
+      ok: false;
+      status_code: number;
+      error: unknown;
+    };
+
+export type ApplyPulledEnvelopesOptions = {
+  store: FileLocalGraphStore;
+  response: SyncEnvelopePullResponse;
+  actorId: string;
+};
+
+export type ApplyPulledEnvelopeConflict = {
+  object_id: string;
+  remote_generation: number;
+  remote_version: number;
+  local_version?: number;
+  reason: "version-gap" | "version-conflict" | "store-conflict";
+  store_reason?: LocalGraphMutationConflictReason;
+};
+
+export type ApplyPulledEnvelopesResult = {
+  ok: boolean;
+  applied_count: number;
+  skipped_count: number;
+  conflict_count: number;
+  cursor: SyncPullCursor;
+  conflicts: ApplyPulledEnvelopeConflict[];
+};
 
 export type SyncOutboxRecord = {
   batch: SyncBatch;
@@ -607,6 +648,145 @@ export async function fetchSyncPull(options: FetchSyncPullOptions): Promise<Fetc
   return {
     ok: true,
     response: SyncPullResponseSchema.parse(body)
+  };
+}
+
+export async function fetchSyncEnvelopes(options: FetchSyncEnvelopesOptions): Promise<FetchSyncEnvelopesResult> {
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const url = new URL("/api/sync/envelopes", options.endpoint);
+  url.searchParams.set("authority_id", options.authorityId);
+  url.searchParams.set("after_generation", String(options.afterGeneration));
+  const response = await fetchImpl(url, {
+    method: "GET",
+    headers: {
+      ...(options.syncToken ? { "x-living-atlas-sync-token": options.syncToken } : {}),
+      ...(options.clientId ? { "x-living-atlas-sync-client-id": options.clientId } : {}),
+      ...(options.capabilityId ? { "x-living-atlas-sync-capability-id": options.capabilityId } : {}),
+      ...(options.tokenId ? { "x-living-atlas-sync-token-id": options.tokenId } : {})
+    }
+  });
+  const body = await response.json().catch(() => undefined);
+
+  if (!response.ok) {
+    return {
+      ok: false,
+      status_code: response.status,
+      error: body
+    };
+  }
+
+  return {
+    ok: true,
+    response: SyncEnvelopePullResponseSchema.parse(body)
+  };
+}
+
+function comparePulledObjects(left: SyncEnvelopePullObject, right: SyncEnvelopePullObject): number {
+  return left.generation - right.generation
+    || left.object.object_id.localeCompare(right.object.object_id)
+    || left.object.version - right.object.version;
+}
+
+export async function applyPulledEnvelopes(options: ApplyPulledEnvelopesOptions): Promise<ApplyPulledEnvelopesResult> {
+  const conflicts: ApplyPulledEnvelopeConflict[] = [];
+  let appliedCount = 0;
+  let skippedCount = 0;
+  let cursor: SyncPullCursor = {
+    authority_id: options.response.authority_id,
+    generation: options.response.from_generation
+  };
+  const objectsByGeneration = new Map<number, SyncEnvelopePullObject[]>();
+
+  for (const pulled of [...options.response.objects].sort(comparePulledObjects)) {
+    const generationObjects = objectsByGeneration.get(pulled.generation) ?? [];
+    generationObjects.push(pulled);
+    objectsByGeneration.set(pulled.generation, generationObjects);
+  }
+
+  for (const [generation, generationObjects] of [...objectsByGeneration.entries()].sort((left, right) => left[0] - right[0])) {
+    let generationOk = true;
+    let generationBatchId: string | undefined;
+
+    for (const pulled of generationObjects) {
+      generationBatchId = pulled.batch_id;
+      const existing = options.store.readObject(pulled.object.object_id);
+      if (existing && existing.version >= pulled.object.version) {
+        skippedCount += 1;
+        continue;
+      }
+
+      if (!existing && pulled.object.version > 1 && options.response.from_generation > 0) {
+        conflicts.push({
+          object_id: pulled.object.object_id,
+          remote_generation: pulled.generation,
+          remote_version: pulled.object.version,
+          reason: "version-gap"
+        });
+        generationOk = false;
+        break;
+      }
+
+      if (existing && pulled.object.version !== existing.version + 1) {
+        conflicts.push({
+          object_id: pulled.object.object_id,
+          remote_generation: pulled.generation,
+          remote_version: pulled.object.version,
+          local_version: existing.version,
+          reason: "version-gap"
+        });
+        generationOk = false;
+        break;
+      }
+
+      const mutation = existing
+        ? await options.store.updateObject({
+            object: pulled.object,
+            expected_generation: options.store.status().generation,
+            expected_version: existing.version,
+            actor_id: options.actorId,
+            recorded_at: pulled.submitted_at
+          })
+        : await options.store.createObject({
+            object: pulled.object,
+            expected_generation: options.store.status().generation,
+            actor_id: options.actorId,
+            recorded_at: pulled.submitted_at
+          });
+
+      if (!mutation.ok) {
+        conflicts.push({
+          object_id: pulled.object.object_id,
+          remote_generation: pulled.generation,
+          remote_version: pulled.object.version,
+          local_version: existing?.version,
+          reason: "store-conflict",
+          store_reason: mutation.reason
+        });
+        generationOk = false;
+        break;
+      }
+
+      appliedCount += 1;
+    }
+
+    if (!generationOk) {
+      break;
+    }
+
+    cursor = {
+      authority_id: options.response.authority_id,
+      generation,
+      batch_id: generationBatchId
+    };
+  }
+
+  return {
+    ok: conflicts.length === 0,
+    applied_count: appliedCount,
+    skipped_count: skippedCount,
+    conflict_count: conflicts.length,
+    cursor: conflicts.length === 0 ? options.response.next_cursor : cursor,
+    conflicts
   };
 }
 

@@ -123,6 +123,20 @@ LIVING_ATLAS_LOCAL_MCP_TOKEN='replace-with-local-dev-token' \
 npm run local-mcp:fixture
 ```
 
+Add `LIVING_ATLAS_LOCAL_GRAPH_DIR` when you want the local MCP to use the
+durable local graph store instead of the in-memory fixture graph:
+
+```bash
+LIVING_ATLAS_LOCAL_GRAPH_DIR=/tmp/living-atlas-graph \
+LIVING_ATLAS_LOCAL_MCP_TOKEN='replace-with-local-dev-token' \
+npm run local-mcp:fixture
+```
+
+By default this store writes `snapshot.json` and `journal.jsonl` with plaintext
+payloads redacted. Set `LIVING_ATLAS_LOCAL_GRAPH_PLAINTEXT=allow` only for an
+explicit local-only debugging run; do not use it for public fixtures, deploy
+artifacts, or shared test output.
+
 The fixture graph intentionally contains sensitive bait and local-private
 ciphertext references so policy and leakage checks have something to catch. Do
 not replace those fixtures with personal graph content.
@@ -280,6 +294,26 @@ Use it for tool/resource/prompt discovery, schema inspection, test calls, and
 notifications while developing the local MCP. It is not a persistent API
 contract registry; the repo contracts and tests remain the source of truth.
 
+The Cloudflare Worker now exposes a minimal token-gated remote MCP JSON-RPC
+skeleton at `/mcp`. It supports `initialize`, `tools/list`, and `tools/call`
+for sync status, pull summaries, and ciphertext envelope pulls. This is a
+developer contract surface for remote sync/replay work; it is not yet the full
+remote-readable graph CRUD surface.
+
+The sync replay path has two read levels:
+
+- `/api/sync/pull`: committed batch summaries and cursors.
+- `/api/sync/envelopes`: committed ciphertext object envelopes for local
+  durable-store catch-up.
+
+Local apply is intentionally conservative: idempotent same-version envelopes are
+skipped, one-version-forward updates are applied, and version gaps/conflicts are
+reported instead of silently overwriting local state.
+
+The activity replay package also exposes a compact hash-only replay report over
+audit, activity, and operational streams. It is meant for current CLI/test
+inspection and as the future input to the visible Atlas activity UI.
+
 `local` verifies the current synthetic scaffold:
 
 - object, temporal edge/event, control-plane, audit, and sync fixtures parse
@@ -422,6 +456,13 @@ Required tests:
 - successful bootstrap burns setup token and disables setup
 - local link creates a local replica profile, keyring references, sync cursor,
   and local MCP credential
+- local MCP durable graph mode writes redacted snapshot/journal files and
+  survives process restart
+- Worker envelope pull returns ciphertext envelopes for local catch-up
+- sync-agent applies pulled envelopes idempotently and reports version conflicts
+- remote MCP skeleton exposes token-gated sync tools
+- replay report summarizes audit/activity/operational streams without raw
+  summaries
 - remote-safe clients cannot grant sensitive access or enroll keyholding
   devices
 - revoked device cannot decrypt newly synced sensitive objects
@@ -450,10 +491,11 @@ Synthetic graph
   -> identity/config control-plane validator
   -> Cloudflare bootstrap claim-lock validator
   -> Cloudflare path/manifest generator
-  -> local MCP auth skeleton
-  -> remote MCP skeleton
+  -> local MCP auth plus durable local graph CRUD skeleton
+  -> remote MCP sync skeleton
+  -> sync envelope pull/apply skeleton
   -> leakage and denial tests
-  -> operational Worker observability scaffold
+  -> operational Worker observability and replay report scaffold
 ```
 
 After that, continue hardening persistent sync/conflict handling, then build the

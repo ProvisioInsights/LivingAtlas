@@ -151,6 +151,9 @@ importers:
       '@living-atlas/local-control-store':
         specifier: workspace:*
         version: link:../local-control-store
+      '@living-atlas/local-graph-store':
+        specifier: workspace:*
+        version: link:../local-graph-store
       '@living-atlas/policy':
         specifier: workspace:*
         version: link:../policy
@@ -182,6 +185,9 @@ importers:
       '@living-atlas/local-control-store':
         specifier: workspace:*
         version: link:../local-control-store
+      '@living-atlas/local-graph-store':
+        specifier: workspace:*
+        version: link:../local-graph-store
       '@living-atlas/policy':
         specifier: workspace:*
         version: link:../policy

@@ -1,17 +1,24 @@
 import { describe, expect, it } from "vitest";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import type { ControlPlaneSnapshot, GraphObjectEnvelope } from "@living-atlas/contracts";
 import {
   controlPlaneFixture,
   fixtureAuthorityId,
   fixtureLocalClientId,
   fixtureRemoteClientId,
-  sensitiveBaitRegistry
+  sensitiveBaitRegistry,
+  syntheticGraphObjects
 } from "@living-atlas/fixtures";
+import { createFixtureLocalControlState } from "@living-atlas/local-control-store";
+import { FileLocalGraphStore } from "@living-atlas/local-graph-store";
 import { InMemoryLocalMcpActivitySink } from "./activity";
 import { InMemoryLocalMcpAuditSink } from "./audit";
 import { hashLocalMcpToken, InMemoryLocalMcpCredentialStore } from "./auth";
 import {
   createFixtureLocalMcpContext,
+  createLocalMcpContextFromControlState,
   localCreateObject,
   localGraphStatus,
   localListObjects,
@@ -483,5 +490,68 @@ describe("local fixture graph tools", () => {
       tool_name: "local_create_object",
       reason_code: "synthetic-store-full"
     }));
+  });
+
+  it("persists local MCP CRUD through the durable local graph store with redacted plaintext", async () => {
+    const token = "local-token-graph-durable-0001";
+    const directory = await mkdtemp(join(tmpdir(), "living-atlas-local-mcp-"));
+    try {
+      const controlState = await createFixtureLocalControlState(token);
+      const graphStore = await FileLocalGraphStore.open({
+        directory,
+        authorityId: controlState.authority_id,
+        plaintextPersistence: "redact"
+      });
+      const initialized = await graphStore.initializeFromObjects(syntheticGraphObjects, {
+        created_at: now
+      });
+      expect(initialized.ok).toBe(true);
+
+      const context = createLocalMcpContextFromControlState({
+        controlState,
+        graphStore,
+        now
+      });
+      const result = await localCreateObject(context, {
+        authorization: `Bearer ${token}`,
+        object: syntheticRemoteSafeObject("la_object_durable0001")
+      });
+
+      expect(result).toEqual({
+        ok: true,
+        result: expect.objectContaining({
+          mutation: "created",
+          persistence: "snapshot+journal",
+          generation: 1,
+          journal_sequence: 1,
+          object_count: 7
+        })
+      });
+
+      const reopened = await FileLocalGraphStore.open({
+        directory,
+        authorityId: controlState.authority_id,
+        plaintextPersistence: "redact"
+      });
+      expect(reopened.readObject("la_object_durable0001")).toEqual(expect.objectContaining({
+        object_id: "la_object_durable0001",
+        version: 1,
+        payload: expect.objectContaining({
+          kind: "ciphertext-inline"
+        })
+      }));
+
+      const persisted = [
+        await readFile(join(directory, "snapshot.json"), "utf8"),
+        await readFile(join(directory, "journal.jsonl"), "utf8")
+      ].join("\n");
+      expect(persisted).not.toContain("Synthetic created object");
+      expect(persisted).not.toContain("Fixture-only local MCP mutation payload.");
+      for (const bait of sensitiveBaitRegistry) {
+        expect(persisted).not.toContain(bait.value);
+      }
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
   });
 });

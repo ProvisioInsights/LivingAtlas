@@ -109,6 +109,22 @@ export const ReplayInspectionSchema = z
   .strict();
 export type ReplayInspection = z.infer<typeof ReplayInspectionSchema>;
 
+export const ReplayReportSchema = z
+  .object({
+    report_schema: z.literal("living-atlas-replay-report:v1"),
+    generated_at: IsoTimestampSchema,
+    summary_policy: z.literal("hash-only"),
+    totals: ReplayInspectionSchema.shape.counters,
+    by_stream: z.record(ReplayStreamSchema, z.number().int().nonnegative()),
+    by_plane: z.record(z.string().min(1), z.number().int().nonnegative()),
+    by_action: z.record(z.string().min(1), z.number().int().nonnegative()),
+    by_outcome: z.record(z.string().min(1), z.number().int().nonnegative()),
+    finding_counts: z.record(ReplayFindingSeveritySchema, z.number().int().nonnegative()),
+    top_findings: z.array(ReplayFindingSchema).max(25)
+  })
+  .strict();
+export type ReplayReport = z.infer<typeof ReplayReportSchema>;
+
 export type BuildReplayInspectionInput = {
   audit_events?: DurableAuditEvent[];
   activity_events?: LiveActivityEvent[];
@@ -324,5 +340,51 @@ export function buildReplayInspection(input: BuildReplayInspectionInput): Replay
       operational_error_operations: operations.filter((operation) => operation.flags.includes("operational-error")).length,
       sensitive_operations: operations.filter((operation) => operation.contains_sensitive).length
     }
+  });
+}
+
+function incrementCounter(counters: Record<string, number>, key: string): void {
+  counters[key] = (counters[key] ?? 0) + 1;
+}
+
+export function buildReplayReport(inspection: ReplayInspection): ReplayReport {
+  const byStream: Record<ReplayStream, number> = {
+    audit: 0,
+    activity: 0,
+    operational: 0
+  };
+  const byPlane: Record<string, number> = {};
+  const byAction: Record<string, number> = {};
+  const byOutcome: Record<string, number> = {};
+  const findingCounts: Record<ReplayFindingSeverity, number> = {
+    info: 0,
+    warn: 0,
+    error: 0
+  };
+
+  for (const record of inspection.records) {
+    byStream[record.stream] += 1;
+    incrementCounter(byPlane, record.plane);
+    incrementCounter(byAction, record.action);
+    if (record.outcome) {
+      incrementCounter(byOutcome, record.outcome);
+    }
+  }
+
+  for (const finding of inspection.findings) {
+    findingCounts[finding.severity] += 1;
+  }
+
+  return ReplayReportSchema.parse({
+    report_schema: "living-atlas-replay-report:v1",
+    generated_at: inspection.generated_at,
+    summary_policy: "hash-only",
+    totals: inspection.counters,
+    by_stream: byStream,
+    by_plane: byPlane,
+    by_action: byAction,
+    by_outcome: byOutcome,
+    finding_counts: findingCounts,
+    top_findings: inspection.findings.slice(0, 25)
   });
 }

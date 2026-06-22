@@ -1,14 +1,18 @@
 import {
+  GraphObjectEnvelopeSchema,
+  SyncEnvelopePullResponseSchema,
   SyncPullResponseSchema,
   SyncStatusSchema,
   type GraphObjectEnvelope,
   type SyncBatch,
+  type SyncEnvelopePullResponse,
   type SyncPullResponse,
   type SyncStatus
 } from "@living-atlas/contracts";
 import { summarizeSyncBatch, type SyncBatchSequenceSummary } from "./sync-sequencer";
 
 export type SyncObjectStore = {
+  get(key: string): Promise<{ text(): Promise<string> } | null>;
   put(
     key: string,
     value: string,
@@ -148,6 +152,8 @@ export const SyncD1SchemaStatements = [
 ];
 
 const MaxConcurrentEnvelopeWrites = 8;
+const MaxConcurrentEnvelopeReads = 8;
+const MaxEnvelopePullObjects = 1000;
 
 async function mapWithConcurrency<T, R>(
   values: T[],
@@ -466,6 +472,13 @@ type PullBatchRow = {
   withheld_plaintext_count: number;
 };
 
+type PullObjectRow = {
+  batch_id: string;
+  target_generation: number;
+  submitted_at: string;
+  envelope_r2_key: string;
+};
+
 export async function readSyncPull(
   controlDb: SyncMetadataStore,
   authorityId: string,
@@ -511,5 +524,111 @@ LIMIT ?`).bind(authorityRef, afterGeneration, boundedLimit + 1);
       batch_id: batches.at(-1)?.batch_id
     },
     has_more: rows.length > boundedLimit
+  });
+}
+
+export async function readSyncEnvelopePull(
+  storage: SyncStorageBindings,
+  authorityId: string,
+  afterGeneration: number,
+  limit = 10
+): Promise<SyncEnvelopePullResponse> {
+  await ensureSyncTables(storage.controlDb);
+
+  const authorityRef = await opaqueRef(authorityId);
+  const latest = await readSyncStatus(storage.controlDb, authorityId);
+  const boundedBatchLimit = Math.min(Math.max(limit, 1), 50);
+  const batchStatement = storage.controlDb.prepare(`
+SELECT
+  batch_id,
+  batch_hash,
+  base_generation,
+  target_generation,
+  submitted_at,
+  object_count,
+  change_count,
+  withheld_plaintext_count
+FROM sync_batches
+WHERE status = 'committed' AND authority_ref = ? AND target_generation > ?
+ORDER BY target_generation ASC
+LIMIT ?`).bind(authorityRef, afterGeneration, boundedBatchLimit + 1);
+  const batchResult = batchStatement.all
+    ? await batchStatement.all<PullBatchRow>()
+    : { results: [] as PullBatchRow[] };
+  const batchRows = batchResult.results ?? [];
+  const boundedBatches: PullBatchRow[] = [];
+  let selectedObjectCount = 0;
+  for (const row of batchRows.slice(0, boundedBatchLimit)) {
+    if (boundedBatches.length > 0 && selectedObjectCount + row.object_count > MaxEnvelopePullObjects) {
+      break;
+    }
+    boundedBatches.push(row);
+    selectedObjectCount += row.object_count;
+  }
+  const throughGeneration = boundedBatches.at(-1)?.target_generation;
+
+  if (throughGeneration === undefined) {
+    return SyncEnvelopePullResponseSchema.parse({
+      ok: true,
+      authority_id: authorityId,
+      from_generation: afterGeneration,
+      latest_generation: latest.latest_generation,
+      objects: [],
+      next_cursor: {
+        authority_id: authorityId,
+        generation: afterGeneration
+      },
+      has_more: false
+    });
+  }
+
+  const objectStatement = storage.controlDb.prepare(`
+SELECT
+  sync_objects.batch_id AS batch_id,
+  sync_batches.target_generation AS target_generation,
+  sync_batches.submitted_at AS submitted_at,
+  sync_objects.envelope_r2_key AS envelope_r2_key
+FROM sync_objects
+INNER JOIN sync_batches ON sync_batches.batch_id = sync_objects.batch_id
+WHERE sync_batches.status = 'committed'
+  AND sync_batches.authority_ref = ?
+  AND sync_batches.target_generation > ?
+  AND sync_batches.target_generation <= ?
+ORDER BY sync_batches.target_generation ASC, sync_objects.object_ref ASC, sync_objects.version ASC
+`).bind(authorityRef, afterGeneration, throughGeneration);
+  const objectResult = objectStatement.all
+    ? await objectStatement.all<PullObjectRow>()
+    : { results: [] as PullObjectRow[] };
+  const rows = objectResult.results ?? [];
+
+  const objects = await mapWithConcurrency(rows, MaxConcurrentEnvelopeReads, async (row) => {
+    const body = await storage.graphBucket.get(row.envelope_r2_key);
+    if (!body) {
+      throw new Error(`Missing sync envelope R2 object: ${row.envelope_r2_key}`);
+    }
+
+    return {
+      batch_id: row.batch_id,
+      generation: row.target_generation,
+      submitted_at: row.submitted_at,
+      object: GraphObjectEnvelopeSchema.parse(JSON.parse(await body.text()))
+    };
+  });
+
+  const lastObject = objects.at(-1);
+  const lastBatch = boundedBatches.at(-1);
+
+  return SyncEnvelopePullResponseSchema.parse({
+    ok: true,
+    authority_id: authorityId,
+    from_generation: afterGeneration,
+    latest_generation: latest.latest_generation,
+    objects,
+    next_cursor: {
+      authority_id: authorityId,
+      generation: throughGeneration,
+      batch_id: lastBatch?.batch_id ?? lastObject?.batch_id
+    },
+    has_more: batchRows.length > boundedBatches.length
   });
 }

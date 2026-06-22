@@ -3,7 +3,7 @@ import { sha256TokenHash } from "./bootstrap";
 import { acceptSyncBatch, getSyncStatus } from "./sync";
 import { authoritySequencerName } from "./sync-sequencer";
 import { handleBootstrapRequest, type BootstrapWorkerEnv } from "./worker";
-import type { SyncMetadataStore, SyncObjectStore } from "./sync-storage";
+import { readSyncEnvelopePull, type SyncMetadataStore, type SyncObjectStore } from "./sync-storage";
 
 const syncToken = "fixture-sync-token-0001";
 const timestamp = "2026-06-21T12:00:00.000Z";
@@ -197,6 +197,39 @@ class FakePreparedStatement {
   }
 
   async all<T = Record<string, unknown>>(): Promise<D1Result<T>> {
+    if (this.query.includes("FROM sync_objects") && this.query.includes("INNER JOIN sync_batches")) {
+      const authorityRef = String(this.bindings[0]);
+      const afterGeneration = Number(this.bindings[1]);
+      const throughGeneration = Number(this.bindings[2]);
+      const batches = new Map(
+        this.committedBatches(authorityRef)
+          .filter((batch) => batch.target_generation > afterGeneration)
+          .filter((batch) => batch.target_generation <= throughGeneration)
+          .map((batch) => [batch.batch_id, batch])
+      );
+      return fakeD1Result<T>(
+        this.records
+          .filter((record) => record.query.includes("INTO sync_objects"))
+          .filter((record) => batches.has(String(record.bindings[1])))
+          .map((record) => {
+            const batch = batches.get(String(record.bindings[1]))!;
+            return {
+              batch_id: batch.batch_id,
+              target_generation: batch.target_generation,
+              submitted_at: batch.submitted_at,
+              object_ref: String(record.bindings[0]),
+              version: Number(record.bindings[3]),
+              envelope_r2_key: String(record.bindings[6])
+            };
+          })
+          .sort((left, right) => (
+            left.target_generation - right.target_generation
+            || left.object_ref.localeCompare(right.object_ref)
+            || left.version - right.version
+          )) as T[]
+      );
+    }
+
     if (this.query.includes("FROM sync_batches") && this.query.includes("target_generation > ?")) {
       const afterGeneration = Number(this.bindings[1]);
       const limit = Number(this.bindings[2]);
@@ -274,17 +307,26 @@ class FakeD1Database implements SyncMetadataStore {
 
 class FakeR2Bucket implements SyncObjectStore {
   readonly puts: R2PutRecord[] = [];
+  private readonly objects = new Map<string, string>();
 
   async head(_key: string): Promise<R2Object | null> {
     return null;
   }
 
-  async get(): Promise<R2ObjectBody | null> {
-    return null;
+  async get(key: string): Promise<R2ObjectBody | null> {
+    const value = this.objects.get(key);
+    if (value === undefined) {
+      return null;
+    }
+
+    return {
+      text: async () => value
+    } as R2ObjectBody;
   }
 
   async put(key: string, value: string, options?: Parameters<SyncObjectStore["put"]>[2]): Promise<R2Object> {
     this.puts.push({ key, value, options });
+    this.objects.set(key, value);
     return {
       key,
       version: "fixture-version",
@@ -455,6 +497,36 @@ describe("Worker sync batch acceptance", () => {
     expect(graphBucket.puts).toHaveLength(12);
     expect(graphBucket.maxActivePuts).toBeGreaterThan(1);
     expect(graphBucket.maxActivePuts).toBeLessThanOrEqual(8);
+  });
+
+  it("pulls complete envelope generations instead of truncating inside one batch", async () => {
+    const graphBucket = new FakeR2Bucket();
+    const controlDb = new FakeD1Database();
+    const batch = multiObjectCiphertextBatch(12);
+    const result = await acceptSyncBatch(batch, syncToken, {
+      sync_token_hash: await sha256TokenHash(syncToken)
+    }, {
+      graphBucket,
+      controlDb
+    });
+
+    expect(result).toMatchObject({ ok: true });
+    const pull = await readSyncEnvelopePull({
+      graphBucket,
+      controlDb
+    }, batch.authority_id, 0, 1);
+
+    expect(pull).toMatchObject({
+      ok: true,
+      latest_generation: 1,
+      next_cursor: {
+        generation: 1,
+        batch_id: batch.batch_id
+      },
+      has_more: false
+    });
+    expect(pull.objects).toHaveLength(12);
+    expect(pull.objects.map((object) => object.generation)).toEqual(Array(12).fill(1));
   });
 
   it("reports empty and persisted sync status from D1", async () => {
@@ -768,6 +840,130 @@ describe("Worker sync batch acceptance", () => {
     expect(JSON.stringify(body)).not.toContain(syncToken);
   });
 
+  it("serves ciphertext envelopes for local replay without exposing the sync token", async () => {
+    const { env } = await createEnv();
+    const batchResponse = await handleBootstrapRequest(new Request("https://living-atlas.example/api/sync/batch", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-living-atlas-sync-token": syncToken
+      },
+      body: JSON.stringify(ciphertextBatch)
+    }), env);
+    expect(batchResponse.status).toBe(202);
+
+    const response = await handleBootstrapRequest(new Request("https://living-atlas.example/api/sync/envelopes?authority_id=la_authority_worker0001&after_generation=0", {
+      method: "GET",
+      headers: {
+        "x-living-atlas-sync-token": syncToken
+      }
+    }), env);
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body).toMatchObject({
+      ok: true,
+      authority_id: "la_authority_worker0001",
+      from_generation: 0,
+      latest_generation: 1,
+      objects: [
+        {
+          batch_id: ciphertextBatch.batch_id,
+          generation: 1,
+          submitted_at: ciphertextBatch.submitted_at,
+          object: expect.objectContaining({
+            object_id: "la_object_worker0001",
+            payload: expect.objectContaining({
+              kind: "ciphertext-ref"
+            })
+          })
+        }
+      ],
+      next_cursor: {
+        generation: 1,
+        batch_id: ciphertextBatch.batch_id
+      },
+      has_more: false
+    });
+    expect(JSON.stringify(body)).not.toContain(syncToken);
+  });
+
+  it("exposes a token-gated remote MCP skeleton for sync tools", async () => {
+    const { env } = await createEnv();
+    await handleBootstrapRequest(new Request("https://living-atlas.example/api/sync/batch", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-living-atlas-sync-token": syncToken
+      },
+      body: JSON.stringify(ciphertextBatch)
+    }), env);
+
+    const toolsResponse = await handleBootstrapRequest(new Request("https://living-atlas.example/mcp", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-living-atlas-sync-token": syncToken
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/list"
+      })
+    }), env);
+
+    expect(toolsResponse.status).toBe(200);
+    await expect(toolsResponse.json()).resolves.toMatchObject({
+      jsonrpc: "2.0",
+      id: 1,
+      result: {
+        tools: expect.arrayContaining([
+          expect.objectContaining({ name: "remote_sync_envelopes" })
+        ])
+      }
+    });
+
+    const callResponse = await handleBootstrapRequest(new Request("https://living-atlas.example/mcp", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-living-atlas-sync-token": syncToken
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "tools/call",
+        params: {
+          name: "remote_sync_envelopes",
+          arguments: {
+            authority_id: "la_authority_worker0001",
+            after_generation: 0
+          }
+        }
+      })
+    }), env);
+
+    expect(callResponse.status).toBe(200);
+    const body = await callResponse.json();
+    expect(body).toMatchObject({
+      jsonrpc: "2.0",
+      id: 2,
+      result: {
+        structuredContent: {
+          latest_generation: 1,
+          objects: [
+            {
+              object: expect.objectContaining({
+                object_id: "la_object_worker0001"
+              })
+            }
+          ]
+        }
+      }
+    });
+    expect(JSON.stringify(body)).not.toContain(syncToken);
+  });
+
   it("rejects sync tokens in query strings", async () => {
     const response = await handleBootstrapRequest(new Request("https://living-atlas.example/api/sync/batch?sync_token=fixture-sync-token-0001", {
       method: "POST",
@@ -788,6 +984,31 @@ describe("Worker sync batch acceptance", () => {
     await expect(statusResponse.json()).resolves.toEqual({
       ok: false,
       error: "sync token must not be sent in the query string"
+    });
+
+    const envelopeResponse = await handleBootstrapRequest(new Request("https://living-atlas.example/api/sync/envelopes?sync_token=fixture-sync-token-0001", {
+      method: "GET"
+    }), (await createEnv()).env);
+
+    expect(envelopeResponse.status).toBe(400);
+    await expect(envelopeResponse.json()).resolves.toEqual({
+      ok: false,
+      error: "sync token must not be sent in the query string"
+    });
+
+    const mcpResponse = await handleBootstrapRequest(new Request("https://living-atlas.example/mcp?sync_token=fixture-sync-token-0001", {
+      method: "POST",
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" })
+    }), (await createEnv()).env);
+
+    expect(mcpResponse.status).toBe(400);
+    await expect(mcpResponse.json()).resolves.toEqual({
+      jsonrpc: "2.0",
+      error: {
+        code: -32600,
+        message: "tokens must not be sent in the query string"
+      },
+      id: null
     });
   });
 });

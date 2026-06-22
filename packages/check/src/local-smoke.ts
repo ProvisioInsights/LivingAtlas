@@ -219,9 +219,22 @@ class LocalD1Database implements SyncMetadataStore {
 
 class LocalR2Bucket implements SyncObjectStore {
   readonly puts: R2PutRecord[] = [];
+  private readonly objects = new Map<string, string>();
+
+  async get(key: string): Promise<R2ObjectBody | null> {
+    const value = this.objects.get(key);
+    if (value === undefined) {
+      return null;
+    }
+
+    return {
+      text: async () => value
+    } as R2ObjectBody;
+  }
 
   async put(key: string, value: string, options?: Parameters<SyncObjectStore["put"]>[2]): Promise<R2Object> {
     this.puts.push({ key, value, options });
+    this.objects.set(key, value);
     return {
       key,
       version: "local-smoke-version",

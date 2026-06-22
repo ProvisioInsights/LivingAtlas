@@ -436,6 +436,28 @@ export const SyncPullResponseSchema = z
   })
   .strict();
 
+export const SyncEnvelopePullObjectSchema = z
+  .object({
+    batch_id: SyncBatchIdSchema,
+    generation: z.number().int().positive(),
+    submitted_at: IsoTimestampSchema,
+    object: CiphertextOnlyObjectSchema
+  })
+  .strict();
+
+export const SyncEnvelopePullResponseSchema = z
+  .object({
+    ok: z.literal(true),
+    authority_id: AuthorityIdSchema,
+    from_generation: z.number().int().nonnegative(),
+    latest_generation: z.number().int().nonnegative(),
+    objects: z.array(SyncEnvelopePullObjectSchema),
+    next_cursor: SyncPullCursorSchema,
+    recovery: SyncPullRecoverySchema.optional(),
+    has_more: z.boolean()
+  })
+  .strict();
+
 export function canonicalSyncBatchHashPayload(batch: Omit<SyncBatch, "batch_hash">): string {
   return JSON.stringify({
     schema: "living-atlas-sync-batch-hash:v1",
@@ -468,3 +490,5 @@ export type SyncStatus = z.infer<typeof SyncStatusSchema>;
 export type SyncPullCursor = z.infer<typeof SyncPullCursorSchema>;
 export type SyncPullRecovery = z.infer<typeof SyncPullRecoverySchema>;
 export type SyncPullResponse = z.infer<typeof SyncPullResponseSchema>;
+export type SyncEnvelopePullObject = z.infer<typeof SyncEnvelopePullObjectSchema>;
+export type SyncEnvelopePullResponse = z.infer<typeof SyncEnvelopePullResponseSchema>;

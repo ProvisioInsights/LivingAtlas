@@ -18,6 +18,7 @@ import {
   Sha256HashSchema
 } from "@living-atlas/contracts";
 import { controlPlaneFixture, syntheticGraphObjects } from "@living-atlas/fixtures";
+import type { FileLocalGraphStore } from "@living-atlas/local-graph-store";
 import { evaluatePolicy, type PolicyDecision } from "@living-atlas/policy";
 import { z } from "zod";
 import {
@@ -35,6 +36,7 @@ import {
 export type LocalMcpContext = {
   controlPlane: ControlPlaneSnapshot;
   graphObjects: GraphObjectEnvelope[];
+  graphStore?: FileLocalGraphStore;
   credentialStore: LocalMcpCredentialStore;
   auditSink?: LocalMcpAuditSink;
   activitySink?: LocalMcpActivitySink;
@@ -134,10 +136,12 @@ export type LocalGraphTombstoneToolInput = LocalGraphToolInput & {
 export type LocalGraphMutationResult = {
   object: AuthorizedLocalObject;
   mutation: "created" | "updated" | "tombstoned";
-  persistence: "synthetic-in-memory";
+  persistence: "synthetic-in-memory" | "snapshot+journal";
   object_count: number;
   previous_version?: number;
   new_version: number;
+  generation?: number;
+  journal_sequence?: number;
 };
 
 export type LocalGraphToolResult<T> =
@@ -171,6 +175,7 @@ export function createFixtureLocalMcpContext(options: {
 export function createLocalMcpContextFromControlState(options: {
   controlState: LocalControlState;
   graphObjects?: GraphObjectEnvelope[];
+  graphStore?: FileLocalGraphStore;
   auditSink?: LocalMcpAuditSink;
   activitySink?: LocalMcpActivitySink;
   now?: string;
@@ -179,6 +184,7 @@ export function createLocalMcpContextFromControlState(options: {
   return {
     controlPlane: options.controlState.control_plane,
     graphObjects: cloneGraphObjects(options.graphObjects ?? syntheticGraphObjects),
+    graphStore: options.graphStore,
     credentialStore: new InMemoryLocalMcpCredentialStore(options.controlState.local_credentials),
     auditSink: options.auditSink,
     activitySink: options.activitySink,
@@ -263,6 +269,22 @@ function findObjectIndex(context: LocalMcpContext, objectId: ObjectId): number {
   return context.graphObjects.findIndex((candidate) => candidate.object_id === objectId);
 }
 
+function contextObjects(context: LocalMcpContext): GraphObjectEnvelope[] {
+  return context.graphStore
+    ? context.graphStore.listObjects({ include_tombstones: true })
+    : context.graphObjects;
+}
+
+function contextActiveObjectCount(context: LocalMcpContext): number {
+  return context.graphStore
+    ? context.graphStore.status().object_count
+    : context.graphObjects.length;
+}
+
+function readContextObject(context: LocalMcpContext, objectId: ObjectId): GraphObjectEnvelope | undefined {
+  return context.graphStore?.readObject(objectId) ?? context.graphObjects.find((candidate) => candidate.object_id === objectId);
+}
+
 function objectWithinSyntheticLimit(context: LocalMcpContext, object: GraphObjectEnvelope): boolean {
   return envelopeByteSize(object) <= syntheticStoreLimits(context).maxEnvelopeBytes;
 }
@@ -303,7 +325,7 @@ export async function localGraphStatus(
     result: {
       authority_id: context.controlPlane.authority.authority_id,
       policy_generation: context.controlPlane.policy_generation,
-      object_count: context.graphObjects.length,
+      object_count: contextActiveObjectCount(context),
       client_id: auth.authenticated.client.client_id,
       profile: auth.authenticated.capability.profile,
       access_classes: auth.authenticated.capability.access_classes,
@@ -324,7 +346,7 @@ export async function localListObjects(
   const objects: AuthorizedLocalObject[] = [];
   let withheld_count = 0;
 
-  for (const object of context.graphObjects) {
+  for (const object of contextObjects(context)) {
     const decision = evaluatePolicy({
       profile: auth.authenticated.capability.profile,
       operation: "read",
@@ -370,7 +392,7 @@ export async function localReadObject(
   }
 
   const objectId = ObjectIdSchema.parse(input.object_id);
-  const object = context.graphObjects.find((candidate) => candidate.object_id === objectId);
+  const object = readContextObject(context, objectId);
   if (!object) {
     recordToolDecision({
       context,
@@ -450,7 +472,7 @@ export async function localCreateObject(
     return { ok: false, reason: "object-authority-mismatch" };
   }
 
-  if (findObjectIndex(context, object.object_id) !== -1) {
+  if (readContextObject(context, object.object_id)) {
     recordToolDecision({
       context,
       authenticated: auth.authenticated,
@@ -463,7 +485,7 @@ export async function localCreateObject(
     return { ok: false, reason: "object-already-exists" };
   }
 
-  if (context.graphObjects.length >= syntheticStoreLimits(context).maxObjects) {
+  if (!context.graphStore && context.graphObjects.length >= syntheticStoreLimits(context).maxObjects) {
     recordToolDecision({
       context,
       authenticated: auth.authenticated,
@@ -510,6 +532,31 @@ export async function localCreateObject(
 
   if (!decision.allowed) {
     return { ok: false, reason: decision.reason_code };
+  }
+
+  if (context.graphStore) {
+    const mutation = await context.graphStore.createObject({
+      object,
+      expected_generation: context.graphStore.status().generation,
+      actor_id: auth.authenticated.client.client_id,
+      recorded_at: nowForMutation(context)
+    });
+    if (!mutation.ok) {
+      return { ok: false, reason: mutation.reason };
+    }
+
+    return {
+      ok: true,
+      result: {
+        object: sanitizeAuthorizedObject(mutation.object, decision.plaintext_allowed),
+        mutation: "created",
+        persistence: mutation.persistence,
+        object_count: context.graphStore.status().object_count,
+        new_version: mutation.new_version,
+        generation: mutation.generation,
+        journal_sequence: mutation.journal_sequence
+      }
+    };
   }
 
   const storedObject = cloneGraphObject(object);
@@ -577,7 +624,7 @@ export async function localUpdateObject(
 
   const objectId = parsedObjectId.data;
   const existingIndex = findObjectIndex(context, objectId);
-  const existingObject = context.graphObjects[existingIndex];
+  const existingObject = readContextObject(context, objectId);
   if (!existingObject) {
     recordToolDecision({
       context,
@@ -670,6 +717,33 @@ export async function localUpdateObject(
     return { ok: false, reason: decision.reason_code };
   }
 
+  if (context.graphStore) {
+    const mutation = await context.graphStore.updateObject({
+      object: nextObject,
+      expected_generation: context.graphStore.status().generation,
+      expected_version: parsedExpectedVersion.data,
+      actor_id: auth.authenticated.client.client_id,
+      recorded_at: nextObject.updated_at
+    });
+    if (!mutation.ok) {
+      return { ok: false, reason: mutation.reason };
+    }
+
+    return {
+      ok: true,
+      result: {
+        object: sanitizeAuthorizedObject(mutation.object, decision.plaintext_allowed),
+        mutation: "updated",
+        persistence: mutation.persistence,
+        object_count: context.graphStore.status().object_count,
+        previous_version: mutation.previous_version,
+        new_version: mutation.new_version,
+        generation: mutation.generation,
+        journal_sequence: mutation.journal_sequence
+      }
+    };
+  }
+
   context.graphObjects[existingIndex] = nextObject;
 
   return {
@@ -722,7 +796,7 @@ export async function localTombstoneObject(
 
   const objectId = parsedObjectId.data;
   const existingIndex = findObjectIndex(context, objectId);
-  const existingObject = context.graphObjects[existingIndex];
+  const existingObject = readContextObject(context, objectId);
   if (!existingObject) {
     recordToolDecision({
       context,
@@ -779,6 +853,33 @@ export async function localTombstoneObject(
 
   if (!decision.allowed) {
     return { ok: false, reason: decision.reason_code };
+  }
+
+  if (context.graphStore) {
+    const mutation = await context.graphStore.tombstoneObject({
+      object_id: objectId,
+      expected_generation: context.graphStore.status().generation,
+      expected_version: parsedExpectedVersion.data,
+      actor_id: auth.authenticated.client.client_id,
+      recorded_at: nextObject.updated_at
+    });
+    if (!mutation.ok) {
+      return { ok: false, reason: mutation.reason };
+    }
+
+    return {
+      ok: true,
+      result: {
+        object: sanitizeAuthorizedObject(mutation.object, decision.plaintext_allowed),
+        mutation: "tombstoned",
+        persistence: mutation.persistence,
+        object_count: context.graphStore.status().object_count,
+        previous_version: mutation.previous_version,
+        new_version: mutation.new_version,
+        generation: mutation.generation,
+        journal_sequence: mutation.journal_sequence
+      }
+    };
   }
 
   context.graphObjects[existingIndex] = nextObject;

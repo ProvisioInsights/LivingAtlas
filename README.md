@@ -73,11 +73,12 @@ objects, and separate capability surfaces:
 
 Phase 1 scaffold exists as a TypeScript workspace. It includes contracts,
 synthetic fixtures, access policy evaluation, metadata leakage scanning,
-readiness check commands, a Cloudflare bootstrap skeleton, and a fixture-backed
-local MCP server skeleton. It also includes an encrypted local control-store and
-a ciphertext-only sync-agent/Worker storage skeleton, plus redacted Worker
-operational observability events. It does not import real graph data or deploy
-personal Cloudflare resources.
+readiness check commands, Cloudflare first-claim bootstrap, fixture-backed local
+MCP tools, a durable redacted local graph store, ciphertext sync batch
+persistence, envelope pull/replay, a minimal token-gated remote MCP sync
+skeleton, and hash-only replay reporting over audit/activity/operational
+events. It does not import real graph data or deploy personal Cloudflare
+resources.
 
 ## Development
 
@@ -218,18 +219,23 @@ Workspace packages:
 - `@living-atlas/check`: local scaffold verification CLI.
 - `@living-atlas/cloudflare-worker`: Cloudflare Worker routes and Durable
   Object first-claim bootstrap lock skeleton, plus token-gated sync batch
-  persistence/status through R2/D1 bindings and redacted structured request
-  observability.
+  persistence/status, envelope pull through R2/D1 bindings, remote MCP sync
+  skeleton, and redacted structured request observability.
 - `@living-atlas/local-control-store`: encrypted local authority/control-plane
   state store, local profile path helpers, and fixture generation tooling.
+- `@living-atlas/local-graph-store`: durable redacted snapshot/journal graph
+  replica for local CRUD and sync replay.
 - `@living-atlas/local-mcp`: local trusted-ingress MCP skeleton with bearer
   token capability checks, sealed control-store loading, fixture graph
-  status/list/read plus synthetic in-memory CRUD tools, and redacted audit
-  events.
+  status/list/read plus synthetic CRUD tools backed by in-memory fixtures or the
+  durable local graph store, and redacted audit events.
 - `@living-atlas/sync-agent`: local sync-agent skeleton that builds
   ciphertext-only batches from the local graph, tracks an in-memory synthetic
-  outbox/daemon plan, and submits to the Worker sync route after checking
-  remote generation status.
+  outbox/daemon plan, submits to the Worker sync route, fetches remote
+  summaries/envelopes, and applies pulled envelopes into the local graph store
+  with version-conflict reporting.
+- `@living-atlas/activity-replay`: hash-only replay inspection and reporting
+  over durable audit, live activity, and operational observability events.
 
 Launch the fixture local MCP server with generated synthetic control state:
 

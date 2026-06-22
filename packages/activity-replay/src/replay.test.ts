@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { DurableAuditEvent, LiveActivityEvent, OperationalEvent } from "@living-atlas/contracts";
 import { fixtureAuthorityId, sensitiveBaitRegistry } from "@living-atlas/fixtures";
 import { scanForBaitStrings } from "@living-atlas/leakage";
-import { buildReplayInspection } from "./index";
+import { buildReplayInspection, buildReplayReport } from "./index";
 
 const operationId = "la_operation_replay0001";
 const traceId = "la_trace_replay0001";
@@ -128,5 +128,49 @@ describe("replay inspection model", () => {
       "operational-error",
       "remote-sensitive-touch"
     ]));
+  });
+
+  it("builds a hash-only replay report with stream, plane, action, and finding counters", () => {
+    const inspection = buildReplayInspection({
+      audit_events: [auditEvent()],
+      activity_events: [activityEvent()],
+      operational_events: [operationalEvent()],
+      generated_at: "2026-06-22T12:01:00.000Z"
+    });
+    const report = buildReplayReport(inspection);
+
+    expect(report).toMatchObject({
+      report_schema: "living-atlas-replay-report:v1",
+      generated_at: "2026-06-22T12:01:00.000Z",
+      summary_policy: "hash-only",
+      totals: {
+        total_records: 3,
+        operations: 1
+      },
+      by_stream: {
+        audit: 1,
+        activity: 1,
+        operational: 1
+      },
+      by_plane: {
+        local: 2,
+        "local-mcp": 1
+      },
+      by_action: {
+        "object.read": 1,
+        read: 1,
+        request: 1
+      },
+      by_outcome: {
+        ok: 1
+      },
+      finding_counts: {
+        info: 0,
+        warn: 0,
+        error: 0
+      },
+      top_findings: []
+    });
+    expect(scanForBaitStrings([{ name: "report", content: JSON.stringify(report) }], sensitiveBaitRegistry)).toEqual([]);
   });
 });

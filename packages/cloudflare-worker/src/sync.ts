@@ -4,6 +4,7 @@ import {
   SyncBatchSchema,
   type SyncBatch,
   type SyncBatchAccepted,
+  type SyncEnvelopePullResponse,
   type SyncPullResponse,
   type SyncStatus
 } from "@living-atlas/contracts";
@@ -11,6 +12,7 @@ import { verifyClaimToken } from "./bootstrap";
 import {
   persistSyncBatch,
   readCommittedBatchByIdempotency,
+  readSyncEnvelopePull,
   readSyncPull,
   readSyncStatus,
   type CommittedSyncBatch,
@@ -72,6 +74,16 @@ export type SyncPullReadResult =
   | {
       ok: true;
       response: SyncPullResponse;
+    }
+  | {
+      ok: false;
+      reason: "sync-disabled" | "missing-token" | "invalid-token" | "invalid-token-binding" | "invalid-pull-request";
+    };
+
+export type SyncEnvelopePullReadResult =
+  | {
+      ok: true;
+      response: SyncEnvelopePullResponse;
     }
   | {
       ok: false;
@@ -291,5 +303,28 @@ export async function getSyncPull(
   return {
     ok: true,
     response: await readSyncPull(controlDb, authorityId, afterGeneration)
+  };
+}
+
+export async function getSyncEnvelopePull(
+  token: string | undefined,
+  config: SyncRuntimeConfig,
+  storage: SyncStorageBindings,
+  authorityId: string | undefined,
+  afterGeneration: number | undefined,
+  binding?: SyncTokenBinding
+): Promise<SyncEnvelopePullReadResult> {
+  const tokenFailure = await verifySyncToken(token, config, binding);
+  if (tokenFailure) {
+    return tokenFailure;
+  }
+
+  if (!authorityId || afterGeneration === undefined || !Number.isInteger(afterGeneration) || afterGeneration < 0) {
+    return { ok: false, reason: "invalid-pull-request" };
+  }
+
+  return {
+    ok: true,
+    response: await readSyncEnvelopePull(storage, authorityId, afterGeneration)
   };
 }
