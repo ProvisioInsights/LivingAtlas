@@ -57,6 +57,9 @@ importers:
       '@living-atlas/local-control-store':
         specifier: workspace:*
         version: link:../local-control-store
+      '@living-atlas/local-graph-store':
+        specifier: workspace:*
+        version: link:../local-graph-store
       '@living-atlas/local-mcp':
         specifier: workspace:*
         version: link:../local-mcp
