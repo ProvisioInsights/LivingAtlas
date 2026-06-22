@@ -18,6 +18,7 @@ type CapturedRequest = {
 const config: CloudflareLiveConcurrencySmokeConfig = {
   endpoint: "https://living-atlas-live.example/",
   syncToken: "live-sync-token-test-secret",
+  healthToken: "live-health-token-test-secret",
   runId: "live_test_0001",
   authorityId: "la_authority_livetest0001",
   clientId: "la_client_livetest0001",
@@ -99,6 +100,10 @@ function createFakeLiveFetch(options: { acceptEveryRaceBatch?: boolean } = {}) {
     requests.push({ url, method, headers, body });
 
     if (url.pathname === "/healthz") {
+      if (headers.get("x-living-atlas-health-token") !== (config.healthToken ?? config.syncToken)) {
+        return rejected(404, "not-found");
+      }
+
       return json(200, { ok: true });
     }
 
@@ -186,6 +191,7 @@ describe("Cloudflare live concurrency smoke config", () => {
     });
 
     expect("syncToken" in parsed && parsed.syncToken).toBe("secret-token-value");
+    expect("healthToken" in parsed && parsed.healthToken).toBeUndefined();
     expect("runId" in parsed && parsed.runId).toBe("live_env_0001");
     expect("concurrency" in parsed && parsed.concurrency).toBe(3);
     if ("authorityId" in parsed) {
@@ -230,6 +236,9 @@ describe("Cloudflare live concurrency smoke harness", () => {
     ]);
 
     const syncRequests = fake.requests.filter((request) => request.url.pathname.startsWith("/api/sync"));
+    const healthRequests = fake.requests.filter((request) => request.url.pathname === "/healthz");
+    expect(healthRequests).toHaveLength(1);
+    expect(healthRequests[0]!.headers.get("x-living-atlas-health-token")).toBe(config.healthToken);
     expect(syncRequests.every((request) => !request.url.searchParams.has("sync_token"))).toBe(true);
     expect(syncRequests.every((request) => request.headers.get("x-living-atlas-sync-token") === config.syncToken)).toBe(true);
     expect(syncRequests.every((request) => request.headers.get("x-living-atlas-sync-client-id") === config.clientId)).toBe(true);

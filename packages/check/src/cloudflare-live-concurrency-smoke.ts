@@ -18,6 +18,7 @@ type FetchLike = typeof fetch;
 export type CloudflareLiveConcurrencySmokeConfig = {
   endpoint: string;
   syncToken: string;
+  healthToken?: string;
   runId: string;
   authorityId: string;
   clientId: string;
@@ -63,6 +64,7 @@ type FetchJsonResult = {
 export const liveConcurrencyEnv = {
   endpoint: "LIVING_ATLAS_LIVE_SYNC_ENDPOINT",
   token: "LIVING_ATLAS_LIVE_SYNC_TOKEN",
+  healthToken: "LIVING_ATLAS_LIVE_HEALTH_TOKEN",
   acknowledgeMutation: "LIVING_ATLAS_LIVE_CONCURRENCY_ACK",
   clientId: "LIVING_ATLAS_LIVE_SYNC_CLIENT_ID",
   capabilityId: "LIVING_ATLAS_LIVE_SYNC_CAPABILITY_ID",
@@ -174,6 +176,7 @@ export function readCloudflareLiveConcurrencySmokeConfig(env: NodeJS.ProcessEnv 
     return {
       endpoint: validateEndpoint(endpoint!, envValue(env, liveConcurrencyEnv.allowInsecureEndpoint) === "1"),
       syncToken: syncToken!,
+      healthToken: envValue(env, liveConcurrencyEnv.healthToken),
       runId,
       authorityId,
       clientId,
@@ -199,6 +202,12 @@ function syncHeaders(config: CloudflareLiveConcurrencySmokeConfig, batch?: SyncB
     "x-living-atlas-sync-client-id": batch?.client_id ?? config.clientId,
     "x-living-atlas-sync-capability-id": batch?.capability_id ?? config.capabilityId,
     ...(batch?.token_id ?? config.tokenId ? { "x-living-atlas-sync-token-id": batch?.token_id ?? config.tokenId! } : {})
+  };
+}
+
+function healthHeaders(config: CloudflareLiveConcurrencySmokeConfig): Record<string, string> {
+  return {
+    "x-living-atlas-health-token": config.healthToken ?? config.syncToken
   };
 }
 
@@ -437,7 +446,10 @@ export async function runCloudflareLiveConcurrencySmoke(options: {
   const errors: string[] = [];
 
   try {
-    const health = await fetchJson(fetchImpl, config, "/healthz", { method: "GET" });
+    const health = await fetchJson(fetchImpl, config, "/healthz", {
+      method: "GET",
+      headers: healthHeaders(config)
+    });
     addCase(cases, "healthz", health.status === 200, `HTTP ${health.status}`);
     if (health.status !== 200) {
       errors.push(`healthz expected HTTP 200, got ${health.status}`);

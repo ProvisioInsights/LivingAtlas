@@ -106,9 +106,53 @@ describe("Worker bootstrap routes", () => {
     const env = await createEnv();
 
     const health = await handleBootstrapRequest(new Request("https://living-atlas.example/healthz"), env);
-    await expect(health.json()).resolves.toEqual({ ok: true, service: "living-atlas-cloudflare-bootstrap" });
+    await expect(health.json()).resolves.toEqual({ ok: true });
 
     const status = await handleBootstrapRequest(new Request("https://living-atlas.example/api/bootstrap/status"), env);
+    await expect(status.json()).resolves.toMatchObject({ bootstrap_state: "unclaimed" });
+  });
+
+  it("hides unauthenticated routes when stealth mode is enabled", async () => {
+    const env = {
+      ...await createEnv(),
+      LA_STEALTH_MODE: "1"
+    };
+
+    for (const request of [
+      new Request("https://living-atlas.example/healthz"),
+      new Request("https://living-atlas.example/api/bootstrap/status"),
+      new Request("https://living-atlas.example/api/bootstrap/claim?claim_token=fixture-bootstrap-token-0001", {
+        method: "POST",
+        body: JSON.stringify(claimPayload)
+      }),
+      new Request("https://living-atlas.example/does-not-exist")
+    ]) {
+      const response = await handleBootstrapRequest(request, env);
+      expect(response.status).toBe(404);
+      expect(response.headers.get("content-type")).toBe("text/plain; charset=utf-8");
+      expect(response.headers.get("x-living-atlas-trace-id")).toBeNull();
+      expect(response.headers.get("x-living-atlas-operation-id")).toBeNull();
+      await expect(response.text()).resolves.toBe("Not Found\n");
+    }
+  });
+
+  it("allows authenticated bootstrap and health checks in stealth mode", async () => {
+    const env = {
+      ...await createEnv(),
+      LA_STEALTH_MODE: "1",
+      LA_HEALTH_TOKEN_HASH: await sha256TokenHash(validToken)
+    };
+
+    const health = await handleBootstrapRequest(new Request("https://living-atlas.example/healthz", {
+      headers: { "x-living-atlas-health-token": validToken }
+    }), env);
+    expect(health.status).toBe(200);
+    await expect(health.json()).resolves.toEqual({ ok: true });
+
+    const status = await handleBootstrapRequest(new Request("https://living-atlas.example/api/bootstrap/status", {
+      headers: { "x-living-atlas-bootstrap-token": validToken }
+    }), env);
+    expect(status.status).toBe(200);
     await expect(status.json()).resolves.toMatchObject({ bootstrap_state: "unclaimed" });
   });
 

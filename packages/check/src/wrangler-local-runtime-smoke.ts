@@ -54,7 +54,7 @@ const requiredStdoutBindings = [
 ];
 
 const requiredBundleMarkers = [
-  "living-atlas-cloudflare-bootstrap",
+  "x-living-atlas-bootstrap-token",
   "/api/bootstrap/claim",
   "/api/sync/batch",
   "BootstrapClaimLock",

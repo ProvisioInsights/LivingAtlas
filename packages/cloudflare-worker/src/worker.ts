@@ -1,5 +1,5 @@
 import { AuthorityIdSchema } from "@living-atlas/contracts";
-import { BootstrapClaimBodySchema, type BootstrapRuntimeConfig } from "./bootstrap";
+import { BootstrapClaimBodySchema, verifyClaimToken, type BootstrapRuntimeConfig } from "./bootstrap";
 import type { BootstrapClaimLockCore } from "./bootstrap-lock";
 import {
   applyWorkerTraceHeaders,
@@ -45,9 +45,12 @@ export type BootstrapWorkerEnv = {
   LA_SYNC_CLIENT_ID?: string;
   LA_SYNC_CAPABILITY_ID?: string;
   LA_SYNC_TOKEN_ID?: string;
+  LA_STEALTH_MODE?: string;
+  LA_HEALTH_TOKEN_HASH?: string;
 } & WorkerObservabilityEnv;
 
 const tokenHeader = "x-living-atlas-bootstrap-token";
+const healthTokenHeader = "x-living-atlas-health-token";
 const syncTokenHeader = "x-living-atlas-sync-token";
 const syncClientHeader = "x-living-atlas-sync-client-id";
 const syncCapabilityHeader = "x-living-atlas-sync-capability-id";
@@ -62,6 +65,20 @@ function json(data: unknown, init?: ResponseInit): Response {
       ...init?.headers
     }
   });
+}
+
+function plainNotFound(): Response {
+  return new Response("Not Found\n", {
+    status: 404,
+    headers: {
+      "content-type": "text/plain; charset=utf-8",
+      "cache-control": "no-store"
+    }
+  });
+}
+
+function truthyFlag(value: string | undefined): boolean {
+  return value === "1" || value === "true" || value === "on" || value === "yes";
 }
 
 function runtimeConfig(env: BootstrapWorkerEnv): BootstrapRuntimeConfig {
@@ -86,6 +103,70 @@ function getClaimLock(env: BootstrapWorkerEnv): BootstrapClaimLockRpc {
 
 function queryContainsToken(url: URL): boolean {
   return forbiddenQueryTokenParams.some((param) => url.searchParams.has(param));
+}
+
+async function hasValidToken(token: string | undefined, hash: string | undefined): Promise<boolean> {
+  return !!token && await verifyClaimToken(token, hash);
+}
+
+async function hasValidBootstrapToken(request: Request, env: BootstrapWorkerEnv): Promise<boolean> {
+  return hasValidToken(request.headers.get(tokenHeader) ?? undefined, env.BOOTSTRAP_CLAIM_TOKEN_HASH);
+}
+
+async function hasValidHealthToken(request: Request, env: BootstrapWorkerEnv): Promise<boolean> {
+  const token = request.headers.get(healthTokenHeader) ?? undefined;
+  return (
+    await hasValidToken(token, env.LA_HEALTH_TOKEN_HASH) ||
+    await hasValidToken(token, env.LA_SYNC_TOKEN_HASH) ||
+    await hasValidToken(token, env.BOOTSTRAP_CLAIM_TOKEN_HASH)
+  );
+}
+
+async function hasValidSyncToken(request: Request, env: BootstrapWorkerEnv): Promise<boolean> {
+  const token = request.headers.get(syncTokenHeader) ?? undefined;
+  if (!(await hasValidToken(token, env.LA_SYNC_TOKEN_HASH))) {
+    return false;
+  }
+
+  const binding = syncTokenBinding(request);
+  if (env.LA_SYNC_CLIENT_ID && binding.client_id !== env.LA_SYNC_CLIENT_ID) {
+    return false;
+  }
+
+  if (env.LA_SYNC_CAPABILITY_ID && binding.capability_id !== env.LA_SYNC_CAPABILITY_ID) {
+    return false;
+  }
+
+  if (env.LA_SYNC_TOKEN_ID && binding.token_id !== env.LA_SYNC_TOKEN_ID) {
+    return false;
+  }
+
+  return true;
+}
+
+async function shouldStealthDrop(request: Request, env: BootstrapWorkerEnv): Promise<boolean> {
+  if (!truthyFlag(env.LA_STEALTH_MODE)) {
+    return false;
+  }
+
+  const url = new URL(request.url);
+  if (queryContainsToken(url)) {
+    return true;
+  }
+
+  if (url.pathname === "/healthz") {
+    return !(await hasValidHealthToken(request, env));
+  }
+
+  if (url.pathname.startsWith("/api/bootstrap/")) {
+    return !(await hasValidBootstrapToken(request, env));
+  }
+
+  if (url.pathname.startsWith("/api/sync/")) {
+    return !(await hasValidSyncToken(request, env));
+  }
+
+  return true;
 }
 
 function syncTokenBinding(request: Request): SyncTokenBinding {
@@ -134,7 +215,7 @@ async function routeBootstrapRequest(request: Request, env: BootstrapWorkerEnv):
   const url = new URL(request.url);
 
   if (request.method === "GET" && url.pathname === "/healthz") {
-    return json({ ok: true, service: "living-atlas-cloudflare-bootstrap" });
+    return json({ ok: true });
   }
 
   if (request.method === "GET" && url.pathname === "/api/bootstrap/status") {
@@ -279,10 +360,14 @@ async function routeBootstrapRequest(request: Request, env: BootstrapWorkerEnv):
     return json({ ok: false, error: result.reason }, { status: statusByReason[result.reason] });
   }
 
-  return json({ ok: false, error: "not-found" }, { status: 404 });
+  return plainNotFound();
 }
 
 export async function handleBootstrapRequest(request: Request, env: BootstrapWorkerEnv): Promise<Response> {
+  if (await shouldStealthDrop(request, env)) {
+    return plainNotFound();
+  }
+
   const startedAt = Date.now();
   const observability = createWorkerObservabilityContext(request);
 

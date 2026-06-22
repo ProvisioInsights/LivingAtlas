@@ -16,7 +16,7 @@ const wranglerStdout = [
 ].join("\n");
 
 const workerBundle = [
-  "living-atlas-cloudflare-bootstrap",
+  "x-living-atlas-bootstrap-token",
   "/api/bootstrap/claim",
   "/api/sync/batch",
   "BootstrapClaimLock",
