@@ -145,6 +145,12 @@ Run the local stress gate when changing CRUD, policy, sync, or leakage code:
 npm run stress:local
 ```
 
+Check deployed synthetic usage before running any live Cloudflare stress:
+
+```bash
+npm run cloudflare:live-usage-gate
+```
+
 This performs hundreds of synthetic local CRUD operations in one run, including
 duplicate creates, stale updates, invalid versions, empty patches, oversized
 objects, store-limit enforcement, tombstones, audit/activity checks, and leakage
@@ -241,6 +247,9 @@ Workspace packages:
   health-token-gated observed usage and configurable budget ratios. The
   response shape is generic so non-Cloudflare deployments can implement the
   same contract with provider-specific collectors.
+- The Worker and remote MCP also expose a `living-atlas-usage-gate:v1`
+  safe-to-test/stop-testing decision. The gate is tunable per deployment and is
+  intended to fail closed before live synthetic stress runs.
 
 Launch the fixture local MCP server with generated synthetic control state:
 

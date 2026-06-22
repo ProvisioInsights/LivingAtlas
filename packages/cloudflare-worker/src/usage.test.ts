@@ -208,6 +208,45 @@ describe("Worker usage status endpoint", () => {
     expect(JSON.stringify(body)).not.toContain("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
   });
 
+  it("returns a tunable safe-to-test or stop-testing usage gate", async () => {
+    const safeResponse = await handleBootstrapRequest(new Request("https://living-atlas.example/api/usage/gate?window_hours=6&max_budget_ratio=0.85&min_worker_requests_remaining=2", {
+      headers: {
+        "x-living-atlas-health-token": healthToken
+      }
+    }), await createEnv());
+
+    expect(safeResponse.status).toBe(200);
+    await expect(safeResponse.json()).resolves.toMatchObject({
+      ok: true,
+      gate_schema: "living-atlas-usage-gate:v1",
+      decision: "safe-to-test",
+      policy: {
+        max_budget_ratio: 0.85,
+        min_worker_requests_remaining: 2,
+        require_zero_5xx: true
+      }
+    });
+
+    const stopResponse = await handleBootstrapRequest(new Request("https://living-atlas.example/api/usage/gate?window_hours=6&max_budget_ratio=0.5&min_worker_requests_remaining=5", {
+      headers: {
+        "x-living-atlas-health-token": healthToken
+      }
+    }), await createEnv());
+
+    expect(stopResponse.status).toBe(200);
+    const stopBody = await stopResponse.json();
+    expect(stopBody).toMatchObject({
+      ok: false,
+      gate_schema: "living-atlas-usage-gate:v1",
+      decision: "stop-testing",
+      reason_codes: expect.arrayContaining([
+        "budget-ratio-exceeded",
+        "worker-request-headroom-too-low"
+      ])
+    });
+    expect(JSON.stringify(stopBody)).not.toContain(healthToken);
+  });
+
   it("rejects missing auth and token query strings", async () => {
     const missingAuth = await handleBootstrapRequest(new Request("https://living-atlas.example/api/usage/status"), await createEnv());
     expect(missingAuth.status).toBe(401);
@@ -219,6 +258,13 @@ describe("Worker usage status endpoint", () => {
     const queryToken = await handleBootstrapRequest(new Request("https://living-atlas.example/api/usage/status?sync_token=secret"), await createEnv());
     expect(queryToken.status).toBe(400);
     await expect(queryToken.json()).resolves.toEqual({
+      ok: false,
+      error: "usage tokens must not be sent in the query string"
+    });
+
+    const gateQueryToken = await handleBootstrapRequest(new Request("https://living-atlas.example/api/usage/gate?sync_token=secret"), await createEnv());
+    expect(gateQueryToken.status).toBe(400);
+    await expect(gateQueryToken.json()).resolves.toEqual({
       ok: false,
       error: "usage tokens must not be sent in the query string"
     });

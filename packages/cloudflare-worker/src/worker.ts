@@ -20,7 +20,7 @@ import {
   type SyncTokenBinding
 } from "./sync";
 import { authoritySequencerName } from "./sync-sequencer";
-import { getUsageStatus, type UsageRuntimeConfig } from "./usage";
+import { getUsageGate, getUsageStatus, type UsageGateOptions, type UsageRuntimeConfig } from "./usage";
 
 export type BootstrapClaimLockRpc = Pick<BootstrapClaimLockCore, "getStatus" | "claim">;
 export type SyncSequencerRpc = {
@@ -447,6 +447,22 @@ async function routeBootstrapRequest(request: Request, env: BootstrapWorkerEnv):
     ));
   }
 
+  if (request.method === "GET" && url.pathname === "/api/usage/gate") {
+    if (queryContainsToken(url)) {
+      return json({ ok: false, error: "usage tokens must not be sent in the query string" }, { status: 400 });
+    }
+
+    if (!(await hasValidHealthToken(request, env))) {
+      return json({ ok: false, error: "missing-or-invalid-health-token" }, { status: 401 });
+    }
+
+    return json(await getUsageGate(
+      env.LA_CONTROL_DB,
+      usageRuntimeConfig(env),
+      usageGateOptionsFromUrl(url)
+    ));
+  }
+
   if (request.method === "POST" && url.pathname === "/mcp") {
     if (queryContainsToken(url)) {
       return json({ jsonrpc: "2.0", error: { code: -32600, message: "tokens must not be sent in the query string" }, id: null }, { status: 400 });
@@ -483,6 +499,36 @@ function stringParam(params: unknown, key: string): string | undefined {
 
 function numberParam(params: unknown, key: string): number | undefined {
   return isRecord(params) && typeof params[key] === "number" && Number.isInteger(params[key]) ? params[key] : undefined;
+}
+
+function finiteNumberParam(params: unknown, key: string): number | undefined {
+  return isRecord(params) && typeof params[key] === "number" && Number.isFinite(params[key]) ? params[key] : undefined;
+}
+
+function booleanParam(params: unknown, key: string): boolean | undefined {
+  return isRecord(params) && typeof params[key] === "boolean" ? params[key] : undefined;
+}
+
+function usageGateOptionsFromUrl(url: URL): UsageGateOptions {
+  const windowHours = Number(url.searchParams.get("window_hours"));
+  const maxBudgetRatio = Number(url.searchParams.get("max_budget_ratio"));
+  const minWorkerRequestsRemaining = Number(url.searchParams.get("min_worker_requests_remaining"));
+  const requireZero5xx = url.searchParams.get("require_zero_5xx");
+  return {
+    windowHours: Number.isFinite(windowHours) ? windowHours : undefined,
+    maxBudgetRatio: Number.isFinite(maxBudgetRatio) ? maxBudgetRatio : undefined,
+    minWorkerRequestsRemaining: Number.isFinite(minWorkerRequestsRemaining) ? minWorkerRequestsRemaining : undefined,
+    requireZero5xx: requireZero5xx === null ? undefined : requireZero5xx !== "0"
+  };
+}
+
+function usageGateOptionsFromArgs(args: unknown): UsageGateOptions {
+  return {
+    windowHours: numberParam(args, "window_hours"),
+    maxBudgetRatio: finiteNumberParam(args, "max_budget_ratio"),
+    minWorkerRequestsRemaining: numberParam(args, "min_worker_requests_remaining"),
+    requireZero5xx: booleanParam(args, "require_zero_5xx")
+  };
 }
 
 async function callRemoteMcpTool(name: string, args: unknown, request: Request, env: BootstrapWorkerEnv): Promise<unknown> {
@@ -530,6 +576,18 @@ async function callRemoteMcpTool(name: string, args: unknown, request: Request, 
       throw new Error(result.reason);
     }
     return result.response;
+  }
+
+  if (name === "remote_usage_gate") {
+    if (!(await hasValidHealthToken(request, env))) {
+      throw new Error("missing-or-invalid-health-token");
+    }
+
+    return getUsageGate(
+      env.LA_CONTROL_DB,
+      usageRuntimeConfig(env),
+      usageGateOptionsFromArgs(args)
+    );
   }
 
   throw new Error("unknown-tool");
@@ -591,6 +649,20 @@ async function routeRemoteMcpRequest(request: Request, env: BootstrapWorkerEnv):
             properties: {
               authority_id: { type: "string" },
               after_generation: { type: "integer", minimum: 0 }
+            }
+          }
+        },
+        {
+          name: "remote_usage_gate",
+          description: "Read observed usage and return a safe-to-test or stop-testing decision before live validation.",
+          inputSchema: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              window_hours: { type: "integer", minimum: 1, maximum: 720 },
+              max_budget_ratio: { type: "number", minimum: 0.01, maximum: 1 },
+              min_worker_requests_remaining: { type: "integer", minimum: 0 },
+              require_zero_5xx: { type: "boolean" }
             }
           }
         }

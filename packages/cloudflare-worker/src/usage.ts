@@ -23,6 +23,33 @@ export type UsageStatusOptions = {
   windowHours?: number;
 };
 
+export type UsageGateOptions = UsageStatusOptions & {
+  maxBudgetRatio?: number;
+  minWorkerRequestsRemaining?: number;
+  requireZero5xx?: boolean;
+};
+
+type UsageStatus = Awaited<ReturnType<typeof getUsageStatus>>;
+
+type UsageBudgetEntry = {
+  used: number;
+  limit: number;
+  ratio: number;
+};
+
+type UsageGateCheck = {
+  name: string;
+  ok: boolean;
+  reason_code?: string;
+  service?: string;
+  metric?: string;
+  used?: number;
+  limit?: number;
+  ratio?: number;
+  threshold?: number;
+  remaining?: number;
+};
+
 type UsageScalarRow = {
   total_requests?: number;
   http_2xx?: number;
@@ -46,6 +73,8 @@ type BudgetMap = Record<string, Record<string, number>>;
 
 const defaultWindowHours = 24;
 const maxWindowHours = 720;
+const defaultMaxBudgetRatio = 0.8;
+const defaultMinWorkerRequestsRemaining = 1_000;
 
 const UsageD1SchemaStatements = [
   `CREATE TABLE IF NOT EXISTS operational_metrics (
@@ -196,6 +225,148 @@ function budgetView(service: string, observed: Record<string, number>, budgets: 
   }
 
   return limits;
+}
+
+function boundedBudgetRatio(value: number | undefined): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return defaultMaxBudgetRatio;
+  }
+
+  return Math.min(Math.max(value, 0.01), 1);
+}
+
+function boundedMinimumRemaining(value: number | undefined): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return defaultMinWorkerRequestsRemaining;
+  }
+
+  return Math.max(Math.trunc(value), 0);
+}
+
+function isBudgetEntry(value: unknown): value is UsageBudgetEntry {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return false;
+  }
+
+  const candidate = value as Partial<UsageBudgetEntry>;
+  return (
+    typeof candidate.used === "number" &&
+    typeof candidate.limit === "number" &&
+    typeof candidate.ratio === "number"
+  );
+}
+
+function budgetEntries(status: UsageStatus): Array<{ service: string; metric: string; budget: UsageBudgetEntry }> {
+  const entries: Array<{ service: string; metric: string; budget: UsageBudgetEntry }> = [];
+  for (const [service, view] of Object.entries(status.services)) {
+    for (const [metric, budget] of Object.entries(view.budgets ?? {})) {
+      if (isBudgetEntry(budget)) {
+        entries.push({ service, metric, budget });
+      }
+    }
+  }
+
+  return entries;
+}
+
+export function evaluateUsageGate(status: UsageStatus, options: UsageGateOptions = {}) {
+  const maxBudgetRatio = boundedBudgetRatio(options.maxBudgetRatio);
+  const minWorkerRequestsRemaining = boundedMinimumRemaining(options.minWorkerRequestsRemaining);
+  const requireZero5xx = options.requireZero5xx ?? true;
+  const checks: UsageGateCheck[] = [];
+
+  for (const { service, metric, budget } of budgetEntries(status)) {
+    const ok = budget.ratio <= maxBudgetRatio;
+    checks.push({
+      name: "budget-ratio",
+      ok,
+      reason_code: ok ? undefined : "budget-ratio-exceeded",
+      service,
+      metric,
+      used: budget.used,
+      limit: budget.limit,
+      ratio: budget.ratio,
+      threshold: maxBudgetRatio
+    });
+  }
+
+  if (checks.length === 0) {
+    checks.push({
+      name: "budget-configured",
+      ok: false,
+      reason_code: "no-budget-configured"
+    });
+  }
+
+  const workerRequestsBudget = status.services.workers.budgets.requests;
+  if (isBudgetEntry(workerRequestsBudget)) {
+    const remaining = workerRequestsBudget.limit - workerRequestsBudget.used;
+    const ok = remaining >= minWorkerRequestsRemaining;
+    checks.push({
+      name: "worker-request-headroom",
+      ok,
+      reason_code: ok ? undefined : "worker-request-headroom-too-low",
+      service: "workers",
+      metric: "requests",
+      used: workerRequestsBudget.used,
+      limit: workerRequestsBudget.limit,
+      remaining,
+      threshold: minWorkerRequestsRemaining
+    });
+  } else if (minWorkerRequestsRemaining > 0) {
+    checks.push({
+      name: "worker-request-headroom",
+      ok: false,
+      reason_code: "worker-request-budget-missing",
+      service: "workers",
+      metric: "requests",
+      threshold: minWorkerRequestsRemaining
+    });
+  }
+
+  if (requireZero5xx) {
+    const worker5xx = status.services.workers.observed.http_5xx;
+    checks.push({
+      name: "worker-5xx",
+      ok: worker5xx === 0,
+      reason_code: worker5xx === 0 ? undefined : "worker-5xx-observed",
+      service: "workers",
+      metric: "http_5xx",
+      used: worker5xx,
+      threshold: 0
+    });
+  }
+
+  if (status.budget_config.parse_error) {
+    checks.push({
+      name: "budget-config-valid",
+      ok: false,
+      reason_code: status.budget_config.parse_error
+    });
+  }
+
+  const failedChecks = checks.filter((check) => !check.ok);
+  return {
+    ok: failedChecks.length === 0,
+    gate_schema: "living-atlas-usage-gate:v1",
+    generated_at: status.generated_at,
+    provider: status.provider,
+    plan: status.plan,
+    decision: failedChecks.length === 0 ? "safe-to-test" : "stop-testing",
+    reason_codes: failedChecks.map((check) => check.reason_code ?? check.name),
+    policy: {
+      max_budget_ratio: maxBudgetRatio,
+      min_worker_requests_remaining: minWorkerRequestsRemaining,
+      require_zero_5xx: requireZero5xx
+    },
+    checks,
+    usage: {
+      window: status.window,
+      services: status.services,
+      sync: status.sync,
+      budget_config: status.budget_config
+    }
+  };
 }
 
 async function ensureUsageTables(store: UsageMetadataStore): Promise<void> {
@@ -351,4 +522,12 @@ WHERE status = 'committed'`).first<UsageScalarRow>();
       ]
     }
   };
+}
+
+export async function getUsageGate(
+  store: UsageMetadataStore,
+  config: UsageRuntimeConfig,
+  options: UsageGateOptions = {}
+) {
+  return evaluateUsageGate(await getUsageStatus(store, config, options), options);
 }

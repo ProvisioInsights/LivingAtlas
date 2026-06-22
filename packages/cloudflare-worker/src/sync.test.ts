@@ -436,7 +436,16 @@ async function createEnv(): Promise<{
       },
       LA_GRAPH_BUCKET: graphBucket as R2Bucket,
       LA_CONTROL_DB: controlDb as D1Database,
-      LA_SYNC_TOKEN_HASH: await sha256TokenHash(syncToken)
+      LA_SYNC_TOKEN_HASH: await sha256TokenHash(syncToken),
+      LA_USAGE_PROVIDER: "cloudflare",
+      LA_USAGE_PLAN: "free",
+      LA_USAGE_BUDGETS_JSON: JSON.stringify({
+        services: {
+          workers: {
+            requests: 10_000
+          }
+        }
+      })
     },
   };
 }
@@ -694,7 +703,8 @@ describe("Worker sync batch acceptance", () => {
       method: "POST",
       headers: {
         "content-type": "application/json",
-        "x-living-atlas-sync-token": syncToken
+        "x-living-atlas-sync-token": syncToken,
+        "x-living-atlas-health-token": syncToken
       },
       body: JSON.stringify(ciphertextBatch)
     }), env);
@@ -726,7 +736,8 @@ describe("Worker sync batch acceptance", () => {
       method: "POST",
       headers: {
         "content-type": "application/json",
-        "x-living-atlas-sync-token": syncToken
+        "x-living-atlas-sync-token": syncToken,
+        "x-living-atlas-health-token": syncToken
       },
       body: JSON.stringify(ciphertextBatch)
     }), env);
@@ -918,7 +929,8 @@ describe("Worker sync batch acceptance", () => {
       id: 1,
       result: {
         tools: expect.arrayContaining([
-          expect.objectContaining({ name: "remote_sync_envelopes" })
+          expect.objectContaining({ name: "remote_sync_envelopes" }),
+          expect.objectContaining({ name: "remote_usage_gate" })
         ])
       }
     });
@@ -962,6 +974,43 @@ describe("Worker sync batch acceptance", () => {
       }
     });
     expect(JSON.stringify(body)).not.toContain(syncToken);
+
+    const usageGateResponse = await handleBootstrapRequest(new Request("https://living-atlas.example/mcp", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-living-atlas-sync-token": syncToken,
+        "x-living-atlas-health-token": syncToken
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 3,
+        method: "tools/call",
+        params: {
+          name: "remote_usage_gate",
+          arguments: {
+            window_hours: 6,
+            max_budget_ratio: 0.8,
+            min_worker_requests_remaining: 1
+          }
+        }
+      })
+    }), env);
+
+    expect(usageGateResponse.status).toBe(200);
+    const usageGateBody = await usageGateResponse.json();
+    expect(usageGateBody).toMatchObject({
+      jsonrpc: "2.0",
+      id: 3,
+      result: {
+        structuredContent: {
+          ok: true,
+          gate_schema: "living-atlas-usage-gate:v1",
+          decision: "safe-to-test"
+        }
+      }
+    });
+    expect(JSON.stringify(usageGateBody)).not.toContain(syncToken);
   });
 
   it("rejects sync tokens in query strings", async () => {

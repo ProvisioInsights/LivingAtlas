@@ -260,8 +260,21 @@ Command map:
 | `npm run local:deploy-synthetic` | No | No | End-to-end synthetic local deploy rehearsal. |
 | `npm run stress:local` | No | No | Larger synthetic CRUD/sync/leakage stress gate. |
 | `npm run cloudflare:wrangler-smoke` | No | No | Wrangler dry-run bundle validation for the public Worker template. |
+| `npm run cloudflare:live-usage-gate` | No real graph data | No | Read-only deployed usage stoplight before live synthetic mutation. |
 | `npm run preflight:synthetic` | No | No | Full synthetic preflight before real Cloudflare work. |
 | `npm run cloudflare:live-concurrency-smoke` | No real graph data | Yes | Optional live deployed-Worker sync race smoke; requires explicit mutation acknowledgement. |
+
+The deployed Cloudflare usage gate should run before any live mutating smoke or
+stress:
+
+```bash
+npm run cloudflare:live-usage-gate
+```
+
+It calls `/api/usage/gate`, fails closed without an endpoint/token, and returns
+`safe-to-test` only when configured budgets remain under the selected threshold,
+Worker request headroom remains above the selected minimum, and no Worker 5xx
+responses were observed when `require_zero_5xx` is enabled.
 
 The deployed Cloudflare concurrency/race smoke is intentionally separate from
 `all`, `check`, and `preflight:synthetic` because it mutates a live Worker's
@@ -296,9 +309,9 @@ contract registry; the repo contracts and tests remain the source of truth.
 
 The Cloudflare Worker now exposes a minimal token-gated remote MCP JSON-RPC
 skeleton at `/mcp`. It supports `initialize`, `tools/list`, and `tools/call`
-for sync status, pull summaries, and ciphertext envelope pulls. This is a
-developer contract surface for remote sync/replay work; it is not yet the full
-remote-readable graph CRUD surface.
+for sync status, pull summaries, ciphertext envelope pulls, and the read-only
+`remote_usage_gate` stoplight. This is a developer contract surface for remote
+sync/replay work; it is not yet the full remote-readable graph CRUD surface.
 
 The sync replay path has two read levels:
 
@@ -320,6 +333,7 @@ The Worker exposes a token-gated usage endpoint:
 
 ```text
 GET /api/usage/status?window_hours=24
+GET /api/usage/gate?window_hours=24&max_budget_ratio=0.8&min_worker_requests_remaining=1000
 ```
 
 Use the health token header:
@@ -353,7 +367,9 @@ LA_USAGE_BUDGETS_JSON={"services":{"workers":{"requests":100000}}}
 ```
 
 For non-Cloudflare deployments, keep the same response shape and replace the
-collector/budget config with provider-specific counters.
+collector/budget config with provider-specific counters. Keep the gate contract
+stable (`living-atlas-usage-gate:v1`) so operators and MCP clients can ask the
+same safe-to-test question regardless of host.
 
 `local` verifies the current synthetic scaffold:
 
