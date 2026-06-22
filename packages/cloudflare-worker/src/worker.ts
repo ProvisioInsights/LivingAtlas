@@ -6,7 +6,8 @@ import {
   createWorkerErrorEvent,
   createWorkerObservabilityContext,
   createWorkerRequestEvent,
-  emitWorkerObservability,
+  emitWorkerOperationalTelemetry,
+  type OperationalMetricRetentionStore,
   type WorkerObservabilityEnv
 } from "./observability";
 import {
@@ -37,7 +38,7 @@ export type BootstrapWorkerEnv = {
     getByName(name: string): SyncSequencerRpc;
   };
   LA_GRAPH_BUCKET: R2Bucket;
-  LA_CONTROL_DB: D1Database;
+  LA_CONTROL_DB: D1Database & OperationalMetricRetentionStore;
   BOOTSTRAP_CLAIM_TOKEN_HASH?: string;
   BOOTSTRAP_TOKEN_EXPIRES_AT?: string;
   BOOTSTRAP_LOCK_NAME?: string;
@@ -188,6 +189,14 @@ function authorityFromBatch(input: unknown): string | undefined {
 
 async function getSyncSequencer(env: BootstrapWorkerEnv, authorityId: string): Promise<SyncSequencerRpc | undefined> {
   return env.SYNC_SEQUENCER?.getByName(await authoritySequencerName(authorityId));
+}
+
+async function emitWorkerTelemetry(env: BootstrapWorkerEnv, event: ReturnType<typeof createWorkerRequestEvent> | ReturnType<typeof createWorkerErrorEvent>): Promise<void> {
+  try {
+    await emitWorkerOperationalTelemetry(env, event);
+  } catch {
+    // Telemetry is best-effort and must not change request behavior.
+  }
 }
 
 async function readClaimBody(request: Request): Promise<{ token?: string; payload?: unknown; malformed?: boolean }> {
@@ -373,7 +382,7 @@ export async function handleBootstrapRequest(request: Request, env: BootstrapWor
 
   try {
     const response = applyWorkerTraceHeaders(await routeBootstrapRequest(request, env), observability);
-    emitWorkerObservability(
+    await emitWorkerTelemetry(
       env,
       createWorkerRequestEvent({
         context: observability,
@@ -387,7 +396,7 @@ export async function handleBootstrapRequest(request: Request, env: BootstrapWor
       json({ ok: false, error: "internal-error" }, { status: 500 }),
       observability
     );
-    emitWorkerObservability(
+    await emitWorkerTelemetry(
       env,
       createWorkerErrorEvent({
         context: observability,

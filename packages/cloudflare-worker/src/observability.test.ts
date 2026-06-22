@@ -106,6 +106,24 @@ describe("Worker operational observability", () => {
     expect(JSON.stringify(events)).not.toContain("secret-claim-token");
   });
 
+  it("retains Worker request metrics through the D1 control binding", async () => {
+    const events: OperationalEvent[] = [];
+    const store = new FakeRetentionStore();
+    const response = await handleBootstrapRequest(
+      new Request("https://living-atlas.example/healthz"),
+      {
+        ...createEnv(events),
+        LA_CONTROL_DB: store as unknown as D1Database
+      }
+    );
+
+    expect(response.status).toBe(200);
+    expect(events).toHaveLength(1);
+    expect(store.records.some((record) => record.query.includes("CREATE TABLE IF NOT EXISTS operational_metrics"))).toBe(true);
+    expect(store.records.some((record) => record.query.includes("INSERT INTO operational_metrics"))).toBe(true);
+    expect(JSON.stringify(store.records)).not.toContain("secret");
+  });
+
   it("propagates valid incoming trace and operation ids", async () => {
     const events: OperationalEvent[] = [];
     const response = await handleBootstrapRequest(
