@@ -1,13 +1,131 @@
 # Development Readiness Checklist
 
 Status: Draft  
-Date: 2026-06-21
+Date: 2026-06-22
 
 ## Purpose
 
-Turn the architecture work into concrete gates for starting implementation.
+Give a developer a synthetic-only path from a clean checkout to local MCP
+fixture mode, local deploy rehearsal, and Cloudflare dry-run/preflight without
+touching real graph data or private deployment values.
 
-This is the short checklist a developer should read before writing code.
+This is the runbook to read before writing code or preparing any deployment.
+
+## First-Run Runbook
+
+All commands in this section use synthetic fixtures unless explicitly marked
+live. They must not import real Logseq, Obsidian, journal, mailbox, CRM, or
+meeting-derived content.
+
+1. Install dependencies with the pinned package manager.
+
+   ```bash
+   npx pnpm@11.8.0 install
+   ```
+
+2. Run the local repo gate.
+
+   ```bash
+   npm run check
+   ```
+
+   This runs repo-safety/leakage checks, TypeScript typecheck, and Vitest.
+
+3. Run the first local smoke path.
+
+   ```bash
+   npm run smoke:local
+   ```
+
+   This covers sealed local control-store creation, fixture local MCP startup,
+   synthetic CRUD calls, activity-log leakage checks, and in-process Worker
+   bootstrap/sync routes with fake D1/R2 bindings.
+
+4. Exercise the full synthetic local deploy rehearsal.
+
+   ```bash
+   npm run local:deploy-synthetic
+   ```
+
+   This is the first-run local deployment rehearsal. It creates a temporary
+   local profile, starts local MCP, claims bootstrap against the local Worker
+   harness, pushes/pulls ciphertext sync batches, checks stale and token-binding
+   rejection, and scans generated artifacts for token or sensitive-bait leaks.
+
+5. Run the Cloudflare public-template dry-run smoke.
+
+   ```bash
+   npm run cloudflare:wrangler-smoke
+   ```
+
+   This builds the Worker with Wrangler `--dry-run` against
+   `packages/cloudflare-worker/wrangler.example.jsonc` in a sanitized temporary
+   environment. It validates the emitted bundle and required bindings, then
+   checks the output for sensitive fixture bait. It does not deploy, claim an
+   authority, upload graph bytes, or require personal Cloudflare values.
+
+6. Run the full synthetic preflight before any real Cloudflare deployment work.
+
+   ```bash
+   npm run preflight:synthetic
+   ```
+
+   This chains `check`, `local:deploy-synthetic`, `stress:local`,
+   `cloudflare:wrangler-smoke`, `infra:fmt`, and `infra:validate`.
+
+Stop here for first-run readiness. A passing synthetic preflight means the
+public scaffold and local workflow are ready for the next implementation slice;
+it does not authorize real graph import or personal Cloudflare deployment.
+
+## Local MCP Fixture Mode
+
+There are two supported local MCP development modes.
+
+Use token-only fixture mode when you want a stdio MCP server backed by generated
+synthetic control state:
+
+```bash
+LIVING_ATLAS_LOCAL_MCP_TOKEN='replace-with-local-dev-token' \
+npm run local-mcp:fixture
+```
+
+Run it from an MCP client or the MCP Inspector; a plain terminal invocation will
+wait on stdio.
+
+```bash
+LIVING_ATLAS_LOCAL_MCP_TOKEN='replace-with-local-dev-token' \
+npm run mcp:inspect:local
+```
+
+Use sealed-store fixture mode when you want to rehearse local initialization
+with an encrypted synthetic control store:
+
+```bash
+LIVING_ATLAS_LOCAL_CONTROL_STORE=/tmp/living-atlas-control-store.json \
+LIVING_ATLAS_LOCAL_CONTROL_STORE_PASSPHRASE='replace-with-local-dev-passphrase' \
+LIVING_ATLAS_LOCAL_MCP_TOKEN='replace-with-local-dev-token' \
+npm run local-control:fixture-store
+```
+
+Then launch local MCP from the sealed store:
+
+```bash
+LIVING_ATLAS_LOCAL_CONTROL_STORE=/tmp/living-atlas-control-store.json \
+LIVING_ATLAS_LOCAL_CONTROL_STORE_PASSPHRASE='replace-with-local-dev-passphrase' \
+npm run local-mcp:fixture
+```
+
+Optional activity-log capture for local MCP runs:
+
+```bash
+LIVING_ATLAS_ACTIVITY_LOG=/tmp/living-atlas-activity.jsonl \
+LIVING_ATLAS_LOCAL_MCP_TOKEN='replace-with-local-dev-token' \
+npm run local-mcp:fixture
+```
+
+The fixture graph intentionally contains sensitive bait and local-private
+ciphertext references so policy and leakage checks have something to catch. Do
+not replace those fixtures with personal graph content.
 
 ## Current V1 Direction
 
@@ -106,17 +224,30 @@ Required:
 
 ## Check Commands
 
-The first readiness slice exposes three check commands from
-`packages/check/src/cli.ts`.
+The first readiness slice exposes named checks from `packages/check/src/cli.ts`.
 
 ```bash
 npx tsx packages/check/src/cli.ts all
 npx tsx packages/check/src/cli.ts local
 npx tsx packages/check/src/cli.ts cloudflare-deploy-readiness
 npx tsx packages/check/src/cli.ts first-run-guardrails
+npx tsx packages/check/src/cli.ts wrangler-local-runtime
 ```
 
-`all` is the default when no command is passed.
+`all` is the default when no command is passed. It runs `local`,
+`cloudflare-deploy-readiness`, and `first-run-guardrails`.
+
+Command map:
+
+| Command | Real data | Cloudflare mutation | Use |
+| --- | --- | --- | --- |
+| `npm run check` | No | No | Default local gate for repo safety, types, and tests. |
+| `npm run smoke:local` | No | No | First local install plus in-process Worker smoke. |
+| `npm run local:deploy-synthetic` | No | No | End-to-end synthetic local deploy rehearsal. |
+| `npm run stress:local` | No | No | Larger synthetic CRUD/sync/leakage stress gate. |
+| `npm run cloudflare:wrangler-smoke` | No | No | Wrangler dry-run bundle validation for the public Worker template. |
+| `npm run preflight:synthetic` | No | No | Full synthetic preflight before real Cloudflare work. |
+| `npm run cloudflare:live-concurrency-smoke` | No real graph data | Yes | Optional live deployed-Worker sync race smoke; requires explicit mutation acknowledgement. |
 
 The deployed Cloudflare concurrency/race smoke is intentionally separate from
 `all`, `check`, and `preflight:synthetic` because it mutates a live Worker's
@@ -183,6 +314,42 @@ Passing these checks does not authorize real graph import. It only proves the
 public scaffold, synthetic deploy posture, and first-run guardrails are ready
 for the next implementation slice.
 
+## Cloudflare Dry-Run And Preflight
+
+Use the script wrapper for the normal public-template dry run:
+
+```bash
+npm run cloudflare:wrangler-smoke
+```
+
+The wrapper runs Wrangler from a sanitized temporary home directory, keeps
+metrics disabled, validates the dry-run bundle, and removes its temporary output
+unless `LIVING_ATLAS_KEEP_WRANGLER_SMOKE=1` is set.
+
+For direct inspection, the equivalent manual dry run is:
+
+```bash
+npx wrangler@4.103.0 deploy --dry-run \
+  --config packages/cloudflare-worker/wrangler.example.jsonc \
+  --outdir /tmp/living-atlas-worker-dry-run
+```
+
+This must stay synthetic-only. The public example config may contain placeholder
+bindings and non-secret Worker vars, but it must not contain account ids,
+resource ids, routes/domains, raw bootstrap or sync tokens, token hashes,
+Terraform/OpenTofu state, `.dev.vars`, or private deployment overlays.
+
+Run the full synthetic preflight before preparing a private deployment overlay:
+
+```bash
+npm run preflight:synthetic
+```
+
+Preflight requires the normal Node/pnpm toolchain plus `terraform` for the
+infrastructure formatting and validation scripts. A preflight failure should be
+treated as a deployment blocker until the synthetic artifact or public template
+is fixed.
+
 ## Private Deploy Inputs
 
 A real personal deployment must supply these outside the public repo:
@@ -220,6 +387,21 @@ The no-real-data boundary remains in force after synthetic deploy readiness
 passes. Real Logseq, Obsidian, journal, mailbox, CRM, or meeting-derived graph
 content must not be imported until the tests below pass with synthetic data and
 their artifacts are reviewed.
+
+Immediate stop rules:
+
+- Do not put personal graph content in fixtures, test snapshots, docs examples,
+  Wrangler config, Terraform/OpenTofu variables, local control-store fixtures, or
+  committed smoke artifacts.
+- Do not point local MCP fixture mode at a real local graph path.
+- Do not run a real Cloudflare deploy from the public example config alone; use
+  a private/ignored overlay for personal account, resource, secret, route, and
+  state values.
+- Do not run `npm run cloudflare:live-concurrency-smoke` unless intentionally
+  testing a deployed synthetic Worker and the mutation acknowledgement
+  environment variable is set.
+- Do not treat `npm run preflight:synthetic` as permission to import real graph
+  data. It only proves the synthetic scaffold and guardrails.
 
 Required tests:
 

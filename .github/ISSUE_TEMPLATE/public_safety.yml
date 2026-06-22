@@ -1,0 +1,47 @@
+name: Public-safety or privacy boundary
+description: Report public-safe concerns about leakage, fixtures, access boundaries, or repo hygiene.
+title: "[Public safety]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This form is for public-safe boundary reports. Do not disclose active vulnerabilities, exploit chains, secrets, recovery material, real graph content, or private deployment details in a public issue.
+  - type: textarea
+    id: concern
+    attributes:
+      label: Concern
+      description: Describe the boundary, leakage, fixture, or repo-hygiene concern without private details.
+    validations:
+      required: true
+  - type: dropdown
+    id: boundary
+    attributes:
+      label: Boundary
+      options:
+        - Secrets or deployment configuration
+        - Real data or personal content
+        - Cloudflare-visible metadata
+        - Local plaintext authority
+        - Synthetic fixtures
+        - Audit or activity logging
+        - Documentation wording
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Public-safe evidence
+      description: Provide file paths, synthetic fixture names, or redacted output only.
+  - type: textarea
+    id: suggested-resolution
+    attributes:
+      label: Suggested resolution
+      description: Optional public-safe fix or validation gate.
+  - type: checkboxes
+    id: public-safety
+    attributes:
+      label: Public-safety confirmation
+      options:
+        - label: I have not included exploit details, secrets, real graph data, personal content, deployment identifiers, or recovery material.
+          required: true

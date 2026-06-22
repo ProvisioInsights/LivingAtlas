@@ -68,7 +68,7 @@ indexes/a=<opaque-authority>/g=<generation>/idx=<opaque-index-id>.bin
 Avoid:
 
 ```text
-authority=person:john/type=edge/yyyy=2026/mm=06/dd=21/...
+authority=person:example/type=edge/yyyy=2026/mm=06/dd=21/...
 pages/Sensitive-Title.md.enc
 journals/2026-06-21.enc
 ```

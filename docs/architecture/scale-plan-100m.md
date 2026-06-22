@@ -143,7 +143,7 @@ log; reads are audit/activity events.
 {
   "change_id": "chg_...",
   "operation": "create | update | delete | tombstone | restore | policy-change",
-  "authority_id": "person:john",
+  "authority_id": "person:example",
   "object_id": "obj_...",
   "object_type": "node",
   "base_version": "v122",

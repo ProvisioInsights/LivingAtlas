@@ -1,5 +1,7 @@
 # Living Atlas
 
+[![CI](https://github.com/ProvisioInsights/LivingAtlas/actions/workflows/ci.yml/badge.svg)](https://github.com/ProvisioInsights/LivingAtlas/actions/workflows/ci.yml)
+
 Living Atlas is a private-first knowledge graph system for a
 Logseq/Obsidian-inspired graph. It stores complete graph bytes in a Cloudflare
 deployment for anywhere access, keeps sensitive plaintext available only to
@@ -49,7 +51,9 @@ docs control what graph facts mean.
 - [CRUD Observability](docs/architecture/crud-observability.md) - how create/read/update/delete activity is seen and audited.
 - [Implementation Plan](docs/implementation-plan.md) - build phases and validation gates.
 - [Development Readiness Checklist](docs/development-readiness.md) - first build slice, pre-deploy gates, and before-real-data tests.
+- [Private Cloudflare Deployment Overlay](docs/deployment/private-cloudflare-overlay-repo.md) - recommended private repo pattern for account-specific Cloudflare deployment state.
 - [Temporal Edge Model](docs/temporal-edge-model/README.md) - schema package entrypoint for edge/event ontology and migration semantics.
+- [Contributing](CONTRIBUTING.md), [Security](SECURITY.md), and [Code of Conduct](CODE_OF_CONDUCT.md) - public collaboration and reporting policies.
 
 ## Working Thesis
 
@@ -76,6 +80,24 @@ operational observability events. It does not import real graph data or deploy
 personal Cloudflare resources.
 
 ## Development
+
+For the complete first-run runbook, see
+[Development Readiness Checklist](docs/development-readiness.md).
+
+First-run synthetic sequence:
+
+```bash
+npx pnpm@11.8.0 install
+npm run check
+npm run smoke:local
+npm run local:deploy-synthetic
+npm run cloudflare:wrangler-smoke
+npm run preflight:synthetic
+```
+
+These commands use synthetic fixtures and public-safe templates. They must not
+import real graph data, claim a real authority, publish personal Cloudflare
+values, or replace placeholder config with private deployment state.
 
 Install with the pinned package manager:
 
@@ -208,6 +230,16 @@ Workspace packages:
   ciphertext-only batches from the local graph, tracks an in-memory synthetic
   outbox/daemon plan, and submits to the Worker sync route after checking
   remote generation status.
+
+Launch the fixture local MCP server with generated synthetic control state:
+
+```bash
+LIVING_ATLAS_LOCAL_MCP_TOKEN='replace-with-local-dev-token' \
+npm run local-mcp:fixture
+```
+
+Run it from an MCP client or the Inspector; a direct terminal run waits on
+stdio.
 
 Create an encrypted synthetic local control store for local MCP development:
 

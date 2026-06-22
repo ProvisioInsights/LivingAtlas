@@ -30,7 +30,7 @@ Account Root Key (ARK)
   wraps authority keys
 
 Authority Key (AK)
-  one per graph authority, e.g. person:john
+  one per graph authority, e.g. person:example
   wraps access-class keys
 
 Access-Class Key (ACK)
@@ -65,7 +65,7 @@ Every encrypted object needs an authenticated envelope:
 {
   "envelope_version": 1,
   "object_id": "obj_...",
-  "authority_id": "person:john",
+  "authority_id": "person:example",
   "access_class": "local-private",
   "encryption_class": "sensitive-client-encrypted",
   "dek_wrapped_by": "ack_sensitive_v3",
@@ -75,7 +75,7 @@ Every encrypted object needs an authenticated envelope:
   "aad": {
     "object_id": "obj_...",
     "object_type": "node",
-    "authority_id": "person:john",
+    "authority_id": "person:example",
     "base_version": "v122",
     "access_class": "local-private",
     "encryption_class": "sensitive-client-encrypted"

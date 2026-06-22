@@ -36,7 +36,7 @@ Private personal deployment state
 ```
 
 The public repo can build and deploy the product, but it must not contain the
-private deployment inputs that make it John's Living Atlas.
+private deployment inputs that make it a specific operator's Living Atlas.
 
 ## Tooling Model
 
@@ -113,19 +113,36 @@ must be generic and non-personal.
 
 ### Preferred: Private Deployment Repo
 
+The recommended overlay shape is documented in
+[`../deployment/private-cloudflare-overlay-repo.md`](../deployment/private-cloudflare-overlay-repo.md).
+This architecture decision owns the boundary; the deployment doc owns the
+operator layout and runbook.
+
 Create a private repo such as:
 
 ```text
 living-atlas-deploy-personal/
+  RUNBOOK.md
+  versions.lock
   terraform/
-    main.tf
-    versions.tf
-    backend.tf
-    terraform.tfvars
+    envs/
+      personal-dev/
+        backend.hcl
+        terraform.tfvars
+      personal-prod/
+        backend.hcl
+        terraform.tfvars
   wrangler/
-    wrangler.jsonc
+    envs/
+      personal-dev/
+        wrangler.jsonc
+      personal-prod/
+        wrangler.jsonc
   secrets/
-    README.md            # instructions only, not raw secrets
+    README.md            # references only, not raw secrets
+    envs/
+      personal-dev.secret-refs.yaml
+      personal-prod.secret-refs.yaml
 ```
 
 That private repo references the public module by Git tag or commit:
@@ -259,4 +276,3 @@ Minimum tests:
 - Worker config fixture contains no sensitive keys
 - bootstrap token is generated outside git and printed once
 - public CI cannot deploy to the personal Cloudflare account
-
