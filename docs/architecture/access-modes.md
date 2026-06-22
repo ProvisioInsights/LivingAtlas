@@ -27,16 +27,23 @@ This is the host-blind remote mode.
 - The key must be supplied in an HTTP header, never in a query string.
 - The key must not be persisted, echoed, logged, stored in D1/KV/R2, or placed in
   telemetry.
-- If implemented later, decrypt happens inside the Cloudflare runtime for that
-  request/session.
+- Decrypt happens inside the Cloudflare runtime for that request/session.
+- V1 cloud-unlock decrypt supports synced `ciphertext-inline` object envelopes
+  using `AES-GCM-256+cloud-unlock-v1`.
+- The encrypted payload is authenticated to the object authority, object id,
+  type, version, access class, encryption class, key ref, timestamps, and
+  visible metadata so ciphertext cannot be silently swapped onto another object.
 
 This is not host-blind while the request is active. It reduces stored-key and
 subpoena-at-rest exposure, but the cloud runtime can theoretically observe key
 material and plaintext during unlock.
 
-Current implementation status: scaffolded and guarded. The remote MCP exposes
-the mode and rejects sensitive decrypt unless the unlock header is present, but
-Cloudflare-side sensitive decryption is intentionally not implemented yet.
+Current implementation status: implemented for the v1 inline envelope format.
+The remote MCP rejects unlock keys in query strings, requires the transient key
+in `x-living-atlas-cloud-unlock-key`, refuses quarantine objects, rejects
+unsupported ciphertext formats, and does not return or persist the supplied key.
+`ciphertext-ref` blob decrypt is intentionally outside this v1 tool until the
+external blob payload format is finalized.
 
 ## Mode C: Local-Keyholding Only
 
@@ -67,4 +74,5 @@ This remains the default for truly sensitive graph work.
 - Local/keyholding profiles use `local-keyholding-only`.
 - Remote MCP query strings reject unlock keys and tokens.
 - Remote MCP mode discovery uses `remote_access_modes`.
-- Remote MCP sensitive decrypt placeholder uses `remote_sensitive_decrypt`.
+- Remote MCP sensitive decrypt uses `remote_sensitive_decrypt` with
+  `authority_id` and `object_id`.

@@ -1,7 +1,8 @@
 import { AuthorityIdSchema } from "@living-atlas/contracts";
-import type { AccessMode } from "@living-atlas/contracts";
+import type { AccessMode, GraphObjectEnvelope, SyncEnvelopePullResponse } from "@living-atlas/contracts";
 import { BootstrapClaimBodySchema, verifyClaimToken, type BootstrapRuntimeConfig } from "./bootstrap";
 import type { BootstrapClaimLockCore } from "./bootstrap-lock";
+import { decryptCloudUnlockObject } from "./cloud-unlock";
 import {
   applyWorkerTraceHeaders,
   createWorkerErrorEvent,
@@ -172,6 +173,11 @@ async function hasValidSyncToken(request: Request, env: BootstrapWorkerEnv): Pro
 function cloudUnlockKeyPresented(request: Request): boolean {
   const value = request.headers.get(cloudUnlockKeyHeader);
   return typeof value === "string" && value.trim().length >= 16;
+}
+
+function cloudUnlockKey(request: Request): string | undefined {
+  const value = request.headers.get(cloudUnlockKeyHeader);
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
 }
 
 function remoteRequestAccessMode(request: Request): AccessMode {
@@ -582,6 +588,13 @@ function usageReconciliationOptionsFromArgs(args: unknown): UsageReconciliationO
   };
 }
 
+function latestEnvelopeForObject(response: SyncEnvelopePullResponse, objectId: string): GraphObjectEnvelope | undefined {
+  return response.objects
+    .filter((entry) => entry.object.object_id === objectId)
+    .sort((left, right) => right.generation - left.generation || right.object.version - left.object.version)
+    .at(0)?.object;
+}
+
 async function callRemoteMcpTool(name: string, args: unknown, request: Request, env: BootstrapWorkerEnv): Promise<unknown> {
   if (name === "remote_access_modes") {
     const currentMode = remoteRequestAccessMode(request);
@@ -624,7 +637,8 @@ async function callRemoteMcpTool(name: string, args: unknown, request: Request, 
       throw new Error("missing-or-invalid-sync-token");
     }
 
-    if (!cloudUnlockKeyPresented(request)) {
+    const unlockKey = cloudUnlockKey(request);
+    if (!unlockKey) {
       return {
         ok: false,
         reason: "cloud-unlock-required",
@@ -633,14 +647,81 @@ async function callRemoteMcpTool(name: string, args: unknown, request: Request, 
       };
     }
 
+    const authorityId = stringParam(args, "authority_id");
+    const objectId = stringParam(args, "object_id");
+    if (!authorityId || !objectId) {
+      return {
+        ok: false,
+        reason: "invalid-decrypt-request",
+        current_mode: "cloud-unlock-session",
+        required_arguments: ["authority_id", "object_id"],
+        key_persisted_by_cloudflare: false
+      };
+    }
+
+    const pullResult = await getSyncEnvelopePull(
+      request.headers.get(syncTokenHeader) ?? undefined,
+      syncRuntimeConfig(env),
+      {
+        graphBucket: env.LA_GRAPH_BUCKET,
+        controlDb: env.LA_CONTROL_DB
+      },
+      authorityId,
+      0,
+      syncTokenBinding(request)
+    );
+    if (!pullResult.ok) {
+      throw new Error(pullResult.reason);
+    }
+
+    const object = latestEnvelopeForObject(pullResult.response, objectId);
+    if (!object) {
+      return {
+        ok: false,
+        reason: "object-not-found",
+        current_mode: "cloud-unlock-session",
+        authority_id: authorityId,
+        object_id: objectId,
+        key_persisted_by_cloudflare: false
+      };
+    }
+
+    if (object.access_class === "quarantine") {
+      return {
+        ok: false,
+        reason: "quarantine-denied",
+        current_mode: "cloud-unlock-session",
+        authority_id: authorityId,
+        object_id: objectId,
+        key_persisted_by_cloudflare: false
+      };
+    }
+
+    const decryptResult = await decryptCloudUnlockObject(object, unlockKey);
+    if (!decryptResult.ok) {
+      return {
+        ok: false,
+        reason: decryptResult.reason,
+        current_mode: "cloud-unlock-session",
+        authority_id: authorityId,
+        object_id: objectId,
+        key_persisted_by_cloudflare: false,
+        host_blind_sensitive_plaintext: true
+      };
+    }
+
     return {
-      ok: false,
-      reason: "cloud-decryptor-not-implemented",
+      ok: true,
       current_mode: "cloud-unlock-session",
-      object_id: stringParam(args, "object_id"),
+      authority_id: authorityId,
+      object_id: object.object_id,
+      object_type: object.object_type,
+      version: object.version,
+      access_class: object.access_class,
+      visible_metadata: object.visible_metadata,
+      payload: decryptResult.plaintext,
       key_persisted_by_cloudflare: false,
-      host_blind_sensitive_plaintext: false,
-      note: "The request supplied a transient unlock key, but Cloudflare-side sensitive decryption is not implemented in this scaffold."
+      host_blind_sensitive_plaintext: false
     };
   }
 
@@ -753,12 +834,13 @@ async function routeRemoteMcpRequest(request: Request, env: BootstrapWorkerEnv):
         },
         {
           name: "remote_sensitive_decrypt",
-          description: "Guarded cloud-unlock placeholder for sensitive decrypt. Requires a transient unlock key header and currently does not decrypt.",
+          description: "Decrypt a synced cloud-unlock ciphertext object with a transient request key. The key must be supplied in the x-living-atlas-cloud-unlock-key header and is not persisted.",
           inputSchema: {
             type: "object",
             additionalProperties: false,
-            required: ["object_id"],
+            required: ["authority_id", "object_id"],
             properties: {
+              authority_id: { type: "string" },
               object_id: { type: "string" }
             }
           }

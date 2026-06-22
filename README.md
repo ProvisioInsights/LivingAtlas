@@ -80,10 +80,11 @@ synthetic fixtures, access policy evaluation, metadata leakage scanning,
 readiness check commands, Cloudflare first-claim bootstrap, fixture-backed local
 MCP tools, a sealed local keyring, an encrypted local graph store, ciphertext
 sync batch persistence, envelope pull/replay, a minimal token-gated remote MCP
-sync skeleton, and hash-only replay reporting over audit/activity/operational
-events. It also includes a token-gated usage/budget endpoint that reports
-provider-neutral observed usage against configurable limits. It does not import
-real graph data or deploy personal Cloudflare resources.
+sync surface, cloud-unlock decrypt for v1 AES-GCM inline ciphertext envelopes,
+and hash-only replay reporting over audit/activity/operational events. It also
+includes a token-gated usage/budget endpoint that reports provider-neutral
+observed usage against configurable limits. It does not import real graph data
+or deploy personal Cloudflare resources.
 
 ## Development
 

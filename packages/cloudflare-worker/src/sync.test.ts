@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
+import {
+  SyncBatchSchema,
+  type GraphObjectEnvelope,
+  type SyncBatch
+} from "@living-atlas/contracts";
 import { sha256TokenHash } from "./bootstrap";
+import { CloudUnlockObjectAlgorithm } from "./cloud-unlock";
 import { acceptSyncBatch, getSyncStatus } from "./sync";
 import { authoritySequencerName } from "./sync-sequencer";
 import { handleBootstrapRequest, type BootstrapWorkerEnv } from "./worker";
@@ -65,6 +71,164 @@ const ciphertextBatch = {
   ],
   withheld_plaintext_count: 0
 } as const;
+
+function testBufferSource(bytes: Uint8Array): Uint8Array<ArrayBuffer> {
+  const copy = new Uint8Array(bytes.byteLength);
+  copy.set(bytes);
+  return copy;
+}
+
+function testToBase64(bytes: Uint8Array): string {
+  let binary = "";
+  for (const byte of bytes) {
+    binary += String.fromCharCode(byte);
+  }
+  return btoa(binary);
+}
+
+function testStableJson(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map(testStableJson).join(",")}]`;
+  }
+
+  if (value && typeof value === "object") {
+    return `{${Object.entries(value)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, entry]) => `${JSON.stringify(key)}:${testStableJson(entry)}`)
+      .join(",")}}`;
+  }
+
+  return JSON.stringify(value);
+}
+
+function testObjectAdditionalData(object: GraphObjectEnvelope): Uint8Array {
+  return new TextEncoder().encode([
+    "living-atlas-cloud-unlock-object-payload:v1",
+    object.authority_id,
+    object.object_id,
+    object.object_type,
+    String(object.version),
+    object.access_class,
+    object.encryption_class,
+    object.key_ref ?? "",
+    object.created_at,
+    object.updated_at,
+    testStableJson(object.visible_metadata)
+  ].join(":"));
+}
+
+async function testSha256Hash(value: string): Promise<`sha256:${string}`> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+  return `sha256:${[...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("")}`;
+}
+
+async function encryptCloudUnlockFixtureObject(input: {
+  rawKey: Uint8Array;
+  nonce: Uint8Array;
+  object: Omit<GraphObjectEnvelope, "content_hash" | "payload">;
+  plaintext: Record<string, unknown>;
+}): Promise<GraphObjectEnvelope> {
+  const draft: GraphObjectEnvelope = {
+    ...input.object,
+    content_hash: "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+    payload: {
+      kind: "ciphertext-inline",
+      ciphertext: "pending",
+      nonce: testToBase64(input.nonce),
+      algorithm: CloudUnlockObjectAlgorithm
+    }
+  };
+  const key = await crypto.subtle.importKey(
+    "raw",
+    testBufferSource(input.rawKey),
+    { name: "AES-GCM", length: 256 },
+    false,
+    ["encrypt"]
+  );
+  const ciphertext = new Uint8Array(await crypto.subtle.encrypt(
+    {
+      name: "AES-GCM",
+      iv: testBufferSource(input.nonce),
+      additionalData: testBufferSource(testObjectAdditionalData(draft))
+    },
+    key,
+    testBufferSource(new TextEncoder().encode(JSON.stringify({
+      kind: "plaintext-json",
+      data: input.plaintext
+    })))
+  ));
+  const ciphertextBase64 = testToBase64(ciphertext);
+
+  return {
+    ...draft,
+    content_hash: await testSha256Hash(ciphertextBase64),
+    payload: {
+      kind: "ciphertext-inline",
+      ciphertext: ciphertextBase64,
+      nonce: testToBase64(input.nonce),
+      algorithm: CloudUnlockObjectAlgorithm
+    }
+  };
+}
+
+async function cloudUnlockBatch(rawKey: Uint8Array): Promise<SyncBatch> {
+  const object = await encryptCloudUnlockFixtureObject({
+    rawKey,
+    nonce: new Uint8Array([12, 1, 4, 1, 5, 9, 2, 6, 5, 3, 5, 8]),
+    object: {
+      schema_version: 1,
+      authority_id: "la_authority_worker0001",
+      object_id: "la_object_cloudunlock0001",
+      object_type: "page",
+      version: 1,
+      access_class: "local-private",
+      encryption_class: "client-encrypted",
+      created_at: timestamp,
+      updated_at: timestamp,
+      key_ref: "la_key_cloudunlock0001",
+      visible_metadata: {
+        tombstone: false,
+        size_class: "tiny",
+        remote_indexable: false
+      }
+    },
+    plaintext: {
+      title: "Synthetic sensitive note",
+      body: "Cloud unlock plaintext only appears after the transient key is supplied."
+    }
+  });
+
+  return SyncBatchSchema.parse({
+    batch_id: "la_sync_batch_cloudunlock0001",
+    authority_id: "la_authority_worker0001",
+    device_id: "la_device_worker0001",
+    client_id: "la_client_worker0001",
+    operation_id: "la_operation_cloudunlock0001",
+    trace_id: "la_trace_cloudunlock0001",
+    submitted_at: timestamp,
+    base_generation: 0,
+    target_generation: 1,
+    objects: [object],
+    changes: [
+      {
+        change_id: "la_change_cloudunlock0001",
+        authority_id: "la_authority_worker0001",
+        operation_id: "la_operation_cloudunlock0001",
+        trace_id: "la_trace_cloudunlock0001",
+        recorded_at: timestamp,
+        object_id: object.object_id,
+        operation: "update",
+        base_version: 0,
+        new_version: 1,
+        content_hash: object.content_hash,
+        access_class: object.access_class,
+        generation: 1,
+        actor_id: "la_client_worker0001"
+      }
+    ],
+    withheld_plaintext_count: 0
+  });
+}
 
 const staleCiphertextBatch = {
   ...ciphertextBatch,
@@ -1052,7 +1216,7 @@ describe("Worker sync batch acceptance", () => {
       }
     });
 
-    const unlockKey = "synthetic-cloud-unlock-key-0001";
+    const unlockKey = testToBase64(new Uint8Array(Array.from({ length: 32 }, (_, index) => index + 1)));
     const unlockedDecryptResponse = await handleBootstrapRequest(new Request("https://living-atlas.example/mcp", {
       method: "POST",
       headers: {
@@ -1067,6 +1231,7 @@ describe("Worker sync batch acceptance", () => {
         params: {
           name: "remote_sensitive_decrypt",
           arguments: {
+            authority_id: "la_authority_worker0001",
             object_id: "la_object_worker0001"
           }
         }
@@ -1080,10 +1245,12 @@ describe("Worker sync batch acceptance", () => {
       result: {
         structuredContent: {
           ok: false,
-          reason: "cloud-decryptor-not-implemented",
+          reason: "unsupported-payload",
           current_mode: "cloud-unlock-session",
+          authority_id: "la_authority_worker0001",
+          object_id: "la_object_worker0001",
           key_persisted_by_cloudflare: false,
-          host_blind_sensitive_plaintext: false
+          host_blind_sensitive_plaintext: true
         }
       }
     });
@@ -1159,6 +1326,114 @@ describe("Worker sync batch acceptance", () => {
       }
     });
     expect(JSON.stringify(usageReconcileBody)).not.toContain(syncToken);
+  });
+
+  it("decrypts a cloud-unlock inline ciphertext object with a transient request key", async () => {
+    const { env } = await createEnv();
+    const rawKey = new Uint8Array(Array.from({ length: 32 }, (_, index) => index + 21));
+    const unlockKey = testToBase64(rawKey);
+    const wrongUnlockKey = testToBase64(new Uint8Array(Array.from({ length: 32 }, (_, index) => index + 55)));
+    const batch = await cloudUnlockBatch(rawKey);
+
+    const syncResponse = await handleBootstrapRequest(new Request("https://living-atlas.example/api/sync/batch", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-living-atlas-sync-token": syncToken
+      },
+      body: JSON.stringify(batch)
+    }), env);
+    expect(syncResponse.status).toBe(202);
+
+    const wrongKeyResponse = await handleBootstrapRequest(new Request("https://living-atlas.example/mcp", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-living-atlas-sync-token": syncToken,
+        "x-living-atlas-cloud-unlock-key": wrongUnlockKey
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 8,
+        method: "tools/call",
+        params: {
+          name: "remote_sensitive_decrypt",
+          arguments: {
+            authority_id: "la_authority_worker0001",
+            object_id: "la_object_cloudunlock0001"
+          }
+        }
+      })
+    }), env);
+
+    const wrongKeyBody = await wrongKeyResponse.json();
+    expect(wrongKeyBody).toMatchObject({
+      jsonrpc: "2.0",
+      id: 8,
+      result: {
+        structuredContent: {
+          ok: false,
+          reason: "decrypt-failed",
+          current_mode: "cloud-unlock-session",
+          key_persisted_by_cloudflare: false,
+          host_blind_sensitive_plaintext: true
+        }
+      }
+    });
+    expect(JSON.stringify(wrongKeyBody)).not.toContain(wrongUnlockKey);
+
+    const decryptResponse = await handleBootstrapRequest(new Request("https://living-atlas.example/mcp", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-living-atlas-sync-token": syncToken,
+        "x-living-atlas-cloud-unlock-key": unlockKey
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 9,
+        method: "tools/call",
+        params: {
+          name: "remote_sensitive_decrypt",
+          arguments: {
+            authority_id: "la_authority_worker0001",
+            object_id: "la_object_cloudunlock0001"
+          }
+        }
+      })
+    }), env);
+
+    const decryptBody = await decryptResponse.json();
+    expect(decryptBody).toMatchObject({
+      jsonrpc: "2.0",
+      id: 9,
+      result: {
+        structuredContent: {
+          ok: true,
+          current_mode: "cloud-unlock-session",
+          authority_id: "la_authority_worker0001",
+          object_id: "la_object_cloudunlock0001",
+          object_type: "page",
+          version: 1,
+          access_class: "local-private",
+          key_persisted_by_cloudflare: false,
+          host_blind_sensitive_plaintext: false,
+          payload: {
+            kind: "plaintext-json",
+            data: {
+              title: "Synthetic sensitive note",
+              body: "Cloud unlock plaintext only appears after the transient key is supplied."
+            }
+          }
+        }
+      }
+    });
+    expect(JSON.stringify(decryptBody)).not.toContain(unlockKey);
+    const encryptedPayload = batch.objects[0]!.payload;
+    expect(encryptedPayload.kind).toBe("ciphertext-inline");
+    if (encryptedPayload.kind === "ciphertext-inline") {
+      expect(JSON.stringify(decryptBody)).not.toContain(encryptedPayload.ciphertext);
+    }
   });
 
   it("rejects sync tokens in query strings", async () => {

@@ -1,5 +1,6 @@
 export { BootstrapClaimLock, SyncAuthoritySequencer, SyncSequencer } from "./durable-object";
 export { default } from "./worker";
+export * from "./cloud-unlock";
 export * from "./observability";
 export * from "./sync";
 export * from "./sync-sequencer";
