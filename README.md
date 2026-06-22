@@ -74,9 +74,9 @@ objects, and separate capability surfaces:
 Phase 1 scaffold exists as a TypeScript workspace. It includes contracts,
 synthetic fixtures, access policy evaluation, metadata leakage scanning,
 readiness check commands, Cloudflare first-claim bootstrap, fixture-backed local
-MCP tools, a durable redacted local graph store, ciphertext sync batch
-persistence, envelope pull/replay, a minimal token-gated remote MCP sync
-skeleton, and hash-only replay reporting over audit/activity/operational
+MCP tools, a sealed local keyring, an encrypted local graph store, ciphertext
+sync batch persistence, envelope pull/replay, a minimal token-gated remote MCP
+sync skeleton, and hash-only replay reporting over audit/activity/operational
 events. It also includes a token-gated usage/budget endpoint that reports
 provider-neutral observed usage against configurable limits. It does not import
 real graph data or deploy personal Cloudflare resources.
@@ -120,9 +120,10 @@ npm run smoke:local
 ```
 
 `local:install-smoke` exercises the local install mode: it creates a sealed
-local control store, starts the local MCP over stdio, calls the fixture graph
-read and synthetic CRUD tools, and checks the activity log for
-token/sensitive-bait leakage.
+local control store and sealed local keyring, starts the local MCP over stdio,
+calls the fixture graph read and synthetic CRUD tools, creates a local-private
+plaintext draft through the MCP, and checks activity plus encrypted graph files
+for token/sensitive-bait/plaintext leakage.
 `cloudflare:local-smoke` exercises the Worker bootstrap and sync routes
 in-process with fake D1/R2 bindings.
 
@@ -232,8 +233,11 @@ Workspace packages:
   skeleton, and redacted structured request observability.
 - `@living-atlas/local-control-store`: encrypted local authority/control-plane
   state store, local profile path helpers, and fixture generation tooling.
-- `@living-atlas/local-graph-store`: durable redacted snapshot/journal graph
-  replica for local CRUD and sync replay.
+- `@living-atlas/local-keyring`: sealed local keyring and AES-GCM payload
+  encryption helpers for local install mode.
+- `@living-atlas/local-graph-store`: durable snapshot/journal graph replica for
+  local CRUD and sync replay, with redacted or local-keyring-encrypted
+  persistence by policy.
 - `@living-atlas/local-mcp`: local trusted-ingress MCP skeleton with bearer
   token capability checks, sealed control-store loading, fixture graph
   status/list/read plus synthetic CRUD tools backed by in-memory fixtures or the

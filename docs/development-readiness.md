@@ -132,10 +132,33 @@ LIVING_ATLAS_LOCAL_MCP_TOKEN='replace-with-local-dev-token' \
 npm run local-mcp:fixture
 ```
 
-By default this store writes `snapshot.json` and `journal.jsonl` with plaintext
-payloads redacted. Set `LIVING_ATLAS_LOCAL_GRAPH_PLAINTEXT=allow` only for an
-explicit local-only debugging run; do not use it for public fixtures, deploy
-artifacts, or shared test output.
+Create a sealed fixture keyring when you want the durable store to persist
+encrypted payloads instead of redacted payload placeholders:
+
+```bash
+LIVING_ATLAS_LOCAL_KEYRING=/tmp/living-atlas-keyring.json \
+LIVING_ATLAS_LOCAL_KEYRING_PASSPHRASE='replace-with-local-keyring-passphrase' \
+npm run local-keyring:fixture-store
+```
+
+Then launch the local MCP with both the durable graph directory and keyring:
+
+```bash
+LIVING_ATLAS_LOCAL_GRAPH_DIR=/tmp/living-atlas-graph \
+LIVING_ATLAS_LOCAL_KEYRING=/tmp/living-atlas-keyring.json \
+LIVING_ATLAS_LOCAL_KEYRING_PASSPHRASE='replace-with-local-keyring-passphrase' \
+LIVING_ATLAS_LOCAL_CONTROL_STORE=/tmp/living-atlas-control-store.json \
+LIVING_ATLAS_LOCAL_CONTROL_STORE_PASSPHRASE='replace-with-local-dev-passphrase' \
+LIVING_ATLAS_LOCAL_MCP_TOKEN='replace-with-local-dev-token' \
+npm run local-mcp:fixture
+```
+
+With a keyring, `snapshot.json` and `journal.jsonl` use
+`AES-GCM-256+local-keyring-v1` ciphertext for plaintext payloads. Without a
+keyring, durable graph persistence redacts plaintext payloads by default. Set
+`LIVING_ATLAS_LOCAL_GRAPH_PLAINTEXT=allow` only for an explicit local-only
+debugging run; do not use it for public fixtures, deploy artifacts, or shared
+test output.
 
 The fixture graph intentionally contains sensitive bait and local-private
 ciphertext references so policy and leakage checks have something to catch. Do

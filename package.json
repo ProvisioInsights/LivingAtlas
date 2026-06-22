@@ -20,6 +20,7 @@
     "infra:fmt": "terraform fmt -check -recursive infra/cloudflare",
     "infra:validate": "terraform -chdir=infra/cloudflare/examples/single-authority init -backend=false -input=false && terraform -chdir=infra/cloudflare/examples/single-authority validate",
     "local-control:fixture-store": "tsx packages/local-control-store/src/create-fixture.ts",
+    "local-keyring:fixture-store": "tsx packages/local-keyring/src/create-fixture.ts",
     "local:deploy-synthetic": "tsx packages/check/src/local-deploy-synthetic.ts",
     "stress:local": "tsx packages/check/src/local-stress.ts",
     "local:install-smoke": "tsx packages/check/src/local-install-smoke.ts",

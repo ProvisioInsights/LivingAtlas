@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@living-atlas/contracts": "workspace:*",
+    "@living-atlas/local-keyring": "workspace:*",
     "zod": "4.4.3"
   },
   "devDependencies": {

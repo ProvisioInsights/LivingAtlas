@@ -18,6 +18,11 @@ import {
   SyncChangeEventSchema,
   TraceIdSchema
 } from "@living-atlas/contracts";
+import {
+  encryptGraphObjectPayload,
+  encryptPlaintextGraphObjectDraft,
+  type LocalKeyringState
+} from "@living-atlas/local-keyring";
 
 const LocalGraphJournalOperationSchema = z.enum(["create", "update", "tombstone"]);
 export type LocalGraphJournalOperation = z.infer<typeof LocalGraphJournalOperationSchema>;
@@ -30,7 +35,7 @@ export const LocalGraphSnapshotSchema = z
     updated_at: IsoTimestampSchema,
     generation: z.number().int().nonnegative(),
     journal_sequence: z.number().int().nonnegative(),
-    plaintext_persistence: z.enum(["redacted", "allowed"]),
+    plaintext_persistence: z.enum(["redacted", "encrypted", "allowed"]),
     objects: z.array(GraphObjectEnvelopeSchema)
   })
   .strict();
@@ -64,12 +69,13 @@ export const LocalGraphJournalEntrySchema = LocalGraphJournalEntryHashPayloadSch
 
 export type LocalGraphJournalEntry = z.infer<typeof LocalGraphJournalEntrySchema>;
 
-export type LocalGraphPlaintextPersistenceMode = "redact" | "allow";
+export type LocalGraphPlaintextPersistenceMode = "redact" | "encrypt" | "allow";
 
 export type OpenFileLocalGraphStoreOptions = {
   directory: string;
   authorityId?: AuthorityId;
   plaintextPersistence?: LocalGraphPlaintextPersistenceMode;
+  keyring?: LocalKeyringState;
   now?: () => string;
 };
 
@@ -86,7 +92,7 @@ export type LocalGraphStoreStatus = {
   active_object_count: number;
   tombstone_count: number;
   updated_at: string;
-  plaintext_persistence: "redacted" | "allowed";
+  plaintext_persistence: "redacted" | "encrypted" | "allowed";
 };
 
 export type LocalGraphMutationInputBase = {
@@ -98,11 +104,11 @@ export type LocalGraphMutationInputBase = {
 };
 
 export type CreateLocalGraphObjectInput = LocalGraphMutationInputBase & {
-  object: GraphObjectEnvelope;
+  object: unknown;
 };
 
 export type UpdateLocalGraphObjectInput = LocalGraphMutationInputBase & {
-  object: GraphObjectEnvelope;
+  object: unknown;
   expected_version?: number;
 };
 
@@ -292,11 +298,25 @@ function redactedPlaintextPayload(object: GraphObjectEnvelope): GraphObjectEnvel
   });
 }
 
-function objectForPersistence(
+async function objectForPersistence(
   objectInput: unknown,
-  plaintextPersistence: LocalGraphPlaintextPersistenceMode
-): GraphObjectEnvelope | undefined {
+  plaintextPersistence: LocalGraphPlaintextPersistenceMode,
+  keyring: LocalKeyringState | undefined
+): Promise<GraphObjectEnvelope | undefined> {
   const parsed = GraphObjectEnvelopeSchema.safeParse(objectInput);
+
+  if (plaintextPersistence === "encrypt") {
+    if (!keyring) {
+      throw new Error("Local graph encrypted persistence requires an unlocked local keyring");
+    }
+
+    if (parsed.success) {
+      return encryptGraphObjectPayload(cloneGraphObject(parsed.data), keyring);
+    }
+
+    return encryptPlaintextGraphObjectDraft(objectInput, keyring);
+  }
+
   if (!parsed.success) {
     return undefined;
   }
@@ -324,7 +344,7 @@ function snapshotFromState(
     updated_at: state.updatedAt,
     generation: state.generation,
     journal_sequence: state.journalSequence,
-    plaintext_persistence: plaintextPersistence === "redact" ? "redacted" : "allowed",
+    plaintext_persistence: plaintextPersistence === "redact" ? "redacted" : plaintextPersistence === "encrypt" ? "encrypted" : "allowed",
     objects: Array.from(state.objects.values()).map(cloneGraphObject)
   });
 }
@@ -343,7 +363,7 @@ function statusFromState(
     active_object_count: objects.length - tombstoneCount,
     tombstone_count: tombstoneCount,
     updated_at: state.updatedAt,
-    plaintext_persistence: plaintextPersistence === "redact" ? "redacted" : "allowed"
+    plaintext_persistence: plaintextPersistence === "redact" ? "redacted" : plaintextPersistence === "encrypt" ? "encrypted" : "allowed"
   };
 }
 
@@ -458,7 +478,7 @@ async function loadState(
     objects: snapshot ? mapFromObjects(snapshot.objects) : new Map()
   };
 
-  if (plaintextPersistence === "redact") {
+  if (plaintextPersistence !== "allow") {
     assertNoPlaintextPayloads(state.objects.values());
   }
 
@@ -470,7 +490,7 @@ async function loadState(
     state = applyJournalEntry(state, entry);
   }
 
-  if (plaintextPersistence === "redact") {
+  if (plaintextPersistence !== "allow") {
     assertNoPlaintextPayloads(state.objects.values());
   }
 
@@ -478,20 +498,35 @@ async function loadState(
 }
 
 export class FileLocalGraphStore {
+  private mutationQueue: Promise<unknown> = Promise.resolve();
+
   private constructor(
     private readonly paths: LocalGraphStorePaths,
     private state: LocalGraphState,
     private readonly plaintextPersistence: LocalGraphPlaintextPersistenceMode,
+    private readonly keyring: LocalKeyringState | undefined,
     private readonly now: () => string
   ) {}
 
   static async open(options: OpenFileLocalGraphStoreOptions): Promise<FileLocalGraphStore> {
     const plaintextPersistence = options.plaintextPersistence ?? "redact";
+    if (plaintextPersistence === "encrypt" && !options.keyring) {
+      throw new Error("Local graph encrypted persistence requires an unlocked local keyring");
+    }
     const now = options.now ?? (() => new Date().toISOString());
     const paths = pathsForDirectory(options.directory);
     await mkdir(paths.directory, { recursive: true });
     const state = await loadState(paths, options.authorityId, plaintextPersistence, now);
-    return new FileLocalGraphStore(paths, state, plaintextPersistence, now);
+    return new FileLocalGraphStore(paths, state, plaintextPersistence, options.keyring, now);
+  }
+
+  private serializeMutation<T>(fn: () => Promise<T>): Promise<T> {
+    const run = this.mutationQueue.then(fn, fn);
+    this.mutationQueue = run.then(
+      () => undefined,
+      () => undefined
+    );
+    return run;
   }
 
   status(): LocalGraphStoreStatus {
@@ -513,6 +548,7 @@ export class FileLocalGraphStore {
     objectsInput: GraphObjectEnvelope[],
     options: InitializeLocalGraphStoreOptions = {}
   ): Promise<LocalGraphMutationResult | { ok: true; status: LocalGraphStoreStatus; persistence: "snapshot+journal" }> {
+    return this.serializeMutation(async () => {
     const expectedGeneration = options.expected_generation ?? 0;
     if (this.state.generation !== expectedGeneration) {
       return {
@@ -532,7 +568,7 @@ export class FileLocalGraphStore {
 
     const objects: GraphObjectEnvelope[] = [];
     for (const objectInput of objectsInput) {
-      const object = objectForPersistence(objectInput, this.plaintextPersistence);
+      const object = await objectForPersistence(objectInput, this.plaintextPersistence, this.keyring);
       if (!object) {
         return {
           ok: false,
@@ -577,9 +613,11 @@ export class FileLocalGraphStore {
       status: this.status(),
       persistence: "snapshot+journal"
     };
+    });
   }
 
   async createObject(input: CreateLocalGraphObjectInput): Promise<LocalGraphMutationResult> {
+    return this.serializeMutation(async () => {
     if (this.state.generation !== input.expected_generation) {
       return {
         ok: false,
@@ -588,7 +626,7 @@ export class FileLocalGraphStore {
       };
     }
 
-    const object = objectForPersistence(input.object, this.plaintextPersistence);
+    const object = await objectForPersistence(input.object, this.plaintextPersistence, this.keyring);
     if (!object) {
       return {
         ok: false,
@@ -615,9 +653,11 @@ export class FileLocalGraphStore {
     }
 
     return this.commitMutation("create", object, undefined, input);
+    });
   }
 
   async updateObject(input: UpdateLocalGraphObjectInput): Promise<LocalGraphMutationResult> {
+    return this.serializeMutation(async () => {
     if (this.state.generation !== input.expected_generation) {
       return {
         ok: false,
@@ -626,7 +666,7 @@ export class FileLocalGraphStore {
       };
     }
 
-    const object = objectForPersistence(input.object, this.plaintextPersistence);
+    const object = await objectForPersistence(input.object, this.plaintextPersistence, this.keyring);
     if (!object) {
       return {
         ok: false,
@@ -671,9 +711,11 @@ export class FileLocalGraphStore {
     }
 
     return this.commitMutation("update", object, existing.version, input);
+    });
   }
 
   async tombstoneObject(input: TombstoneLocalGraphObjectInput): Promise<LocalGraphMutationResult> {
+    return this.serializeMutation(async () => {
     if (this.state.generation !== input.expected_generation) {
       return {
         ok: false,
@@ -733,11 +775,14 @@ export class FileLocalGraphStore {
       ...input,
       recorded_at: recordedAt
     });
+    });
   }
 
   async compact(): Promise<LocalGraphStoreStatus> {
+    return this.serializeMutation(async () => {
     await atomicWriteJson(this.paths.snapshotPath, snapshotFromState(this.state, this.plaintextPersistence));
     return this.status();
+    });
   }
 
   private async commitMutation(

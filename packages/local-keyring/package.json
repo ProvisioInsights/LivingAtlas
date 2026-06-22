@@ -1,0 +1,23 @@
+{
+  "name": "@living-atlas/local-keyring",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "bin": {
+    "living-atlas-create-fixture-keyring": "./src/create-fixture.ts"
+  },
+  "scripts": {
+    "test": "vitest run --root ../.. packages/local-keyring/src/local-keyring.test.ts",
+    "typecheck": "tsc --ignoreConfig --noEmit --target ES2022 --module ESNext --moduleResolution Bundler --strict --noUncheckedIndexedAccess --isolatedModules --skipLibCheck --types node,vitest,@cloudflare/workers-types src/local-keyring.ts src/local-keyring.test.ts"
+  },
+  "dependencies": {
+    "@living-atlas/contracts": "workspace:*",
+    "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "@living-atlas/fixtures": "workspace:*"
+  }
+}

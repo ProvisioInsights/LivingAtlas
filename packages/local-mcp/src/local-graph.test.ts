@@ -62,6 +62,34 @@ function syntheticRemoteSafeObject(objectId: string): GraphObjectEnvelope {
   };
 }
 
+function sensitivePlaintextDraft(objectId: string) {
+  return {
+    schema_version: 1,
+    authority_id: fixtureAuthorityId,
+    object_id: objectId,
+    object_type: "page",
+    version: 1,
+    access_class: "local-private",
+    encryption_class: "plaintext",
+    created_at: now,
+    updated_at: now,
+    content_hash: fixedHash("d"),
+    visible_metadata: {
+      schema_namespace: "test/sensitive-draft",
+      tombstone: false,
+      size_class: "tiny",
+      remote_indexable: false
+    },
+    payload: {
+      kind: "plaintext-json",
+      data: {
+        title: "Sensitive redacted-mode draft",
+        body: "This draft should fail before persistence."
+      }
+    }
+  };
+}
+
 function readonlyControlPlane(): ControlPlaneSnapshot {
   const localFullCapability = controlPlaneFixture.capabilities.find(
     (capability) => capability.capability_id === "la_cap_localfull0001"
@@ -490,6 +518,64 @@ describe("local fixture graph tools", () => {
       tool_name: "local_create_object",
       reason_code: "synthetic-store-full"
     }));
+  });
+
+  it("records denied activity when policy passes but durable persistence rejects", async () => {
+    const token = "local-token-graph-rejected-persist-0001";
+    const directory = await mkdtemp(join(tmpdir(), "living-atlas-local-mcp-reject-"));
+    try {
+      const controlState = await createFixtureLocalControlState(token);
+      const graphStore = await FileLocalGraphStore.open({
+        directory,
+        authorityId: controlState.authority_id,
+        plaintextPersistence: "redact"
+      });
+      const auditSink = new InMemoryLocalMcpAuditSink();
+      const activitySink = new InMemoryLocalMcpActivitySink();
+      const context = createLocalMcpContextFromControlState({
+        controlState,
+        graphStore,
+        auditSink,
+        activitySink,
+        now
+      });
+
+      await expect(localCreateObject(context, {
+        authorization: `Bearer ${token}`,
+        object: sensitivePlaintextDraft("la_object_rejectedpersist0001")
+      })).resolves.toEqual({
+        ok: false,
+        reason: "invalid-object"
+      });
+
+      expect(auditSink.events).toContainEqual(expect.objectContaining({
+        event_type: "tool.denied",
+        operation: "create",
+        tool_name: "local_create_object",
+        object_id: "la_object_rejectedpersist0001",
+        access_class: "local-private",
+        reason_code: "invalid-object"
+      }));
+      expect(activitySink.events).toContainEqual(expect.objectContaining({
+        crud: "create",
+        policy_decision: "deny",
+        graph_touch: expect.objectContaining({
+          objects: ["la_object_rejectedpersist0001"]
+        }),
+        visibility: {
+          mode: "metadata",
+          contains_sensitive: true,
+          redacted: true
+        }
+      }));
+
+      const serializedAudit = JSON.stringify(auditSink.events);
+      const serializedActivity = JSON.stringify(activitySink.events);
+      expect(serializedAudit).not.toContain("Sensitive redacted-mode draft");
+      expect(serializedActivity).not.toContain("Sensitive redacted-mode draft");
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
   });
 
   it("persists local MCP CRUD through the durable local graph store with redacted plaintext", async () => {

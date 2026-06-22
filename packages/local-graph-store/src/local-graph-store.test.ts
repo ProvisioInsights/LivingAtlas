@@ -10,6 +10,10 @@ import {
   sensitiveBaitRegistry,
   syntheticGraphObjects
 } from "@living-atlas/fixtures";
+import {
+  createDefaultLocalKeyring,
+  decryptGraphObjectPayload
+} from "@living-atlas/local-keyring";
 import { FileLocalGraphStore } from "./local-graph-store";
 
 const now = "2026-06-22T12:00:00.000Z";
@@ -51,6 +55,34 @@ function syntheticPlaintextObject(objectId: string): GraphObjectEnvelope {
       data: {
         title: "Local graph store plaintext fixture",
         body: "This text must not be written to default store files."
+      }
+    }
+  };
+}
+
+function sensitivePlaintextDraft(objectId: string) {
+  return {
+    schema_version: 1,
+    authority_id: fixtureAuthorityId,
+    object_id: objectId,
+    object_type: "page",
+    version: 1,
+    access_class: "local-private",
+    encryption_class: "plaintext",
+    created_at: now,
+    updated_at: now,
+    content_hash: fixedHash("e"),
+    visible_metadata: {
+      schema_namespace: "fixture/local-graph-store",
+      tombstone: false,
+      size_class: "tiny",
+      remote_indexable: false
+    },
+    payload: {
+      kind: "plaintext-json",
+      data: {
+        title: "Local keyring encrypted graph fixture",
+        body: "This sensitive draft must only persist as ciphertext."
       }
     }
   };
@@ -204,6 +236,72 @@ describe("file local graph store", () => {
     }
   });
 
+  it("encrypts local graph persistence when an unlocked local keyring is provided", async () => {
+    const directory = await tempStoreDir();
+    const keyring = createDefaultLocalKeyring({ authorityId: fixtureAuthorityId, createdAt: now });
+    const store = await FileLocalGraphStore.open({
+      directory,
+      authorityId: fixtureAuthorityId,
+      plaintextPersistence: "encrypt",
+      keyring,
+      now: () => now
+    });
+
+    await expect(store.createObject({
+      object: sensitivePlaintextDraft("la_object_storeencrypted0001"),
+      expected_generation: 0,
+      actor_id: fixtureLocalClientId,
+      recorded_at: "2026-06-22T12:01:00.000Z"
+    })).resolves.toMatchObject({
+      ok: true,
+      object: expect.objectContaining({
+        access_class: "local-private",
+        encryption_class: "client-encrypted",
+        key_ref: expect.stringMatching(/^la_key_/),
+        payload: expect.objectContaining({
+          kind: "ciphertext-inline",
+          algorithm: "AES-GCM-256+local-keyring-v1"
+        })
+      }),
+      generation: 1
+    });
+
+    expect(store.status()).toEqual(expect.objectContaining({
+      plaintext_persistence: "encrypted"
+    }));
+
+    const stored = store.readObject("la_object_storeencrypted0001")!;
+    await expect(decryptGraphObjectPayload(stored, keyring)).resolves.toEqual({
+      kind: "plaintext-json",
+      data: {
+        title: "Local keyring encrypted graph fixture",
+        body: "This sensitive draft must only persist as ciphertext."
+      }
+    });
+
+    const files = await readStoreFiles(directory);
+    expect(files).toContain("AES-GCM-256+local-keyring-v1");
+    expect(files).not.toContain("plaintext-json");
+    expect(files).not.toContain("Local keyring encrypted graph fixture");
+    expect(files).not.toContain("This sensitive draft must only persist as ciphertext.");
+    for (const bait of sensitiveBaitRegistry) {
+      expect(files).not.toContain(bait.value);
+    }
+
+    const reopened = await FileLocalGraphStore.open({
+      directory,
+      authorityId: fixtureAuthorityId,
+      plaintextPersistence: "encrypt",
+      keyring,
+      now: () => "2026-06-22T12:04:00.000Z"
+    });
+    expect(reopened.status()).toEqual(expect.objectContaining({
+      generation: 1,
+      object_count: 1,
+      plaintext_persistence: "encrypted"
+    }));
+  });
+
   it("rejects stale generation and version writes without appending to the journal", async () => {
     const directory = await tempStoreDir();
     const store = await FileLocalGraphStore.open({
@@ -246,6 +344,53 @@ describe("file local graph store", () => {
       object_count: syntheticGraphObjects.length
     }));
     expect(await readFile(join(directory, "journal.jsonl"), "utf8").catch(() => "")).toBe("");
+  });
+
+  it("serializes concurrent mutations before assigning generation and journal sequence", async () => {
+    const directory = await tempStoreDir();
+    const store = await FileLocalGraphStore.open({
+      directory,
+      authorityId: fixtureAuthorityId,
+      now: () => now
+    });
+    await store.initializeFromObjects(syntheticGraphObjects, { created_at: now });
+
+    const results = await Promise.all([
+      store.createObject({
+        object: syntheticPlaintextObject("la_object_concurrent0001"),
+        expected_generation: 0,
+        actor_id: fixtureLocalClientId,
+        recorded_at: "2026-06-22T12:01:00.000Z"
+      }),
+      store.createObject({
+        object: syntheticPlaintextObject("la_object_concurrent0002"),
+        expected_generation: 0,
+        actor_id: fixtureLocalClientId,
+        recorded_at: "2026-06-22T12:01:00.000Z"
+      })
+    ]);
+
+    const successful = results.filter((result) => result.ok);
+    const conflicted = results.filter((result) => !result.ok);
+    expect(successful).toHaveLength(1);
+    expect(conflicted).toEqual([{
+      ok: false,
+      reason: "generation-conflict",
+      current_generation: 1
+    }]);
+    expect(successful[0]).toEqual(expect.objectContaining({
+      ok: true,
+      generation: 1,
+      journal_sequence: 1
+    }));
+
+    const journalLines = (await readFile(join(directory, "journal.jsonl"), "utf8")).trim().split("\n");
+    expect(journalLines).toHaveLength(1);
+    expect(JSON.parse(journalLines[0]!)).toEqual(expect.objectContaining({
+      sequence: 1,
+      previous_generation: 0,
+      generation: 1
+    }));
   });
 
   it("compacts the replayed state into an atomic snapshot", async () => {

@@ -1,8 +1,9 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { GraphObjectEnvelopeSchema, ObjectIdSchema } from "@living-atlas/contracts";
+import { ObjectIdSchema } from "@living-atlas/contracts";
 import {
   LocalGraphExpectedVersionSchema,
+  LocalGraphObjectInputSchema,
   LocalGraphUpdatePatchSchema,
   localCreateObject,
   localGraphStatus,
@@ -27,7 +28,7 @@ const ReadObjectInputSchema = {
   object_id: ObjectIdSchema.describe("Living Atlas graph object id.")
 };
 const CreateObjectInputSchema = {
-  object: GraphObjectEnvelopeSchema.describe("Complete synthetic in-memory graph object envelope to create.")
+  object: LocalGraphObjectInputSchema.describe("Complete graph object envelope or local plaintext draft to create.")
 };
 const UpdateObjectInputSchema = {
   object_id: ObjectIdSchema.describe("Living Atlas graph object id."),

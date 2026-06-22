@@ -19,6 +19,10 @@ import {
 } from "@living-atlas/contracts";
 import { controlPlaneFixture, syntheticGraphObjects } from "@living-atlas/fixtures";
 import type { FileLocalGraphStore } from "@living-atlas/local-graph-store";
+import {
+  PlaintextGraphObjectDraftSchema,
+  type PlaintextGraphObjectDraft
+} from "@living-atlas/local-keyring";
 import { evaluatePolicy, type PolicyDecision } from "@living-atlas/policy";
 import { z } from "zod";
 import {
@@ -78,7 +82,12 @@ export const LocalGraphUpdatePatchSchema = z
   .refine((patch) => Object.keys(patch).length > 0, "Synthetic update patch must include at least one field.");
 
 export const LocalGraphExpectedVersionSchema = z.number().int().nonnegative().optional();
+export const LocalGraphObjectInputSchema = z.union([
+  GraphObjectEnvelopeSchema,
+  PlaintextGraphObjectDraftSchema
+]);
 export type LocalGraphUpdatePatch = z.infer<typeof LocalGraphUpdatePatchSchema>;
+type LocalGraphObjectInput = GraphObjectEnvelope | PlaintextGraphObjectDraft;
 
 export type AuthorizedLocalObject = {
   object_id: string;
@@ -95,6 +104,7 @@ export type LocalGraphStatusResult = {
   authority_id: string;
   policy_generation: number;
   object_count: number;
+  plaintext_persistence?: "redacted" | "encrypted" | "allowed";
   client_id: string;
   profile: CapabilityGrant["profile"];
   access_classes: CapabilityGrant["access_classes"];
@@ -119,7 +129,7 @@ export type LocalGraphReadToolInput = LocalGraphToolInput & {
 };
 
 export type LocalGraphCreateToolInput = LocalGraphToolInput & {
-  object: GraphObjectEnvelope;
+  object: unknown;
 };
 
 export type LocalGraphUpdateToolInput = LocalGraphToolInput & {
@@ -261,7 +271,7 @@ function syntheticStoreLimits(context: LocalMcpContext): LocalGraphSyntheticStor
   };
 }
 
-function envelopeByteSize(object: GraphObjectEnvelope): number {
+function envelopeByteSize(object: unknown): number {
   return Buffer.byteLength(JSON.stringify(object), "utf8");
 }
 
@@ -285,8 +295,48 @@ function readContextObject(context: LocalMcpContext, objectId: ObjectId): GraphO
   return context.graphStore?.readObject(objectId) ?? context.graphObjects.find((candidate) => candidate.object_id === objectId);
 }
 
-function objectWithinSyntheticLimit(context: LocalMcpContext, object: GraphObjectEnvelope): boolean {
+function objectWithinSyntheticLimit(context: LocalMcpContext, object: unknown): boolean {
   return envelopeByteSize(object) <= syntheticStoreLimits(context).maxEnvelopeBytes;
+}
+
+function policyEnvelopeForDraft(draft: PlaintextGraphObjectDraft): GraphObjectEnvelope {
+  return GraphObjectEnvelopeSchema.parse({
+    ...draft,
+    encryption_class: "client-encrypted",
+    payload: {
+      kind: "ciphertext-inline",
+      ciphertext: "policy-placeholder",
+      nonce: "policy-placeholder",
+      algorithm: "AES-GCM-256+local-keyring-v1"
+    }
+  });
+}
+
+function parseLocalGraphObjectInput(input: unknown, allowPlaintextDraft: boolean): {
+  object: LocalGraphObjectInput;
+  policyObject: GraphObjectEnvelope;
+} | undefined {
+  const parsedEnvelope = GraphObjectEnvelopeSchema.safeParse(input);
+  if (parsedEnvelope.success) {
+    return {
+      object: parsedEnvelope.data,
+      policyObject: parsedEnvelope.data
+    };
+  }
+
+  if (!allowPlaintextDraft) {
+    return undefined;
+  }
+
+  const parsedDraft = PlaintextGraphObjectDraftSchema.safeParse(input);
+  if (!parsedDraft.success) {
+    return undefined;
+  }
+
+  return {
+    object: parsedDraft.data,
+    policyObject: policyEnvelopeForDraft(parsedDraft.data)
+  };
 }
 
 function sanitizeAuthorizedObject(object: GraphObjectEnvelope, plaintextAllowed: boolean): AuthorizedLocalObject {
@@ -323,12 +373,13 @@ export async function localGraphStatus(
   return {
     ok: true,
     result: {
-      authority_id: context.controlPlane.authority.authority_id,
-      policy_generation: context.controlPlane.policy_generation,
-      object_count: contextActiveObjectCount(context),
-      client_id: auth.authenticated.client.client_id,
-      profile: auth.authenticated.capability.profile,
-      access_classes: auth.authenticated.capability.access_classes,
+	      authority_id: context.controlPlane.authority.authority_id,
+	      policy_generation: context.controlPlane.policy_generation,
+	      object_count: contextActiveObjectCount(context),
+	      plaintext_persistence: context.graphStore?.status().plaintext_persistence,
+	      client_id: auth.authenticated.client.client_id,
+	      profile: auth.authenticated.capability.profile,
+	      access_classes: auth.authenticated.capability.access_classes,
       operations: auth.authenticated.capability.operations
     }
   };
@@ -445,8 +496,8 @@ export async function localCreateObject(
     return { ok: false, reason: auth.reason };
   }
 
-  const parsedObject = GraphObjectEnvelopeSchema.safeParse(input.object);
-  if (!parsedObject.success) {
+  const parsedObject = parseLocalGraphObjectInput(input.object, Boolean(context.graphStore));
+  if (!parsedObject) {
     recordToolDecision({
       context,
       authenticated: auth.authenticated,
@@ -458,14 +509,15 @@ export async function localCreateObject(
     return { ok: false, reason: "invalid-object" };
   }
 
-  const object = parsedObject.data;
+  const object = parsedObject.object;
+  const policyObject = parsedObject.policyObject;
   if (object.authority_id !== context.controlPlane.authority.authority_id) {
     recordToolDecision({
       context,
       authenticated: auth.authenticated,
       toolName: "local_create_object",
       operation: "create",
-      object,
+      object: policyObject,
       allowed: false,
       reason: "object-authority-mismatch"
     });
@@ -478,7 +530,7 @@ export async function localCreateObject(
       authenticated: auth.authenticated,
       toolName: "local_create_object",
       operation: "create",
-      object,
+      object: policyObject,
       allowed: false,
       reason: "object-already-exists"
     });
@@ -491,7 +543,7 @@ export async function localCreateObject(
       authenticated: auth.authenticated,
       toolName: "local_create_object",
       operation: "create",
-      object,
+      object: policyObject,
       allowed: false,
       reason: "synthetic-store-full"
     });
@@ -504,7 +556,7 @@ export async function localCreateObject(
       authenticated: auth.authenticated,
       toolName: "local_create_object",
       operation: "create",
-      object,
+      object: policyObject,
       allowed: false,
       reason: "object-too-large"
     });
@@ -517,20 +569,19 @@ export async function localCreateObject(
     actor_id: auth.authenticated.client.client_id,
     capability: auth.authenticated.capability,
     now: context.now
-  }, object);
-
-  recordToolDecision({
-    context,
-    authenticated: auth.authenticated,
-    toolName: "local_create_object",
-    operation: "create",
-    object,
-    decision,
-    allowed: decision.allowed,
-    reason: decision.reason_code
-  });
+  }, policyObject);
 
   if (!decision.allowed) {
+    recordToolDecision({
+      context,
+      authenticated: auth.authenticated,
+      toolName: "local_create_object",
+      operation: "create",
+      object: policyObject,
+      decision,
+      allowed: false,
+      reason: decision.reason_code
+    });
     return { ok: false, reason: decision.reason_code };
   }
 
@@ -542,8 +593,29 @@ export async function localCreateObject(
       recorded_at: nowForMutation(context)
     });
     if (!mutation.ok) {
+      recordToolDecision({
+        context,
+        authenticated: auth.authenticated,
+        toolName: "local_create_object",
+        operation: "create",
+        object: policyObject,
+        decision,
+        allowed: false,
+        reason: mutation.reason
+      });
       return { ok: false, reason: mutation.reason };
     }
+
+    recordToolDecision({
+      context,
+      authenticated: auth.authenticated,
+      toolName: "local_create_object",
+      operation: "create",
+      object: mutation.object,
+      decision,
+      allowed: true,
+      reason: decision.reason_code
+    });
 
     return {
       ok: true,
@@ -559,8 +631,18 @@ export async function localCreateObject(
     };
   }
 
-  const storedObject = cloneGraphObject(object);
+  const storedObject = cloneGraphObject(policyObject);
   context.graphObjects.push(storedObject);
+  recordToolDecision({
+    context,
+    authenticated: auth.authenticated,
+    toolName: "local_create_object",
+    operation: "create",
+    object: storedObject,
+    decision,
+    allowed: true,
+    reason: decision.reason_code
+  });
 
   return {
     ok: true,
@@ -651,7 +733,7 @@ export async function localUpdateObject(
   }
 
   const patch = parsedPatch.data;
-  const candidate = GraphObjectEnvelopeSchema.safeParse({
+  const candidateInput = {
     ...existingObject,
     ...patch,
     authority_id: existingObject.authority_id,
@@ -659,15 +741,17 @@ export async function localUpdateObject(
     created_at: existingObject.created_at,
     updated_at: patch.updated_at ?? nowForMutation(context),
     version: existingObject.version + 1,
+    encryption_class: patch.encryption_class ?? (patch.payload?.kind === "plaintext-json" ? "plaintext" : existingObject.encryption_class),
     visible_metadata: patch.visible_metadata
       ? {
           ...existingObject.visible_metadata,
           ...patch.visible_metadata
         }
       : existingObject.visible_metadata
-  });
+  };
+  const candidate = parseLocalGraphObjectInput(candidateInput, Boolean(context.graphStore));
 
-  if (!candidate.success) {
+  if (!candidate) {
     recordToolDecision({
       context,
       authenticated: auth.authenticated,
@@ -680,14 +764,15 @@ export async function localUpdateObject(
     return { ok: false, reason: "invalid-object" };
   }
 
-  const nextObject = candidate.data;
+  const nextObject = candidate.object;
+  const policyObject = candidate.policyObject;
   if (!objectWithinSyntheticLimit(context, nextObject)) {
     recordToolDecision({
       context,
       authenticated: auth.authenticated,
       toolName: "local_update_object",
       operation: "update",
-      object: existingObject,
+      object: policyObject,
       allowed: false,
       reason: "object-too-large"
     });
@@ -700,20 +785,19 @@ export async function localUpdateObject(
     actor_id: auth.authenticated.client.client_id,
     capability: auth.authenticated.capability,
     now: context.now
-  }, nextObject);
-
-  recordToolDecision({
-    context,
-    authenticated: auth.authenticated,
-    toolName: "local_update_object",
-    operation: "update",
-    object: nextObject,
-    decision,
-    allowed: decision.allowed,
-    reason: decision.reason_code
-  });
+  }, policyObject);
 
   if (!decision.allowed) {
+    recordToolDecision({
+      context,
+      authenticated: auth.authenticated,
+      toolName: "local_update_object",
+      operation: "update",
+      object: policyObject,
+      decision,
+      allowed: false,
+      reason: decision.reason_code
+    });
     return { ok: false, reason: decision.reason_code };
   }
 
@@ -726,8 +810,29 @@ export async function localUpdateObject(
       recorded_at: nextObject.updated_at
     });
     if (!mutation.ok) {
+      recordToolDecision({
+        context,
+        authenticated: auth.authenticated,
+        toolName: "local_update_object",
+        operation: "update",
+        object: policyObject,
+        decision,
+        allowed: false,
+        reason: mutation.reason
+      });
       return { ok: false, reason: mutation.reason };
     }
+
+    recordToolDecision({
+      context,
+      authenticated: auth.authenticated,
+      toolName: "local_update_object",
+      operation: "update",
+      object: mutation.object,
+      decision,
+      allowed: true,
+      reason: decision.reason_code
+    });
 
     return {
       ok: true,
@@ -745,6 +850,16 @@ export async function localUpdateObject(
   }
 
   context.graphObjects[existingIndex] = nextObject;
+  recordToolDecision({
+    context,
+    authenticated: auth.authenticated,
+    toolName: "local_update_object",
+    operation: "update",
+    object: nextObject,
+    decision,
+    allowed: true,
+    reason: decision.reason_code
+  });
 
   return {
     ok: true,
@@ -840,18 +955,17 @@ export async function localTombstoneObject(
     }
   });
 
-  recordToolDecision({
-    context,
-    authenticated: auth.authenticated,
-    toolName: "local_tombstone_object",
-    operation: "delete",
-    object: nextObject,
-    decision,
-    allowed: decision.allowed,
-    reason: decision.reason_code
-  });
-
   if (!decision.allowed) {
+    recordToolDecision({
+      context,
+      authenticated: auth.authenticated,
+      toolName: "local_tombstone_object",
+      operation: "delete",
+      object: nextObject,
+      decision,
+      allowed: false,
+      reason: decision.reason_code
+    });
     return { ok: false, reason: decision.reason_code };
   }
 
@@ -864,8 +978,29 @@ export async function localTombstoneObject(
       recorded_at: nextObject.updated_at
     });
     if (!mutation.ok) {
+      recordToolDecision({
+        context,
+        authenticated: auth.authenticated,
+        toolName: "local_tombstone_object",
+        operation: "delete",
+        object: nextObject,
+        decision,
+        allowed: false,
+        reason: mutation.reason
+      });
       return { ok: false, reason: mutation.reason };
     }
+
+    recordToolDecision({
+      context,
+      authenticated: auth.authenticated,
+      toolName: "local_tombstone_object",
+      operation: "delete",
+      object: mutation.object,
+      decision,
+      allowed: true,
+      reason: decision.reason_code
+    });
 
     return {
       ok: true,
@@ -883,6 +1018,16 @@ export async function localTombstoneObject(
   }
 
   context.graphObjects[existingIndex] = nextObject;
+  recordToolDecision({
+    context,
+    authenticated: auth.authenticated,
+    toolName: "local_tombstone_object",
+    operation: "delete",
+    object: nextObject,
+    decision,
+    allowed: true,
+    reason: decision.reason_code
+  });
 
   return {
     ok: true,

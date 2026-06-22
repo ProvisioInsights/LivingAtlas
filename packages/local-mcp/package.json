@@ -14,6 +14,7 @@
     "@living-atlas/fixtures": "workspace:*",
     "@living-atlas/local-control-store": "workspace:*",
     "@living-atlas/local-graph-store": "workspace:*",
+    "@living-atlas/local-keyring": "workspace:*",
     "@living-atlas/policy": "workspace:*",
     "@modelcontextprotocol/sdk": "1.29.0",
     "zod": "4.4.3"
