@@ -77,8 +77,9 @@ readiness check commands, Cloudflare first-claim bootstrap, fixture-backed local
 MCP tools, a durable redacted local graph store, ciphertext sync batch
 persistence, envelope pull/replay, a minimal token-gated remote MCP sync
 skeleton, and hash-only replay reporting over audit/activity/operational
-events. It does not import real graph data or deploy personal Cloudflare
-resources.
+events. It also includes a token-gated usage/budget endpoint that reports
+provider-neutral observed usage against configurable limits. It does not import
+real graph data or deploy personal Cloudflare resources.
 
 ## Development
 
@@ -236,6 +237,10 @@ Workspace packages:
   with version-conflict reporting.
 - `@living-atlas/activity-replay`: hash-only replay inspection and reporting
   over durable audit, live activity, and operational observability events.
+- `@living-atlas/cloudflare-worker` also exposes `/api/usage/status` for
+  health-token-gated observed usage and configurable budget ratios. The
+  response shape is generic so non-Cloudflare deployments can implement the
+  same contract with provider-specific collectors.
 
 Launch the fixture local MCP server with generated synthetic control state:
 

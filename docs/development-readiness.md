@@ -314,6 +314,47 @@ The activity replay package also exposes a compact hash-only replay report over
 audit, activity, and operational streams. It is meant for current CLI/test
 inspection and as the future input to the visible Atlas activity UI.
 
+## Usage And Budget Endpoint
+
+The Worker exposes a token-gated usage endpoint:
+
+```text
+GET /api/usage/status?window_hours=24
+```
+
+Use the health token header:
+
+```text
+x-living-atlas-health-token: <health token>
+```
+
+The response shape is provider-neutral (`living-atlas-usage-status:v1`) so
+Cloudflare, local, or another future host can return the same top-level
+contract. Cloudflare deployments populate what the app can observe:
+
+- Worker request counts from retained operational metrics
+- route-level request counts
+- sync batch/object/change totals from D1
+- R2 object and byte estimates from accepted sync envelopes
+- configured budget ratios from `LA_USAGE_BUDGETS_JSON`
+
+It is not a Cloudflare billing authority. D1 row-read/row-write billing, exact
+R2 Class A/B operation counts, KV operation counts, and Durable Object storage
+usage still require provider-native metrics or dashboard/API data. Keep the
+endpoint conservative and label estimates as estimates.
+
+Tunable environment variables:
+
+```text
+LA_USAGE_PROVIDER=cloudflare
+LA_USAGE_PLAN=free
+LA_USAGE_WINDOW_HOURS=24
+LA_USAGE_BUDGETS_JSON={"services":{"workers":{"requests":100000}}}
+```
+
+For non-Cloudflare deployments, keep the same response shape and replace the
+collector/budget config with provider-specific counters.
+
 `local` verifies the current synthetic scaffold:
 
 - object, temporal edge/event, control-plane, audit, and sync fixtures parse

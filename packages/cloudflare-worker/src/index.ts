@@ -4,3 +4,4 @@ export * from "./observability";
 export * from "./sync";
 export * from "./sync-sequencer";
 export * from "./sync-storage";
+export * from "./usage";

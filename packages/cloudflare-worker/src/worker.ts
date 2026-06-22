@@ -20,6 +20,7 @@ import {
   type SyncTokenBinding
 } from "./sync";
 import { authoritySequencerName } from "./sync-sequencer";
+import { getUsageStatus, type UsageRuntimeConfig } from "./usage";
 
 export type BootstrapClaimLockRpc = Pick<BootstrapClaimLockCore, "getStatus" | "claim">;
 export type SyncSequencerRpc = {
@@ -49,6 +50,10 @@ export type BootstrapWorkerEnv = {
   LA_SYNC_TOKEN_ID?: string;
   LA_STEALTH_MODE?: string;
   LA_HEALTH_TOKEN_HASH?: string;
+  LA_USAGE_PROVIDER?: string;
+  LA_USAGE_PLAN?: string;
+  LA_USAGE_WINDOW_HOURS?: string;
+  LA_USAGE_BUDGETS_JSON?: string;
 } & WorkerObservabilityEnv;
 
 const tokenHeader = "x-living-atlas-bootstrap-token";
@@ -96,6 +101,15 @@ function syncRuntimeConfig(env: BootstrapWorkerEnv): SyncRuntimeConfig {
     sync_client_id: env.LA_SYNC_CLIENT_ID,
     sync_capability_id: env.LA_SYNC_CAPABILITY_ID,
     sync_token_id: env.LA_SYNC_TOKEN_ID
+  };
+}
+
+function usageRuntimeConfig(env: BootstrapWorkerEnv): UsageRuntimeConfig {
+  return {
+    provider: env.LA_USAGE_PROVIDER,
+    plan: env.LA_USAGE_PLAN,
+    default_window_hours: env.LA_USAGE_WINDOW_HOURS,
+    budgets_json: env.LA_USAGE_BUDGETS_JSON
   };
 }
 
@@ -166,6 +180,10 @@ async function shouldStealthDrop(request: Request, env: BootstrapWorkerEnv): Pro
 
   if (url.pathname.startsWith("/api/sync/")) {
     return !(await hasValidSyncToken(request, env));
+  }
+
+  if (url.pathname.startsWith("/api/usage/")) {
+    return !(await hasValidHealthToken(request, env));
   }
 
   if (url.pathname === "/mcp") {
@@ -408,6 +426,25 @@ async function routeBootstrapRequest(request: Request, env: BootstrapWorkerEnv):
     }
 
     return json({ ok: false, error: result.reason }, { status: syncErrorStatus(result.reason) });
+  }
+
+  if (request.method === "GET" && url.pathname === "/api/usage/status") {
+    if (queryContainsToken(url)) {
+      return json({ ok: false, error: "usage tokens must not be sent in the query string" }, { status: 400 });
+    }
+
+    if (!(await hasValidHealthToken(request, env))) {
+      return json({ ok: false, error: "missing-or-invalid-health-token" }, { status: 401 });
+    }
+
+    const windowHours = Number(url.searchParams.get("window_hours"));
+    return json(await getUsageStatus(
+      env.LA_CONTROL_DB,
+      usageRuntimeConfig(env),
+      {
+        windowHours: Number.isFinite(windowHours) ? windowHours : undefined
+      }
+    ));
   }
 
   if (request.method === "POST" && url.pathname === "/mcp") {
