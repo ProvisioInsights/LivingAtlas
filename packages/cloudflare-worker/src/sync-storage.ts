@@ -147,6 +147,28 @@ export const SyncD1SchemaStatements = [
   ...SyncIndexSql
 ];
 
+const MaxConcurrentEnvelopeWrites = 8;
+
+async function mapWithConcurrency<T, R>(
+  values: T[],
+  concurrency: number,
+  mapper: (value: T, index: number) => Promise<R>
+): Promise<R[]> {
+  const results = new Array<R>(values.length);
+  let nextIndex = 0;
+  const workerCount = Math.min(Math.max(concurrency, 1), values.length);
+
+  await Promise.all(Array.from({ length: workerCount }, async () => {
+    while (nextIndex < values.length) {
+      const index = nextIndex;
+      nextIndex += 1;
+      results[index] = await mapper(values[index]!, index);
+    }
+  }));
+
+  return results;
+}
+
 function toHex(bytes: Uint8Array): string {
   return [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
@@ -187,6 +209,8 @@ function objectPayloadRef(batch: SyncBatch, object: GraphObjectEnvelope) {
     payload.object_id === object.object_id && payload.version === object.version
   ));
 }
+
+type ObjectPayloadRef = NonNullable<ReturnType<typeof objectPayloadRef>>;
 
 function metadataByteLength(metadata: Record<string, string>): number {
   return new TextEncoder().encode(JSON.stringify(metadata)).byteLength;
@@ -236,7 +260,6 @@ export async function persistSyncBatch(
 ): Promise<StoredSyncBatch> {
   await ensureSyncTables(storage.controlDb);
 
-  const envelopeKeys = new Map<string, string>();
   const authorityRef = await opaqueRef(batch.authority_id);
   const summary = options.summary ?? await summarizeSyncBatch(batch);
   const stagedAt = options.staged_at ?? new Date().toISOString();
@@ -291,14 +314,13 @@ INSERT OR IGNORE INTO sync_batches (
     stagedAt,
   ).run();
 
-  for (const object of batch.objects) {
+  const storedEnvelopes = await mapWithConcurrency(batch.objects, MaxConcurrentEnvelopeWrites, async (object) => {
     const payloadRef = objectPayloadRef(batch, object);
     if (!payloadRef) {
       throw new Error(`Missing payload ref for ${object.object_id}:${object.version}`);
     }
 
     const key = await envelopeR2Key(batch, object);
-    envelopeKeys.set(object.object_id, key);
     await storage.graphBucket.put(key, JSON.stringify(object), {
       httpMetadata: {
         contentType: "application/json; charset=utf-8"
@@ -307,14 +329,15 @@ INSERT OR IGNORE INTO sync_batches (
         ...r2CustomMetadata(authorityRef, payloadRef)
       }
     });
-  }
 
-  for (const object of batch.objects) {
-    const payloadRef = objectPayloadRef(batch, object);
-    if (!payloadRef) {
-      throw new Error(`Missing payload ref for ${object.object_id}:${object.version}`);
-    }
+    return { object, payloadRef, key } satisfies {
+      object: GraphObjectEnvelope;
+      payloadRef: ObjectPayloadRef;
+      key: string;
+    };
+  });
 
+  for (const { object, payloadRef, key } of storedEnvelopes) {
     await storage.controlDb.prepare(`
 INSERT OR REPLACE INTO sync_objects (
   object_ref,
@@ -333,7 +356,7 @@ INSERT OR REPLACE INTO sync_objects (
       object.version,
       payloadRef.envelope_hash,
       payloadRef.payload_hash,
-      envelopeKeys.get(object.object_id) ?? "",
+      key,
       payloadRef.r2_path_hash ?? null,
       batch.submitted_at
     ).run();

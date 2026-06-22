@@ -322,6 +322,60 @@ class FakeR2Bucket implements SyncObjectStore {
   }
 }
 
+class DelayedFakeR2Bucket extends FakeR2Bucket {
+  activePuts = 0;
+  maxActivePuts = 0;
+
+  override async put(key: string, value: string, options?: Parameters<SyncObjectStore["put"]>[2]): Promise<R2Object> {
+    this.activePuts += 1;
+    this.maxActivePuts = Math.max(this.maxActivePuts, this.activePuts);
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 1));
+      return await super.put(key, value, options);
+    } finally {
+      this.activePuts -= 1;
+    }
+  }
+}
+
+function ciphertextObject(index: number) {
+  const suffix = index.toString().padStart(4, "0");
+  const segment = index.toString(16).padStart(40, "0");
+  const hash = `sha256:${index.toString(16).padStart(64, "0")}`;
+
+  return {
+    ...ciphertextBatch.objects[0],
+    object_id: `la_object_workerparallel${suffix}`,
+    content_hash: hash,
+    payload: {
+      ...ciphertextBatch.objects[0].payload,
+      path: `objects/a=1111111111111111/p=${segment.slice(0, 2)}/s=${segment}.bin`,
+      ciphertext_hash: hash
+    }
+  };
+}
+
+function ciphertextChange(index: number) {
+  const suffix = index.toString().padStart(4, "0");
+  const object = ciphertextObject(index);
+
+  return {
+    ...ciphertextBatch.changes[0],
+    change_id: `la_change_workerparallel${suffix}`,
+    object_id: object.object_id,
+    content_hash: object.content_hash
+  };
+}
+
+function multiObjectCiphertextBatch(count: number) {
+  return {
+    ...ciphertextBatch,
+    batch_id: "la_sync_batch_workerparallel0001",
+    objects: Array.from({ length: count }, (_, index) => ciphertextObject(index + 1)),
+    changes: Array.from({ length: count }, (_, index) => ciphertextChange(index + 1))
+  };
+}
+
 async function createEnv(): Promise<{
   env: BootstrapWorkerEnv;
   graphBucket: FakeR2Bucket;
@@ -384,6 +438,23 @@ describe("Worker sync batch acceptance", () => {
     expect(controlDb.records.some((record) => record.query.includes("UPDATE sync_batches"))).toBe(true);
     expect(controlDb.records.some((record) => record.query.includes("INSERT OR REPLACE INTO sync_objects"))).toBe(true);
     expect(controlDb.records.some((record) => record.query.includes("INSERT OR REPLACE INTO sync_changes"))).toBe(true);
+  });
+
+  it("persists batch object envelopes to R2 with bounded parallelism", async () => {
+    const graphBucket = new DelayedFakeR2Bucket();
+    const controlDb = new FakeD1Database();
+    const batch = multiObjectCiphertextBatch(12);
+    const result = await acceptSyncBatch(batch, syncToken, {
+      sync_token_hash: await sha256TokenHash(syncToken)
+    }, {
+      graphBucket,
+      controlDb
+    });
+
+    expect(result).toMatchObject({ ok: true });
+    expect(graphBucket.puts).toHaveLength(12);
+    expect(graphBucket.maxActivePuts).toBeGreaterThan(1);
+    expect(graphBucket.maxActivePuts).toBeLessThanOrEqual(8);
   });
 
   it("reports empty and persisted sync status from D1", async () => {
