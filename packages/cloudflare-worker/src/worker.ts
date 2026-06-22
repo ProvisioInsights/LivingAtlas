@@ -350,24 +350,16 @@ async function commitRemoteGraphMutationToSync(
     withheld_plaintext_count: 0
   });
 
-  const sequencer = await getSyncSequencer(env, object.authority_id);
-  const result = sequencer
-    ? await sequencer.acceptBatch(
-        batch,
-        request.headers.get(syncTokenHeader) ?? undefined,
-        syncRuntimeConfig(env),
-        syncTokenBinding(request)
-      )
-    : await acceptSyncBatch(
-        batch,
-        request.headers.get(syncTokenHeader) ?? undefined,
-        syncRuntimeConfig(env),
-        {
-          graphBucket: env.LA_GRAPH_BUCKET,
-          controlDb: env.LA_CONTROL_DB
-        },
-        syncTokenBinding(request)
-      );
+  const result = await acceptSyncBatch(
+    batch,
+    request.headers.get(syncTokenHeader) ?? undefined,
+    syncRuntimeConfig(env),
+    {
+      graphBucket: env.LA_GRAPH_BUCKET,
+      controlDb: env.LA_CONTROL_DB
+    },
+    syncTokenBinding(request)
+  );
   if (!result.ok) {
     throw new Error(result.reason);
   }
