@@ -224,6 +224,20 @@ describe("Cloudflare live CRUD stress config", () => {
       expect(parsed.capabilityId).not.toContain("fixture-token-value");
     }
   });
+
+  it("allows an explicitly tiny live CRUD entry count", () => {
+    const parsed = readCloudflareLiveCrudStressConfig({
+      [liveCrudStressEnv.endpoint]: "https://living-atlas-live.example",
+      [liveCrudStressEnv.token]: "fixture-token-value",
+      [liveCrudStressEnv.acknowledgeMutation]: "mutates-deployed-sync-state",
+      [liveCrudStressEnv.runId]: "live_crud_tiny_env_0001",
+      [liveCrudStressEnv.entryCount]: "12",
+      [liveCrudStressEnv.batchSize]: "12"
+    });
+
+    expect("entryCount" in parsed && parsed.entryCount).toBe(12);
+    expect("batchSize" in parsed && parsed.batchSize).toBe(12);
+  });
 });
 
 describe("Cloudflare live CRUD stress planner", () => {

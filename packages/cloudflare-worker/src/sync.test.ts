@@ -930,7 +930,8 @@ describe("Worker sync batch acceptance", () => {
       result: {
         tools: expect.arrayContaining([
           expect.objectContaining({ name: "remote_sync_envelopes" }),
-          expect.objectContaining({ name: "remote_usage_gate" })
+          expect.objectContaining({ name: "remote_usage_gate" }),
+          expect.objectContaining({ name: "remote_usage_reconcile" })
         ])
       }
     });
@@ -1011,6 +1012,40 @@ describe("Worker sync batch acceptance", () => {
       }
     });
     expect(JSON.stringify(usageGateBody)).not.toContain(syncToken);
+
+    const usageReconcileResponse = await handleBootstrapRequest(new Request("https://living-atlas.example/mcp", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-living-atlas-sync-token": syncToken,
+        "x-living-atlas-health-token": syncToken
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 4,
+        method: "tools/call",
+        params: {
+          name: "remote_usage_reconcile",
+          arguments: {
+            window_hours: 6,
+            max_r2_objects: 10
+          }
+        }
+      })
+    }), env);
+
+    expect(usageReconcileResponse.status).toBe(200);
+    const usageReconcileBody = await usageReconcileResponse.json();
+    expect(usageReconcileBody).toMatchObject({
+      jsonrpc: "2.0",
+      id: 4,
+      result: {
+        structuredContent: {
+          reconciliation_schema: "living-atlas-usage-reconciliation:v1"
+        }
+      }
+    });
+    expect(JSON.stringify(usageReconcileBody)).not.toContain(syncToken);
   });
 
   it("rejects sync tokens in query strings", async () => {

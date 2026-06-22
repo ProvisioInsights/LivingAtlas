@@ -261,6 +261,8 @@ Command map:
 | `npm run stress:local` | No | No | Larger synthetic CRUD/sync/leakage stress gate. |
 | `npm run cloudflare:wrangler-smoke` | No | No | Wrangler dry-run bundle validation for the public Worker template. |
 | `npm run cloudflare:live-usage-gate` | No real graph data | No | Read-only deployed usage stoplight before live synthetic mutation. |
+| `npm run cloudflare:live-ops-report` | No real graph data | No | Read-only deployed operator report with gate plus R2 inventory reconciliation. |
+| `npm run cloudflare:live-crud-tiny` | No real graph data | Yes | Tiny deployed CRUD pass; requires gate pass and explicit tiny mutation acknowledgement. |
 | `npm run preflight:synthetic` | No | No | Full synthetic preflight before real Cloudflare work. |
 | `npm run cloudflare:live-concurrency-smoke` | No real graph data | Yes | Optional live deployed-Worker sync race smoke; requires explicit mutation acknowledgement. |
 
@@ -269,12 +271,27 @@ stress:
 
 ```bash
 npm run cloudflare:live-usage-gate
+npm run cloudflare:live-ops-report
 ```
 
 It calls `/api/usage/gate`, fails closed without an endpoint/token, and returns
 `safe-to-test` only when configured budgets remain under the selected threshold,
 Worker request headroom remains above the selected minimum, and no Worker 5xx
 responses were observed when `require_zero_5xx` is enabled.
+
+`cloudflare:live-ops-report` also calls `/api/usage/reconcile`, which compares
+app-observed sync/R2 metadata to provider inventory available through bound
+Cloudflare services. Today that includes R2 object count and byte inventory via
+the bucket binding. Workers billing counters, KV billing counters, and Durable
+Object billing counters still require Cloudflare analytics/dashboard checks.
+
+The tiny live CRUD tier runs the gate first, then mutates only a small synthetic
+set by default:
+
+```bash
+LIVING_ATLAS_LIVE_TINY_CRUD_ACK=mutates-deployed-sync-state \
+npm run cloudflare:live-crud-tiny
+```
 
 The deployed Cloudflare concurrency/race smoke is intentionally separate from
 `all`, `check`, and `preflight:synthetic` because it mutates a live Worker's
@@ -334,6 +351,7 @@ The Worker exposes a token-gated usage endpoint:
 ```text
 GET /api/usage/status?window_hours=24
 GET /api/usage/gate?window_hours=24&max_budget_ratio=0.8&min_worker_requests_remaining=1000
+GET /api/usage/reconcile?window_hours=24&max_r2_objects=10000
 ```
 
 Use the health token header:
@@ -350,6 +368,8 @@ contract. Cloudflare deployments populate what the app can observe:
 - route-level request counts
 - sync batch/object/change totals from D1
 - R2 object and byte estimates from accepted sync envelopes
+- R2 object and byte inventory through the bound R2 bucket when reconciliation
+  is requested
 - configured budget ratios from `LA_USAGE_BUDGETS_JSON`
 
 It is not a Cloudflare billing authority. D1 row-read/row-write billing, exact

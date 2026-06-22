@@ -212,7 +212,7 @@ export function readCloudflareLiveCrudStressConfig(env: NodeJS.ProcessEnv = proc
       capabilityId,
       deviceId,
       tokenId: envValue(env, liveCrudStressEnv.tokenId),
-      entryCount: parsePositiveInteger(envValue(env, liveCrudStressEnv.entryCount), 1_200, 1_001, 10_000),
+      entryCount: parsePositiveInteger(envValue(env, liveCrudStressEnv.entryCount), 1_200, 1, 10_000),
       batchSize: parsePositiveInteger(envValue(env, liveCrudStressEnv.batchSize), 50, 1, 250),
       requestTimeoutMs: parsePositiveInteger(envValue(env, liveCrudStressEnv.timeoutMs), 60_000, 1_000, 180_000)
     };

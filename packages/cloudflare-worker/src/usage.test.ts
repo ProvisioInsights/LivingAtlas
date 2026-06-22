@@ -117,6 +117,46 @@ class FakeUsageD1 implements UsageMetadataStore {
   }
 }
 
+class FakeUsageR2Bucket {
+  private readonly objects = Array.from({ length: 42 }, (_, index) => ({
+    key: `sync/envelopes/${index.toString().padStart(4, "0")}.json`,
+    version: "fixture-version",
+    size: index < 41 ? 390 : 394,
+    etag: "fixture-etag",
+    httpEtag: "\"fixture-etag\"",
+    uploaded: new Date("2026-06-22T12:00:00.000Z"),
+    httpMetadata: {},
+    customMetadata: {},
+    range: undefined,
+    storageClass: "Standard" as const,
+    checksums: {
+      toJSON: () => ({})
+    },
+    writeHttpMetadata: (_headers: Headers) => {}
+  }));
+
+  async list(options?: R2ListOptions): Promise<R2Objects> {
+    const start = options?.cursor ? Number(options.cursor) : 0;
+    const limit = options?.limit ?? 1000;
+    const page = this.objects.slice(start, start + limit);
+    const next = start + page.length;
+    if (next < this.objects.length) {
+      return {
+        objects: page as R2Object[],
+        delimitedPrefixes: [],
+        truncated: true,
+        cursor: String(next)
+      };
+    }
+
+    return {
+      objects: page as R2Object[],
+      delimitedPrefixes: [],
+      truncated: false
+    };
+  }
+}
+
 async function createEnv(): Promise<BootstrapWorkerEnv> {
   return {
     BOOTSTRAP_CLAIM_LOCK: {
@@ -124,7 +164,7 @@ async function createEnv(): Promise<BootstrapWorkerEnv> {
         throw new Error("bootstrap lock should not be used by usage tests");
       }
     },
-    LA_GRAPH_BUCKET: {} as R2Bucket,
+    LA_GRAPH_BUCKET: new FakeUsageR2Bucket() as unknown as R2Bucket,
     LA_CONTROL_DB: new FakeUsageD1() as unknown as D1Database & UsageMetadataStore,
     LA_HEALTH_TOKEN_HASH: await sha256TokenHash(healthToken),
     LA_USAGE_PROVIDER: "cloudflare",
@@ -247,6 +287,39 @@ describe("Worker usage status endpoint", () => {
     expect(JSON.stringify(stopBody)).not.toContain(healthToken);
   });
 
+  it("reconciles app-observed usage against provider inventory available to the Worker", async () => {
+    const response = await handleBootstrapRequest(new Request("https://living-atlas.example/api/usage/reconcile?window_hours=6&max_r2_objects=50", {
+      headers: {
+        "x-living-atlas-health-token": healthToken
+      }
+    }), await createEnv());
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body).toMatchObject({
+      ok: true,
+      reconciliation_schema: "living-atlas-usage-reconciliation:v1",
+      decision: "reconciled",
+      provider_observed: {
+        r2: {
+          object_count: 42,
+          total_bytes: 16384,
+          list_calls: 1,
+          truncated: false,
+          object_delta_vs_app: 0,
+          byte_delta_vs_app_estimate: 0
+        }
+      },
+      app_observed: {
+        sync_generation: 4,
+        sync_object_count: 42,
+        r2_estimated_objects: 42,
+        r2_estimated_stored_bytes: 16384
+      }
+    });
+    expect(JSON.stringify(body)).not.toContain(healthToken);
+  });
+
   it("rejects missing auth and token query strings", async () => {
     const missingAuth = await handleBootstrapRequest(new Request("https://living-atlas.example/api/usage/status"), await createEnv());
     expect(missingAuth.status).toBe(401);
@@ -265,6 +338,13 @@ describe("Worker usage status endpoint", () => {
     const gateQueryToken = await handleBootstrapRequest(new Request("https://living-atlas.example/api/usage/gate?sync_token=secret"), await createEnv());
     expect(gateQueryToken.status).toBe(400);
     await expect(gateQueryToken.json()).resolves.toEqual({
+      ok: false,
+      error: "usage tokens must not be sent in the query string"
+    });
+
+    const reconcileQueryToken = await handleBootstrapRequest(new Request("https://living-atlas.example/api/usage/reconcile?sync_token=secret"), await createEnv());
+    expect(reconcileQueryToken.status).toBe(400);
+    await expect(reconcileQueryToken.json()).resolves.toEqual({
       ok: false,
       error: "usage tokens must not be sent in the query string"
     });

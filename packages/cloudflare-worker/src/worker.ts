@@ -20,7 +20,14 @@ import {
   type SyncTokenBinding
 } from "./sync";
 import { authoritySequencerName } from "./sync-sequencer";
-import { getUsageGate, getUsageStatus, type UsageGateOptions, type UsageRuntimeConfig } from "./usage";
+import {
+  getUsageGate,
+  getUsageReconciliation,
+  getUsageStatus,
+  type UsageGateOptions,
+  type UsageReconciliationOptions,
+  type UsageRuntimeConfig
+} from "./usage";
 
 export type BootstrapClaimLockRpc = Pick<BootstrapClaimLockCore, "getStatus" | "claim">;
 export type SyncSequencerRpc = {
@@ -463,6 +470,23 @@ async function routeBootstrapRequest(request: Request, env: BootstrapWorkerEnv):
     ));
   }
 
+  if (request.method === "GET" && url.pathname === "/api/usage/reconcile") {
+    if (queryContainsToken(url)) {
+      return json({ ok: false, error: "usage tokens must not be sent in the query string" }, { status: 400 });
+    }
+
+    if (!(await hasValidHealthToken(request, env))) {
+      return json({ ok: false, error: "missing-or-invalid-health-token" }, { status: 401 });
+    }
+
+    return json(await getUsageReconciliation(
+      env.LA_CONTROL_DB,
+      env.LA_GRAPH_BUCKET,
+      usageRuntimeConfig(env),
+      usageReconciliationOptionsFromUrl(url)
+    ));
+  }
+
   if (request.method === "POST" && url.pathname === "/mcp") {
     if (queryContainsToken(url)) {
       return json({ jsonrpc: "2.0", error: { code: -32600, message: "tokens must not be sent in the query string" }, id: null }, { status: 400 });
@@ -522,12 +546,28 @@ function usageGateOptionsFromUrl(url: URL): UsageGateOptions {
   };
 }
 
+function usageReconciliationOptionsFromUrl(url: URL): UsageReconciliationOptions {
+  const windowHours = Number(url.searchParams.get("window_hours"));
+  const maxR2Objects = Number(url.searchParams.get("max_r2_objects"));
+  return {
+    windowHours: Number.isFinite(windowHours) ? windowHours : undefined,
+    maxR2Objects: Number.isFinite(maxR2Objects) ? maxR2Objects : undefined
+  };
+}
+
 function usageGateOptionsFromArgs(args: unknown): UsageGateOptions {
   return {
     windowHours: numberParam(args, "window_hours"),
     maxBudgetRatio: finiteNumberParam(args, "max_budget_ratio"),
     minWorkerRequestsRemaining: numberParam(args, "min_worker_requests_remaining"),
     requireZero5xx: booleanParam(args, "require_zero_5xx")
+  };
+}
+
+function usageReconciliationOptionsFromArgs(args: unknown): UsageReconciliationOptions {
+  return {
+    windowHours: numberParam(args, "window_hours"),
+    maxR2Objects: numberParam(args, "max_r2_objects")
   };
 }
 
@@ -587,6 +627,19 @@ async function callRemoteMcpTool(name: string, args: unknown, request: Request, 
       env.LA_CONTROL_DB,
       usageRuntimeConfig(env),
       usageGateOptionsFromArgs(args)
+    );
+  }
+
+  if (name === "remote_usage_reconcile") {
+    if (!(await hasValidHealthToken(request, env))) {
+      throw new Error("missing-or-invalid-health-token");
+    }
+
+    return getUsageReconciliation(
+      env.LA_CONTROL_DB,
+      env.LA_GRAPH_BUCKET,
+      usageRuntimeConfig(env),
+      usageReconciliationOptionsFromArgs(args)
     );
   }
 
@@ -663,6 +716,18 @@ async function routeRemoteMcpRequest(request: Request, env: BootstrapWorkerEnv):
               max_budget_ratio: { type: "number", minimum: 0.01, maximum: 1 },
               min_worker_requests_remaining: { type: "integer", minimum: 0 },
               require_zero_5xx: { type: "boolean" }
+            }
+          }
+        },
+        {
+          name: "remote_usage_reconcile",
+          description: "Compare app-observed usage with provider-native inventory exposed through bound Cloudflare services.",
+          inputSchema: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              window_hours: { type: "integer", minimum: 1, maximum: 720 },
+              max_r2_objects: { type: "integer", minimum: 1, maximum: 100000 }
             }
           }
         }

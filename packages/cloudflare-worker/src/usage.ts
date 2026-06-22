@@ -29,6 +29,10 @@ export type UsageGateOptions = UsageStatusOptions & {
   requireZero5xx?: boolean;
 };
 
+export type UsageReconciliationOptions = UsageStatusOptions & {
+  maxR2Objects?: number;
+};
+
 type UsageStatus = Awaited<ReturnType<typeof getUsageStatus>>;
 
 type UsageBudgetEntry = {
@@ -75,6 +79,8 @@ const defaultWindowHours = 24;
 const maxWindowHours = 720;
 const defaultMaxBudgetRatio = 0.8;
 const defaultMinWorkerRequestsRemaining = 1_000;
+const defaultMaxR2Objects = 10_000;
+const maxR2ObjectsHardLimit = 100_000;
 
 const UsageD1SchemaStatements = [
   `CREATE TABLE IF NOT EXISTS operational_metrics (
@@ -243,6 +249,14 @@ function boundedMinimumRemaining(value: number | undefined): number {
   return Math.max(Math.trunc(value), 0);
 }
 
+function boundedMaxR2Objects(value: number | undefined): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return defaultMaxR2Objects;
+  }
+
+  return Math.min(Math.max(Math.trunc(value), 1), maxR2ObjectsHardLimit);
+}
+
 function isBudgetEntry(value: unknown): value is UsageBudgetEntry {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     return false;
@@ -366,6 +380,40 @@ export function evaluateUsageGate(status: UsageStatus, options: UsageGateOptions
       sync: status.sync,
       budget_config: status.budget_config
     }
+  };
+}
+
+async function listR2Inventory(bucket: Pick<R2Bucket, "list">, maxObjects: number) {
+  let cursor: string | undefined;
+  let truncated = false;
+  let objectCount = 0;
+  let totalBytes = 0;
+  let listCalls = 0;
+
+  do {
+    const remaining = maxObjects - objectCount;
+    if (remaining <= 0) {
+      truncated = true;
+      break;
+    }
+
+    const page = await bucket.list({
+      cursor,
+      limit: Math.min(remaining, 1000)
+    });
+    listCalls += 1;
+    objectCount += page.objects.length;
+    totalBytes += page.objects.reduce((sum, object) => sum + object.size, 0);
+    cursor = page.truncated ? page.cursor : undefined;
+    truncated = page.truncated;
+  } while (cursor);
+
+  return {
+    ok: true,
+    object_count: objectCount,
+    total_bytes: totalBytes,
+    list_calls: listCalls,
+    truncated
   };
 }
 
@@ -530,4 +578,69 @@ export async function getUsageGate(
   options: UsageGateOptions = {}
 ) {
   return evaluateUsageGate(await getUsageStatus(store, config, options), options);
+}
+
+export async function getUsageReconciliation(
+  store: UsageMetadataStore,
+  bucket: Pick<R2Bucket, "list">,
+  config: UsageRuntimeConfig,
+  options: UsageReconciliationOptions = {}
+) {
+  const status = await getUsageStatus(store, config, options);
+  const maxR2Objects = boundedMaxR2Objects(options.maxR2Objects);
+  const r2Inventory = await listR2Inventory(bucket, maxR2Objects);
+  const metadataObjectCount = status.sync.object_count;
+  const estimatedObjectCount = status.services.r2.observed.objects;
+  const r2ObjectDelta = r2Inventory.object_count - estimatedObjectCount;
+  const r2ByteDelta = r2Inventory.total_bytes - status.services.r2.observed.estimated_stored_bytes;
+  const r2Matched = !r2Inventory.truncated && r2ObjectDelta === 0;
+
+  return {
+    ok: r2Matched,
+    reconciliation_schema: "living-atlas-usage-reconciliation:v1",
+    generated_at: status.generated_at,
+    provider: status.provider,
+    plan: status.plan,
+    decision: r2Matched ? "reconciled" : "needs-review",
+    reason_codes: r2Matched ? [] : [
+      ...(r2Inventory.truncated ? ["r2-inventory-truncated"] : []),
+      ...(r2ObjectDelta !== 0 ? ["r2-object-count-mismatch"] : [])
+    ],
+    policy: {
+      max_r2_objects: maxR2Objects
+    },
+    app_observed: {
+      sync_generation: status.sync.latest_generation,
+      sync_object_count: metadataObjectCount,
+      sync_change_count: status.sync.change_count,
+      r2_estimated_objects: estimatedObjectCount,
+      r2_estimated_stored_bytes: status.services.r2.observed.estimated_stored_bytes,
+      d1_retained_metric_rows: status.services.d1.observed.retained_metric_rows,
+      d1_committed_batches: status.services.d1.observed.committed_batches,
+      d1_committed_objects: status.services.d1.observed.committed_objects,
+      d1_committed_changes: status.services.d1.observed.committed_changes
+    },
+    provider_observed: {
+      r2: {
+        object_count: r2Inventory.object_count,
+        total_bytes: r2Inventory.total_bytes,
+        list_calls: r2Inventory.list_calls,
+        truncated: r2Inventory.truncated,
+        object_delta_vs_app: r2ObjectDelta,
+        byte_delta_vs_app_estimate: r2ByteDelta
+      },
+      d1: {
+        note: "D1 counts are read from the Cloudflare D1 binding tables; billing row-read/write counters remain provider metrics."
+      },
+      workers: {
+        note: "Workers invocation billing counters are not exposed to this Worker; use Cloudflare analytics/dashboard for billing truth."
+      },
+      kv: {
+        note: "KV operation counters are not emitted by the app yet."
+      },
+      durable_objects: {
+        note: "Durable Object billing counters are not exposed to this Worker endpoint."
+      }
+    }
+  };
 }

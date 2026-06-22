@@ -149,6 +149,8 @@ Check deployed synthetic usage before running any live Cloudflare stress:
 
 ```bash
 npm run cloudflare:live-usage-gate
+npm run cloudflare:live-ops-report
+npm run cloudflare:live-crud-tiny
 ```
 
 This performs hundreds of synthetic local CRUD operations in one run, including
@@ -250,6 +252,9 @@ Workspace packages:
 - The Worker and remote MCP also expose a `living-atlas-usage-gate:v1`
   safe-to-test/stop-testing decision. The gate is tunable per deployment and is
   intended to fail closed before live synthetic stress runs.
+- `cloudflare:live-ops-report` adds a compact operator report over the gate and
+  provider-side inventory available through bound Cloudflare services, including
+  R2 object count/byte reconciliation.
 
 Launch the fixture local MCP server with generated synthetic control state:
 
