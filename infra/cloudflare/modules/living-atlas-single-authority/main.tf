@@ -12,6 +12,12 @@ resource "cloudflare_r2_bucket" "graph_custody" {
 resource "cloudflare_d1_database" "control_metadata" {
   account_id = var.account_id
   name       = local.d1_database_name
+
+  lifecycle {
+    ignore_changes = [
+      read_replication
+    ]
+  }
 }
 
 resource "cloudflare_workers_kv_namespace" "config" {
