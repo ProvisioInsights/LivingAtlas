@@ -1,5 +1,6 @@
 import { AuthorityIdSchema } from "@living-atlas/contracts";
-import type { AccessMode, GraphObjectEnvelope, SyncEnvelopePullResponse } from "@living-atlas/contracts";
+import { SyncBatchSchema } from "@living-atlas/contracts";
+import type { AccessMode, GraphObjectEnvelope, SyncBatch, SyncEnvelopePullResponse } from "@living-atlas/contracts";
 import { BootstrapClaimBodySchema, verifyClaimToken, type BootstrapRuntimeConfig } from "./bootstrap";
 import type { BootstrapClaimLockCore } from "./bootstrap-lock";
 import { decryptCloudUnlockObject } from "./cloud-unlock";
@@ -30,6 +31,21 @@ import {
   type UsageReconciliationOptions,
   type UsageRuntimeConfig
 } from "./usage";
+import {
+  canonicalPredicate,
+  createRemoteEdgeObject,
+  createRemoteGraphObject,
+  deleteRemoteEdgeObject,
+  deleteRemoteGraphObject,
+  findRemoteEdgeObject,
+  latestRemoteGraphObject,
+  listRemoteGraphObjects,
+  queryRemoteTimeline,
+  searchRemoteGraphObjects,
+  traverseRemoteGraph,
+  updateRemoteEdgeObject,
+  updateRemoteGraphObject
+} from "./remote-graph";
 
 export type BootstrapClaimLockRpc = Pick<BootstrapClaimLockCore, "getStatus" | "claim">;
 export type SyncSequencerRpc = {
@@ -256,6 +272,106 @@ async function emitWorkerTelemetry(env: BootstrapWorkerEnv, event: ReturnType<ty
   } catch {
     // Telemetry is best-effort and must not change request behavior.
   }
+}
+
+function hashIdPart(value: string): string {
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return Math.abs(hash >>> 0).toString(36).padStart(8, "0");
+}
+
+function remoteMcpSyncBatchId(prefix: string, seed: string): string {
+  return `${prefix}_${hashIdPart(seed)}${hashIdPart(`${seed}:extra`)}`;
+}
+
+async function commitRemoteGraphMutationToSync(
+  request: Request,
+  env: BootstrapWorkerEnv,
+  mutation: "create" | "update" | "delete" | "restore",
+  object: GraphObjectEnvelope,
+  previousVersion?: number
+): Promise<SyncBatch> {
+  const statusResult = await getSyncStatus(
+    request.headers.get(syncTokenHeader) ?? undefined,
+    syncRuntimeConfig(env),
+    env.LA_CONTROL_DB,
+    syncTokenBinding(request)
+  );
+  if (!statusResult.ok) {
+    throw new Error(statusResult.reason);
+  }
+
+  const submittedAt = new Date().toISOString();
+  const baseGeneration = statusResult.status.latest_generation;
+  const seed = [
+    "remote-mcp-sync:v1",
+    object.authority_id,
+    object.object_id,
+    String(object.version),
+    object.content_hash,
+    submittedAt
+  ].join(":");
+  const operationId = remoteMcpSyncBatchId("la_operation", seed);
+  const traceId = remoteMcpSyncBatchId("la_trace", seed);
+  const batch = SyncBatchSchema.parse({
+    batch_id: remoteMcpSyncBatchId("la_sync_batch", seed),
+    authority_id: object.authority_id,
+    device_id: "la_device_remote_mcp",
+    client_id: request.headers.get(syncClientHeader) ?? "la_client_remote_mcp",
+    capability_id: request.headers.get(syncCapabilityHeader) ?? "la_cap_remote_mcp",
+    token_id: request.headers.get(syncTokenIdHeader) ?? undefined,
+    operation_id: operationId,
+    trace_id: traceId,
+    idempotency_key: remoteMcpSyncBatchId("la_idem", seed),
+    submitted_at: submittedAt,
+    base_generation: baseGeneration,
+    target_generation: baseGeneration + 1,
+    objects: [object],
+    changes: [
+      {
+        change_id: remoteMcpSyncBatchId("la_change", seed),
+        authority_id: object.authority_id,
+        operation_id: operationId,
+        trace_id: traceId,
+        recorded_at: submittedAt,
+        object_id: object.object_id,
+        operation: mutation === "delete" ? "tombstone" : mutation,
+        base_version: previousVersion,
+        new_version: object.version,
+        content_hash: object.content_hash,
+        access_class: object.access_class,
+        generation: baseGeneration + 1,
+        actor_id: request.headers.get(syncClientHeader) ?? "remote-mcp"
+      }
+    ],
+    withheld_plaintext_count: 0
+  });
+
+  const sequencer = await getSyncSequencer(env, object.authority_id);
+  const result = sequencer
+    ? await sequencer.acceptBatch(
+        batch,
+        request.headers.get(syncTokenHeader) ?? undefined,
+        syncRuntimeConfig(env),
+        syncTokenBinding(request)
+      )
+    : await acceptSyncBatch(
+        batch,
+        request.headers.get(syncTokenHeader) ?? undefined,
+        syncRuntimeConfig(env),
+        {
+          graphBucket: env.LA_GRAPH_BUCKET,
+          controlDb: env.LA_CONTROL_DB
+        },
+        syncTokenBinding(request)
+      );
+  if (!result.ok) {
+    throw new Error(result.reason);
+  }
+  return batch;
 }
 
 async function readClaimBody(request: Request): Promise<{ token?: string; payload?: unknown; malformed?: boolean }> {
@@ -588,6 +704,37 @@ function usageReconciliationOptionsFromArgs(args: unknown): UsageReconciliationO
   };
 }
 
+function remoteGraphStorage(env: BootstrapWorkerEnv) {
+  return {
+    graphBucket: env.LA_GRAPH_BUCKET,
+    controlDb: env.LA_CONTROL_DB
+  };
+}
+
+async function requireRemoteMcpSyncToken(request: Request, env: BootstrapWorkerEnv): Promise<void> {
+  if (!(await hasValidSyncToken(request, env))) {
+    throw new Error("missing-or-invalid-sync-token");
+  }
+}
+
+function recordParam(params: unknown, key: string): Record<string, unknown> | undefined {
+  if (!isRecord(params)) {
+    return undefined;
+  }
+  const value = params[key];
+  return isRecord(value) ? value : undefined;
+}
+
+function syncMutationFromRemote(mutation: "created" | "updated" | "deleted" | "restored"): "create" | "update" | "delete" | "restore" {
+  const byMutation = {
+    created: "create",
+    updated: "update",
+    deleted: "delete",
+    restored: "restore"
+  } as const;
+  return byMutation[mutation];
+}
+
 function latestEnvelopeForObject(response: SyncEnvelopePullResponse, objectId: string): GraphObjectEnvelope | undefined {
   return response.objects
     .filter((entry) => entry.object.object_id === objectId)
@@ -633,9 +780,7 @@ async function callRemoteMcpTool(name: string, args: unknown, request: Request, 
   }
 
   if (name === "remote_sensitive_decrypt") {
-    if (!(await hasValidSyncToken(request, env))) {
-      throw new Error("missing-or-invalid-sync-token");
-    }
+    await requireRemoteMcpSyncToken(request, env);
 
     const unlockKey = cloudUnlockKey(request);
     if (!unlockKey) {
@@ -722,6 +867,267 @@ async function callRemoteMcpTool(name: string, args: unknown, request: Request, 
       payload: decryptResult.plaintext,
       key_persisted_by_cloudflare: false,
       host_blind_sensitive_plaintext: false
+    };
+  }
+
+  if (name === "remote_graph_status") {
+    await requireRemoteMcpSyncToken(request, env);
+    const authorityId = stringParam(args, "authority_id");
+    if (!authorityId) {
+      throw new Error("invalid-graph-status-request");
+    }
+    const objects = await listRemoteGraphObjects(remoteGraphStorage(env), authorityId, {
+      include_tombstones: booleanParam(args, "include_tombstones"),
+      limit: numberParam(args, "limit")
+    });
+    return {
+      ok: true,
+      authority_id: authorityId,
+      object_count: objects.filter((object) => !object.visible_metadata.tombstone).length,
+      tombstone_count: objects.filter((object) => object.visible_metadata.tombstone).length,
+      remote_graph: "remote-readable"
+    };
+  }
+
+  if (name === "remote_graph_list") {
+    await requireRemoteMcpSyncToken(request, env);
+    const authorityId = stringParam(args, "authority_id");
+    if (!authorityId) {
+      throw new Error("invalid-graph-list-request");
+    }
+    return {
+      ok: true,
+      authority_id: authorityId,
+      objects: await listRemoteGraphObjects(remoteGraphStorage(env), authorityId, {
+        include_tombstones: booleanParam(args, "include_tombstones"),
+        object_type: stringParam(args, "object_type") as never,
+        limit: numberParam(args, "limit")
+      })
+    };
+  }
+
+  if (name === "remote_graph_read") {
+    await requireRemoteMcpSyncToken(request, env);
+    const authorityId = stringParam(args, "authority_id");
+    const objectId = stringParam(args, "object_id");
+    if (!authorityId || !objectId) {
+      throw new Error("invalid-graph-read-request");
+    }
+    const object = await latestRemoteGraphObject(remoteGraphStorage(env), authorityId, objectId);
+    return object && !object.visible_metadata.tombstone
+      ? { ok: true, object }
+      : { ok: false, reason: "object-not-found", authority_id: authorityId, object_id: objectId };
+  }
+
+  if (name === "remote_graph_create") {
+    await requireRemoteMcpSyncToken(request, env);
+    const object = recordParam(args, "object");
+    if (!object) {
+      throw new Error("invalid-graph-create-request");
+    }
+    const result = await createRemoteGraphObject(remoteGraphStorage(env), object);
+    const syncBatch = await commitRemoteGraphMutationToSync(
+      request,
+      env,
+      syncMutationFromRemote(result.mutation),
+      result.object,
+      result.previous_version
+    );
+    return {
+      ok: true,
+      ...result,
+      sync_generation: syncBatch.target_generation,
+      sync_batch_id: syncBatch.batch_id
+    };
+  }
+
+  if (name === "remote_graph_update") {
+    await requireRemoteMcpSyncToken(request, env);
+    const authorityId = stringParam(args, "authority_id");
+    const objectId = stringParam(args, "object_id");
+    const patch = recordParam(args, "patch");
+    if (!authorityId || !objectId || !patch) {
+      throw new Error("invalid-graph-update-request");
+    }
+    const result = await updateRemoteGraphObject(remoteGraphStorage(env), authorityId, objectId, patch, numberParam(args, "expected_version"));
+    const syncBatch = await commitRemoteGraphMutationToSync(
+      request,
+      env,
+      syncMutationFromRemote(result.mutation),
+      result.object,
+      result.previous_version
+    );
+    return {
+      ok: true,
+      ...result,
+      sync_generation: syncBatch.target_generation,
+      sync_batch_id: syncBatch.batch_id
+    };
+  }
+
+  if (name === "remote_graph_delete") {
+    await requireRemoteMcpSyncToken(request, env);
+    const authorityId = stringParam(args, "authority_id");
+    const objectId = stringParam(args, "object_id");
+    if (!authorityId || !objectId) {
+      throw new Error("invalid-graph-delete-request");
+    }
+    const result = await deleteRemoteGraphObject(remoteGraphStorage(env), authorityId, objectId, numberParam(args, "expected_version"));
+    const syncBatch = await commitRemoteGraphMutationToSync(
+      request,
+      env,
+      syncMutationFromRemote(result.mutation),
+      result.object,
+      result.previous_version
+    );
+    return {
+      ok: true,
+      ...result,
+      sync_generation: syncBatch.target_generation,
+      sync_batch_id: syncBatch.batch_id
+    };
+  }
+
+  if (name === "remote_semantic_search") {
+    await requireRemoteMcpSyncToken(request, env);
+    const authorityId = stringParam(args, "authority_id");
+    const query = stringParam(args, "query");
+    if (!authorityId || !query) {
+      throw new Error("invalid-semantic-search-request");
+    }
+    return {
+      ok: true,
+      authority_id: authorityId,
+      query,
+      search_mode: "deterministic-text-v1",
+      results: await searchRemoteGraphObjects(remoteGraphStorage(env), authorityId, query, {
+        object_type: stringParam(args, "object_type") as never,
+        limit: numberParam(args, "limit")
+      })
+    };
+  }
+
+  if (name === "remote_graph_traverse") {
+    await requireRemoteMcpSyncToken(request, env);
+    const authorityId = stringParam(args, "authority_id");
+    const startObjectId = stringParam(args, "start_object_id");
+    if (!authorityId || !startObjectId) {
+      throw new Error("invalid-graph-traverse-request");
+    }
+    const predicates = isRecord(args) && Array.isArray(args.predicates)
+      ? args.predicates.filter((value): value is string => typeof value === "string").map(canonicalPredicate)
+      : undefined;
+    return {
+      ok: true,
+      authority_id: authorityId,
+      ...(await traverseRemoteGraph(remoteGraphStorage(env), authorityId, startObjectId, {
+        direction: stringParam(args, "direction") as never,
+        max_depth: numberParam(args, "max_depth"),
+        predicates,
+        limit: numberParam(args, "limit")
+      }))
+    };
+  }
+
+  if (name === "remote_timeline_query") {
+    await requireRemoteMcpSyncToken(request, env);
+    const authorityId = stringParam(args, "authority_id");
+    if (!authorityId) {
+      throw new Error("invalid-timeline-query-request");
+    }
+    return {
+      ok: true,
+      authority_id: authorityId,
+      results: await queryRemoteTimeline(remoteGraphStorage(env), authorityId, {
+        from: stringParam(args, "from"),
+        to: stringParam(args, "to"),
+        object_id: stringParam(args, "object_id"),
+        predicate: stringParam(args, "predicate"),
+        limit: numberParam(args, "limit")
+      })
+    };
+  }
+
+  if (name === "remote_edge_create") {
+    await requireRemoteMcpSyncToken(request, env);
+    const authorityId = stringParam(args, "authority_id");
+    const edge = recordParam(args, "edge");
+    if (!authorityId || !edge) {
+      throw new Error("invalid-edge-create-request");
+    }
+    const result = await createRemoteEdgeObject(remoteGraphStorage(env), authorityId, edge);
+    const syncBatch = await commitRemoteGraphMutationToSync(
+      request,
+      env,
+      syncMutationFromRemote(result.mutation),
+      result.object,
+      result.previous_version
+    );
+    return {
+      ok: true,
+      ...result,
+      sync_generation: syncBatch.target_generation,
+      sync_batch_id: syncBatch.batch_id
+    };
+  }
+
+  if (name === "remote_edge_read") {
+    await requireRemoteMcpSyncToken(request, env);
+    const authorityId = stringParam(args, "authority_id");
+    const edgeId = stringParam(args, "edge_id");
+    if (!authorityId || !edgeId) {
+      throw new Error("invalid-edge-read-request");
+    }
+    const object = await findRemoteEdgeObject(remoteGraphStorage(env), authorityId, edgeId);
+    return object && !object.visible_metadata.tombstone
+      ? { ok: true, object }
+      : { ok: false, reason: "edge-not-found", authority_id: authorityId, edge_id: edgeId };
+  }
+
+  if (name === "remote_edge_update") {
+    await requireRemoteMcpSyncToken(request, env);
+    const authorityId = stringParam(args, "authority_id");
+    const edgeId = stringParam(args, "edge_id");
+    const patch = recordParam(args, "patch");
+    if (!authorityId || !edgeId || !patch) {
+      throw new Error("invalid-edge-update-request");
+    }
+    const result = await updateRemoteEdgeObject(remoteGraphStorage(env), authorityId, edgeId, patch, numberParam(args, "expected_version"));
+    const syncBatch = await commitRemoteGraphMutationToSync(
+      request,
+      env,
+      syncMutationFromRemote(result.mutation),
+      result.object,
+      result.previous_version
+    );
+    return {
+      ok: true,
+      ...result,
+      sync_generation: syncBatch.target_generation,
+      sync_batch_id: syncBatch.batch_id
+    };
+  }
+
+  if (name === "remote_edge_delete") {
+    await requireRemoteMcpSyncToken(request, env);
+    const authorityId = stringParam(args, "authority_id");
+    const edgeId = stringParam(args, "edge_id");
+    if (!authorityId || !edgeId) {
+      throw new Error("invalid-edge-delete-request");
+    }
+    const result = await deleteRemoteEdgeObject(remoteGraphStorage(env), authorityId, edgeId, numberParam(args, "expected_version"));
+    const syncBatch = await commitRemoteGraphMutationToSync(
+      request,
+      env,
+      syncMutationFromRemote(result.mutation),
+      result.object,
+      result.previous_version
+    );
+    return {
+      ok: true,
+      ...result,
+      sync_generation: syncBatch.target_generation,
+      sync_batch_id: syncBatch.batch_id
     };
   }
 
@@ -846,6 +1252,193 @@ async function routeRemoteMcpRequest(request: Request, env: BootstrapWorkerEnv):
           }
         },
         {
+          name: "remote_graph_status",
+          description: "Read remote-readable graph object counts for an authority.",
+          inputSchema: {
+            type: "object",
+            additionalProperties: false,
+            required: ["authority_id"],
+            properties: {
+              authority_id: { type: "string" },
+              include_tombstones: { type: "boolean" },
+              limit: { type: "integer", minimum: 1, maximum: 1000 }
+            }
+          }
+        },
+        {
+          name: "remote_graph_list",
+          description: "List remote-readable graph objects for an authority.",
+          inputSchema: {
+            type: "object",
+            additionalProperties: false,
+            required: ["authority_id"],
+            properties: {
+              authority_id: { type: "string" },
+              object_type: { type: "string" },
+              include_tombstones: { type: "boolean" },
+              limit: { type: "integer", minimum: 1, maximum: 1000 }
+            }
+          }
+        },
+        {
+          name: "remote_graph_read",
+          description: "Read one remote-readable graph object by id.",
+          inputSchema: {
+            type: "object",
+            additionalProperties: false,
+            required: ["authority_id", "object_id"],
+            properties: {
+              authority_id: { type: "string" },
+              object_id: { type: "string" }
+            }
+          }
+        },
+        {
+          name: "remote_graph_create",
+          description: "Create one remote-readable plaintext graph object. Local-private and quarantine objects are rejected.",
+          inputSchema: {
+            type: "object",
+            additionalProperties: false,
+            required: ["object"],
+            properties: {
+              object: { type: "object" }
+            }
+          }
+        },
+        {
+          name: "remote_graph_update",
+          description: "Update one remote-readable graph object with optimistic version support.",
+          inputSchema: {
+            type: "object",
+            additionalProperties: false,
+            required: ["authority_id", "object_id", "patch"],
+            properties: {
+              authority_id: { type: "string" },
+              object_id: { type: "string" },
+              expected_version: { type: "integer", minimum: 0 },
+              patch: { type: "object" }
+            }
+          }
+        },
+        {
+          name: "remote_graph_delete",
+          description: "Tombstone one remote-readable graph object with optimistic version support.",
+          inputSchema: {
+            type: "object",
+            additionalProperties: false,
+            required: ["authority_id", "object_id"],
+            properties: {
+              authority_id: { type: "string" },
+              object_id: { type: "string" },
+              expected_version: { type: "integer", minimum: 0 }
+            }
+          }
+        },
+        {
+          name: "remote_semantic_search",
+          description: "Search remote-readable graph object text and metadata. Current mode is deterministic text scoring; embedding/vector search can replace the scorer later.",
+          inputSchema: {
+            type: "object",
+            additionalProperties: false,
+            required: ["authority_id", "query"],
+            properties: {
+              authority_id: { type: "string" },
+              query: { type: "string" },
+              object_type: { type: "string" },
+              limit: { type: "integer", minimum: 1, maximum: 1000 }
+            }
+          }
+        },
+        {
+          name: "remote_graph_traverse",
+          description: "Traverse remote-readable edge objects from a start object.",
+          inputSchema: {
+            type: "object",
+            additionalProperties: false,
+            required: ["authority_id", "start_object_id"],
+            properties: {
+              authority_id: { type: "string" },
+              start_object_id: { type: "string" },
+              direction: { type: "string", enum: ["outbound", "inbound", "both"] },
+              max_depth: { type: "integer", minimum: 1, maximum: 5 },
+              predicates: { type: "array", items: { type: "string" } },
+              limit: { type: "integer", minimum: 1, maximum: 1000 }
+            }
+          }
+        },
+        {
+          name: "remote_timeline_query",
+          description: "Query remote-readable graph objects by created/updated, edge valid dates, or event dates.",
+          inputSchema: {
+            type: "object",
+            additionalProperties: false,
+            required: ["authority_id"],
+            properties: {
+              authority_id: { type: "string" },
+              from: { type: "string" },
+              to: { type: "string" },
+              object_id: { type: "string" },
+              predicate: { type: "string" },
+              limit: { type: "integer", minimum: 1, maximum: 1000 }
+            }
+          }
+        },
+        {
+          name: "remote_edge_create",
+          description: "Create a typed temporal edge as a remote-readable graph object.",
+          inputSchema: {
+            type: "object",
+            additionalProperties: false,
+            required: ["authority_id", "edge"],
+            properties: {
+              authority_id: { type: "string" },
+              edge: { type: "object" }
+            }
+          }
+        },
+        {
+          name: "remote_edge_read",
+          description: "Read a remote-readable typed edge by edge_id.",
+          inputSchema: {
+            type: "object",
+            additionalProperties: false,
+            required: ["authority_id", "edge_id"],
+            properties: {
+              authority_id: { type: "string" },
+              edge_id: { type: "string" }
+            }
+          }
+        },
+        {
+          name: "remote_edge_update",
+          description: "Update a typed temporal edge by edge_id.",
+          inputSchema: {
+            type: "object",
+            additionalProperties: false,
+            required: ["authority_id", "edge_id", "patch"],
+            properties: {
+              authority_id: { type: "string" },
+              edge_id: { type: "string" },
+              expected_version: { type: "integer", minimum: 0 },
+              patch: { type: "object" }
+            }
+          }
+        },
+        {
+          name: "remote_edge_delete",
+          description: "Tombstone a typed temporal edge by edge_id.",
+          inputSchema: {
+            type: "object",
+            additionalProperties: false,
+            required: ["authority_id", "edge_id"],
+            properties: {
+              authority_id: { type: "string" },
+              edge_id: { type: "string" },
+              expected_version: { type: "integer", minimum: 0 }
+            }
+          }
+        },
+        {
           name: "remote_sync_status",
           description: "Read remote sync cursor and counts for the authenticated authority.",
           inputSchema: { type: "object", additionalProperties: false, properties: {} }
@@ -865,7 +1458,7 @@ async function routeRemoteMcpRequest(request: Request, env: BootstrapWorkerEnv):
         },
         {
           name: "remote_sync_envelopes",
-          description: "Read committed ciphertext envelopes after a generation.",
+          description: "Read committed sync envelopes after a generation. Sensitive objects remain ciphertext; remote-readable objects may be plaintext.",
           inputSchema: {
             type: "object",
             additionalProperties: false,

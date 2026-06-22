@@ -2,6 +2,7 @@ export { BootstrapClaimLock, SyncAuthoritySequencer, SyncSequencer } from "./dur
 export { default } from "./worker";
 export * from "./cloud-unlock";
 export * from "./observability";
+export * from "./remote-graph";
 export * from "./sync";
 export * from "./sync-sequencer";
 export * from "./sync-storage";

@@ -347,11 +347,17 @@ Use it for tool/resource/prompt discovery, schema inspection, test calls, and
 notifications while developing the local MCP. It is not a persistent API
 contract registry; the repo contracts and tests remain the source of truth.
 
-The Cloudflare Worker now exposes a minimal token-gated remote MCP JSON-RPC
-skeleton at `/mcp`. It supports `initialize`, `tools/list`, and `tools/call`
-for sync status, pull summaries, ciphertext envelope pulls, and the read-only
-`remote_usage_gate` stoplight. This is a developer contract surface for remote
-sync/replay work; it is not yet the full remote-readable graph CRUD surface.
+The Cloudflare Worker now exposes a token-gated remote MCP JSON-RPC surface at
+`/mcp`. It supports `initialize`, `tools/list`, and `tools/call` for sync
+status, pull summaries, ciphertext envelope pulls, usage gates, remote-readable
+graph CRUD, edge-specific CRUD, deterministic text search, bounded graph
+traversal, and timeline queries.
+
+The current `remote_semantic_search` implementation is intentionally
+provider-free deterministic text scoring over remote-readable plaintext and
+visible metadata. It gives MCP clients a useful knowledge search contract now;
+Vectorize/embedding search can later replace the scorer without changing the
+tool boundary.
 
 The sync replay path has two read levels:
 
@@ -558,9 +564,11 @@ Required tests:
   and local MCP credential
 - local MCP durable graph mode writes redacted snapshot/journal files and
   survives process restart
-- Worker envelope pull returns ciphertext envelopes for local catch-up
+- Worker envelope pull returns sync envelopes for local catch-up, including
+  remote-readable plaintext and sensitive ciphertext envelopes
 - sync-agent applies pulled envelopes idempotently and reports version conflicts
-- remote MCP skeleton exposes token-gated sync tools
+- remote MCP exposes token-gated sync tools plus remote-readable graph CRUD,
+  edge CRUD, search, traversal, and timeline queries
 - replay report summarizes audit/activity/operational streams without raw
   summaries
 - remote-safe clients cannot grant sensitive access or enroll keyholding
@@ -592,7 +600,7 @@ Synthetic graph
   -> Cloudflare bootstrap claim-lock validator
   -> Cloudflare path/manifest generator
   -> local MCP auth plus durable local graph CRUD skeleton
-  -> remote MCP sync skeleton
+  -> remote MCP remote-readable graph and sync tools
   -> sync envelope pull/apply skeleton
   -> leakage and denial tests
   -> operational Worker observability and replay report scaffold

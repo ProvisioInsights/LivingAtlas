@@ -332,7 +332,7 @@ describe("local control and sync contracts", () => {
     expect(parsed.success).toBe(false);
   });
 
-  it("rejects plaintext sync-batch object payloads", () => {
+  it("rejects sensitive plaintext sync-batch object payloads", () => {
     const parsed = SyncBatchSchema.safeParse({
       batch_id: "la_sync_batch_contract0001",
       authority_id: "la_authority_contract0001",
@@ -350,14 +350,14 @@ describe("local control and sync contracts", () => {
           object_id: "la_object_contract0005",
           object_type: "page",
           version: 1,
-          access_class: "remote-safe",
+          access_class: "local-private",
           encryption_class: "plaintext",
           created_at: timestamp,
           updated_at: timestamp,
           content_hash: "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
           visible_metadata: {
             tombstone: false,
-            remote_indexable: true
+            remote_indexable: false
           },
           payload: {
             kind: "plaintext-json",
@@ -370,6 +370,46 @@ describe("local control and sync contracts", () => {
     });
 
     expect(parsed.success).toBe(false);
+  });
+
+  it("accepts remote-readable plaintext sync-batch object payloads", () => {
+    const parsed = SyncBatchSchema.safeParse({
+      batch_id: "la_sync_batch_contract0005",
+      authority_id: "la_authority_contract0001",
+      device_id: "la_device_contract0001",
+      client_id: "la_client_contract0001",
+      operation_id: "la_operation_contract0001",
+      trace_id: "la_trace_contract0001",
+      submitted_at: timestamp,
+      base_generation: 0,
+      target_generation: 1,
+      objects: [
+        {
+          schema_version: 1,
+          authority_id: "la_authority_contract0001",
+          object_id: "la_object_contract0006",
+          object_type: "page",
+          version: 1,
+          access_class: "remote-safe",
+          encryption_class: "plaintext",
+          created_at: timestamp,
+          updated_at: timestamp,
+          content_hash: "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          visible_metadata: {
+            tombstone: false,
+            remote_indexable: true
+          },
+          payload: {
+            kind: "plaintext-json",
+            data: { title: "allowed remote-safe sync batch object" }
+          }
+        }
+      ],
+      changes: [],
+      withheld_plaintext_count: 0
+    });
+
+    expect(parsed.success).toBe(true);
   });
 
   it("rejects sync batches that skip generations", () => {

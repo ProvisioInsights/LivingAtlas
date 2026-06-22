@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { GraphObjectEnvelopeSchema } from "./object-envelope";
+import { isRemoteReadableAccessClass } from "./classification";
 import {
   AuthorityIdSchema,
   CapabilityIdSchema,
@@ -13,12 +14,12 @@ import {
 } from "./ids";
 import { SyncChangeEventSchema } from "./events";
 
-const CiphertextOnlyObjectSchema = GraphObjectEnvelopeSchema.superRefine((object, ctx) => {
-  if (object.payload.kind === "plaintext-json") {
+const SyncableObjectSchema = GraphObjectEnvelopeSchema.superRefine((object, ctx) => {
+  if (object.payload.kind === "plaintext-json" && !isRemoteReadableAccessClass(object.access_class)) {
     ctx.addIssue({
       code: "custom",
       path: ["payload"],
-      message: "sync batches carry ciphertext envelopes only; plaintext projections use a separate release path"
+      message: "sync batches only carry plaintext for explicitly remote-readable objects"
     });
   }
 });
@@ -282,7 +283,7 @@ const SyncBatchShapeSchema = z
     base_cursor: SyncPullCursorSchema.optional(),
     pull_recovery: SyncPullRecoverySchema.optional(),
     object_payloads: z.array(SyncObjectPayloadRefSchema),
-    objects: z.array(CiphertextOnlyObjectSchema),
+    objects: z.array(SyncableObjectSchema),
     changes: z.array(SyncChangeEventSchema),
     estimated_batch_bytes: z.number().int().nonnegative(),
     limits: SyncBatchLimitsSchema.default(DefaultSyncBatchLimits),
@@ -441,7 +442,7 @@ export const SyncEnvelopePullObjectSchema = z
     batch_id: SyncBatchIdSchema,
     generation: z.number().int().positive(),
     submitted_at: IsoTimestampSchema,
-    object: CiphertextOnlyObjectSchema
+    object: SyncableObjectSchema
   })
   .strict();
 

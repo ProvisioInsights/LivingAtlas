@@ -170,7 +170,8 @@ Implement schema and runtime together on synthetic fixtures:
 4. Access-class policy evaluator.
 5. Local-private leakage tests against remote-readable output.
 6. Metadata/path leakage scanner.
-7. Local MCP and remote MCP skeletons using the same edge/event object contract.
+7. Local MCP graph access and remote MCP remote-readable graph access using the
+   same edge/event object contract.
 
 Do not run the real Logseq migration until synthetic tests pass.
 

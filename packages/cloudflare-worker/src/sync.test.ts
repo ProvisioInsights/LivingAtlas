@@ -319,6 +319,28 @@ class FakePreparedStatement {
       .filter((batch) => !authorityRef || batch.authority_ref === authorityRef);
   }
 
+  private remoteGraphRows(authorityRef?: string) {
+    return this.records
+      .filter((record) => record.query.includes("INTO remote_graph_objects"))
+      .map((record) => ({
+        object_ref: String(record.bindings[0]),
+        authority_ref: String(record.bindings[1]),
+        version: Number(record.bindings[2]),
+        object_type: String(record.bindings[3]),
+        access_class: String(record.bindings[4]),
+        envelope_r2_key: String(record.bindings[5]),
+        content_hash: String(record.bindings[6]),
+        created_at: String(record.bindings[7]),
+        updated_at: String(record.bindings[8]),
+        tombstone: Number(record.bindings[9]),
+        edge_ref: record.bindings[10] === null ? undefined : String(record.bindings[10]),
+        source_ref: record.bindings[11] === null ? undefined : String(record.bindings[11]),
+        target_ref: record.bindings[12] === null ? undefined : String(record.bindings[12]),
+        predicate: record.bindings[13] === null ? undefined : String(record.bindings[13])
+      }))
+      .filter((row) => !authorityRef || row.authority_ref === authorityRef);
+  }
+
   async first<T = unknown>(_colName?: string): Promise<T | null> {
     if (this.query.includes("WHERE idempotency_key = ?")) {
       const idempotencyKey = String(this.bindings[0]);
@@ -350,6 +372,26 @@ class FakePreparedStatement {
         .sort((left, right) => right.target_generation - left.target_generation || right.submitted_at.localeCompare(left.submitted_at));
 
       return (batches[0] ?? null) as T | null;
+    }
+
+    if (this.query.includes("FROM remote_graph_objects") && this.query.includes("object_ref = ?")) {
+      const authorityRef = String(this.bindings[0]);
+      const objectRef = String(this.bindings[1]);
+      const row = this.remoteGraphRows(authorityRef)
+        .filter((candidate) => candidate.object_ref === objectRef)
+        .sort((left, right) => right.version - left.version)
+        .at(0);
+      return (row ?? null) as T | null;
+    }
+
+    if (this.query.includes("FROM remote_graph_objects") && this.query.includes("edge_ref = ?")) {
+      const authorityRef = String(this.bindings[0]);
+      const edgeRef = String(this.bindings[1]);
+      const row = this.remoteGraphRows(authorityRef)
+        .filter((candidate) => candidate.edge_ref === edgeRef)
+        .sort((left, right) => right.version - left.version)
+        .at(0);
+      return (row ?? null) as T | null;
     }
 
     return null;
@@ -411,6 +453,16 @@ class FakePreparedStatement {
             change_count: batch.change_count,
             withheld_plaintext_count: batch.withheld_plaintext_count
           }))
+          .slice(0, limit) as T[]
+      );
+    }
+
+    if (this.query.includes("FROM remote_graph_objects")) {
+      const authorityRef = String(this.bindings[0]);
+      const limit = Number(this.bindings[1] ?? 1000);
+      return fakeD1Result<T>(
+        this.remoteGraphRows(authorityRef)
+          .sort((left, right) => left.object_ref.localeCompare(right.object_ref) || right.version - left.version)
           .slice(0, limit) as T[]
       );
     }
@@ -846,7 +898,6 @@ describe("Worker sync batch acceptance", () => {
       objects: [
         {
           ...ciphertextBatch.objects[0],
-          access_class: "remote-safe",
           encryption_class: "plaintext",
           key_ref: undefined,
           payload: {
@@ -1063,7 +1114,7 @@ describe("Worker sync batch acceptance", () => {
     expect(JSON.stringify(body)).not.toContain(syncToken);
   });
 
-  it("exposes a token-gated remote MCP skeleton for sync tools", async () => {
+  it("exposes token-gated remote MCP sync tools", async () => {
     const { env } = await createEnv();
     await handleBootstrapRequest(new Request("https://living-atlas.example/api/sync/batch", {
       method: "POST",
@@ -1434,6 +1485,279 @@ describe("Worker sync batch acceptance", () => {
     if (encryptedPayload.kind === "ciphertext-inline") {
       expect(JSON.stringify(decryptBody)).not.toContain(encryptedPayload.ciphertext);
     }
+  });
+
+  it("supports remote-readable graph CRUD, search, traversal, timeline, and edge CRUD through MCP", async () => {
+    const { env } = await createEnv();
+    const mcpCall = async (id: number, name: string, args: Record<string, unknown>) => {
+      const response = await handleBootstrapRequest(new Request("https://living-atlas.example/mcp", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-living-atlas-sync-token": syncToken
+        },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id,
+          method: "tools/call",
+          params: { name, arguments: args }
+        })
+      }), env);
+      expect(response.status).toBe(200);
+      return response.json() as Promise<{
+        result?: {
+          structuredContent?: Record<string, unknown>;
+        };
+        error?: unknown;
+      }>;
+    };
+    const authorityId = "la_authority_worker0001";
+    const sourceId = "la_object_remotecrudsource0001";
+    const targetId = "la_object_remotecrudtarget0001";
+    const page = {
+      schema_version: 1,
+      authority_id: authorityId,
+      object_id: sourceId,
+      object_type: "page",
+      version: 1,
+      access_class: "remote-safe",
+      encryption_class: "plaintext",
+      created_at: timestamp,
+      updated_at: timestamp,
+      content_hash: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      visible_metadata: {
+        schema_namespace: "synthetic/remote-crud",
+        tombstone: false,
+        size_class: "tiny",
+        remote_indexable: true
+      },
+      payload: {
+        kind: "plaintext-json",
+        data: {
+          title: "Remote Atlas Knowledge Seed",
+          body: "Mercury Atlas search target with timeline context.",
+          occurred_on: "2026-06-21"
+        }
+      }
+    };
+    const target = {
+      ...page,
+      object_id: targetId,
+      content_hash: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      payload: {
+        kind: "plaintext-json",
+        data: {
+          title: "Remote Atlas Target",
+          body: "Traversal target."
+        }
+      }
+    };
+
+    await expect(mcpCall(10, "remote_graph_create", { object: page })).resolves.toMatchObject({
+      result: {
+        structuredContent: {
+          ok: true,
+          mutation: "created",
+          object: expect.objectContaining({ object_id: sourceId }),
+          sync_generation: 1,
+          sync_batch_id: expect.stringMatching(/^la_sync_batch_/)
+        }
+      }
+    });
+    await expect(mcpCall(11, "remote_graph_create", { object: target })).resolves.toMatchObject({
+      result: {
+        structuredContent: {
+          ok: true,
+          sync_generation: 2
+        }
+      }
+    });
+
+    await expect(mcpCall(110, "remote_sync_envelopes", { authority_id: authorityId, after_generation: 0 })).resolves.toMatchObject({
+      result: {
+        structuredContent: {
+          ok: true,
+          latest_generation: 2,
+          objects: expect.arrayContaining([
+            expect.objectContaining({
+              generation: 1,
+              object: expect.objectContaining({
+                object_id: sourceId,
+                payload: expect.objectContaining({ kind: "plaintext-json" })
+              })
+            }),
+            expect.objectContaining({
+              generation: 2,
+              object: expect.objectContaining({ object_id: targetId })
+            })
+          ])
+        }
+      }
+    });
+
+    await expect(mcpCall(12, "remote_graph_read", { authority_id: authorityId, object_id: sourceId })).resolves.toMatchObject({
+      result: {
+        structuredContent: {
+          ok: true,
+          object: expect.objectContaining({
+            object_id: sourceId,
+            payload: expect.objectContaining({
+              data: expect.objectContaining({ title: "Remote Atlas Knowledge Seed" })
+            })
+          })
+        }
+      }
+    });
+
+    await expect(mcpCall(13, "remote_semantic_search", { authority_id: authorityId, query: "Mercury Atlas", limit: 5 })).resolves.toMatchObject({
+      result: {
+        structuredContent: {
+          ok: true,
+          search_mode: "deterministic-text-v1",
+          results: expect.arrayContaining([
+            expect.objectContaining({
+              object: expect.objectContaining({ object_id: sourceId }),
+              score: expect.any(Number)
+            })
+          ])
+        }
+      }
+    });
+
+    await expect(mcpCall(14, "remote_graph_update", {
+      authority_id: authorityId,
+      object_id: sourceId,
+      expected_version: 1,
+      patch: {
+        payload: {
+          kind: "plaintext-json",
+          data: {
+            title: "Remote Atlas Knowledge Seed",
+            body: "Mercury Atlas search target updated.",
+            occurred_on: "2026-06-22"
+          }
+        }
+      }
+    })).resolves.toMatchObject({
+      result: {
+        structuredContent: {
+          ok: true,
+          mutation: "updated",
+          object: expect.objectContaining({ version: 2 }),
+          sync_generation: 3
+        }
+      }
+    });
+
+    const edge = {
+      edge_id: "la_edge_remotecrud0001",
+      source_object_id: sourceId,
+      source_type: "person",
+      target_object_id: targetId,
+      target_type: "project",
+      predicate: "advises",
+      valid_from: "2026-06",
+      status: "active",
+      confidence: "high",
+      source: "synthetic remote MCP test",
+      attrs: {
+        scope: "remote graph traversal"
+      }
+    };
+    await expect(mcpCall(15, "remote_edge_create", { authority_id: authorityId, edge })).resolves.toMatchObject({
+      result: {
+        structuredContent: {
+          ok: true,
+          mutation: "created",
+          object: expect.objectContaining({ object_type: "edge" }),
+          sync_generation: 4
+        }
+      }
+    });
+
+    await expect(mcpCall(16, "remote_graph_traverse", {
+      authority_id: authorityId,
+      start_object_id: sourceId,
+      direction: "outbound",
+      predicates: ["advisor-to"],
+      max_depth: 1
+    })).resolves.toMatchObject({
+      result: {
+        structuredContent: {
+          ok: true,
+          visited_object_ids: expect.arrayContaining([sourceId, targetId]),
+          edges: [expect.objectContaining({ object_type: "edge" })]
+        }
+      }
+    });
+
+    await expect(mcpCall(17, "remote_timeline_query", { authority_id: authorityId, from: "2026-06", to: "2026-06-30", predicate: "advises" })).resolves.toMatchObject({
+      result: {
+        structuredContent: {
+          ok: true,
+          results: expect.arrayContaining([
+            expect.objectContaining({
+              field: "edge.valid_from",
+              timeline_at: "2026-06"
+            })
+          ])
+        }
+      }
+    });
+
+    await expect(mcpCall(18, "remote_edge_update", {
+      authority_id: authorityId,
+      edge_id: "la_edge_remotecrud0001",
+      expected_version: 1,
+      patch: {
+        status: "ended",
+        valid_to: "2026-06-22"
+      }
+    })).resolves.toMatchObject({
+      result: {
+        structuredContent: {
+          ok: true,
+          mutation: "updated",
+          object: expect.objectContaining({ version: 2 }),
+          sync_generation: 5
+        }
+      }
+    });
+
+    await expect(mcpCall(19, "remote_edge_read", { authority_id: authorityId, edge_id: "la_edge_remotecrud0001" })).resolves.toMatchObject({
+      result: {
+        structuredContent: {
+          ok: true,
+          object: expect.objectContaining({
+            payload: expect.objectContaining({
+              data: expect.objectContaining({ status: "ended" })
+            })
+          })
+        }
+      }
+    });
+
+    await expect(mcpCall(20, "remote_graph_delete", { authority_id: authorityId, object_id: sourceId, expected_version: 2 })).resolves.toMatchObject({
+      result: {
+        structuredContent: {
+          ok: true,
+          mutation: "deleted",
+          sync_generation: 6,
+          object: expect.objectContaining({
+            version: 3,
+            visible_metadata: expect.objectContaining({ tombstone: true })
+          })
+        }
+      }
+    });
+
+    await expect(mcpCall(21, "remote_graph_create", {
+      object: ciphertextBatch.objects[0]
+    })).resolves.toMatchObject({
+      error: {
+        message: "remote graph objects must be remote-readable plaintext"
+      }
+    });
   });
 
   it("rejects sync tokens in query strings", async () => {

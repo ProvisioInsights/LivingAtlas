@@ -78,13 +78,15 @@ objects, and separate capability surfaces:
 Phase 1 scaffold exists as a TypeScript workspace. It includes contracts,
 synthetic fixtures, access policy evaluation, metadata leakage scanning,
 readiness check commands, Cloudflare first-claim bootstrap, fixture-backed local
-MCP tools, a sealed local keyring, an encrypted local graph store, ciphertext
-sync batch persistence, envelope pull/replay, a minimal token-gated remote MCP
-sync surface, cloud-unlock decrypt for v1 AES-GCM inline ciphertext envelopes,
-and hash-only replay reporting over audit/activity/operational events. It also
-includes a token-gated usage/budget endpoint that reports provider-neutral
-observed usage against configurable limits. It does not import real graph data
-or deploy personal Cloudflare resources.
+MCP tools, a sealed local keyring, an encrypted local graph store, sync batch
+persistence for remote-readable plaintext and sensitive ciphertext envelopes,
+envelope pull/replay, a token-gated remote MCP with
+remote-readable graph CRUD, edge CRUD, deterministic text search, bounded graph
+traversal, timeline queries, cloud-unlock decrypt for v1 AES-GCM inline
+ciphertext envelopes, and hash-only replay reporting over audit/activity/
+operational events. It also includes a token-gated usage/budget endpoint that
+reports provider-neutral observed usage against configurable limits. It does
+not import real graph data or deploy personal Cloudflare resources.
 
 ## Development
 
@@ -234,8 +236,9 @@ Workspace packages:
 - `@living-atlas/check`: local scaffold verification CLI.
 - `@living-atlas/cloudflare-worker`: Cloudflare Worker routes and Durable
   Object first-claim bootstrap lock skeleton, plus token-gated sync batch
-  persistence/status, envelope pull through R2/D1 bindings, remote MCP sync
-  skeleton, and redacted structured request observability.
+  persistence/status, envelope pull through R2/D1 bindings, remote MCP
+  remote-readable graph CRUD/search/traversal/timeline/edge tools, and redacted
+  structured request observability.
 - `@living-atlas/local-control-store`: encrypted local authority/control-plane
   state store, local profile path helpers, and fixture generation tooling.
 - `@living-atlas/local-keyring`: sealed local keyring and AES-GCM payload
@@ -248,7 +251,7 @@ Workspace packages:
   status/list/read plus synthetic CRUD tools backed by in-memory fixtures or the
   durable local graph store, and redacted audit events.
 - `@living-atlas/sync-agent`: local sync-agent skeleton that builds
-  ciphertext-only batches from the local graph, tracks an in-memory synthetic
+  ciphertext batches for sensitive local graph changes, tracks an in-memory synthetic
   outbox/daemon plan, submits to the Worker sync route, fetches remote
   summaries/envelopes, and applies pulled envelopes into the local graph store
   with version-conflict reporting.
