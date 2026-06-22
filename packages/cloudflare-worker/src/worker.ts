@@ -22,6 +22,7 @@ import {
   type SyncRuntimeConfig,
   type SyncTokenBinding
 } from "./sync";
+import { readSyncStatus } from "./sync-storage";
 import { authoritySequencerName } from "./sync-sequencer";
 import {
   getUsageGate,
@@ -294,18 +295,8 @@ async function commitRemoteGraphMutationToSync(
   object: GraphObjectEnvelope,
   previousVersion?: number
 ): Promise<SyncBatch> {
-  const statusResult = await getSyncStatus(
-    request.headers.get(syncTokenHeader) ?? undefined,
-    syncRuntimeConfig(env),
-    env.LA_CONTROL_DB,
-    syncTokenBinding(request)
-  );
-  if (!statusResult.ok) {
-    throw new Error(statusResult.reason);
-  }
-
   const submittedAt = new Date().toISOString();
-  const baseGeneration = statusResult.status.latest_generation;
+  const baseGeneration = (await readSyncStatus(env.LA_CONTROL_DB, object.authority_id)).latest_generation;
   const seed = [
     "remote-mcp-sync:v1",
     object.authority_id,
