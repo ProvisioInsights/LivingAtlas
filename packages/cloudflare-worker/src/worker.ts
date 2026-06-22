@@ -1,6 +1,8 @@
-import { AuthorityIdSchema } from "@living-atlas/contracts";
+import { AuthorityIdSchema, PraxisActivityAuditStreamRequestSchema } from "@living-atlas/contracts";
 import { SyncBatchSchema } from "@living-atlas/contracts";
 import type { AccessMode, GraphObjectEnvelope, SyncBatch, SyncEnvelopePullResponse } from "@living-atlas/contracts";
+import type { DurableAuditEvent, Operation } from "@living-atlas/contracts";
+import { appendAuditEvent, createAuditId, readPraxisActivityAuditStream } from "./audit-ledger";
 import { BootstrapClaimBodySchema, verifyClaimToken, type BootstrapRuntimeConfig } from "./bootstrap";
 import type { BootstrapClaimLockCore } from "./bootstrap-lock";
 import { decryptCloudUnlockObject } from "./cloud-unlock";
@@ -34,18 +36,26 @@ import {
 } from "./usage";
 import {
   canonicalPredicate,
-  createRemoteEdgeObject,
-  createRemoteGraphObject,
-  deleteRemoteEdgeObject,
-  deleteRemoteGraphObject,
+  commitRemoteGraphWrite,
+  failRemoteGraphWrite,
   findRemoteEdgeObject,
+  isExpiredReleaseObject,
   latestRemoteGraphObject,
   listRemoteGraphObjects,
+  prepareCreateRemoteEdgeObject,
+  prepareCreateRemoteGraphObject,
+  prepareDeleteRemoteEdgeObject,
+  prepareDeleteRemoteGraphObject,
+  prepareUpdateRemoteEdgeObject,
+  prepareUpdateRemoteGraphObject,
   queryRemoteTimeline,
+  reconcileRemoteGraph,
   searchRemoteGraphObjects,
+  stageRemoteGraphWrite,
+  storePreparedRemoteGraphMutation,
   traverseRemoteGraph,
-  updateRemoteEdgeObject,
-  updateRemoteGraphObject
+  type RemoteGraphMutationResult,
+  type RemoteGraphWriteOperation
 } from "./remote-graph";
 
 export type BootstrapClaimLockRpc = Pick<BootstrapClaimLockCore, "getStatus" | "claim">;
@@ -74,6 +84,9 @@ export type BootstrapWorkerEnv = {
   LA_SYNC_CLIENT_ID?: string;
   LA_SYNC_CAPABILITY_ID?: string;
   LA_SYNC_TOKEN_ID?: string;
+  LA_CLOUD_UNLOCK_CLIENT_ID?: string;
+  LA_CLOUD_UNLOCK_CAPABILITY_ID?: string;
+  LA_CLOUD_UNLOCK_TOKEN_ID?: string;
   LA_STEALTH_MODE?: string;
   LA_HEALTH_TOKEN_HASH?: string;
   LA_USAGE_PROVIDER?: string;
@@ -89,7 +102,9 @@ const syncClientHeader = "x-living-atlas-sync-client-id";
 const syncCapabilityHeader = "x-living-atlas-sync-capability-id";
 const syncTokenIdHeader = "x-living-atlas-sync-token-id";
 const cloudUnlockKeyHeader = "x-living-atlas-cloud-unlock-key";
+const remoteWriteIdempotencyHeader = "x-living-atlas-idempotency-key";
 const forbiddenQueryTokenParams = ["token", "claim_token", "bootstrap_claim_token", "sync_token", "cloud_unlock_key", "decrypt_key", "encryption_key"];
+const forbiddenQueryTokenPattern = /(^|[_-])(authorization|bearer|token|secret|password|api[_-]?key|access[_-]?key|cloud[_-]?unlock[_-]?key|decrypt[_-]?key|encryption[_-]?key|key)($|[_-])/i;
 
 function json(data: unknown, init?: ResponseInit): Response {
   return new Response(JSON.stringify(data), {
@@ -131,6 +146,15 @@ function syncRuntimeConfig(env: BootstrapWorkerEnv): SyncRuntimeConfig {
   };
 }
 
+function cloudUnlockRuntimeConfig(env: BootstrapWorkerEnv): SyncRuntimeConfig {
+  return {
+    sync_token_hash: env.LA_SYNC_TOKEN_HASH,
+    sync_client_id: env.LA_CLOUD_UNLOCK_CLIENT_ID,
+    sync_capability_id: env.LA_CLOUD_UNLOCK_CAPABILITY_ID,
+    sync_token_id: env.LA_CLOUD_UNLOCK_TOKEN_ID
+  };
+}
+
 function usageRuntimeConfig(env: BootstrapWorkerEnv): UsageRuntimeConfig {
   return {
     provider: env.LA_USAGE_PROVIDER,
@@ -145,11 +169,22 @@ function getClaimLock(env: BootstrapWorkerEnv): BootstrapClaimLockRpc {
 }
 
 function queryContainsToken(url: URL): boolean {
-  return forbiddenQueryTokenParams.some((param) => url.searchParams.has(param));
+  return [...url.searchParams.keys()].some((param) => (
+    forbiddenQueryTokenParams.includes(param) || forbiddenQueryTokenPattern.test(param)
+  ));
 }
 
 async function hasValidToken(token: string | undefined, hash: string | undefined): Promise<boolean> {
   return !!token && await verifyClaimToken(token, hash);
+}
+
+function toHex(bytes: Uint8Array): string {
+  return [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+async function sha256Hex(value: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+  return toHex(new Uint8Array(digest));
 }
 
 async function hasValidBootstrapToken(request: Request, env: BootstrapWorkerEnv): Promise<boolean> {
@@ -181,6 +216,30 @@ async function hasValidSyncToken(request: Request, env: BootstrapWorkerEnv): Pro
   }
 
   if (env.LA_SYNC_TOKEN_ID && binding.token_id !== env.LA_SYNC_TOKEN_ID) {
+    return false;
+  }
+
+  return true;
+}
+
+async function hasValidCloudUnlockCapability(request: Request, env: BootstrapWorkerEnv): Promise<boolean> {
+  if (!env.LA_CLOUD_UNLOCK_CAPABILITY_ID) {
+    return false;
+  }
+
+  const token = request.headers.get(syncTokenHeader) ?? undefined;
+  if (!(await hasValidToken(token, env.LA_SYNC_TOKEN_HASH))) {
+    return false;
+  }
+
+  const binding = syncTokenBinding(request);
+  if (env.LA_CLOUD_UNLOCK_CLIENT_ID && binding.client_id !== env.LA_CLOUD_UNLOCK_CLIENT_ID) {
+    return false;
+  }
+  if (binding.capability_id !== env.LA_CLOUD_UNLOCK_CAPABILITY_ID) {
+    return false;
+  }
+  if (env.LA_CLOUD_UNLOCK_TOKEN_ID && binding.token_id !== env.LA_CLOUD_UNLOCK_TOKEN_ID) {
     return false;
   }
 
@@ -220,6 +279,10 @@ async function shouldStealthDrop(request: Request, env: BootstrapWorkerEnv): Pro
   }
 
   if (url.pathname.startsWith("/api/sync/")) {
+    return !(await hasValidSyncToken(request, env));
+  }
+
+  if (url.pathname.startsWith("/api/activity/") || url.pathname.startsWith("/api/audit/")) {
     return !(await hasValidSyncToken(request, env));
   }
 
@@ -293,17 +356,33 @@ async function commitRemoteGraphMutationToSync(
   env: BootstrapWorkerEnv,
   mutation: "create" | "update" | "delete" | "restore",
   object: GraphObjectEnvelope,
-  previousVersion?: number
+  previousVersion: number | undefined,
+  write?: {
+    idempotency_key: string;
+    request_hash: string;
+    submitted_at: string;
+  }
 ): Promise<SyncBatch> {
-  const submittedAt = new Date().toISOString();
-  const baseGeneration = (await readSyncStatus(env.LA_CONTROL_DB, object.authority_id)).latest_generation;
-  const seed = [
+  const submittedAt = write?.submitted_at ?? new Date().toISOString();
+  const requestHash = write?.request_hash ?? `sha256:${await sha256Hex([
     "remote-mcp-sync:v1",
+    mutation,
     object.authority_id,
     object.object_id,
     String(object.version),
     object.content_hash,
     submittedAt
+  ].join(":"))}`;
+  const idempotencyKey = write?.idempotency_key ?? remoteMcpSyncBatchId("la_idem", requestHash);
+  const baseGeneration = (await readSyncStatus(env.LA_CONTROL_DB, object.authority_id)).latest_generation;
+  const seed = [
+    "remote-mcp-sync:v1",
+    idempotencyKey,
+    requestHash,
+    object.authority_id,
+    object.object_id,
+    String(object.version),
+    object.content_hash
   ].join(":");
   const operationId = remoteMcpSyncBatchId("la_operation", seed);
   const traceId = remoteMcpSyncBatchId("la_trace", seed);
@@ -316,7 +395,7 @@ async function commitRemoteGraphMutationToSync(
     token_id: request.headers.get(syncTokenIdHeader) ?? undefined,
     operation_id: operationId,
     trace_id: traceId,
-    idempotency_key: remoteMcpSyncBatchId("la_idem", seed),
+    idempotency_key: idempotencyKey,
     submitted_at: submittedAt,
     base_generation: baseGeneration,
     target_generation: baseGeneration + 1,
@@ -551,6 +630,28 @@ async function routeBootstrapRequest(request: Request, env: BootstrapWorkerEnv):
     return json({ ok: false, error: result.reason }, { status: syncErrorStatus(result.reason) });
   }
 
+  if (request.method === "GET" && (url.pathname === "/api/activity/audit" || url.pathname === "/api/audit/recent")) {
+    if (queryContainsToken(url)) {
+      return json({ ok: false, error: "activity tokens must not be sent in the query string" }, { status: 400 });
+    }
+
+    if (!(await hasValidSyncToken(request, env))) {
+      return json({ ok: false, error: "missing-or-invalid-sync-token" }, { status: 401 });
+    }
+
+    const options = (() => {
+      try {
+        return activityAuditStreamOptionsFromUrl(url);
+      } catch {
+        return undefined;
+      }
+    })();
+    if (!options) {
+      return json({ ok: false, error: "invalid-activity-audit-request" }, { status: 400 });
+    }
+    return json(await readPraxisActivityAuditStream(env.LA_CONTROL_DB, options));
+  }
+
   if (request.method === "GET" && url.pathname === "/api/usage/status") {
     if (queryContainsToken(url)) {
       return json({ ok: false, error: "usage tokens must not be sent in the query string" }, { status: 400 });
@@ -633,6 +734,20 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+function stableJson(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map(stableJson).join(",")}]`;
+  }
+  if (isRecord(value)) {
+    return `{${Object.entries(value)
+      .filter(([key]) => key !== "idempotency_key")
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, entry]) => `${JSON.stringify(key)}:${stableJson(entry)}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
 function stringParam(params: unknown, key: string): string | undefined {
   return isRecord(params) && typeof params[key] === "string" ? params[key] : undefined;
 }
@@ -687,6 +802,29 @@ function usageReconciliationOptionsFromArgs(args: unknown): UsageReconciliationO
   };
 }
 
+function activityAuditStreamOptionsFromUrl(url: URL) {
+  const limit = url.searchParams.get("limit");
+  return PraxisActivityAuditStreamRequestSchema.parse({
+    authority_id: url.searchParams.get("authority_id") ?? undefined,
+    operation_id: url.searchParams.get("operation_id") ?? undefined,
+    trace_id: url.searchParams.get("trace_id") ?? undefined,
+    event_type: url.searchParams.get("event_type") ?? undefined,
+    cursor: url.searchParams.get("cursor") ?? undefined,
+    limit: limit === null ? 50 : Number(limit)
+  });
+}
+
+function activityAuditStreamOptionsFromArgs(args: unknown) {
+  return PraxisActivityAuditStreamRequestSchema.parse({
+    authority_id: stringParam(args, "authority_id"),
+    operation_id: stringParam(args, "operation_id"),
+    trace_id: stringParam(args, "trace_id"),
+    event_type: stringParam(args, "event_type"),
+    cursor: stringParam(args, "cursor"),
+    limit: numberParam(args, "limit") ?? 50
+  });
+}
+
 function remoteGraphStorage(env: BootstrapWorkerEnv) {
   return {
     graphBucket: env.LA_GRAPH_BUCKET,
@@ -694,10 +832,34 @@ function remoteGraphStorage(env: BootstrapWorkerEnv) {
   };
 }
 
+function remoteWriteIdempotencyKeyFromRequest(request: Request, args: unknown): string | undefined {
+  return request.headers.get(remoteWriteIdempotencyHeader) ?? stringParam(args, "idempotency_key");
+}
+
+async function remoteWriteRequestHash(toolName: string, args: unknown): Promise<`sha256:${string}`> {
+  return `sha256:${await sha256Hex(stableJson({
+    tool: toolName,
+    arguments: args
+  }))}`;
+}
+
+async function remoteWriteIdempotencyKey(request: Request, toolName: string, args: unknown, requestHash: string): Promise<string> {
+  const explicitKey = remoteWriteIdempotencyKeyFromRequest(request, args);
+  const key = explicitKey ?? `la_idem_${(await sha256Hex(`${toolName}:${requestHash}`)).slice(0, 24)}`;
+  if (!/^la_idem_[A-Za-z0-9_-]{8,}$/.test(key)) {
+    throw new Error("invalid-remote-write-idempotency-key");
+  }
+  return key;
+}
+
 async function requireRemoteMcpSyncToken(request: Request, env: BootstrapWorkerEnv): Promise<void> {
   if (!(await hasValidSyncToken(request, env))) {
     throw new Error("missing-or-invalid-sync-token");
   }
+}
+
+async function hasValidRemoteMcpDiscoveryToken(request: Request, env: BootstrapWorkerEnv): Promise<boolean> {
+  return await hasValidSyncToken(request, env) || await hasValidCloudUnlockCapability(request, env);
 }
 
 function recordParam(params: unknown, key: string): Record<string, unknown> | undefined {
@@ -718,6 +880,128 @@ function syncMutationFromRemote(mutation: "created" | "updated" | "deleted" | "r
   return byMutation[mutation];
 }
 
+async function commitIdempotentRemoteGraphMutation(
+  toolName: string,
+  args: unknown,
+  request: Request,
+  env: BootstrapWorkerEnv,
+  input: {
+    authority_id: string;
+    object_id?: string;
+    operation: RemoteGraphWriteOperation;
+    prepare: () => Promise<RemoteGraphMutationResult>;
+  }
+): Promise<Record<string, unknown>> {
+  const storage = remoteGraphStorage(env);
+  const requestHash = await remoteWriteRequestHash(toolName, args);
+  const idempotencyKey = await remoteWriteIdempotencyKey(request, toolName, args, requestHash);
+  const stage = await stageRemoteGraphWrite(storage, {
+    idempotency_key: idempotencyKey,
+    request_hash: requestHash,
+    authority_id: input.authority_id,
+    object_id: input.object_id,
+    operation: input.operation
+  });
+
+  if (stage.status === "committed") {
+    return {
+      ...stage.response,
+      idempotent_replay: true
+    };
+  }
+
+  let syncAccepted = false;
+  try {
+    const result = await input.prepare();
+    const syncBatch = await commitRemoteGraphMutationToSync(
+      request,
+      env,
+      syncMutationFromRemote(result.mutation),
+      result.object,
+      result.previous_version,
+      {
+        idempotency_key: idempotencyKey,
+        request_hash: requestHash,
+        submitted_at: stage.created_at
+      }
+    );
+    syncAccepted = true;
+    await storePreparedRemoteGraphMutation(storage, result);
+    const response = {
+      ok: true,
+      ...result,
+      sync_generation: syncBatch.target_generation,
+      sync_batch_id: syncBatch.batch_id,
+      idempotency_key: idempotencyKey,
+      idempotent_replay: false
+    };
+    await commitRemoteGraphWrite(storage, {
+      idempotency_key: idempotencyKey,
+      request_hash: requestHash,
+      sync_batch_id: syncBatch.batch_id,
+      sync_generation: syncBatch.target_generation,
+      response
+    });
+    return response;
+  } catch (error) {
+    if (!syncAccepted) {
+      await failRemoteGraphWrite(storage, {
+        idempotency_key: idempotencyKey,
+        request_hash: requestHash,
+        reason: error instanceof Error ? error.message : "remote-write-failed"
+      });
+    }
+    throw error;
+  }
+}
+
+function remoteMcpActorId(request: Request): string {
+  return request.headers.get(syncClientHeader) ?? "remote-mcp";
+}
+
+async function appendRemoteMcpAudit(input: {
+  request: Request;
+  env: BootstrapWorkerEnv;
+  authority_id: string;
+  operation: Operation;
+  event_type: DurableAuditEvent["event_type"];
+  summary: string;
+  object_id?: string;
+  access_class?: GraphObjectEnvelope["access_class"];
+  outcome?: DurableAuditEvent["outcome"];
+  reason_code?: string;
+  sync_batch_id?: string;
+}): Promise<void> {
+  await appendAuditEvent(input.env.LA_CONTROL_DB, {
+    audit_id: createAuditId(),
+    authority_id: input.authority_id,
+    operation_id: requestOperationId(input.request),
+    trace_id: requestTraceId(input.request),
+    recorded_at: new Date().toISOString(),
+    actor_id: remoteMcpActorId(input.request),
+    mcp_profile: remoteRequestAccessMode(input.request) === "cloud-unlock-session" ? "remote-cloud-unlock" : "remote-safe",
+    operation: input.operation,
+    event_type: input.event_type,
+    outcome: input.outcome ?? "allowed",
+    reason_code: input.reason_code,
+    object_id: input.object_id,
+    access_class: input.access_class,
+    sync_batch_id: input.sync_batch_id,
+    redaction: "remote-redacted",
+    summary: input.summary
+  });
+}
+
+function requestOperationId(request: Request): string {
+  const value = request.headers.get("x-living-atlas-operation-id");
+  return value && /^la_operation_[A-Za-z0-9_-]{8,}$/.test(value) ? value : `la_operation_${crypto.randomUUID().replaceAll("-", "")}`;
+}
+
+function requestTraceId(request: Request): string {
+  const value = request.headers.get("x-living-atlas-trace-id");
+  return value && /^la_trace_[A-Za-z0-9_-]{8,}$/.test(value) ? value : `la_trace_${crypto.randomUUID().replaceAll("-", "")}`;
+}
+
 function latestEnvelopeForObject(response: SyncEnvelopePullResponse, objectId: string): GraphObjectEnvelope | undefined {
   return response.objects
     .filter((entry) => entry.object.object_id === objectId)
@@ -728,6 +1012,7 @@ function latestEnvelopeForObject(response: SyncEnvelopePullResponse, objectId: s
 async function callRemoteMcpTool(name: string, args: unknown, request: Request, env: BootstrapWorkerEnv): Promise<unknown> {
   if (name === "remote_access_modes") {
     const currentMode = remoteRequestAccessMode(request);
+    const cloudUnlockConfigured = !!env.LA_CLOUD_UNLOCK_CAPABILITY_ID;
     return {
       ok: true,
       current_mode: currentMode,
@@ -742,12 +1027,13 @@ async function callRemoteMcpTool(name: string, args: unknown, request: Request, 
         },
         {
           mode: "cloud-unlock-session",
-          available: true,
-          current: currentMode === "cloud-unlock-session",
+          available: cloudUnlockConfigured,
+          current: cloudUnlockConfigured && currentMode === "cloud-unlock-session",
           host_blind_sensitive_plaintext: false,
-          sensitive_plaintext_available: currentMode === "cloud-unlock-session",
+          sensitive_plaintext_available: cloudUnlockConfigured && currentMode === "cloud-unlock-session",
           key_persisted_by_cloudflare: false,
-          required_header: cloudUnlockKeyHeader
+          required_header: cloudUnlockKeyHeader,
+          required_capability_header: syncCapabilityHeader
         },
         {
           mode: "local-keyholding-only",
@@ -762,11 +1048,50 @@ async function callRemoteMcpTool(name: string, args: unknown, request: Request, 
     };
   }
 
-  if (name === "remote_sensitive_decrypt") {
+  if (name === "remote_activity_audit") {
     await requireRemoteMcpSyncToken(request, env);
+    return readPraxisActivityAuditStream(env.LA_CONTROL_DB, activityAuditStreamOptionsFromArgs(args));
+  }
+
+  if (name === "remote_sensitive_decrypt") {
+    if (!(await hasValidCloudUnlockCapability(request, env))) {
+      const authorityId = stringParam(args, "authority_id");
+      if (authorityId) {
+        await appendRemoteMcpAudit({
+          request,
+          env,
+          authority_id: authorityId,
+          operation: "decrypt",
+          event_type: "object.denied",
+          outcome: "denied",
+          reason_code: "cloud-unlock-capability-required",
+          summary: "Remote cloud unlock denied"
+        });
+      }
+      return {
+        ok: false,
+        reason: "cloud-unlock-capability-required",
+        current_mode: "remote-safe-only",
+        key_persisted_by_cloudflare: false,
+        host_blind_sensitive_plaintext: true
+      };
+    }
 
     const unlockKey = cloudUnlockKey(request);
     if (!unlockKey) {
+      const authorityId = stringParam(args, "authority_id");
+      if (authorityId) {
+        await appendRemoteMcpAudit({
+          request,
+          env,
+          authority_id: authorityId,
+          operation: "decrypt",
+          event_type: "object.denied",
+          outcome: "denied",
+          reason_code: "cloud-unlock-required",
+          summary: "Remote cloud unlock denied"
+        });
+      }
       return {
         ok: false,
         reason: "cloud-unlock-required",
@@ -789,7 +1114,7 @@ async function callRemoteMcpTool(name: string, args: unknown, request: Request, 
 
     const pullResult = await getSyncEnvelopePull(
       request.headers.get(syncTokenHeader) ?? undefined,
-      syncRuntimeConfig(env),
+      cloudUnlockRuntimeConfig(env),
       {
         graphBucket: env.LA_GRAPH_BUCKET,
         controlDb: env.LA_CONTROL_DB
@@ -804,6 +1129,17 @@ async function callRemoteMcpTool(name: string, args: unknown, request: Request, 
 
     const object = latestEnvelopeForObject(pullResult.response, objectId);
     if (!object) {
+      await appendRemoteMcpAudit({
+        request,
+        env,
+        authority_id: authorityId,
+        operation: "decrypt",
+        event_type: "object.denied",
+        outcome: "denied",
+        reason_code: "object-not-found",
+        object_id: objectId,
+        summary: "Remote object unavailable"
+      });
       return {
         ok: false,
         reason: "object-not-found",
@@ -815,6 +1151,18 @@ async function callRemoteMcpTool(name: string, args: unknown, request: Request, 
     }
 
     if (object.access_class === "quarantine") {
+      await appendRemoteMcpAudit({
+        request,
+        env,
+        authority_id: authorityId,
+        operation: "decrypt",
+        event_type: "object.denied",
+        outcome: "denied",
+        reason_code: "quarantine-denied",
+        object_id: object.object_id,
+        access_class: object.access_class,
+        summary: "Remote object unavailable"
+      });
       return {
         ok: false,
         reason: "quarantine-denied",
@@ -827,6 +1175,18 @@ async function callRemoteMcpTool(name: string, args: unknown, request: Request, 
 
     const decryptResult = await decryptCloudUnlockObject(object, unlockKey);
     if (!decryptResult.ok) {
+      await appendRemoteMcpAudit({
+        request,
+        env,
+        authority_id: authorityId,
+        operation: "decrypt",
+        event_type: "object.denied",
+        outcome: "denied",
+        reason_code: decryptResult.reason,
+        object_id: object.object_id,
+        access_class: object.access_class,
+        summary: "Remote cloud unlock denied"
+      });
       return {
         ok: false,
         reason: decryptResult.reason,
@@ -837,6 +1197,18 @@ async function callRemoteMcpTool(name: string, args: unknown, request: Request, 
         host_blind_sensitive_plaintext: true
       };
     }
+
+    await appendRemoteMcpAudit({
+      request,
+      env,
+      authority_id: authorityId,
+      operation: "decrypt",
+      event_type: "object.decrypt",
+      outcome: "allowed",
+      object_id: object.object_id,
+      access_class: object.access_class,
+      summary: "Remote cloud unlock allowed"
+    });
 
     return {
       ok: true,
@@ -863,13 +1235,45 @@ async function callRemoteMcpTool(name: string, args: unknown, request: Request, 
       include_tombstones: booleanParam(args, "include_tombstones"),
       limit: numberParam(args, "limit")
     });
+    const reconciliation = await reconcileRemoteGraph(remoteGraphStorage(env), authorityId, {
+      limit: numberParam(args, "limit")
+    });
+    await appendRemoteMcpAudit({
+      request,
+      env,
+      authority_id: authorityId,
+      operation: "read",
+      event_type: "sync.read",
+      summary: "Remote graph status read allowed"
+    });
     return {
       ok: true,
       authority_id: authorityId,
       object_count: objects.filter((object) => !object.visible_metadata.tombstone).length,
       tombstone_count: objects.filter((object) => object.visible_metadata.tombstone).length,
-      remote_graph: "remote-readable"
+      remote_graph: "remote-readable",
+      reconciliation
     };
+  }
+
+  if (name === "remote_graph_reconcile") {
+    await requireRemoteMcpSyncToken(request, env);
+    const authorityId = stringParam(args, "authority_id");
+    if (!authorityId) {
+      throw new Error("invalid-graph-reconcile-request");
+    }
+    const reconciliation = await reconcileRemoteGraph(remoteGraphStorage(env), authorityId, {
+      limit: numberParam(args, "limit")
+    });
+    await appendRemoteMcpAudit({
+      request,
+      env,
+      authority_id: authorityId,
+      operation: "read",
+      event_type: "sync.read",
+      summary: "Remote graph reconciliation read allowed"
+    });
+    return reconciliation;
   }
 
   if (name === "remote_graph_list") {
@@ -878,14 +1282,23 @@ async function callRemoteMcpTool(name: string, args: unknown, request: Request, 
     if (!authorityId) {
       throw new Error("invalid-graph-list-request");
     }
+    const objects = await listRemoteGraphObjects(remoteGraphStorage(env), authorityId, {
+      include_tombstones: booleanParam(args, "include_tombstones"),
+      object_type: stringParam(args, "object_type") as never,
+      limit: numberParam(args, "limit")
+    });
+    await appendRemoteMcpAudit({
+      request,
+      env,
+      authority_id: authorityId,
+      operation: "read",
+      event_type: "object.read",
+      summary: "Remote graph list read allowed"
+    });
     return {
       ok: true,
       authority_id: authorityId,
-      objects: await listRemoteGraphObjects(remoteGraphStorage(env), authorityId, {
-        include_tombstones: booleanParam(args, "include_tombstones"),
-        object_type: stringParam(args, "object_type") as never,
-        limit: numberParam(args, "limit")
-      })
+      objects
     };
   }
 
@@ -897,31 +1310,52 @@ async function callRemoteMcpTool(name: string, args: unknown, request: Request, 
       throw new Error("invalid-graph-read-request");
     }
     const object = await latestRemoteGraphObject(remoteGraphStorage(env), authorityId, objectId);
-    return object && !object.visible_metadata.tombstone
+    const available = object && !object.visible_metadata.tombstone && !isExpiredReleaseObject(object);
+    await appendRemoteMcpAudit({
+      request,
+      env,
+      authority_id: authorityId,
+      operation: "read",
+      event_type: available ? "object.read" : "object.denied",
+      outcome: available ? "allowed" : "denied",
+      reason_code: available ? undefined : object && isExpiredReleaseObject(object) ? "release-expired" : "object-not-found",
+      object_id: objectId,
+      access_class: object?.access_class,
+      summary: available ? "Remote object read allowed" : "Remote object unavailable"
+    });
+    return available
       ? { ok: true, object }
-      : { ok: false, reason: "object-not-found", authority_id: authorityId, object_id: objectId };
+      : { ok: false, reason: object && isExpiredReleaseObject(object) ? "release-expired" : "object-not-found", authority_id: authorityId, object_id: objectId };
   }
 
   if (name === "remote_graph_create") {
     await requireRemoteMcpSyncToken(request, env);
     const object = recordParam(args, "object");
-    if (!object) {
+    const authorityId = stringParam(object, "authority_id");
+    const objectId = stringParam(object, "object_id");
+    if (!object || !authorityId || !objectId) {
       throw new Error("invalid-graph-create-request");
     }
-    const result = await createRemoteGraphObject(remoteGraphStorage(env), object);
-    const syncBatch = await commitRemoteGraphMutationToSync(
-      request,
-      env,
-      syncMutationFromRemote(result.mutation),
-      result.object,
-      result.previous_version
-    );
-    return {
-      ok: true,
-      ...result,
-      sync_generation: syncBatch.target_generation,
-      sync_batch_id: syncBatch.batch_id
-    };
+    const response = await commitIdempotentRemoteGraphMutation(name, args, request, env, {
+      authority_id: authorityId,
+      object_id: objectId,
+      operation: "create",
+      prepare: () => prepareCreateRemoteGraphObject(remoteGraphStorage(env), object)
+    });
+    if (response.idempotent_replay !== true && isRecord(response.object)) {
+      await appendRemoteMcpAudit({
+        request,
+        env,
+        authority_id: authorityId,
+        operation: response.mutation === "restored" ? "restore" : "create",
+        event_type: response.mutation === "restored" ? "object.restore" : "object.create",
+        object_id: stringParam(response.object, "object_id"),
+        access_class: stringParam(response.object, "access_class") as never,
+        sync_batch_id: stringParam(response, "sync_batch_id"),
+        summary: response.mutation === "restored" ? "Remote object restored" : "Remote object created"
+      });
+    }
+    return response;
   }
 
   if (name === "remote_graph_update") {
@@ -932,20 +1366,26 @@ async function callRemoteMcpTool(name: string, args: unknown, request: Request, 
     if (!authorityId || !objectId || !patch) {
       throw new Error("invalid-graph-update-request");
     }
-    const result = await updateRemoteGraphObject(remoteGraphStorage(env), authorityId, objectId, patch, numberParam(args, "expected_version"));
-    const syncBatch = await commitRemoteGraphMutationToSync(
-      request,
-      env,
-      syncMutationFromRemote(result.mutation),
-      result.object,
-      result.previous_version
-    );
-    return {
-      ok: true,
-      ...result,
-      sync_generation: syncBatch.target_generation,
-      sync_batch_id: syncBatch.batch_id
-    };
+    const response = await commitIdempotentRemoteGraphMutation(name, args, request, env, {
+      authority_id: authorityId,
+      object_id: objectId,
+      operation: "update",
+      prepare: () => prepareUpdateRemoteGraphObject(remoteGraphStorage(env), authorityId, objectId, patch, numberParam(args, "expected_version"))
+    });
+    if (response.idempotent_replay !== true && isRecord(response.object)) {
+      await appendRemoteMcpAudit({
+        request,
+        env,
+        authority_id: authorityId,
+        operation: response.mutation === "deleted" ? "delete" : "update",
+        event_type: response.mutation === "deleted" ? "object.delete" : "object.update",
+        object_id: stringParam(response.object, "object_id"),
+        access_class: stringParam(response.object, "access_class") as never,
+        sync_batch_id: stringParam(response, "sync_batch_id"),
+        summary: response.mutation === "deleted" ? "Remote object deleted" : "Remote object updated"
+      });
+    }
+    return response;
   }
 
   if (name === "remote_graph_delete") {
@@ -955,20 +1395,26 @@ async function callRemoteMcpTool(name: string, args: unknown, request: Request, 
     if (!authorityId || !objectId) {
       throw new Error("invalid-graph-delete-request");
     }
-    const result = await deleteRemoteGraphObject(remoteGraphStorage(env), authorityId, objectId, numberParam(args, "expected_version"));
-    const syncBatch = await commitRemoteGraphMutationToSync(
-      request,
-      env,
-      syncMutationFromRemote(result.mutation),
-      result.object,
-      result.previous_version
-    );
-    return {
-      ok: true,
-      ...result,
-      sync_generation: syncBatch.target_generation,
-      sync_batch_id: syncBatch.batch_id
-    };
+    const response = await commitIdempotentRemoteGraphMutation(name, args, request, env, {
+      authority_id: authorityId,
+      object_id: objectId,
+      operation: "delete",
+      prepare: () => prepareDeleteRemoteGraphObject(remoteGraphStorage(env), authorityId, objectId, numberParam(args, "expected_version"))
+    });
+    if (response.idempotent_replay !== true && isRecord(response.object)) {
+      await appendRemoteMcpAudit({
+        request,
+        env,
+        authority_id: authorityId,
+        operation: "delete",
+        event_type: "object.delete",
+        object_id: stringParam(response.object, "object_id"),
+        access_class: stringParam(response.object, "access_class") as never,
+        sync_batch_id: stringParam(response, "sync_batch_id"),
+        summary: "Remote object deleted"
+      });
+    }
+    return response;
   }
 
   if (name === "remote_semantic_search") {
@@ -978,15 +1424,24 @@ async function callRemoteMcpTool(name: string, args: unknown, request: Request, 
     if (!authorityId || !query) {
       throw new Error("invalid-semantic-search-request");
     }
+    const results = await searchRemoteGraphObjects(remoteGraphStorage(env), authorityId, query, {
+      object_type: stringParam(args, "object_type") as never,
+      limit: numberParam(args, "limit")
+    });
+    await appendRemoteMcpAudit({
+      request,
+      env,
+      authority_id: authorityId,
+      operation: "search",
+      event_type: "sync.read",
+      summary: "Remote search allowed"
+    });
     return {
       ok: true,
       authority_id: authorityId,
       query,
       search_mode: "deterministic-text-v1",
-      results: await searchRemoteGraphObjects(remoteGraphStorage(env), authorityId, query, {
-        object_type: stringParam(args, "object_type") as never,
-        limit: numberParam(args, "limit")
-      })
+      results
     };
   }
 
@@ -1000,15 +1455,25 @@ async function callRemoteMcpTool(name: string, args: unknown, request: Request, 
     const predicates = isRecord(args) && Array.isArray(args.predicates)
       ? args.predicates.filter((value): value is string => typeof value === "string").map(canonicalPredicate)
       : undefined;
+    const traversal = await traverseRemoteGraph(remoteGraphStorage(env), authorityId, startObjectId, {
+      direction: stringParam(args, "direction") as never,
+      max_depth: numberParam(args, "max_depth"),
+      predicates,
+      limit: numberParam(args, "limit")
+    });
+    await appendRemoteMcpAudit({
+      request,
+      env,
+      authority_id: authorityId,
+      operation: "traverse",
+      event_type: "object.read",
+      object_id: startObjectId,
+      summary: "Remote traversal allowed"
+    });
     return {
       ok: true,
       authority_id: authorityId,
-      ...(await traverseRemoteGraph(remoteGraphStorage(env), authorityId, startObjectId, {
-        direction: stringParam(args, "direction") as never,
-        max_depth: numberParam(args, "max_depth"),
-        predicates,
-        limit: numberParam(args, "limit")
-      }))
+      ...traversal
     };
   }
 
@@ -1018,16 +1483,26 @@ async function callRemoteMcpTool(name: string, args: unknown, request: Request, 
     if (!authorityId) {
       throw new Error("invalid-timeline-query-request");
     }
+    const results = await queryRemoteTimeline(remoteGraphStorage(env), authorityId, {
+      from: stringParam(args, "from"),
+      to: stringParam(args, "to"),
+      object_id: stringParam(args, "object_id"),
+      predicate: stringParam(args, "predicate"),
+      limit: numberParam(args, "limit")
+    });
+    await appendRemoteMcpAudit({
+      request,
+      env,
+      authority_id: authorityId,
+      operation: "read",
+      event_type: stringParam(args, "object_id") ? "object.read" : "sync.read",
+      object_id: stringParam(args, "object_id"),
+      summary: "Remote timeline read allowed"
+    });
     return {
       ok: true,
       authority_id: authorityId,
-      results: await queryRemoteTimeline(remoteGraphStorage(env), authorityId, {
-        from: stringParam(args, "from"),
-        to: stringParam(args, "to"),
-        object_id: stringParam(args, "object_id"),
-        predicate: stringParam(args, "predicate"),
-        limit: numberParam(args, "limit")
-      })
+      results
     };
   }
 
@@ -1035,23 +1510,30 @@ async function callRemoteMcpTool(name: string, args: unknown, request: Request, 
     await requireRemoteMcpSyncToken(request, env);
     const authorityId = stringParam(args, "authority_id");
     const edge = recordParam(args, "edge");
-    if (!authorityId || !edge) {
+    const edgeId = stringParam(edge, "edge_id");
+    if (!authorityId || !edge || !edgeId) {
       throw new Error("invalid-edge-create-request");
     }
-    const result = await createRemoteEdgeObject(remoteGraphStorage(env), authorityId, edge);
-    const syncBatch = await commitRemoteGraphMutationToSync(
-      request,
-      env,
-      syncMutationFromRemote(result.mutation),
-      result.object,
-      result.previous_version
-    );
-    return {
-      ok: true,
-      ...result,
-      sync_generation: syncBatch.target_generation,
-      sync_batch_id: syncBatch.batch_id
-    };
+    const response = await commitIdempotentRemoteGraphMutation(name, args, request, env, {
+      authority_id: authorityId,
+      object_id: edgeId,
+      operation: "edge-create",
+      prepare: () => prepareCreateRemoteEdgeObject(remoteGraphStorage(env), authorityId, edge)
+    });
+    if (response.idempotent_replay !== true && isRecord(response.object)) {
+      await appendRemoteMcpAudit({
+        request,
+        env,
+        authority_id: authorityId,
+        operation: response.mutation === "restored" ? "restore" : "create",
+        event_type: response.mutation === "restored" ? "object.restore" : "object.create",
+        object_id: stringParam(response.object, "object_id"),
+        access_class: stringParam(response.object, "access_class") as never,
+        sync_batch_id: stringParam(response, "sync_batch_id"),
+        summary: response.mutation === "restored" ? "Remote edge restored" : "Remote edge created"
+      });
+    }
+    return response;
   }
 
   if (name === "remote_edge_read") {
@@ -1062,6 +1544,18 @@ async function callRemoteMcpTool(name: string, args: unknown, request: Request, 
       throw new Error("invalid-edge-read-request");
     }
     const object = await findRemoteEdgeObject(remoteGraphStorage(env), authorityId, edgeId);
+    await appendRemoteMcpAudit({
+      request,
+      env,
+      authority_id: authorityId,
+      operation: "read",
+      event_type: object && !object.visible_metadata.tombstone ? "object.read" : "object.denied",
+      outcome: object && !object.visible_metadata.tombstone ? "allowed" : "denied",
+      reason_code: object && !object.visible_metadata.tombstone ? undefined : "edge-not-found",
+      object_id: object?.object_id,
+      access_class: object?.access_class,
+      summary: object && !object.visible_metadata.tombstone ? "Remote edge read allowed" : "Remote edge unavailable"
+    });
     return object && !object.visible_metadata.tombstone
       ? { ok: true, object }
       : { ok: false, reason: "edge-not-found", authority_id: authorityId, edge_id: edgeId };
@@ -1075,20 +1569,26 @@ async function callRemoteMcpTool(name: string, args: unknown, request: Request, 
     if (!authorityId || !edgeId || !patch) {
       throw new Error("invalid-edge-update-request");
     }
-    const result = await updateRemoteEdgeObject(remoteGraphStorage(env), authorityId, edgeId, patch, numberParam(args, "expected_version"));
-    const syncBatch = await commitRemoteGraphMutationToSync(
-      request,
-      env,
-      syncMutationFromRemote(result.mutation),
-      result.object,
-      result.previous_version
-    );
-    return {
-      ok: true,
-      ...result,
-      sync_generation: syncBatch.target_generation,
-      sync_batch_id: syncBatch.batch_id
-    };
+    const response = await commitIdempotentRemoteGraphMutation(name, args, request, env, {
+      authority_id: authorityId,
+      object_id: edgeId,
+      operation: "edge-update",
+      prepare: () => prepareUpdateRemoteEdgeObject(remoteGraphStorage(env), authorityId, edgeId, patch, numberParam(args, "expected_version"))
+    });
+    if (response.idempotent_replay !== true && isRecord(response.object)) {
+      await appendRemoteMcpAudit({
+        request,
+        env,
+        authority_id: authorityId,
+        operation: response.mutation === "deleted" ? "delete" : "update",
+        event_type: response.mutation === "deleted" ? "object.delete" : "object.update",
+        object_id: stringParam(response.object, "object_id"),
+        access_class: stringParam(response.object, "access_class") as never,
+        sync_batch_id: stringParam(response, "sync_batch_id"),
+        summary: response.mutation === "deleted" ? "Remote edge deleted" : "Remote edge updated"
+      });
+    }
+    return response;
   }
 
   if (name === "remote_edge_delete") {
@@ -1098,20 +1598,26 @@ async function callRemoteMcpTool(name: string, args: unknown, request: Request, 
     if (!authorityId || !edgeId) {
       throw new Error("invalid-edge-delete-request");
     }
-    const result = await deleteRemoteEdgeObject(remoteGraphStorage(env), authorityId, edgeId, numberParam(args, "expected_version"));
-    const syncBatch = await commitRemoteGraphMutationToSync(
-      request,
-      env,
-      syncMutationFromRemote(result.mutation),
-      result.object,
-      result.previous_version
-    );
-    return {
-      ok: true,
-      ...result,
-      sync_generation: syncBatch.target_generation,
-      sync_batch_id: syncBatch.batch_id
-    };
+    const response = await commitIdempotentRemoteGraphMutation(name, args, request, env, {
+      authority_id: authorityId,
+      object_id: edgeId,
+      operation: "edge-delete",
+      prepare: () => prepareDeleteRemoteEdgeObject(remoteGraphStorage(env), authorityId, edgeId, numberParam(args, "expected_version"))
+    });
+    if (response.idempotent_replay !== true && isRecord(response.object)) {
+      await appendRemoteMcpAudit({
+        request,
+        env,
+        authority_id: authorityId,
+        operation: "delete",
+        event_type: "object.delete",
+        object_id: stringParam(response.object, "object_id"),
+        access_class: stringParam(response.object, "access_class") as never,
+        sync_batch_id: stringParam(response, "sync_batch_id"),
+        summary: "Remote edge deleted"
+      });
+    }
+    return response;
   }
 
   if (name === "remote_sync_status") {
@@ -1124,25 +1630,47 @@ async function callRemoteMcpTool(name: string, args: unknown, request: Request, 
     if (!result.ok) {
       throw new Error(result.reason);
     }
+    if (result.status.authority_id) {
+      await appendRemoteMcpAudit({
+        request,
+        env,
+        authority_id: result.status.authority_id,
+        operation: "read",
+        event_type: "sync.read",
+        summary: "Remote sync status read allowed"
+      });
+    }
     return result.status;
   }
 
   if (name === "remote_sync_pull") {
+    const authorityId = stringParam(args, "authority_id");
     const result = await getSyncPull(
       request.headers.get(syncTokenHeader) ?? undefined,
       syncRuntimeConfig(env),
       env.LA_CONTROL_DB,
-      stringParam(args, "authority_id"),
+      authorityId,
       numberParam(args, "after_generation"),
       syncTokenBinding(request)
     );
     if (!result.ok) {
       throw new Error(result.reason);
     }
+    if (authorityId) {
+      await appendRemoteMcpAudit({
+        request,
+        env,
+        authority_id: authorityId,
+        operation: "read",
+        event_type: "sync.read",
+        summary: "Remote sync pull read allowed"
+      });
+    }
     return result.response;
   }
 
   if (name === "remote_sync_envelopes") {
+    const authorityId = stringParam(args, "authority_id");
     const result = await getSyncEnvelopePull(
       request.headers.get(syncTokenHeader) ?? undefined,
       syncRuntimeConfig(env),
@@ -1150,12 +1678,22 @@ async function callRemoteMcpTool(name: string, args: unknown, request: Request, 
         graphBucket: env.LA_GRAPH_BUCKET,
         controlDb: env.LA_CONTROL_DB
       },
-      stringParam(args, "authority_id"),
+      authorityId,
       numberParam(args, "after_generation"),
       syncTokenBinding(request)
     );
     if (!result.ok) {
       throw new Error(result.reason);
+    }
+    if (authorityId) {
+      await appendRemoteMcpAudit({
+        request,
+        env,
+        authority_id: authorityId,
+        operation: "read",
+        event_type: "sync.read",
+        summary: "Remote sync envelope read allowed"
+      });
     }
     return result.response;
   }
@@ -1201,6 +1739,9 @@ async function routeRemoteMcpRequest(request: Request, env: BootstrapWorkerEnv):
   }
 
   if (body.method === "initialize") {
+    if (!(await hasValidRemoteMcpDiscoveryToken(request, env))) {
+      return jsonRpcError(body.id, -32001, "missing-or-invalid-mcp-token", 401);
+    }
     return jsonRpcResult(body.id, {
       protocolVersion: "2025-06-18",
       serverInfo: {
@@ -1214,12 +1755,31 @@ async function routeRemoteMcpRequest(request: Request, env: BootstrapWorkerEnv):
   }
 
   if (body.method === "tools/list") {
+    if (!(await hasValidRemoteMcpDiscoveryToken(request, env))) {
+      return jsonRpcError(body.id, -32001, "missing-or-invalid-mcp-token", 401);
+    }
     return jsonRpcResult(body.id, {
       tools: [
         {
           name: "remote_access_modes",
           description: "Describe Living Atlas remote-safe, cloud-unlock, and local-keyholding access modes for this request.",
           inputSchema: { type: "object", additionalProperties: false, properties: {} }
+        },
+        {
+          name: "remote_activity_audit",
+          description: "Read recent remote-safe activity and audit events for Praxis. Events expose stable cursors and hashed refs only.",
+          inputSchema: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              authority_id: { type: "string" },
+              operation_id: { type: "string" },
+              trace_id: { type: "string" },
+              event_type: { type: "string" },
+              cursor: { type: "string" },
+              limit: { type: "integer", minimum: 1, maximum: 100 }
+            }
+          }
         },
         {
           name: "remote_sensitive_decrypt",
@@ -1236,7 +1796,7 @@ async function routeRemoteMcpRequest(request: Request, env: BootstrapWorkerEnv):
         },
         {
           name: "remote_graph_status",
-          description: "Read remote-readable graph object counts for an authority.",
+          description: "Read remote-readable graph object counts and sync-envelope reconciliation for an authority.",
           inputSchema: {
             type: "object",
             additionalProperties: false,
@@ -1244,6 +1804,19 @@ async function routeRemoteMcpRequest(request: Request, env: BootstrapWorkerEnv):
             properties: {
               authority_id: { type: "string" },
               include_tombstones: { type: "boolean" },
+              limit: { type: "integer", minimum: 1, maximum: 1000 }
+            }
+          }
+        },
+        {
+          name: "remote_graph_reconcile",
+          description: "Compare the remote-readable graph index with committed sync envelope state for an authority.",
+          inputSchema: {
+            type: "object",
+            additionalProperties: false,
+            required: ["authority_id"],
+            properties: {
+              authority_id: { type: "string" },
               limit: { type: "integer", minimum: 1, maximum: 1000 }
             }
           }
@@ -1278,19 +1851,20 @@ async function routeRemoteMcpRequest(request: Request, env: BootstrapWorkerEnv):
         },
         {
           name: "remote_graph_create",
-          description: "Create one remote-readable plaintext graph object. Local-private and quarantine objects are rejected.",
+          description: "Create one remote-readable plaintext graph object idempotently. Local-private and quarantine objects are rejected.",
           inputSchema: {
             type: "object",
             additionalProperties: false,
             required: ["object"],
             properties: {
-              object: { type: "object" }
+              object: { type: "object" },
+              idempotency_key: { type: "string" }
             }
           }
         },
         {
           name: "remote_graph_update",
-          description: "Update one remote-readable graph object with optimistic version support.",
+          description: "Update one remote-readable graph object idempotently with optimistic version support.",
           inputSchema: {
             type: "object",
             additionalProperties: false,
@@ -1299,13 +1873,14 @@ async function routeRemoteMcpRequest(request: Request, env: BootstrapWorkerEnv):
               authority_id: { type: "string" },
               object_id: { type: "string" },
               expected_version: { type: "integer", minimum: 0 },
+              idempotency_key: { type: "string" },
               patch: { type: "object" }
             }
           }
         },
         {
           name: "remote_graph_delete",
-          description: "Tombstone one remote-readable graph object with optimistic version support.",
+          description: "Tombstone one remote-readable graph object idempotently with optimistic version support.",
           inputSchema: {
             type: "object",
             additionalProperties: false,
@@ -1313,6 +1888,7 @@ async function routeRemoteMcpRequest(request: Request, env: BootstrapWorkerEnv):
             properties: {
               authority_id: { type: "string" },
               object_id: { type: "string" },
+              idempotency_key: { type: "string" },
               expected_version: { type: "integer", minimum: 0 }
             }
           }
@@ -1368,14 +1944,15 @@ async function routeRemoteMcpRequest(request: Request, env: BootstrapWorkerEnv):
         },
         {
           name: "remote_edge_create",
-          description: "Create a typed temporal edge as a remote-readable graph object.",
+          description: "Create a typed temporal edge idempotently as a remote-readable graph object.",
           inputSchema: {
             type: "object",
             additionalProperties: false,
             required: ["authority_id", "edge"],
             properties: {
               authority_id: { type: "string" },
-              edge: { type: "object" }
+              edge: { type: "object" },
+              idempotency_key: { type: "string" }
             }
           }
         },
@@ -1394,7 +1971,7 @@ async function routeRemoteMcpRequest(request: Request, env: BootstrapWorkerEnv):
         },
         {
           name: "remote_edge_update",
-          description: "Update a typed temporal edge by edge_id.",
+          description: "Update a typed temporal edge idempotently by edge_id.",
           inputSchema: {
             type: "object",
             additionalProperties: false,
@@ -1403,13 +1980,14 @@ async function routeRemoteMcpRequest(request: Request, env: BootstrapWorkerEnv):
               authority_id: { type: "string" },
               edge_id: { type: "string" },
               expected_version: { type: "integer", minimum: 0 },
+              idempotency_key: { type: "string" },
               patch: { type: "object" }
             }
           }
         },
         {
           name: "remote_edge_delete",
-          description: "Tombstone a typed temporal edge by edge_id.",
+          description: "Tombstone a typed temporal edge idempotently by edge_id.",
           inputSchema: {
             type: "object",
             additionalProperties: false,
@@ -1417,6 +1995,7 @@ async function routeRemoteMcpRequest(request: Request, env: BootstrapWorkerEnv):
             properties: {
               authority_id: { type: "string" },
               edge_id: { type: "string" },
+              idempotency_key: { type: "string" },
               expected_version: { type: "integer", minimum: 0 }
             }
           }
@@ -1477,7 +2056,7 @@ async function routeRemoteMcpRequest(request: Request, env: BootstrapWorkerEnv):
               max_r2_objects: { type: "integer", minimum: 1, maximum: 100000 }
             }
           }
-        }
+        },
       ]
     });
   }

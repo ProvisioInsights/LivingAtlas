@@ -5,8 +5,10 @@ import {
   isRemoteReadableAccessClass,
   type GraphObjectEnvelope,
   type ObjectType,
+  type SyncStatus,
   type TemporalEdge
 } from "@living-atlas/contracts";
+import { readSyncEnvelopePull, readSyncStatus } from "./sync-storage";
 
 export type RemoteGraphObjectStore = {
   get(key: string): Promise<{ text(): Promise<string> } | null>;
@@ -79,6 +81,48 @@ export type RemoteGraphTimelineResult = {
   field: string;
 };
 
+export type RemoteGraphWriteOperation = "create" | "update" | "delete" | "restore" | "edge-create" | "edge-update" | "edge-delete";
+
+export type RemoteGraphWriteStage =
+  | {
+      status: "staged";
+      idempotency_key: string;
+      created_at: string;
+    }
+  | {
+      status: "committed";
+      idempotency_key: string;
+      response: Record<string, unknown>;
+    };
+
+export type RemoteGraphReconciliation = {
+  ok: true;
+  authority_id: string;
+  reconciliation_schema: "living-atlas-remote-graph-reconciliation:v1";
+  decision: "reconciled" | "drift-detected";
+  remote_graph_index: {
+    indexed_versions: number;
+    latest_object_count: number;
+    active_object_count: number;
+    tombstone_count: number;
+  };
+  sync_envelopes: Pick<SyncStatus, "latest_generation" | "latest_batch_id" | "object_count" | "change_count" | "latest_withheld_plaintext_count"> & {
+    remote_readable_object_versions: number;
+    truncated: boolean;
+  };
+  drift: {
+    remote_graph_versions_missing_sync_envelope: number;
+    remote_readable_sync_versions_missing_remote_graph_index: number;
+    samples: Array<{
+      kind: "remote-graph-missing-sync-envelope" | "sync-envelope-missing-remote-graph";
+      object_id: string;
+      version: number;
+      object_type: ObjectType;
+      access_class: string;
+    }>;
+  };
+};
+
 const MaxGraphListLimit = 1000;
 const textEncoder = new TextEncoder();
 
@@ -107,6 +151,23 @@ CREATE TABLE IF NOT EXISTS remote_graph_objects (
   PRIMARY KEY (object_ref, version)
 )`;
 
+const RemoteGraphWritesSql = `
+CREATE TABLE IF NOT EXISTS remote_graph_writes (
+  idempotency_key TEXT PRIMARY KEY,
+  request_hash TEXT NOT NULL,
+  authority_ref TEXT NOT NULL,
+  object_ref TEXT,
+  operation TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('staged', 'committed', 'failed')),
+  sync_batch_id TEXT,
+  sync_generation INTEGER,
+  response_json TEXT,
+  failure_reason TEXT,
+  created_at TEXT NOT NULL,
+  committed_at TEXT,
+  last_seen_at TEXT NOT NULL
+)`;
+
 const RemoteGraphIndexSql = [
   "CREATE INDEX IF NOT EXISTS idx_remote_graph_authority_object ON remote_graph_objects (authority_ref, object_ref, version)",
   "CREATE INDEX IF NOT EXISTS idx_remote_graph_authority_updated ON remote_graph_objects (authority_ref, updated_at)",
@@ -114,11 +175,13 @@ const RemoteGraphIndexSql = [
   "CREATE INDEX IF NOT EXISTS idx_remote_graph_authority_edge ON remote_graph_objects (authority_ref, edge_ref, version)",
   "CREATE INDEX IF NOT EXISTS idx_remote_graph_authority_source ON remote_graph_objects (authority_ref, source_ref, predicate)",
   "CREATE INDEX IF NOT EXISTS idx_remote_graph_authority_target ON remote_graph_objects (authority_ref, target_ref, predicate)",
-  "CREATE INDEX IF NOT EXISTS idx_remote_graph_authority_timeline ON remote_graph_objects (authority_ref, timeline_start)"
+  "CREATE INDEX IF NOT EXISTS idx_remote_graph_authority_timeline ON remote_graph_objects (authority_ref, timeline_start)",
+  "CREATE INDEX IF NOT EXISTS idx_remote_graph_writes_authority_status ON remote_graph_writes (authority_ref, status, created_at)"
 ];
 
 export const RemoteGraphD1SchemaStatements = [
   RemoteGraphObjectsSql,
+  RemoteGraphWritesSql,
   ...RemoteGraphIndexSql
 ];
 
@@ -169,6 +232,17 @@ function textFromValue(value: unknown): string {
       .join(" ");
   }
   return "";
+}
+
+function parseStoredResponse(value: string | null | undefined): Record<string, unknown> {
+  if (!value) {
+    throw new Error("remote-write-missing-response");
+  }
+  const parsed = JSON.parse(value) as unknown;
+  if (!isRecord(parsed)) {
+    throw new Error("remote-write-invalid-response");
+  }
+  return parsed;
 }
 
 function plaintextData(object: GraphObjectEnvelope): Record<string, unknown> | undefined {
@@ -246,6 +320,14 @@ function objectAllowedForRemoteGraph(object: GraphObjectEnvelope): boolean {
   return true;
 }
 
+export function isExpiredReleaseObject(object: GraphObjectEnvelope, now = Date.now()): boolean {
+  if (object.access_class !== "release") {
+    return false;
+  }
+  const expiresAt = object.visible_metadata.release_expires_at;
+  return !!expiresAt && Date.parse(expiresAt) <= now;
+}
+
 async function remoteGraphEnvelopeR2Key(object: GraphObjectEnvelope): Promise<string> {
   const authority = (await sha256Hex(object.authority_id)).slice(0, 16);
   const segment = (await sha256Hex([
@@ -256,6 +338,162 @@ async function remoteGraphEnvelopeR2Key(object: GraphObjectEnvelope): Promise<st
     object.content_hash
   ].join(":"))).slice(0, 40);
   return `remote-graph/a=${authority}/p=${segment.slice(0, 2)}/s=${segment}.json`;
+}
+
+type RemoteGraphWriteRow = {
+  idempotency_key: string;
+  request_hash: string;
+  status: "staged" | "committed" | "failed";
+  response_json?: string | null;
+  failure_reason?: string | null;
+  created_at: string;
+};
+
+async function readRemoteGraphWrite(controlDb: RemoteGraphMetadataStore, idempotencyKey: string): Promise<RemoteGraphWriteRow | undefined> {
+  const row = await controlDb.prepare(`
+SELECT idempotency_key, request_hash, status, response_json, failure_reason, created_at
+FROM remote_graph_writes
+WHERE idempotency_key = ?
+LIMIT 1`).bind(idempotencyKey).first<RemoteGraphWriteRow>();
+  return row ?? undefined;
+}
+
+export async function stageRemoteGraphWrite(
+  storage: RemoteGraphStorageBindings,
+  input: {
+    idempotency_key: string;
+    request_hash: string;
+    authority_id: string;
+    object_id?: string;
+    operation: RemoteGraphWriteOperation;
+  }
+): Promise<RemoteGraphWriteStage> {
+  await ensureRemoteGraphTables(storage.controlDb);
+  const existing = await readRemoteGraphWrite(storage.controlDb, input.idempotency_key);
+  if (existing) {
+    await storage.controlDb.prepare(`
+UPDATE remote_graph_writes
+SET last_seen_at = ?
+WHERE idempotency_key = ?`).bind(new Date().toISOString(), input.idempotency_key).run();
+
+    if (existing.request_hash !== input.request_hash) {
+      throw new Error("remote-write-idempotency-conflict");
+    }
+    if (existing.status === "committed") {
+      return {
+        status: "committed",
+        idempotency_key: input.idempotency_key,
+        response: parseStoredResponse(existing.response_json)
+      };
+    }
+    if (existing.status === "failed") {
+      throw new Error(existing.failure_reason || "remote-write-failed");
+    }
+    return {
+      status: "staged",
+      idempotency_key: input.idempotency_key,
+      created_at: existing.created_at
+    };
+  }
+
+  const now = new Date().toISOString();
+  await storage.controlDb.prepare(`
+INSERT OR IGNORE INTO remote_graph_writes (
+  idempotency_key,
+  request_hash,
+  authority_ref,
+  object_ref,
+  operation,
+  status,
+  sync_batch_id,
+  sync_generation,
+  response_json,
+  failure_reason,
+  created_at,
+  committed_at,
+  last_seen_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(
+    input.idempotency_key,
+    input.request_hash,
+    await opaqueRef(input.authority_id),
+    input.object_id ? await opaqueRef(input.object_id) : null,
+    input.operation,
+    "staged",
+    null,
+    null,
+    null,
+    null,
+    now,
+    null,
+    now
+  ).run();
+
+  const staged = await readRemoteGraphWrite(storage.controlDb, input.idempotency_key);
+  if (!staged || staged.request_hash !== input.request_hash) {
+    throw new Error("remote-write-idempotency-conflict");
+  }
+  if (staged.status !== "staged" || staged.created_at !== now) {
+    throw new Error(staged.status === "committed" ? "remote-write-committed-before-stage" : "remote-write-in-flight");
+  }
+
+  return {
+    status: "staged",
+    idempotency_key: input.idempotency_key,
+    created_at: now
+  };
+}
+
+export async function commitRemoteGraphWrite(
+  storage: RemoteGraphStorageBindings,
+  input: {
+    idempotency_key: string;
+    request_hash: string;
+    sync_batch_id: string;
+    sync_generation: number;
+    response: Record<string, unknown>;
+  }
+): Promise<void> {
+  const now = new Date().toISOString();
+  await storage.controlDb.prepare(`
+UPDATE remote_graph_writes
+SET status = 'committed',
+    sync_batch_id = ?,
+    sync_generation = ?,
+    response_json = ?,
+    failure_reason = NULL,
+    committed_at = ?,
+    last_seen_at = ?
+WHERE idempotency_key = ? AND request_hash = ? AND status = 'staged'`).bind(
+    input.sync_batch_id,
+    input.sync_generation,
+    JSON.stringify(input.response),
+    now,
+    now,
+    input.idempotency_key,
+    input.request_hash
+  ).run();
+}
+
+export async function failRemoteGraphWrite(
+  storage: RemoteGraphStorageBindings,
+  input: {
+    idempotency_key: string;
+    request_hash: string;
+    reason: string;
+  }
+): Promise<void> {
+  const now = new Date().toISOString();
+  await storage.controlDb.prepare(`
+UPDATE remote_graph_writes
+SET status = 'failed',
+    failure_reason = ?,
+    last_seen_at = ?
+WHERE idempotency_key = ? AND request_hash = ? AND status = 'staged'`).bind(
+    input.reason,
+    now,
+    input.idempotency_key,
+    input.request_hash
+  ).run();
 }
 
 async function storeRemoteGraphObject(storage: RemoteGraphStorageBindings, object: GraphObjectEnvelope): Promise<void> {
@@ -282,7 +520,7 @@ async function storeRemoteGraphObject(storage: RemoteGraphStorageBindings, objec
   });
 
   await storage.controlDb.prepare(`
-INSERT OR REPLACE INTO remote_graph_objects (
+INSERT INTO remote_graph_objects (
   object_ref,
   authority_ref,
   version,
@@ -325,6 +563,13 @@ INSERT OR REPLACE INTO remote_graph_objects (
     searchText(object),
     new Date().toISOString()
   ).run();
+}
+
+export async function storePreparedRemoteGraphMutation(
+  storage: RemoteGraphStorageBindings,
+  result: RemoteGraphMutationResult
+): Promise<void> {
+  await storeRemoteGraphObject(storage, result.object);
 }
 
 async function loadObject(storage: RemoteGraphStorageBindings, key: string): Promise<GraphObjectEnvelope> {
@@ -386,6 +631,9 @@ LIMIT ?`).bind(await opaqueRef(authorityId), boundedLimit(options.limit) * 5).al
   const objects: GraphObjectEnvelope[] = [];
   for (const row of latestRows.values()) {
     const object = await loadObject(storage, row.envelope_r2_key);
+    if (isExpiredReleaseObject(object)) {
+      continue;
+    }
     if (!options.include_tombstones && object.visible_metadata.tombstone) {
       continue;
     }
@@ -400,7 +648,7 @@ LIMIT ?`).bind(await opaqueRef(authorityId), boundedLimit(options.limit) * 5).al
   return objects.sort((left, right) => right.updated_at.localeCompare(left.updated_at) || left.object_id.localeCompare(right.object_id));
 }
 
-export async function createRemoteGraphObject(
+export async function prepareCreateRemoteGraphObject(
   storage: RemoteGraphStorageBindings,
   input: unknown
 ): Promise<RemoteGraphMutationResult> {
@@ -410,7 +658,6 @@ export async function createRemoteGraphObject(
   if (existing && !existing.visible_metadata.tombstone) {
     throw new Error("object-already-exists");
   }
-  await storeRemoteGraphObject(storage, object);
   return {
     mutation: existing ? "restored" : "created",
     object,
@@ -419,7 +666,16 @@ export async function createRemoteGraphObject(
   };
 }
 
-export async function updateRemoteGraphObject(
+export async function createRemoteGraphObject(
+  storage: RemoteGraphStorageBindings,
+  input: unknown
+): Promise<RemoteGraphMutationResult> {
+  const result = await prepareCreateRemoteGraphObject(storage, input);
+  await storePreparedRemoteGraphMutation(storage, result);
+  return result;
+}
+
+export async function prepareUpdateRemoteGraphObject(
   storage: RemoteGraphStorageBindings,
   authorityId: string,
   objectId: string,
@@ -454,7 +710,6 @@ export async function updateRemoteGraphObject(
     payload: patch.payload ?? existing.payload,
     content_hash: typeof patch.content_hash === "string" ? patch.content_hash : await sha256Hash(JSON.stringify(patch.payload ?? existing.payload))
   });
-  await storeRemoteGraphObject(storage, merged);
   return {
     mutation: merged.visible_metadata.tombstone ? "deleted" : "updated",
     object: merged,
@@ -463,13 +718,25 @@ export async function updateRemoteGraphObject(
   };
 }
 
-export async function deleteRemoteGraphObject(
+export async function updateRemoteGraphObject(
+  storage: RemoteGraphStorageBindings,
+  authorityId: string,
+  objectId: string,
+  patch: unknown,
+  expectedVersion?: number
+): Promise<RemoteGraphMutationResult> {
+  const result = await prepareUpdateRemoteGraphObject(storage, authorityId, objectId, patch, expectedVersion);
+  await storePreparedRemoteGraphMutation(storage, result);
+  return result;
+}
+
+export async function prepareDeleteRemoteGraphObject(
   storage: RemoteGraphStorageBindings,
   authorityId: string,
   objectId: string,
   expectedVersion?: number
 ): Promise<RemoteGraphMutationResult> {
-  return updateRemoteGraphObject(
+  return prepareUpdateRemoteGraphObject(
     storage,
     authorityId,
     objectId,
@@ -479,6 +746,17 @@ export async function deleteRemoteGraphObject(
     },
     expectedVersion
   );
+}
+
+export async function deleteRemoteGraphObject(
+  storage: RemoteGraphStorageBindings,
+  authorityId: string,
+  objectId: string,
+  expectedVersion?: number
+): Promise<RemoteGraphMutationResult> {
+  const result = await prepareDeleteRemoteGraphObject(storage, authorityId, objectId, expectedVersion);
+  await storePreparedRemoteGraphMutation(storage, result);
+  return result;
 }
 
 export async function searchRemoteGraphObjects(
@@ -600,7 +878,111 @@ export async function queryRemoteTimeline(
     .slice(0, boundedLimit(options.limit));
 }
 
-export async function createRemoteEdgeObject(
+export async function reconcileRemoteGraph(
+  storage: RemoteGraphStorageBindings,
+  authorityId: string,
+  options: { limit?: number } = {}
+): Promise<RemoteGraphReconciliation> {
+  await ensureRemoteGraphTables(storage.controlDb);
+  const authorityRef = await opaqueRef(authorityId);
+  const limit = boundedLimit(options.limit) * 5;
+  const indexRows = (await storage.controlDb.prepare(`
+SELECT object_ref, version, envelope_r2_key
+FROM remote_graph_objects
+WHERE authority_ref = ?
+ORDER BY object_ref ASC, version DESC
+LIMIT ?`).bind(authorityRef, limit).all?.<RemoteGraphObjectRow>())?.results ?? [];
+  const indexedVersions = new Set(indexRows.map((row) => `${row.object_ref}:${row.version}`));
+  const latestRows = new Map<string, RemoteGraphObjectRow>();
+  for (const row of indexRows) {
+    if (!latestRows.has(row.object_ref)) {
+      latestRows.set(row.object_ref, row);
+    }
+  }
+
+  const latestObjects: GraphObjectEnvelope[] = [];
+  for (const row of latestRows.values()) {
+    latestObjects.push(await loadObject(storage, row.envelope_r2_key));
+  }
+
+  const syncStatus = await readSyncStatus(storage.controlDb, authorityId);
+  const syncPull = await readSyncEnvelopePull(storage, authorityId, 0, 50);
+  const syncRemoteReadableEntries = syncPull.objects.filter((entry) => objectAllowedForRemoteGraph(entry.object));
+  const syncRemoteReadableVersionRefs = new Set<string>();
+  for (const entry of syncRemoteReadableEntries) {
+    syncRemoteReadableVersionRefs.add(`${await opaqueRef(entry.object.object_id)}:${entry.object.version}`);
+  }
+
+  const samples: RemoteGraphReconciliation["drift"]["samples"] = [];
+  let missingSyncCount = 0;
+  for (const row of indexRows) {
+    if (syncRemoteReadableVersionRefs.has(`${row.object_ref}:${row.version}`)) {
+      continue;
+    }
+    missingSyncCount += 1;
+    if (samples.length < 10) {
+      const object = await loadObject(storage, row.envelope_r2_key);
+      samples.push({
+        kind: "remote-graph-missing-sync-envelope",
+        object_id: object.object_id,
+        version: object.version,
+        object_type: object.object_type,
+        access_class: object.access_class
+      });
+    }
+  }
+
+  let missingRemoteCount = 0;
+  for (const entry of syncRemoteReadableEntries) {
+    const ref = `${await opaqueRef(entry.object.object_id)}:${entry.object.version}`;
+    if (indexedVersions.has(ref)) {
+      continue;
+    }
+    missingRemoteCount += 1;
+    if (samples.length < 10) {
+      samples.push({
+        kind: "sync-envelope-missing-remote-graph",
+        object_id: entry.object.object_id,
+        version: entry.object.version,
+        object_type: entry.object.object_type,
+        access_class: entry.object.access_class
+      });
+    }
+  }
+
+  const activeObjectCount = latestObjects.filter((object) => !object.visible_metadata.tombstone && !isExpiredReleaseObject(object)).length;
+  const tombstoneCount = latestObjects.filter((object) => object.visible_metadata.tombstone).length;
+  const decision = missingSyncCount === 0 && missingRemoteCount === 0 ? "reconciled" : "drift-detected";
+
+  return {
+    ok: true,
+    authority_id: authorityId,
+    reconciliation_schema: "living-atlas-remote-graph-reconciliation:v1",
+    decision,
+    remote_graph_index: {
+      indexed_versions: indexRows.length,
+      latest_object_count: latestObjects.length,
+      active_object_count: activeObjectCount,
+      tombstone_count: tombstoneCount
+    },
+    sync_envelopes: {
+      latest_generation: syncStatus.latest_generation,
+      latest_batch_id: syncStatus.latest_batch_id,
+      object_count: syncStatus.object_count,
+      change_count: syncStatus.change_count,
+      latest_withheld_plaintext_count: syncStatus.latest_withheld_plaintext_count,
+      remote_readable_object_versions: syncRemoteReadableEntries.length,
+      truncated: syncPull.has_more
+    },
+    drift: {
+      remote_graph_versions_missing_sync_envelope: missingSyncCount,
+      remote_readable_sync_versions_missing_remote_graph_index: missingRemoteCount,
+      samples
+    }
+  };
+}
+
+export async function prepareCreateRemoteEdgeObject(
   storage: RemoteGraphStorageBindings,
   authorityId: string,
   input: unknown
@@ -629,7 +1011,17 @@ export async function createRemoteEdgeObject(
       data: edge
     }
   });
-  return createRemoteGraphObject(storage, object);
+  return prepareCreateRemoteGraphObject(storage, object);
+}
+
+export async function createRemoteEdgeObject(
+  storage: RemoteGraphStorageBindings,
+  authorityId: string,
+  input: unknown
+): Promise<RemoteGraphMutationResult> {
+  const result = await prepareCreateRemoteEdgeObject(storage, authorityId, input);
+  await storePreparedRemoteGraphMutation(storage, result);
+  return result;
 }
 
 export async function findRemoteEdgeObject(
@@ -647,7 +1039,7 @@ LIMIT 1`).bind(await opaqueRef(authorityId), await opaqueRef(edgeId)).first<Remo
   return row ? loadObject(storage, row.envelope_r2_key) : undefined;
 }
 
-export async function updateRemoteEdgeObject(
+export async function prepareUpdateRemoteEdgeObject(
   storage: RemoteGraphStorageBindings,
   authorityId: string,
   edgeId: string,
@@ -666,7 +1058,7 @@ export async function updateRemoteEdgeObject(
     ...existingEdge,
     ...(isRecord(patch) ? patch : {})
   });
-  return updateRemoteGraphObject(storage, authorityId, existing.object_id, {
+  return prepareUpdateRemoteGraphObject(storage, authorityId, existing.object_id, {
     payload: {
       kind: "plaintext-json",
       data: updatedEdge
@@ -675,7 +1067,19 @@ export async function updateRemoteEdgeObject(
   }, expectedVersion);
 }
 
-export async function deleteRemoteEdgeObject(
+export async function updateRemoteEdgeObject(
+  storage: RemoteGraphStorageBindings,
+  authorityId: string,
+  edgeId: string,
+  patch: unknown,
+  expectedVersion?: number
+): Promise<RemoteGraphMutationResult> {
+  const result = await prepareUpdateRemoteEdgeObject(storage, authorityId, edgeId, patch, expectedVersion);
+  await storePreparedRemoteGraphMutation(storage, result);
+  return result;
+}
+
+export async function prepareDeleteRemoteEdgeObject(
   storage: RemoteGraphStorageBindings,
   authorityId: string,
   edgeId: string,
@@ -685,7 +1089,18 @@ export async function deleteRemoteEdgeObject(
   if (!existing) {
     throw new Error("edge-not-found");
   }
-  return deleteRemoteGraphObject(storage, authorityId, existing.object_id, expectedVersion);
+  return prepareDeleteRemoteGraphObject(storage, authorityId, existing.object_id, expectedVersion);
+}
+
+export async function deleteRemoteEdgeObject(
+  storage: RemoteGraphStorageBindings,
+  authorityId: string,
+  edgeId: string,
+  expectedVersion?: number
+): Promise<RemoteGraphMutationResult> {
+  const result = await prepareDeleteRemoteEdgeObject(storage, authorityId, edgeId, expectedVersion);
+  await storePreparedRemoteGraphMutation(storage, result);
+  return result;
 }
 
 export function canonicalPredicate(input: string): string {

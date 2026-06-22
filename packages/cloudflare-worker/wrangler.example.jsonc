@@ -71,12 +71,14 @@
     "LA_OBSERVABILITY_ANALYTICS_DATASET": "living_atlas_operational_metrics_example",
     "LA_OBSERVABILITY_LOG_SAMPLE_RATE": "1",
     "LA_OBSERVABILITY_RETENTION_DAYS": "30",
+    "LA_STEALTH_MODE": "1",
     "LA_USAGE_PROVIDER": "cloudflare",
     "LA_USAGE_PLAN": "free",
     "LA_USAGE_WINDOW_HOURS": "24",
     "LA_USAGE_BUDGETS_JSON": "{\"services\":{\"workers\":{\"requests\":100000},\"d1\":{\"window_estimated_rows_written\":100000},\"r2\":{\"estimated_stored_bytes\":10737418240,\"window_class_a_operations_estimate\":1000000},\"kv\":{\"reads\":100000,\"writes\":1000,\"deletes\":1000,\"lists\":1000},\"durable_objects\":{\"window_estimated_rows_written\":100000}}}",
     "LA_SYNC_CLIENT_ID": "la_client_sync0001",
     "LA_SYNC_CAPABILITY_ID": "la_cap_sync0001",
-    "LA_SYNC_TOKEN_ID": "synthetic-sync-token-1"
+    "LA_SYNC_TOKEN_ID": "synthetic-sync-token-1",
+    "LA_CLOUD_UNLOCK_CAPABILITY_ID": "la_cap_cloudunlock0001"
   }
 }

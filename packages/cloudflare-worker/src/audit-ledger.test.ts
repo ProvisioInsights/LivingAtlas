@@ -2,12 +2,16 @@ import { describe, expect, it } from "vitest";
 import type { DurableAuditEvent } from "@living-atlas/contracts";
 import {
   appendAuditEvent,
+  readPraxisActivityAuditStream,
   readAuditLedgerEvents,
   type AuditLedgerMetadataStore,
   type StoredAuditLedgerEvent
 } from "./audit-ledger";
+import { sha256TokenHash } from "./bootstrap";
+import { handleBootstrapRequest, type BootstrapWorkerEnv } from "./worker";
 
 const timestamp = "2026-06-22T12:00:00.000Z";
+const syncToken = "fixture-sync-token-0001";
 
 type D1RunRecord = {
   query: string;
@@ -91,8 +95,17 @@ class FakePreparedStatement {
   async all<T = Record<string, unknown>>(): Promise<D1Result<T>> {
     if (this.query.includes("FROM audit_events")) {
       const limit = Number(this.bindings.at(-1));
+      const cursorIndex = this.query.includes("recorded_at < ?") ? this.bindings.length - 4 : -1;
+      const cursorRecordedAt = cursorIndex >= 0 ? String(this.bindings[cursorIndex]) : undefined;
+      const cursorAuditId = cursorIndex >= 0 ? String(this.bindings[cursorIndex + 2]) : undefined;
       return fakeD1Result<T>(
         this.auditRows()
+          .filter((row) => {
+            if (!cursorRecordedAt || !cursorAuditId) {
+              return true;
+            }
+            return row.recorded_at < cursorRecordedAt || (row.recorded_at === cursorRecordedAt && row.audit_id < cursorAuditId);
+          })
           .sort((left, right) => right.recorded_at.localeCompare(left.recorded_at) || right.audit_id.localeCompare(left.audit_id))
           .slice(0, limit) as T[]
       );
@@ -118,6 +131,19 @@ class FakeD1Database implements AuditLedgerMetadataStore {
   prepare(query: string): FakePreparedStatement {
     return new FakePreparedStatement(this.records, query);
   }
+}
+
+async function createEnv(controlDb = new FakeD1Database()): Promise<BootstrapWorkerEnv> {
+  return {
+    BOOTSTRAP_CLAIM_LOCK: {
+      getByName: () => {
+        throw new Error("bootstrap lock should not be used by audit tests");
+      }
+    },
+    LA_GRAPH_BUCKET: {} as R2Bucket,
+    LA_CONTROL_DB: controlDb as unknown as D1Database,
+    LA_SYNC_TOKEN_HASH: await sha256TokenHash(syncToken)
+  };
 }
 
 function auditEvent(overrides: Partial<DurableAuditEvent> = {}): DurableAuditEvent {
@@ -219,5 +245,116 @@ describe("Cloudflare audit ledger", () => {
     }))).rejects.toThrow(/plaintext, ciphertext, secret, token, or payload/);
 
     expect(controlDb.records.filter((record) => record.query.includes("INSERT INTO audit_events"))).toHaveLength(0);
+  });
+
+  it("returns a bounded Praxis stream with stable cursors and hashed refs only", async () => {
+    const controlDb = new FakeD1Database();
+    await appendAuditEvent(controlDb, auditEvent({
+      audit_id: "la_audit_worker0001",
+      recorded_at: "2026-06-22T12:00:00.000Z",
+      summary: "Remote object read allowed"
+    }));
+    await appendAuditEvent(controlDb, auditEvent({
+      audit_id: "la_audit_worker0002",
+      operation_id: "la_operation_audit0002",
+      recorded_at: "2026-06-22T12:01:00.000Z",
+      event_type: "object.denied",
+      outcome: "denied",
+      reason_code: "remote-sensitive-unavailable",
+      object_id: "la_object_privateaudit0001",
+      access_class: "local-private",
+      summary: "Remote object unavailable"
+    }));
+    await appendAuditEvent(controlDb, auditEvent({
+      audit_id: "la_audit_worker0003",
+      operation_id: "la_operation_audit0003",
+      recorded_at: "2026-06-22T12:02:00.000Z",
+      event_type: "sync.read",
+      operation: "sync-read",
+      object_id: undefined,
+      access_class: undefined,
+      summary: "Remote sync status read"
+    }));
+
+    const first = await readPraxisActivityAuditStream(controlDb, { limit: 2 });
+    expect(first).toMatchObject({
+      stream_schema: "living-atlas-praxis-activity-audit-stream:v1",
+      ok: true,
+      limit: 2,
+      has_more: true
+    });
+    expect(first.events.map((event) => event.audit.audit_id)).toEqual(["la_audit_worker0003", "la_audit_worker0002"]);
+    expect(first.events[1]!.policy_decision).toBe("deny");
+    expect(first.events[0]!.crud).toBe("sync-pull");
+    expect(first.next_cursor).toBe(first.events[1]!.cursor);
+
+    const next = await readPraxisActivityAuditStream(controlDb, { cursor: first.next_cursor!, limit: 2 });
+    expect(next.events.map((event) => event.audit.audit_id)).toEqual(["la_audit_worker0001"]);
+    expect(next.has_more).toBe(false);
+    expect(next.next_cursor).toBeNull();
+
+    const serialized = JSON.stringify(first);
+    expect(serialized).not.toContain("la_authority_audit0001");
+    expect(serialized).not.toContain("fixture-actor-secret-token-0001");
+    expect(serialized).not.toContain("la_object_privateaudit0001");
+    expect(serialized).not.toContain("wrapped-key-ciphertext-fixture");
+    expect(first.events.every((event) => event.refs.authority_ref.startsWith("sha256:"))).toBe(true);
+  });
+
+  it("serves the Praxis stream over token-gated HTTP and MCP routes", async () => {
+    const controlDb = new FakeD1Database();
+    await appendAuditEvent(controlDb, auditEvent({
+      audit_id: "la_audit_worker0006",
+      operation_id: "la_operation_audit0006",
+      summary: "Remote object read allowed"
+    }));
+    const env = await createEnv(controlDb);
+
+    const missingToken = await handleBootstrapRequest(new Request("https://living-atlas.example/api/activity/audit"), env);
+    expect(missingToken.status).toBe(401);
+
+    const queryToken = await handleBootstrapRequest(new Request("https://living-atlas.example/api/audit/recent?sync_token=secret"), env);
+    expect(queryToken.status).toBe(400);
+
+    const response = await handleBootstrapRequest(new Request("https://living-atlas.example/api/audit/recent?limit=1", {
+      headers: { "x-living-atlas-sync-token": syncToken }
+    }), env);
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      stream_schema: "living-atlas-praxis-activity-audit-stream:v1",
+      ok: true,
+      events: [
+        {
+          audit: {
+            audit_id: "la_audit_worker0006"
+          }
+        }
+      ]
+    });
+
+    const mcpResponse = await handleBootstrapRequest(new Request("https://living-atlas.example/mcp", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-living-atlas-sync-token": syncToken
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: {
+          name: "remote_activity_audit",
+          arguments: {
+            limit: 1
+          }
+        }
+      })
+    }), env);
+    expect(mcpResponse.status).toBe(200);
+    const mcpBody = await mcpResponse.json() as { result?: { structuredContent?: unknown } };
+    expect(mcpBody.result?.structuredContent).toMatchObject({
+      stream_schema: "living-atlas-praxis-activity-audit-stream:v1",
+      ok: true
+    });
   });
 });

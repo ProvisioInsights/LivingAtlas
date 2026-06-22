@@ -43,6 +43,12 @@ importers:
         specifier: workspace:*
         version: link:../leakage
 
+  packages/atlas-client:
+    dependencies:
+      '@living-atlas/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+
   packages/check:
     dependencies:
       '@living-atlas/contracts':

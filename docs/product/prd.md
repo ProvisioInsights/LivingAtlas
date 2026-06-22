@@ -143,7 +143,7 @@ Access must be governed by capability and location:
 | Context | Expected Authority |
 |---|---|
 | Trusted laptop local MCP | Full authorized graph CRUD, subject to local safety guards |
-| Trusted laptop Atlas UI | Full authorized read/inspect; writes through MCP/policy |
+| Trusted laptop Praxis UI/client | Full authorized read/inspect through Atlas APIs; writes through MCP/policy |
 | Cloudflare remote MCP | CRUD on remote-readable objects; sensitive ciphertext custody only |
 | Keyholding remote/browser client | Client-side encrypted sensitive CRUD where explicitly supported |
 | Cloudflare object store | Complete graph bytes; sensitive payloads ciphertext |
@@ -222,10 +222,10 @@ Reads by remote providers are first-class audit events. They are not passive.
   paths.
 - Track sync cursors and conflicts without storing private plaintext remotely.
 
-### Atlas UI
+### Praxis UI/Client
 
-- Show graph overview, source detail, temporal scrubber, activity ledger,
-  policy visibility, and review queues.
+- Render graph overview, source detail, temporal scrubber, activity ledger,
+  policy visibility, and review queues from Atlas APIs.
 - Make it obvious whether the current view is full-local or remote-filtered.
 - Show recent CRUD operations and remote read attempts.
 - Provide drilldown from a visible graph fact to source, provenance, and ledger

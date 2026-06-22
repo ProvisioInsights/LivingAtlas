@@ -9,6 +9,7 @@ import {
   LiveActivityEventSchema,
   LocalControlStateSchema,
   OperationalEventSchema,
+  PraxisActivityAuditStreamResponseSchema,
   SyncBatchSchema,
   SyncPullRecoverySchema,
   SyncStatusSchema,
@@ -542,6 +543,58 @@ describe("live activity contract", () => {
     });
 
     expect(parsed.visibility.redacted).toBe(true);
+  });
+
+  it("accepts remote-safe audit streams with hashed refs and bounded cursors", () => {
+    const parsed = PraxisActivityAuditStreamResponseSchema.parse({
+      stream_schema: "living-atlas-praxis-activity-audit-stream:v1",
+      ok: true,
+      limit: 1,
+      has_more: true,
+      next_cursor: "1771473600000:la_audit_contract0001",
+      events: [
+        {
+          event_schema: "living-atlas-praxis-activity-audit-event:v1",
+          event_id: "la_event_contract0001",
+          cursor: "1771473600000:la_audit_contract0001",
+          recorded_at: timestamp,
+          plane: "remote",
+          crud: "read",
+          policy_decision: "allow",
+          operation_id: "la_operation_contract0001",
+          trace_id: "la_trace_contract0001",
+          summary: "Remote object read allowed",
+          visibility: {
+            mode: "remote_safe",
+            contains_sensitive: false,
+            redacted: true
+          },
+          audit: {
+            audit_id: "la_audit_contract0001",
+            event_type: "object.read",
+            outcome: "allowed",
+            reason_code: null,
+            mcp_profile: "remote-safe",
+            operation: "read",
+            access_class: "remote-safe",
+            redaction: "remote-redacted",
+            event_hash: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            previous_event_hash: null
+          },
+          refs: {
+            authority_ref: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            actor_ref: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            object_ref: "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            release_ref: null,
+            key_ref: null,
+            capability_ref: null,
+            sync_batch_ref: null
+          }
+        }
+      ]
+    });
+
+    expect(parsed.events[0]!.refs.object_ref).toMatch(/^sha256:/);
   });
 });
 

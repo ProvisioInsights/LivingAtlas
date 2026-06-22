@@ -1,4 +1,13 @@
-import { DurableAuditEventSchema, type DurableAuditEvent } from "@living-atlas/contracts";
+import {
+  DurableAuditEventSchema,
+  PraxisActivityAuditEventSchema,
+  PraxisActivityAuditStreamRequestSchema,
+  PraxisActivityAuditStreamResponseSchema,
+  type DurableAuditEvent,
+  type PraxisActivityAuditEvent,
+  type PraxisActivityAuditStreamRequest,
+  type PraxisActivityAuditStreamResponse
+} from "@living-atlas/contracts";
 
 type BindableStatement = {
   bind(...values: unknown[]): BindableStatement;
@@ -49,6 +58,7 @@ export type ReadAuditLedgerOptions = {
   operation_id?: string;
   trace_id?: string;
   event_type?: DurableAuditEvent["event_type"];
+  cursor?: string;
   limit?: number;
 };
 
@@ -57,6 +67,7 @@ type LatestAuditHashRow = {
 };
 
 const MaxAuditReadLimit = 250;
+const DefaultActivityAuditStreamLimit = 50;
 
 const AuditEventsTableSql = `
 CREATE TABLE IF NOT EXISTS audit_events (
@@ -141,6 +152,22 @@ function checkpointBucket(recordedAt: string): string {
   return recordedAt.slice(0, 10);
 }
 
+export function activityAuditCursorFor(row: Pick<StoredAuditLedgerEvent, "recorded_at" | "audit_id">): string {
+  return `${String(Date.parse(row.recorded_at)).padStart(13, "0")}:${row.audit_id}`;
+}
+
+function parseActivityAuditCursor(cursor: string): { recorded_at: string; audit_id: string } {
+  const [recordedAtMs, auditId] = cursor.split(":");
+  if (!recordedAtMs || !auditId) {
+    throw new Error("invalid-activity-audit-cursor");
+  }
+
+  return {
+    recorded_at: new Date(Number(recordedAtMs)).toISOString(),
+    audit_id: auditId
+  };
+}
+
 function assertRemoteLedgerRedaction(event: DurableAuditEvent): void {
   if (event.redaction === "none") {
     throw new Error("Cloudflare audit ledger stores only redacted audit events");
@@ -170,6 +197,94 @@ function canonicalAuditHashPayload(event: Omit<StoredAuditLedgerEvent, "event_ha
     summary: event.summary,
     checkpoint_bucket: event.checkpoint_bucket,
     previous_event_hash: event.previous_event_hash
+  });
+}
+
+function activityCrudFor(eventType: DurableAuditEvent["event_type"]): PraxisActivityAuditEvent["crud"] {
+  if (eventType === "sync.read") {
+    return "sync-pull";
+  }
+
+  if (eventType === "sync.denied" || eventType === "sync.conflict") {
+    return "sync-push";
+  }
+
+  if (eventType.startsWith("release.")) {
+    return "release";
+  }
+
+  if (eventType.startsWith("policy.") || eventType.startsWith("key.") || eventType.startsWith("device.") || eventType.startsWith("client.")) {
+    return "policy-allow";
+  }
+
+  const crudByEventType: Partial<Record<DurableAuditEvent["event_type"], PraxisActivityAuditEvent["crud"]>> = {
+    "object.read": "read",
+    "object.denied": "read",
+    "object.decrypt": "decrypt",
+    "object.create": "create",
+    "object.update": "update",
+    "object.delete": "delete",
+    "object.restore": "restore",
+    "bootstrap.claimed": "policy-allow"
+  };
+
+  return crudByEventType[eventType] ?? "read";
+}
+
+function activityDecisionFor(row: StoredAuditLedgerEvent): PraxisActivityAuditEvent["policy_decision"] {
+  if (row.outcome === "denied" || row.event_type === "object.denied" || row.event_type === "sync.denied") {
+    return "deny";
+  }
+
+  if (row.outcome === "withheld") {
+    return "ciphertext-only";
+  }
+
+  if (row.event_type === "sync.conflict") {
+    return "partial";
+  }
+
+  return "allow";
+}
+
+function toPraxisActivityAuditEvent(row: StoredAuditLedgerEvent): PraxisActivityAuditEvent {
+  return PraxisActivityAuditEventSchema.parse({
+    event_schema: "living-atlas-praxis-activity-audit-event:v1",
+    event_id: row.audit_id.replace(/^la_audit_/, "la_event_"),
+    cursor: activityAuditCursorFor(row),
+    recorded_at: row.recorded_at,
+    plane: "remote",
+    crud: activityCrudFor(row.event_type as DurableAuditEvent["event_type"]),
+    policy_decision: activityDecisionFor(row),
+    operation_id: row.operation_id,
+    trace_id: row.trace_id,
+    summary: row.summary,
+    visibility: {
+      mode: "remote_safe",
+      contains_sensitive: false,
+      redacted: true
+    },
+    audit: {
+      audit_id: row.audit_id,
+      event_type: row.event_type,
+      outcome: row.outcome,
+      reason_code: row.reason_code,
+      mcp_profile: row.mcp_profile,
+      operation: row.operation,
+      access_class: row.access_class,
+      redaction: row.redaction,
+      event_hash: row.event_hash,
+      previous_event_hash: row.previous_event_hash
+    },
+    refs: {
+      authority_ref: row.authority_ref,
+      actor_ref: row.actor_ref,
+      object_ref: row.object_ref,
+      release_ref: row.release_ref,
+      key_ref: row.key_ref,
+      capability_ref: row.capability_ref,
+      sync_batch_ref: row.sync_batch_ref
+    }
   });
 }
 
@@ -322,6 +437,12 @@ export async function readAuditLedgerEvents(
     values.push(options.event_type);
   }
 
+  if (options.cursor) {
+    const cursor = parseActivityAuditCursor(options.cursor);
+    filters.push("(recorded_at < ? OR (recorded_at = ? AND audit_id < ?))");
+    values.push(cursor.recorded_at, cursor.recorded_at, cursor.audit_id);
+  }
+
   const limit = Math.min(Math.max(options.limit ?? 100, 1), MaxAuditReadLimit);
   const statement = controlDb.prepare(`
 SELECT
@@ -356,4 +477,29 @@ LIMIT ?`).bind(...values, limit);
     : { results: [] as StoredAuditLedgerEvent[] };
 
   return result.results ?? [];
+}
+
+export async function readPraxisActivityAuditStream(
+  controlDb: AuditLedgerMetadataStore,
+  options: Partial<PraxisActivityAuditStreamRequest> = {}
+): Promise<PraxisActivityAuditStreamResponse> {
+  const parsedOptions = PraxisActivityAuditStreamRequestSchema.parse({
+    limit: DefaultActivityAuditStreamLimit,
+    ...options
+  });
+  const rows = await readAuditLedgerEvents(controlDb, {
+    ...parsedOptions,
+    limit: parsedOptions.limit + 1
+  });
+  const visibleRows = rows.slice(0, parsedOptions.limit);
+  const hasMore = rows.length > parsedOptions.limit;
+
+  return PraxisActivityAuditStreamResponseSchema.parse({
+    stream_schema: "living-atlas-praxis-activity-audit-stream:v1",
+    ok: true,
+    events: visibleRows.map(toPraxisActivityAuditEvent),
+    limit: parsedOptions.limit,
+    next_cursor: hasMore && visibleRows.length > 0 ? activityAuditCursorFor(visibleRows[visibleRows.length - 1]!) : null,
+    has_more: hasMore
+  });
 }

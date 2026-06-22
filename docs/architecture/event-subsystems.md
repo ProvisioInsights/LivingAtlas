@@ -97,10 +97,11 @@ Integrity:
 
 Purpose:
 
-- near-live graph firing view
+- headless source events for a near-live graph firing view in Praxis or another
+  consumer
 - operation inspector
 - debugging agent behavior
-- replay UI input
+- replay input
 
 Contains:
 
@@ -191,3 +192,24 @@ V1 may defer:
 - Analytics Engine dashboards
 - custom span trees around every D1/R2 operation
 - long-term operational metric retention
+
+## Headless Boundary
+
+Living Atlas does not render the activity UI in V1. It owns:
+
+- event schemas
+- cursor semantics
+- retention and redaction rules
+- MCP/API access to bounded event windows
+- replay/audit correlation data
+
+Praxis owns:
+
+- graph visualization
+- timeline panels
+- replay controls
+- operator dashboards
+- animation and visual language
+
+This keeps Atlas deployable as a secure knowledge substrate while leaving the
+experience layer free to evolve in Praxis.

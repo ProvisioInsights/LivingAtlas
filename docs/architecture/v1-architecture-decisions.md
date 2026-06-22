@@ -30,7 +30,10 @@ Why:
 Security boundary:
 
 - Remote MCP can see remote-readable plaintext.
-- Remote MCP cannot decrypt sensitive plaintext.
+- Remote MCP cannot decrypt sensitive plaintext in normal remote-safe mode.
+- Cloud-unlock decrypt is explicit: a request must carry a transient unlock key
+  and a configured remote-cloud-unlock capability; Cloudflare must not store the
+  key.
 - Cloudflare can see metadata and remote-readable data; this is an explicit V1
   tradeoff.
 

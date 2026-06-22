@@ -39,6 +39,8 @@ export const AuditEventTypeSchema = z.enum([
 export const AuditRedactionSchema = z.enum(["none", "remote-redacted", "generic-unavailable"]);
 export const AuditOutcomeSchema = z.enum(["allowed", "denied", "withheld", "released", "changed"]);
 export const AuditReasonCodeSchema = z.string().regex(/^[a-z0-9][a-z0-9._:-]{0,95}$/);
+export const ActivityAuditStreamCursorSchema = z.string().regex(/^[0-9]{13}:la_audit_[A-Za-z0-9_-]{8,}$/);
+export const ActivityAuditStreamLimitSchema = z.number().int().min(1).max(100).default(50);
 
 const SyncBatchIdSchema = z.string().regex(/^la_sync_batch_[A-Za-z0-9_-]{8,}$/);
 const ForbiddenAuditSummaryPattern = /\b(ciphertext|plaintext|secret|token|password|payload|wrapped[-_ ]?key)\b/i;
@@ -171,3 +173,70 @@ export const LiveActivityEventSchema = z
   .strict();
 
 export type LiveActivityEvent = z.infer<typeof LiveActivityEventSchema>;
+
+export const PraxisActivityAuditEventSchema = z
+  .object({
+    event_schema: z.literal("living-atlas-praxis-activity-audit-event:v1"),
+    event_id: EventIdSchema,
+    cursor: ActivityAuditStreamCursorSchema,
+    recorded_at: IsoTimestampSchema,
+    plane: z.literal("remote"),
+    crud: LiveActivityCrudSchema,
+    policy_decision: LiveActivityPolicyDecisionSchema,
+    operation_id: OperationIdSchema,
+    trace_id: TraceIdSchema,
+    summary: SafeAuditSummarySchema,
+    visibility: z.object({
+      mode: z.literal("remote_safe"),
+      contains_sensitive: z.literal(false),
+      redacted: z.literal(true)
+    }),
+    audit: z.object({
+      audit_id: z.string().regex(/^la_audit_[A-Za-z0-9_-]{8,}$/),
+      event_type: AuditEventTypeSchema,
+      outcome: AuditOutcomeSchema.nullable(),
+      reason_code: AuditReasonCodeSchema.nullable(),
+      mcp_profile: McpProfileSchema,
+      operation: OperationSchema,
+      access_class: AccessClassSchema.nullable(),
+      redaction: z.enum(["remote-redacted", "generic-unavailable"]),
+      event_hash: Sha256HashSchema,
+      previous_event_hash: Sha256HashSchema.nullable()
+    }),
+    refs: z.object({
+      authority_ref: Sha256HashSchema,
+      actor_ref: Sha256HashSchema,
+      object_ref: Sha256HashSchema.nullable(),
+      release_ref: Sha256HashSchema.nullable(),
+      key_ref: Sha256HashSchema.nullable(),
+      capability_ref: Sha256HashSchema.nullable(),
+      sync_batch_ref: Sha256HashSchema.nullable()
+    })
+  })
+  .strict();
+
+export const PraxisActivityAuditStreamRequestSchema = z
+  .object({
+    authority_id: AuthorityIdSchema.optional(),
+    operation_id: OperationIdSchema.optional(),
+    trace_id: TraceIdSchema.optional(),
+    event_type: AuditEventTypeSchema.optional(),
+    cursor: ActivityAuditStreamCursorSchema.optional(),
+    limit: ActivityAuditStreamLimitSchema
+  })
+  .strict();
+
+export const PraxisActivityAuditStreamResponseSchema = z
+  .object({
+    stream_schema: z.literal("living-atlas-praxis-activity-audit-stream:v1"),
+    ok: z.literal(true),
+    events: z.array(PraxisActivityAuditEventSchema),
+    limit: ActivityAuditStreamLimitSchema,
+    next_cursor: ActivityAuditStreamCursorSchema.nullable(),
+    has_more: z.boolean()
+  })
+  .strict();
+
+export type PraxisActivityAuditEvent = z.infer<typeof PraxisActivityAuditEventSchema>;
+export type PraxisActivityAuditStreamRequest = z.infer<typeof PraxisActivityAuditStreamRequestSchema>;
+export type PraxisActivityAuditStreamResponse = z.infer<typeof PraxisActivityAuditStreamResponseSchema>;

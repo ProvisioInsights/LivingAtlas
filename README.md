@@ -70,8 +70,8 @@ objects, and separate capability surfaces:
   may unlock sensitive content in the cloud runtime, without key persistence,
   when runtime-memory exposure is acceptable.
 - Sensitive objects: plaintext CRUD only through keyholding client/local path.
-- Atlas UI: read-oriented exploration surface with visible provenance and
-  activity history.
+- Praxis-facing contracts: headless activity, audit, replay, and graph APIs
+  that a UI or operator runtime can consume without moving UI code into Atlas.
 
 ## Current Status
 
@@ -255,6 +255,9 @@ Workspace packages:
   outbox/daemon plan, submits to the Worker sync route, fetches remote
   summaries/envelopes, and applies pulled envelopes into the local graph store
   with version-conflict reporting.
+- `@living-atlas/atlas-client`: dependency-light TypeScript client helpers for
+  Praxis and other consumers calling remote MCP, activity, and usage surfaces
+  with token headers and redacted error details.
 - `@living-atlas/activity-replay`: hash-only replay inspection and reporting
   over durable audit, live activity, and operational observability events.
 - `@living-atlas/cloudflare-worker` also exposes `/api/usage/status` for

@@ -59,7 +59,7 @@ Visibility is part of the product, not just debug logging.
 - Remote MCP.
 - File watcher.
 - Sync agent.
-- Atlas UI.
+- Praxis UI/client.
 - CLI importer.
 - Browser/mail/calendar capture tools.
 - Manual filesystem edits detected after the fact.
@@ -77,9 +77,9 @@ Purpose:
 - Recovery metadata.
 - Testable audit trail.
 
-### Human Activity Feed
+### Human Activity Feed Projection
 
-Rendered in Atlas.
+Rendered by Praxis or another authorized consumer from Atlas event streams.
 
 Purpose:
 
@@ -137,9 +137,10 @@ The ledger can leak sensitive patterns. Store plaintext detail locally only.
 Remote ledger records should use opaque IDs and coarse event categories unless
 the relevant content is classified as remote-safe.
 
-## User Experience Requirements
+## Headless Consumer Requirements
 
-Atlas must include:
+Atlas must emit and expose enough bounded, redacted stream data for Praxis to
+build:
 
 - Recent activity feed.
 - Per-object history.
@@ -149,7 +150,7 @@ Atlas must include:
 - Diff links for writes where possible.
 - Recovery links for checkpointed writes.
 
-The UI must distinguish:
+The emitted fields must let consumers distinguish:
 
 - Human action.
 - Local agent action.

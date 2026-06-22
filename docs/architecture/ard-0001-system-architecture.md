@@ -71,16 +71,15 @@ Responsibilities:
 - Emit audit events for every user, device, client, capability, recovery, and
   key configuration change.
 
-### Atlas UI
+### Praxis UI/Client
 
 Responsibilities:
 
-- Read-oriented graph exploration.
-- Temporal and provenance inspection.
-- Policy visibility inspection.
-- Activity and CRUD ledger inspection.
-- Review queues for quarantined facts, invalid ontology entries, and policy
-  gaps.
+- Render read-oriented graph exploration through Atlas APIs.
+- Render temporal, provenance, policy, activity, and CRUD inspection.
+- Surface review queues for quarantined facts, invalid ontology entries, and
+  policy gaps.
+- Leave graph storage, policy, sync, and MCP behavior in Atlas.
 
 ### Sync Agent
 

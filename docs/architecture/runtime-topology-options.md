@@ -102,7 +102,7 @@ Trusted laptop
   full graph authority
   local index
   local MCP
-  Atlas UI
+  Praxis UI/client
   encryption/sync agent
 
 Cloudflare

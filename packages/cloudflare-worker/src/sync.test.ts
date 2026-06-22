@@ -13,6 +13,7 @@ import { readSyncEnvelopePull, type SyncMetadataStore, type SyncObjectStore } fr
 
 const syncToken = "fixture-sync-token-0001";
 const timestamp = "2026-06-21T12:00:00.000Z";
+const cloudUnlockCapabilityId = "la_cap_cloudunlock0001";
 
 const ciphertextBatch = {
   batch_id: "la_sync_batch_worker0001",
@@ -341,7 +342,91 @@ class FakePreparedStatement {
       .filter((row) => !authorityRef || row.authority_ref === authorityRef);
   }
 
+  private auditRows(authorityRef?: string) {
+    return this.records
+      .filter((record) => record.query.includes("INSERT INTO audit_events"))
+      .map((record) => ({
+        audit_id: String(record.bindings[0]),
+        authority_ref: String(record.bindings[1]),
+        operation_id: String(record.bindings[2]),
+        trace_id: String(record.bindings[3]),
+        recorded_at: String(record.bindings[4]),
+        actor_ref: String(record.bindings[5]),
+        mcp_profile: String(record.bindings[6]),
+        operation: String(record.bindings[7]),
+        event_type: String(record.bindings[8]),
+        outcome: record.bindings[9] === null ? null : String(record.bindings[9]),
+        reason_code: record.bindings[10] === null ? null : String(record.bindings[10]),
+        object_ref: record.bindings[11] === null ? null : String(record.bindings[11]),
+        release_ref: record.bindings[12] === null ? null : String(record.bindings[12]),
+        key_ref: record.bindings[13] === null ? null : String(record.bindings[13]),
+        capability_ref: record.bindings[14] === null ? null : String(record.bindings[14]),
+        sync_batch_ref: record.bindings[15] === null ? null : String(record.bindings[15]),
+        access_class: record.bindings[16] === null ? null : String(record.bindings[16]),
+        redaction: String(record.bindings[17]),
+        summary: String(record.bindings[18]),
+        checkpoint_bucket: String(record.bindings[19]),
+        previous_event_hash: record.bindings[20] === null ? null : String(record.bindings[20]),
+        event_hash: String(record.bindings[21])
+      }))
+      .filter((row) => !authorityRef || row.authority_ref === authorityRef);
+  }
+
+  private remoteGraphWriteRows() {
+    const rows = new Map<string, {
+      idempotency_key: string;
+      request_hash: string;
+      status: "staged" | "committed" | "failed";
+      response_json: string | null;
+      failure_reason: string | null;
+      created_at: string;
+    }>();
+
+    for (const record of this.records) {
+      if (record.query.includes("INTO remote_graph_writes")) {
+        rows.set(String(record.bindings[0]), {
+          idempotency_key: String(record.bindings[0]),
+          request_hash: String(record.bindings[1]),
+          status: "staged",
+          response_json: null,
+          failure_reason: null,
+          created_at: String(record.bindings[10])
+        });
+      }
+
+      if (record.query.includes("UPDATE remote_graph_writes") && record.query.includes("SET status = 'committed'")) {
+        const row = rows.get(String(record.bindings[5]));
+        if (row && row.request_hash === String(record.bindings[6])) {
+          rows.set(row.idempotency_key, {
+            ...row,
+            status: "committed",
+            response_json: String(record.bindings[2]),
+            failure_reason: null
+          });
+        }
+      }
+
+      if (record.query.includes("UPDATE remote_graph_writes") && record.query.includes("SET status = 'failed'")) {
+        const row = rows.get(String(record.bindings[2]));
+        if (row && row.request_hash === String(record.bindings[3])) {
+          rows.set(row.idempotency_key, {
+            ...row,
+            status: "failed",
+            failure_reason: String(record.bindings[0])
+          });
+        }
+      }
+    }
+
+    return [...rows.values()];
+  }
+
   async first<T = unknown>(_colName?: string): Promise<T | null> {
+    if (this.query.includes("FROM remote_graph_writes")) {
+      const idempotencyKey = String(this.bindings[0]);
+      return (this.remoteGraphWriteRows().find((row) => row.idempotency_key === idempotencyKey) ?? null) as T | null;
+    }
+
     if (this.query.includes("WHERE idempotency_key = ?")) {
       const idempotencyKey = String(this.bindings[0]);
       return (this.committedBatches().find((batch) => batch.idempotency_key === idempotencyKey) ?? null) as T | null;
@@ -392,6 +477,14 @@ class FakePreparedStatement {
         .sort((left, right) => right.version - left.version)
         .at(0);
       return (row ?? null) as T | null;
+    }
+
+    if (this.query.includes("SELECT event_hash") && this.query.includes("FROM audit_events")) {
+      const authorityRef = String(this.bindings[0]);
+      const row = this.auditRows(authorityRef)
+        .sort((left, right) => right.recorded_at.localeCompare(left.recorded_at) || right.audit_id.localeCompare(left.audit_id))
+        .at(0);
+      return (row ? { event_hash: row.event_hash } : null) as T | null;
     }
 
     return null;
@@ -463,6 +556,16 @@ class FakePreparedStatement {
       return fakeD1Result<T>(
         this.remoteGraphRows(authorityRef)
           .sort((left, right) => left.object_ref.localeCompare(right.object_ref) || right.version - left.version)
+          .slice(0, limit) as T[]
+      );
+    }
+
+    if (this.query.includes("FROM audit_events")) {
+      const limit = Number(this.bindings.at(-1) ?? 100);
+      const authorityRef = this.query.includes("authority_ref = ?") ? String(this.bindings[0]) : undefined;
+      return fakeD1Result<T>(
+        this.auditRows(authorityRef)
+          .sort((left, right) => right.recorded_at.localeCompare(left.recorded_at) || right.audit_id.localeCompare(left.audit_id))
           .slice(0, limit) as T[]
       );
     }
@@ -653,6 +756,7 @@ async function createEnv(): Promise<{
       LA_GRAPH_BUCKET: graphBucket as R2Bucket,
       LA_CONTROL_DB: controlDb as D1Database,
       LA_SYNC_TOKEN_HASH: await sha256TokenHash(syncToken),
+      LA_CLOUD_UNLOCK_CAPABILITY_ID: cloudUnlockCapabilityId,
       LA_USAGE_PROVIDER: "cloudflare",
       LA_USAGE_PLAN: "free",
       LA_USAGE_BUDGETS_JSON: JSON.stringify({
@@ -1125,6 +1229,27 @@ describe("Worker sync batch acceptance", () => {
       body: JSON.stringify(ciphertextBatch)
     }), env);
 
+    const unauthenticatedToolsResponse = await handleBootstrapRequest(new Request("https://living-atlas.example/mcp", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json"
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 99,
+        method: "tools/list"
+      })
+    }), env);
+
+    expect(unauthenticatedToolsResponse.status).toBe(401);
+    await expect(unauthenticatedToolsResponse.json()).resolves.toMatchObject({
+      jsonrpc: "2.0",
+      id: 99,
+      error: {
+        message: "missing-or-invalid-mcp-token"
+      }
+    });
+
     const toolsResponse = await handleBootstrapRequest(new Request("https://living-atlas.example/mcp", {
       method: "POST",
       headers: {
@@ -1261,7 +1386,7 @@ describe("Worker sync batch acceptance", () => {
       result: {
         structuredContent: {
           ok: false,
-          reason: "cloud-unlock-required",
+          reason: "cloud-unlock-capability-required",
           current_mode: "remote-safe-only"
         }
       }
@@ -1273,6 +1398,7 @@ describe("Worker sync batch acceptance", () => {
       headers: {
         "content-type": "application/json",
         "x-living-atlas-sync-token": syncToken,
+        "x-living-atlas-sync-capability-id": cloudUnlockCapabilityId,
         "x-living-atlas-cloud-unlock-key": unlockKey
       },
       body: JSON.stringify({
@@ -1401,6 +1527,7 @@ describe("Worker sync batch acceptance", () => {
       headers: {
         "content-type": "application/json",
         "x-living-atlas-sync-token": syncToken,
+        "x-living-atlas-sync-capability-id": cloudUnlockCapabilityId,
         "x-living-atlas-cloud-unlock-key": wrongUnlockKey
       },
       body: JSON.stringify({
@@ -1433,11 +1560,48 @@ describe("Worker sync batch acceptance", () => {
     });
     expect(JSON.stringify(wrongKeyBody)).not.toContain(wrongUnlockKey);
 
+    const missingCapabilityResponse = await handleBootstrapRequest(new Request("https://living-atlas.example/mcp", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-living-atlas-sync-token": syncToken,
+        "x-living-atlas-cloud-unlock-key": unlockKey
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 88,
+        method: "tools/call",
+        params: {
+          name: "remote_sensitive_decrypt",
+          arguments: {
+            authority_id: "la_authority_worker0001",
+            object_id: "la_object_cloudunlock0001"
+          }
+        }
+      })
+    }), env);
+
+    const missingCapabilityBody = await missingCapabilityResponse.json();
+    expect(missingCapabilityBody).toMatchObject({
+      jsonrpc: "2.0",
+      id: 88,
+      result: {
+        structuredContent: {
+          ok: false,
+          reason: "cloud-unlock-capability-required",
+          key_persisted_by_cloudflare: false,
+          host_blind_sensitive_plaintext: true
+        }
+      }
+    });
+    expect(JSON.stringify(missingCapabilityBody)).not.toContain(unlockKey);
+
     const decryptResponse = await handleBootstrapRequest(new Request("https://living-atlas.example/mcp", {
       method: "POST",
       headers: {
         "content-type": "application/json",
         "x-living-atlas-sync-token": syncToken,
+        "x-living-atlas-sync-capability-id": cloudUnlockCapabilityId,
         "x-living-atlas-cloud-unlock-key": unlockKey
       },
       body: JSON.stringify({
@@ -1485,6 +1649,55 @@ describe("Worker sync batch acceptance", () => {
     if (encryptedPayload.kind === "ciphertext-inline") {
       expect(JSON.stringify(decryptBody)).not.toContain(encryptedPayload.ciphertext);
     }
+
+    const auditResponse = await handleBootstrapRequest(new Request("https://living-atlas.example/mcp", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-living-atlas-sync-token": syncToken
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 10,
+        method: "tools/call",
+        params: {
+          name: "remote_activity_audit",
+          arguments: {
+            authority_id: "la_authority_worker0001",
+            limit: 20
+          }
+        }
+      })
+    }), env);
+
+    const auditBody = await auditResponse.json();
+    expect(auditBody).toMatchObject({
+      jsonrpc: "2.0",
+      id: 10,
+      result: {
+        structuredContent: {
+          events: expect.arrayContaining([
+            expect.objectContaining({
+              audit: expect.objectContaining({
+                operation: "decrypt",
+                event_type: "object.decrypt",
+                outcome: "allowed",
+                redaction: "remote-redacted",
+                mcp_profile: "remote-cloud-unlock"
+              }),
+              refs: expect.objectContaining({
+                object_ref: expect.stringMatching(/^sha256:[a-f0-9]{64}$/)
+              })
+            })
+          ])
+        }
+      }
+    });
+    expect(JSON.stringify(auditBody)).not.toContain(unlockKey);
+    if (encryptedPayload.kind === "ciphertext-inline") {
+      expect(JSON.stringify(auditBody)).not.toContain(encryptedPayload.ciphertext);
+    }
+    expect(JSON.stringify(auditBody)).not.toContain("Synthetic sensitive note");
   });
 
   it("supports remote-readable graph CRUD, search, traversal, timeline, and edge CRUD through MCP", async () => {
@@ -1564,6 +1777,17 @@ describe("Worker sync batch acceptance", () => {
         }
       }
     });
+    await expect(mcpCall(101, "remote_graph_create", { object: page })).resolves.toMatchObject({
+      result: {
+        structuredContent: {
+          ok: true,
+          mutation: "created",
+          idempotent_replay: true,
+          object: expect.objectContaining({ object_id: sourceId }),
+          sync_generation: 1
+        }
+      }
+    });
     await expect(mcpCall(11, "remote_graph_create", { object: target })).resolves.toMatchObject({
       result: {
         structuredContent: {
@@ -1624,6 +1848,59 @@ describe("Worker sync batch acceptance", () => {
       }
     });
 
+    const expiredReleaseId = "la_object_expiredrelease0001";
+    const expiredRelease = {
+      ...page,
+      object_id: expiredReleaseId,
+      access_class: "release",
+      content_hash: "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      visible_metadata: {
+        ...page.visible_metadata,
+        release_expires_at: "2026-01-01T00:00:00.000Z"
+      },
+      payload: {
+        kind: "plaintext-json",
+        data: {
+          title: "Expired Release",
+          body: "Expired release search target."
+        }
+      }
+    };
+
+    await expect(mcpCall(130, "remote_graph_create", { object: expiredRelease })).resolves.toMatchObject({
+      result: {
+        structuredContent: {
+          ok: true,
+          sync_generation: 3
+        }
+      }
+    });
+    await expect(mcpCall(131, "remote_graph_read", { authority_id: authorityId, object_id: expiredReleaseId })).resolves.toMatchObject({
+      result: {
+        structuredContent: {
+          ok: false,
+          reason: "release-expired"
+        }
+      }
+    });
+    await expect(mcpCall(132, "remote_graph_list", { authority_id: authorityId, limit: 20 })).resolves.not.toMatchObject({
+      result: {
+        structuredContent: {
+          objects: expect.arrayContaining([
+            expect.objectContaining({ object_id: expiredReleaseId })
+          ])
+        }
+      }
+    });
+    await expect(mcpCall(133, "remote_semantic_search", { authority_id: authorityId, query: "Expired Release", limit: 5 })).resolves.toMatchObject({
+      result: {
+        structuredContent: {
+          ok: true,
+          results: []
+        }
+      }
+    });
+
     await expect(mcpCall(14, "remote_graph_update", {
       authority_id: authorityId,
       object_id: sourceId,
@@ -1644,7 +1921,32 @@ describe("Worker sync batch acceptance", () => {
           ok: true,
           mutation: "updated",
           object: expect.objectContaining({ version: 2 }),
-          sync_generation: 3
+          sync_generation: 4
+        }
+      }
+    });
+    await expect(mcpCall(114, "remote_graph_update", {
+      authority_id: authorityId,
+      object_id: sourceId,
+      expected_version: 1,
+      patch: {
+        payload: {
+          kind: "plaintext-json",
+          data: {
+            title: "Remote Atlas Knowledge Seed",
+            body: "Mercury Atlas search target updated.",
+            occurred_on: "2026-06-22"
+          }
+        }
+      }
+    })).resolves.toMatchObject({
+      result: {
+        structuredContent: {
+          ok: true,
+          mutation: "updated",
+          idempotent_replay: true,
+          object: expect.objectContaining({ version: 2 }),
+          sync_generation: 4
         }
       }
     });
@@ -1670,7 +1972,7 @@ describe("Worker sync batch acceptance", () => {
           ok: true,
           mutation: "created",
           object: expect.objectContaining({ object_type: "edge" }),
-          sync_generation: 4
+          sync_generation: 5
         }
       }
     });
@@ -1719,7 +2021,7 @@ describe("Worker sync batch acceptance", () => {
           ok: true,
           mutation: "updated",
           object: expect.objectContaining({ version: 2 }),
-          sync_generation: 5
+          sync_generation: 6
         }
       }
     });
@@ -1742,11 +2044,35 @@ describe("Worker sync batch acceptance", () => {
         structuredContent: {
           ok: true,
           mutation: "deleted",
-          sync_generation: 6,
+          sync_generation: 7,
           object: expect.objectContaining({
             version: 3,
             visible_metadata: expect.objectContaining({ tombstone: true })
           })
+        }
+      }
+    });
+
+    await expect(mcpCall(210, "remote_graph_reconcile", { authority_id: authorityId })).resolves.toMatchObject({
+      result: {
+        structuredContent: {
+          ok: true,
+          reconciliation_schema: "living-atlas-remote-graph-reconciliation:v1",
+          decision: "reconciled",
+          remote_graph_index: {
+            indexed_versions: 7,
+            latest_object_count: 4,
+            active_object_count: 2,
+            tombstone_count: 1
+          },
+          sync_envelopes: {
+            latest_generation: 7,
+            remote_readable_object_versions: 7
+          },
+          drift: {
+            remote_graph_versions_missing_sync_envelope: 0,
+            remote_readable_sync_versions_missing_remote_graph_index: 0
+          }
         }
       }
     });
@@ -1758,6 +2084,44 @@ describe("Worker sync batch acceptance", () => {
         message: "remote graph objects must be remote-readable plaintext"
       }
     });
+
+    await expect(mcpCall(22, "remote_activity_audit", { authority_id: authorityId, limit: 50 })).resolves.toMatchObject({
+      result: {
+        structuredContent: {
+          ok: true,
+          stream_schema: "living-atlas-praxis-activity-audit-stream:v1",
+          events: expect.arrayContaining([
+            expect.objectContaining({
+              audit: expect.objectContaining({
+                event_type: "object.create",
+                redaction: "remote-redacted"
+              }),
+              refs: expect.objectContaining({
+                object_ref: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
+                sync_batch_ref: expect.stringMatching(/^sha256:[a-f0-9]{64}$/)
+              })
+            }),
+            expect.objectContaining({
+              audit: expect.objectContaining({
+                event_type: "object.read",
+                redaction: "remote-redacted"
+              })
+            }),
+            expect.objectContaining({
+              audit: expect.objectContaining({
+                event_type: "object.delete",
+                redaction: "remote-redacted"
+              })
+            })
+          ])
+        }
+      }
+    });
+
+    const auditResponse = await mcpCall(23, "remote_activity_audit", { authority_id: authorityId, limit: 50 });
+    expect(JSON.stringify(auditResponse)).not.toContain("Remote Atlas Knowledge Seed");
+    expect(JSON.stringify(auditResponse)).not.toContain("Mercury Atlas");
+    expect(JSON.stringify(auditResponse)).not.toContain(syncToken);
   });
 
   it("rejects sync tokens in query strings", async () => {
@@ -1814,6 +2178,21 @@ describe("Worker sync batch acceptance", () => {
 
     expect(cloudUnlockQueryResponse.status).toBe(400);
     await expect(cloudUnlockQueryResponse.json()).resolves.toEqual({
+      jsonrpc: "2.0",
+      error: {
+        code: -32600,
+        message: "tokens must not be sent in the query string"
+      },
+      id: null
+    });
+
+    const accessTokenQueryResponse = await handleBootstrapRequest(new Request("https://living-atlas.example/mcp?access_token=fixture-sync-token-0001", {
+      method: "POST",
+      body: JSON.stringify({ jsonrpc: "2.0", id: 3, method: "tools/list" })
+    }), (await createEnv()).env);
+
+    expect(accessTokenQueryResponse.status).toBe(400);
+    await expect(accessTokenQueryResponse.json()).resolves.toEqual({
       jsonrpc: "2.0",
       error: {
         code: -32600,

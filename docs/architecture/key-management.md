@@ -48,14 +48,21 @@ Device Wrapping Key (DWK)
 V1 has one authority but keeps the hierarchy so organization/federation can be
 added without rewriting object envelopes.
 
-## Encryption Classes
+## Access And Encryption Classes
 
-| Class | Who Can Decrypt | Remote MCP Can See Plaintext | Use |
+`access_class` controls policy and serving. `encryption_class` controls payload
+handling. Do not collapse them into one field.
+
+| `access_class` | Typical `encryption_class` | Remote MCP Plaintext | Use |
 |---|---|---:|---|
-| `remote-readable` | Cloudflare remote MCP and authorized clients | yes | normal remote work |
-| `sensitive-client-encrypted` | trusted local/keyholding clients only | no | sensitive graph objects in Cloudflare custody |
-| `release` | remote MCP until expiry/revocation | yes | operator-approved excerpts/projections |
-| `local-only-index` | local device only | no | local search/index material |
+| `remote-safe` | `plaintext` | yes | normal remote work |
+| `shareable` | `plaintext` | yes | approved lower-risk sharing |
+| `release` | `plaintext` | yes until expiry/revocation | operator-approved excerpts/projections |
+| `local-private` | `client-encrypted` | no by default; cloud-unlock only with request key and cloud-unlock capability | sensitive graph objects in Cloudflare custody |
+| `quarantine` | `client-encrypted` | no | uncertain or blocked material |
+
+`local-only-index` is an `encryption_class`, not an `access_class`; it is for
+local search/index material that must not become remote-readable.
 
 ## Object Envelope
 
@@ -63,22 +70,29 @@ Every encrypted object needs an authenticated envelope:
 
 ```json
 {
-  "envelope_version": 1,
-  "object_id": "obj_...",
-  "authority_id": "person:example",
+  "schema_version": 1,
+  "authority_id": "la_authority_example0001",
+  "object_id": "la_object_example0001",
+  "object_type": "page",
+  "version": 123,
   "access_class": "local-private",
-  "encryption_class": "sensitive-client-encrypted",
-  "dek_wrapped_by": "ack_sensitive_v3",
-  "base_version": "v122",
-  "new_version": "v123",
-  "content_hash": "sha256:ciphertext...",
-  "aad": {
-    "object_id": "obj_...",
-    "object_type": "node",
-    "authority_id": "person:example",
-    "base_version": "v122",
-    "access_class": "local-private",
-    "encryption_class": "sensitive-client-encrypted"
+  "encryption_class": "client-encrypted",
+  "created_at": "2026-06-22T00:00:00.000Z",
+  "updated_at": "2026-06-22T00:00:00.000Z",
+  "content_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "key_ref": "la_key_example0001",
+  "visible_metadata": {
+    "tombstone": false,
+    "size_class": "tiny",
+    "remote_indexable": false
+  },
+  "payload": {
+    "kind": "ciphertext-ref",
+    "storage": "r2",
+    "path": "objects/a=example/p=aa/s=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.json",
+    "ciphertext_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "byte_size": 512,
+    "algorithm": "xchacha20-poly1305"
   }
 }
 ```

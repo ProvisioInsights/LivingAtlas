@@ -150,7 +150,7 @@ log; reads are audit/activity events.
   "new_version": "v123",
   "content_hash": "sha256:...",
   "access_class": "remote-safe | local-private | shareable | quarantine | release",
-  "encryption_class": "remote-readable | sensitive-client-encrypted | release | local-only-index",
+  "encryption_class": "plaintext | client-encrypted | local-only-index",
   "actor_id": "actor_...",
   "mcp_profile": "remote | local",
   "recorded_at": "2026-06-21T00:00:00Z"

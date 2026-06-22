@@ -142,9 +142,11 @@ Exit gate:
 - Two simultaneous valid bootstrap claims create exactly one authority.
 - Successful bootstrap burns setup token and disables setup.
 - Remote MCP can CRUD remote-readable fixture objects.
-- Remote MCP cannot retrieve, search, traverse, decrypt, or semantically edit
-  local-private/sensitive plaintext.
-- Remote MCP may custody sensitive ciphertext only through authenticated object
+- Remote MCP cannot retrieve, search, traverse, or semantically edit
+  local-private/sensitive plaintext in the normal remote-safe mode.
+- Cloud-unlock decrypt requires both a transient request key and a configured
+  remote-cloud-unlock capability; the key is not stored by Cloudflare.
+- Remote MCP may custody sensitive ciphertext through authenticated object
   envelopes from a keyholding client/local path.
 - Cloudflare-visible keys/manifests/indexes pass leakage tests.
 
@@ -167,7 +169,7 @@ Exit gate:
 - Sensitive conflicts do not become remotely readable while unresolved.
 - Conflict resolution writes a new change event.
 
-## Phase 6: Atlas UI And Observability
+## Phase 6: Praxis UI And Atlas Observability
 
 Deliverables:
 
@@ -248,7 +250,7 @@ The first implementation PR should be:
 - Metadata leakage scanner skeleton.
 - Local check command that runs the fixture/schema/leakage tests.
 
-It should not import real Logseq data, build the full Atlas UI, or deploy to
+It should not import real Logseq data, build the Praxis UI, or deploy to
 Cloudflare.
 
 ## Open Decisions Before Encryption Code
