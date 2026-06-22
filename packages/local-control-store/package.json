@@ -1,0 +1,17 @@
+{
+  "name": "@living-atlas/local-control-store",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "bin": {
+    "living-atlas-create-fixture-control-store": "./src/create-fixture.ts"
+  },
+  "dependencies": {
+    "@living-atlas/contracts": "workspace:*",
+    "@living-atlas/fixtures": "workspace:*",
+    "zod": "4.4.3"
+  }
+}

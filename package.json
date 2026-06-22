@@ -1,0 +1,37 @@
+{
+  "name": "living-atlas",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@11.8.0",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "check": "npm run lint:repo-safety && npm run typecheck && npm test",
+    "cloudflare:live-concurrency-smoke": "tsx packages/check/src/cloudflare-live-concurrency-smoke.ts",
+    "cloudflare:local-smoke": "tsx packages/check/src/local-smoke.ts",
+    "cloudflare:wrangler-smoke": "tsx packages/check/src/cli.ts wrangler-local-runtime",
+    "infra:fmt": "terraform fmt -check -recursive infra/cloudflare",
+    "infra:validate": "terraform -chdir=infra/cloudflare/examples/single-authority init -backend=false -input=false && terraform -chdir=infra/cloudflare/examples/single-authority validate",
+    "local-control:fixture-store": "tsx packages/local-control-store/src/create-fixture.ts",
+    "local:deploy-synthetic": "tsx packages/check/src/local-deploy-synthetic.ts",
+    "stress:local": "tsx packages/check/src/local-stress.ts",
+    "local:install-smoke": "tsx packages/check/src/local-install-smoke.ts",
+    "local-mcp:fixture": "tsx packages/local-mcp/src/cli.ts",
+    "mcp:inspect:local": "npx @modelcontextprotocol/inspector npx tsx packages/local-mcp/src/cli.ts",
+    "lint:repo-safety": "tsx packages/check/src/cli.ts",
+    "preflight:synthetic": "npm run check && npm run local:deploy-synthetic && npm run stress:local && npm run cloudflare:wrangler-smoke && npm run infra:fmt && npm run infra:validate",
+    "smoke:local": "npm run local:install-smoke && npm run cloudflare:local-smoke",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "4.20260621.1",
+    "@types/node": "26.0.0",
+    "tsx": "4.22.4",
+    "typescript": "6.0.3",
+    "vitest": "4.1.9",
+    "zod": "4.4.3"
+  }
+}

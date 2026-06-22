@@ -1,0 +1,18 @@
+{
+  "name": "@living-atlas/cloudflare-worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./bootstrap": "./src/bootstrap.ts",
+    "./bootstrap-lock": "./src/bootstrap-lock.ts",
+    "./observability": "./src/observability.ts",
+    "./sync": "./src/sync.ts",
+    "./worker": "./src/worker.ts"
+  },
+  "dependencies": {
+    "@living-atlas/contracts": "workspace:*",
+    "zod": "4.4.3"
+  }
+}

@@ -1,0 +1,78 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "living-atlas-bootstrap-example",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-06-22",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  "observability": {
+    "enabled": true,
+    "logs": {
+      "head_sampling_rate": 1
+    },
+    "traces": {
+      "enabled": true,
+      "head_sampling_rate": 0.1
+    }
+  },
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "BOOTSTRAP_CLAIM_LOCK",
+        "class_name": "BootstrapClaimLock"
+      },
+      {
+        "name": "SYNC_SEQUENCER",
+        "class_name": "SyncSequencer"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["BootstrapClaimLock"]
+    },
+    {
+      "tag": "v2",
+      "new_sqlite_classes": ["SyncSequencer"]
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "LA_GRAPH_BUCKET",
+      "bucket_name": "living-atlas-example-graph"
+    }
+  ],
+  "analytics_engine_datasets": [
+    {
+      "binding": "LA_OPERATIONAL_ANALYTICS",
+      "dataset": "living_atlas_operational_metrics_example"
+    }
+  ],
+  "d1_databases": [
+    {
+      "binding": "LA_CONTROL_DB",
+      "database_name": "living-atlas-example-control",
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "migrations_dir": "./migrations"
+    }
+  ],
+  "kv_namespaces": [
+    {
+      "binding": "LA_CONFIG",
+      "id": "00000000000000000000000000000000"
+    }
+  ],
+  "vars": {
+    "BOOTSTRAP_LOCK_NAME": "living-atlas-bootstrap-claim-lock",
+    "BOOTSTRAP_TOKEN_EXPIRES_AT": "2026-06-23T00:00:00.000Z",
+    "LA_OBSERVABILITY_CONSOLE": "1",
+    "LA_OBSERVABILITY_ENVIRONMENT": "example",
+    "LA_OBSERVABILITY_ANALYTICS_DATASET": "living_atlas_operational_metrics_example",
+    "LA_OBSERVABILITY_LOG_SAMPLE_RATE": "1",
+    "LA_OBSERVABILITY_RETENTION_DAYS": "30",
+    "LA_SYNC_CLIENT_ID": "la_client_sync0001",
+    "LA_SYNC_CAPABILITY_ID": "la_cap_sync0001",
+    "LA_SYNC_TOKEN_ID": "synthetic-sync-token-1"
+  }
+}

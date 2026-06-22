@@ -1,0 +1,17 @@
+{
+  "name": "@living-atlas/importer",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@living-atlas/contracts": "workspace:*",
+    "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "@living-atlas/fixtures": "workspace:*",
+    "@living-atlas/leakage": "workspace:*"
+  }
+}

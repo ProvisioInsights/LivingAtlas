@@ -1,0 +1,14 @@
+{
+  "name": "@living-atlas/leakage",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@living-atlas/contracts": "workspace:*",
+    "@living-atlas/fixtures": "workspace:*",
+    "@living-atlas/policy": "workspace:*"
+  }
+}
