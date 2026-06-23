@@ -320,6 +320,46 @@ describe("Worker usage status endpoint", () => {
     expect(JSON.stringify(body)).not.toContain(usageToken);
   });
 
+  it("reconciles usage from metadata without scanning provider inventory", async () => {
+    const env = await createEnv();
+    let listCalls = 0;
+    env.LA_GRAPH_BUCKET = {
+      ...env.LA_GRAPH_BUCKET,
+      list: async () => {
+        listCalls += 1;
+        throw new Error("metadata mode should not list R2 inventory");
+      }
+    } as R2Bucket;
+
+    const response = await handleBootstrapRequest(new Request("https://living-atlas.example/api/usage/reconcile?window_hours=6&inventory_mode=metadata", {
+      headers: {
+        "x-living-atlas-usage-token": usageToken
+      }
+    }), env);
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body).toMatchObject({
+      ok: true,
+      decision: "reconciled",
+      policy: {
+        inventory_mode: "metadata"
+      },
+      provider_observed: {
+        r2: {
+          inventory_mode: "metadata",
+          object_count: 42,
+          total_bytes: 16384,
+          list_calls: 0,
+          truncated: false,
+          object_delta_vs_app: 0,
+          byte_delta_vs_app_estimate: 0
+        }
+      }
+    });
+    expect(listCalls).toBe(0);
+  });
+
   it("rejects missing auth and token query strings", async () => {
     const missingAuth = await handleBootstrapRequest(new Request("https://living-atlas.example/api/usage/status"), await createEnv());
     expect(missingAuth.status).toBe(401);

@@ -24,6 +24,7 @@ type ReconciliationBody = {
   };
   provider_observed?: {
     r2?: {
+      inventory_mode?: string;
       object_count?: number;
       total_bytes?: number;
       list_calls?: number;
@@ -45,6 +46,7 @@ export type CloudflareLiveOpsReportResult = {
     r2_total_bytes?: number;
     r2_list_calls?: number;
     r2_truncated?: boolean;
+    r2_inventory_mode?: string;
     r2_object_delta_vs_app?: number;
     r2_byte_delta_vs_app_estimate?: number;
     sync_generation?: number;
@@ -64,6 +66,7 @@ function reconciliationUrl(config: CloudflareLiveUsageGateConfig): URL {
   const url = new URL("/api/usage/reconcile", config.endpoint);
   url.searchParams.set("window_hours", String(config.windowHours));
   url.searchParams.set("max_r2_objects", process.env.LIVING_ATLAS_LIVE_RECONCILE_MAX_R2_OBJECTS ?? "10000");
+  url.searchParams.set("inventory_mode", process.env.LIVING_ATLAS_LIVE_RECONCILE_INVENTORY_MODE ?? "full");
   return url;
 }
 
@@ -111,6 +114,7 @@ async function fetchReconciliation(config: CloudflareLiveUsageGateConfig, fetchI
       r2_total_bytes: body.provider_observed?.r2?.total_bytes,
       r2_list_calls: body.provider_observed?.r2?.list_calls,
       r2_truncated: body.provider_observed?.r2?.truncated,
+      r2_inventory_mode: body.provider_observed?.r2?.inventory_mode,
       r2_object_delta_vs_app: body.provider_observed?.r2?.object_delta_vs_app,
       r2_byte_delta_vs_app_estimate: body.provider_observed?.r2?.byte_delta_vs_app_estimate,
       sync_generation: body.app_observed?.sync_generation,
@@ -194,7 +198,7 @@ export function printCloudflareLiveOpsReport(result: CloudflareLiveOpsReportResu
   if (result.reconciliation) {
     output(`reconciliation_decision=${result.reconciliation.decision ?? "unknown"}`);
     output(`sync_generation=${result.reconciliation.sync_generation ?? "unknown"}; sync_objects=${result.reconciliation.sync_object_count ?? "unknown"}; sync_changes=${result.reconciliation.sync_change_count ?? "unknown"}`);
-    output(`r2_objects=${result.reconciliation.r2_object_count ?? "unknown"}; r2_bytes=${result.reconciliation.r2_total_bytes ?? "unknown"}; r2_delta=${result.reconciliation.r2_object_delta_vs_app ?? "unknown"}; r2_list_calls=${result.reconciliation.r2_list_calls ?? "unknown"}; r2_truncated=${result.reconciliation.r2_truncated ?? "unknown"}`);
+    output(`r2_objects=${result.reconciliation.r2_object_count ?? "unknown"}; r2_bytes=${result.reconciliation.r2_total_bytes ?? "unknown"}; r2_delta=${result.reconciliation.r2_object_delta_vs_app ?? "unknown"}; r2_list_calls=${result.reconciliation.r2_list_calls ?? "unknown"}; r2_truncated=${result.reconciliation.r2_truncated ?? "unknown"}; r2_inventory_mode=${result.reconciliation.r2_inventory_mode ?? "unknown"}`);
     output(`d1_metric_rows=${result.reconciliation.d1_retained_metric_rows ?? "unknown"}; d1_batches=${result.reconciliation.d1_committed_batches ?? "unknown"}`);
     for (const reason of result.reconciliation.reason_codes) {
       output(`reconciliation_reason=${reason}`);

@@ -31,6 +31,7 @@ export type UsageGateOptions = UsageStatusOptions & {
 
 export type UsageReconciliationOptions = UsageStatusOptions & {
   maxR2Objects?: number;
+  inventoryMode?: "full" | "metadata";
 };
 
 type UsageStatus = Awaited<ReturnType<typeof getUsageStatus>>;
@@ -417,6 +418,16 @@ async function listR2Inventory(bucket: Pick<R2Bucket, "list">, maxObjects: numbe
   };
 }
 
+function metadataR2Inventory(status: UsageStatus) {
+  return {
+    ok: true,
+    object_count: status.services.r2.observed.objects,
+    total_bytes: status.services.r2.observed.estimated_stored_bytes,
+    list_calls: 0,
+    truncated: false
+  };
+}
+
 async function ensureUsageTables(store: UsageMetadataStore): Promise<void> {
   for (const statement of UsageD1SchemaStatements) {
     await store.prepare(statement).run();
@@ -589,7 +600,10 @@ export async function getUsageReconciliation(
 ) {
   const status = await getUsageStatus(store, config, options);
   const maxR2Objects = boundedMaxR2Objects(options.maxR2Objects);
-  const r2Inventory = await listR2Inventory(bucket, maxR2Objects);
+  const inventoryMode = options.inventoryMode ?? "full";
+  const r2Inventory = inventoryMode === "metadata"
+    ? metadataR2Inventory(status)
+    : await listR2Inventory(bucket, maxR2Objects);
   const metadataObjectCount = status.sync.object_count;
   const estimatedObjectCount = status.services.r2.observed.objects;
   const r2ObjectDelta = r2Inventory.object_count - estimatedObjectCount;
@@ -608,7 +622,8 @@ export async function getUsageReconciliation(
       ...(r2ObjectDelta !== 0 ? ["r2-object-count-mismatch"] : [])
     ],
     policy: {
-      max_r2_objects: maxR2Objects
+      max_r2_objects: maxR2Objects,
+      inventory_mode: inventoryMode
     },
     app_observed: {
       sync_generation: status.sync.latest_generation,
@@ -623,6 +638,7 @@ export async function getUsageReconciliation(
     },
     provider_observed: {
       r2: {
+        inventory_mode: inventoryMode,
         object_count: r2Inventory.object_count,
         total_bytes: r2Inventory.total_bytes,
         list_calls: r2Inventory.list_calls,

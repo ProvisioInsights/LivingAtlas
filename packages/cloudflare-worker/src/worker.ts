@@ -908,9 +908,11 @@ function usageGateOptionsFromUrl(url: URL): UsageGateOptions {
 function usageReconciliationOptionsFromUrl(url: URL): UsageReconciliationOptions {
   const windowHours = Number(url.searchParams.get("window_hours"));
   const maxR2Objects = Number(url.searchParams.get("max_r2_objects"));
+  const inventoryMode = url.searchParams.get("inventory_mode");
   return {
     windowHours: Number.isFinite(windowHours) ? windowHours : undefined,
-    maxR2Objects: Number.isFinite(maxR2Objects) ? maxR2Objects : undefined
+    maxR2Objects: Number.isFinite(maxR2Objects) ? maxR2Objects : undefined,
+    inventoryMode: inventoryMode === "metadata" ? "metadata" : inventoryMode === "full" ? "full" : undefined
   };
 }
 
@@ -924,9 +926,11 @@ function usageGateOptionsFromArgs(args: unknown): UsageGateOptions {
 }
 
 function usageReconciliationOptionsFromArgs(args: unknown): UsageReconciliationOptions {
+  const inventoryMode = stringParam(args, "inventory_mode");
   return {
     windowHours: numberParam(args, "window_hours"),
-    maxR2Objects: numberParam(args, "max_r2_objects")
+    maxR2Objects: numberParam(args, "max_r2_objects"),
+    inventoryMode: inventoryMode === "metadata" ? "metadata" : inventoryMode === "full" ? "full" : undefined
   };
 }
 
@@ -2164,7 +2168,8 @@ async function routeRemoteMcpRequest(request: Request, env: BootstrapWorkerEnv):
             additionalProperties: false,
             properties: {
               window_hours: { type: "integer", minimum: 1, maximum: 720 },
-              max_r2_objects: { type: "integer", minimum: 1, maximum: 100000 }
+              max_r2_objects: { type: "integer", minimum: 1, maximum: 100000 },
+              inventory_mode: { type: "string", enum: ["full", "metadata"] }
             }
           }
         },
