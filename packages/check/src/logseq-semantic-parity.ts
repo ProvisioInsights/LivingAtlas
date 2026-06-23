@@ -86,6 +86,16 @@ type SemanticBatchLedgerRecord = {
     batch_count?: number;
     synced_objects?: number;
   };
+  files: Array<{
+    source_path_ref: string;
+    content_hash: `sha256:${string}`;
+    migration_status: "migrated" | "skipped" | "quarantined";
+    review_status: "not-required" | "needs-review" | "reviewed";
+    parity_status: "local-verified" | "synced" | "blocked";
+    source_capsule_object_id: string;
+    planned_objects: number;
+    object_plan_hash: `sha256:${string}`;
+  }>;
   decisions: Record<string, number>;
   plaintext_policy: "hash-counts-refs-only";
 };
@@ -210,6 +220,22 @@ function assertNoNeedles(label: string, value: unknown, needles: string[]): void
       throw new Error(`${label} leaked sampled plaintext`);
     }
   }
+}
+
+function semanticFileRefs(
+  ledger: Awaited<ReturnType<typeof createLogseqSemanticGraphObjects>>["ledger"],
+  parityStatus: "local-verified" | "synced" | "blocked"
+): SemanticBatchLedgerRecord["files"] {
+  return ledger.files.map((file) => ({
+    source_path_ref: file.source_path_ref,
+    content_hash: file.content_hash as `sha256:${string}`,
+    migration_status: file.counts.terminal_quarantined > 0 ? "quarantined" : "migrated",
+    review_status: file.review_status,
+    parity_status: parityStatus,
+    source_capsule_object_id: file.source_capsule_object_id,
+    planned_objects: file.objects.length,
+    object_plan_hash: sha256(JSON.stringify(file.objects))
+  }));
 }
 
 async function appendBatchLedgerRecord(path: string | undefined, record: SemanticBatchLedgerRecord, needles: string[]): Promise<void> {
@@ -506,19 +532,39 @@ async function syncSemanticObjects(input: {
     syncedObjects += submitted.accepted.accepted_objects;
   }
 
-  const pulled = await fetchSyncEnvelopesWithRetry({
-    endpoint,
-    authorityId: input.authorityId,
-    afterGeneration: initialBaseGeneration,
-    syncToken,
-    clientId: syncClientId,
-    capabilityId: syncCapabilityId,
-    tokenId: syncTokenId
-  });
-  if (!pulled.ok) {
-    throw new Error(`semantic envelope pull failed HTTP ${pulled.status_code}: ${JSON.stringify(pulled.error)}`);
+  const pulledObjects: GraphObjectEnvelope[] = [];
+  let afterGeneration = initialBaseGeneration;
+  do {
+    const pulled = await fetchSyncEnvelopesWithRetry({
+      endpoint,
+      authorityId: input.authorityId,
+      afterGeneration,
+      syncToken,
+      clientId: syncClientId,
+      capabilityId: syncCapabilityId,
+      tokenId: syncTokenId
+    });
+    if (!pulled.ok) {
+      throw new Error(`semantic envelope pull failed HTTP ${pulled.status_code}: ${JSON.stringify(pulled.error)}`);
+    }
+    assertNoNeedles("semantic pulled envelopes", pulled.response, input.needles);
+    pulledObjects.push(...pulled.response.objects.map((entry) => entry.object));
+    afterGeneration = pulled.response.next_cursor.generation;
+    if (!pulled.response.has_more) {
+      break;
+    }
+  } while (afterGeneration < baseGeneration);
+
+  const pulledById = new Map(pulledObjects.map((object) => [object.object_id, object]));
+  for (const expected of input.objects) {
+    const actual = pulledById.get(expected.object_id);
+    if (!actual) {
+      throw new Error(`semantic envelope pull missed object ${expected.object_id}`);
+    }
+    if (actual.version !== expected.version || actual.content_hash !== expected.content_hash) {
+      throw new Error(`semantic envelope mismatch for ${expected.object_id}`);
+    }
   }
-  assertNoNeedles("semantic pulled envelopes", pulled.response, input.needles);
 
   return {
     generation: generations.at(-1) ?? initialBaseGeneration,
@@ -535,6 +581,7 @@ async function main(): Promise<void> {
   const batchLedgerPath = envValue("LIVING_ATLAS_LOGSEQ_SEMANTIC_LEDGER_PATH");
   const authorityId = envValue("LIVING_ATLAS_LIVE_AUTHORITY_ID") ?? "la_authority_logseqsemantic0001";
   const configuredPathRedactionSecret = envValue("LIVING_ATLAS_REAL_DATA_PATH_REDACTION_SECRET");
+  const sourceKind = (envValue("LIVING_ATLAS_REAL_MARKDOWN_SOURCE_KIND") ?? "logseq") as MarkdownFileInput["source_kind"];
   const mutatesOrBackfills = envValue(liveAckEnv) === liveAckValue || envValue(backfillAckEnv) === backfillAckValue;
   if (mutatesOrBackfills && !configuredPathRedactionSecret) {
     throw new Error("LIVING_ATLAS_REAL_DATA_PATH_REDACTION_SECRET is required for live semantic sync or ledger backfill");
@@ -551,7 +598,7 @@ async function main(): Promise<void> {
     files.push({
       source_path: relative(root, path),
       markdown: await readFile(path, "utf8"),
-      source_kind: "logseq"
+      source_kind: sourceKind
     });
   }
   const needles = collectPlaintextNeedles(files);
@@ -577,7 +624,8 @@ async function main(): Promise<void> {
   console.log(`files=${result.ledger.file_count}; offset=${fileOffset}; objects=${result.objects.length}; local_generation=${crud.generation}`);
   console.log(`pages=${result.ledger.totals.pages}; blocks=${result.ledger.totals.blocks}; indexes=${result.ledger.totals.reference_index_objects_planned}; edges=${result.ledger.totals.edge_objects}; quarantine=${result.ledger.totals.quarantine_objects}`);
   console.log(`wikilinks=${result.ledger.totals.wikilinks}; tags=${result.ledger.totals.hash_tags}; block_refs=${result.ledger.totals.block_refs}; page_properties=${result.ledger.totals.page_properties}; block_properties=${result.ledger.totals.block_properties}`);
-  console.log(`bytes=${result.ledger.totals.bytes}; root_ref=sha256:${digest(root, 64)}; store_ref=sha256:${digest(crud.directory, 64)}`);
+  const rootRef = `sha256:${digest(`${pathRedactionSecret}:semantic-root:v1:${root}`, 64)}` as const;
+  console.log(`bytes=${result.ledger.totals.bytes}; root_ref=${rootRef}`);
 
   if (envValue(backfillAckEnv) === backfillAckValue) {
     if (envValue(liveAckEnv) === liveAckValue) {
@@ -600,7 +648,7 @@ async function main(): Promise<void> {
       record_schema: "living-atlas-logseq-semantic-batch:v1",
       recorded_at: new Date().toISOString(),
       authority_id: authorityId,
-      root_ref: `sha256:${digest(root, 64)}`,
+      root_ref: rootRef,
       file_offset: fileOffset,
       requested_file_count: fileCount,
       actual_file_count: result.ledger.file_count,
@@ -634,6 +682,7 @@ async function main(): Promise<void> {
         generation: backfillGeneration,
         synced_objects: backfillSyncedObjects
       },
+      files: semanticFileRefs(result.ledger, "synced"),
       decisions: result.ledger.decisions,
       plaintext_policy: "hash-counts-refs-only"
     }, needles);
@@ -647,7 +696,7 @@ async function main(): Promise<void> {
       record_schema: "living-atlas-logseq-semantic-batch:v1",
       recorded_at: new Date().toISOString(),
       authority_id: authorityId,
-      root_ref: `sha256:${digest(root, 64)}`,
+      root_ref: rootRef,
       file_offset: fileOffset,
       requested_file_count: fileCount,
       actual_file_count: result.ledger.file_count,
@@ -679,6 +728,7 @@ async function main(): Promise<void> {
       sync: {
         attempted: false
       },
+      files: semanticFileRefs(result.ledger, "local-verified"),
       decisions: result.ledger.decisions,
       plaintext_policy: "hash-counts-refs-only"
     }, needles);
@@ -695,7 +745,7 @@ async function main(): Promise<void> {
     record_schema: "living-atlas-logseq-semantic-batch:v1",
     recorded_at: new Date().toISOString(),
     authority_id: authorityId,
-    root_ref: `sha256:${digest(root, 64)}`,
+    root_ref: rootRef,
     file_offset: fileOffset,
     requested_file_count: fileCount,
     actual_file_count: result.ledger.file_count,
@@ -731,6 +781,7 @@ async function main(): Promise<void> {
         batch_count: synced.batch_count,
         synced_objects: synced.synced_objects
       },
+    files: semanticFileRefs(result.ledger, "synced"),
     decisions: result.ledger.decisions,
     plaintext_policy: "hash-counts-refs-only"
   }, needles);

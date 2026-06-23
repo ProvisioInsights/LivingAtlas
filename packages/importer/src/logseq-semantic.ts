@@ -24,6 +24,7 @@ import {
 } from "./markdown";
 
 export const LogseqSemanticObjectKindSchema = z.enum([
+  "source-capsule",
   "page",
   "block",
   "reference-index",
@@ -43,7 +44,7 @@ export type LogseqSemanticDecision = z.infer<typeof LogseqSemanticDecisionSchema
 export const LogseqSemanticObjectPlanSchema = z
   .object({
     object_id: ObjectIdSchema,
-    object_type: z.enum(["page", "block", "edge", "index"]),
+    object_type: z.enum(["page", "block", "edge", "index", "attachment"]),
     semantic_kind: LogseqSemanticObjectKindSchema,
     access_class: AccessClassSchema,
     source_path_ref: z.string().regex(/^la_source_[a-f0-9]{24}$/),
@@ -59,11 +60,18 @@ export const LogseqSemanticFileLedgerSchema = z
   .object({
     source_path_ref: z.string().regex(/^la_source_[a-f0-9]{24}$/),
     source_kind: z.enum(["logseq", "obsidian", "generic-markdown"]),
+    migration_status: z.enum(["planned", "migrated", "skipped", "quarantined"]),
+    review_status: z.enum(["not-required", "needs-review", "reviewed"]),
+    parity_status: z.enum(["planned", "local-verified", "synced", "blocked"]),
+    source_capsule_object_id: ObjectIdSchema,
     byte_size: z.number().int().nonnegative(),
     line_count: z.number().int().nonnegative(),
     content_hash: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+    source_hash_before: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+    source_hash_after: z.string().regex(/^sha256:[a-f0-9]{64}$/),
     counts: z
       .object({
+        source_capsules: z.number().int().nonnegative(),
         pages: z.number().int().nonnegative(),
         blocks: z.number().int().nonnegative(),
         page_properties: z.number().int().nonnegative(),
@@ -74,7 +82,10 @@ export const LogseqSemanticFileLedgerSchema = z
         reference_index_objects: z.number().int().nonnegative(),
         edge_candidates: z.number().int().nonnegative(),
         valid_edge_candidates: z.number().int().nonnegative(),
-        quarantined_edge_candidates: z.number().int().nonnegative()
+        quarantined_edge_candidates: z.number().int().nonnegative(),
+        terminal_migrated: z.number().int().nonnegative(),
+        terminal_skipped: z.number().int().nonnegative(),
+        terminal_quarantined: z.number().int().nonnegative()
       })
       .strict(),
     objects: z.array(LogseqSemanticObjectPlanSchema)
@@ -110,8 +121,12 @@ export const LogseqSemanticParityLedgerSchema = z
         page_objects: z.number().int().nonnegative(),
         block_objects: z.number().int().nonnegative(),
         reference_index_objects_planned: z.number().int().nonnegative(),
+        source_capsule_objects: z.number().int().nonnegative(),
         edge_objects: z.number().int().nonnegative(),
-        quarantine_objects: z.number().int().nonnegative()
+        quarantine_objects: z.number().int().nonnegative(),
+        terminal_migrated: z.number().int().nonnegative(),
+        terminal_skipped: z.number().int().nonnegative(),
+        terminal_quarantined: z.number().int().nonnegative()
       })
       .strict(),
     decisions: z.record(z.string(), z.number().int().nonnegative()),
@@ -198,6 +213,7 @@ type ParsedLogseqFile = {
   byte_size: number;
   line_count: number;
   content_hash: `sha256:${string}`;
+  source_markdown: string;
   page_properties: LogseqProperty[];
   blocks: LogseqBlock[];
   references: Reference[];
@@ -390,6 +406,7 @@ function parseTypedEndpoint(title: string | undefined, type: string | undefined)
 function parseTypedEdgeCandidate(edge: EdgeCandidate, options: {
   authorityId: string;
   sourcePathRef: string;
+  sourceContentHash: `sha256:${string}`;
   pathRedactionSecret: string;
 }): TypedEdgeParseResult {
   if (!edge.canonical_predicate) {
@@ -416,10 +433,12 @@ function parseTypedEdgeCandidate(edge: EdgeCandidate, options: {
     predicate: edge.canonical_predicate,
     valid_from: match[8] ?? "unknown",
     status: "active",
-    confidence: "medium",
+    confidence: "high",
     source: "logseq-edge-section",
     attrs: {
       source_path_ref: options.sourcePathRef,
+      source_capsule_object_id: semanticObjectId(options.authorityId, "source-capsule", options.sourcePathRef, "source-capsule"),
+      source_content_hash: options.sourceContentHash,
       source_text_hash: sha256(edge.source_text),
       canonicalization: edge.canonicalization
     }
@@ -440,6 +459,7 @@ function parseLogseqFile(input: MarkdownFileInput, pathRedactionSecret: string):
     byte_size: Buffer.byteLength(parsed.markdown, "utf8"),
     line_count: parsed.markdown.length === 0 ? 0 : lines.length,
     content_hash: sha256(parsed.markdown),
+    source_markdown: parsed.markdown,
     page_properties: extractPageProperties(lines),
     blocks: extractBlocks(lines, sourcePathRef),
     references: extractReferences(parsed.markdown),
@@ -478,7 +498,7 @@ function plannedObject(input: {
   authorityId: string;
   sourcePathRef: string;
   semanticKind: LogseqSemanticObjectKind;
-  objectType: "page" | "block" | "edge" | "index";
+  objectType: "page" | "block" | "edge" | "index" | "attachment";
   localRef: string;
   accessClass: AccessClass;
   sourceBlockRef?: string;
@@ -511,6 +531,24 @@ function draftObjectsForFile(parsed: ParsedLogseqFile, options: {
   defaultAccessClass: AccessClass;
 }): DraftObject[] {
   const drafts: DraftObject[] = [];
+  drafts.push(plannedObject({
+    authorityId: options.authorityId,
+    sourcePathRef: parsed.source_path_ref,
+    semanticKind: "source-capsule",
+    objectType: "attachment",
+    localRef: "source-capsule",
+    accessClass: options.defaultAccessClass,
+    decision: "captured-encrypted",
+    reasonCode: "source-capsule-preserved",
+    plaintextPayload: {
+      kind: "logseq-source-capsule",
+      source_path_ref: parsed.source_path_ref,
+      source_kind: parsed.source_kind,
+      content_hash: parsed.content_hash,
+      markdown: parsed.source_markdown
+    }
+  }));
+
   drafts.push(plannedObject({
     authorityId: options.authorityId,
     sourcePathRef: parsed.source_path_ref,
@@ -578,6 +616,7 @@ function draftObjectsForFile(parsed: ParsedLogseqFile, options: {
       ? parseTypedEdgeCandidate(edge, {
           authorityId: options.authorityId,
           sourcePathRef: parsed.source_path_ref,
+          sourceContentHash: parsed.content_hash,
           pathRedactionSecret: options.pathRedactionSecret
         })
       : undefined;
@@ -630,9 +669,9 @@ function draftObjectsForFile(parsed: ParsedLogseqFile, options: {
       semanticKind: "edge-candidate",
       objectType: "edge",
       localRef: `edge:${edge.index}`,
-      accessClass: valid ? options.defaultAccessClass : "quarantine",
-      decision: valid ? "captured-encrypted" : "quarantined",
-      reasonCode: valid ? "edge-candidate-canonicalized" : edge.canonicalization,
+      accessClass: "quarantine",
+      decision: "quarantined",
+      reasonCode: valid ? "ambiguous-edge-endpoints" : edge.canonicalization,
       plaintextPayload: {
         kind: "logseq-edge-candidate",
         source_path_ref: parsed.source_path_ref,
@@ -667,8 +706,12 @@ function emptyTotals(): LogseqSemanticParityLedger["totals"] {
     page_objects: 0,
     block_objects: 0,
     reference_index_objects_planned: 0,
+    source_capsule_objects: 0,
     edge_objects: 0,
-    quarantine_objects: 0
+    quarantine_objects: 0,
+    terminal_migrated: 0,
+    terminal_skipped: 0,
+    terminal_quarantined: 0
   };
 }
 
@@ -688,8 +731,11 @@ function ledgerFromDrafts(input: {
     const quarantinedEdgeCandidates = edgeDrafts.filter((draft) => draft.plan.access_class === "quarantine").length;
     const validEdgeCandidates = edgeDrafts.length - quarantinedEdgeCandidates;
     const referenceIndexes = drafts.filter((draft) => draft.plan.semantic_kind === "reference-index").length;
+    const sourceCapsules = drafts.filter((draft) => draft.plan.semantic_kind === "source-capsule").length;
     const blockPropertyCount = parsed.blocks.reduce((sum, block) => sum + block.properties.length, 0);
+    const quarantineObjects = drafts.filter((draft) => draft.plan.access_class === "quarantine").length;
     const counts = {
+      source_capsules: sourceCapsules,
       pages: 1,
       blocks: parsed.blocks.length,
       page_properties: parsed.page_properties.length,
@@ -700,7 +746,10 @@ function ledgerFromDrafts(input: {
       reference_index_objects: referenceIndexes,
       edge_candidates: parsed.edge_candidates.length,
       valid_edge_candidates: validEdgeCandidates,
-      quarantined_edge_candidates: quarantinedEdgeCandidates
+      quarantined_edge_candidates: quarantinedEdgeCandidates,
+      terminal_migrated: quarantineObjects > 0 ? 0 : 1,
+      terminal_skipped: 0,
+      terminal_quarantined: quarantineObjects > 0 ? 1 : 0
     };
 
     totals.bytes += parsed.byte_size;
@@ -720,8 +769,12 @@ function ledgerFromDrafts(input: {
     totals.page_objects += drafts.filter((draft) => draft.plan.object_type === "page").length;
     totals.block_objects += drafts.filter((draft) => draft.plan.object_type === "block").length;
     totals.reference_index_objects_planned += drafts.filter((draft) => draft.plan.object_type === "index").length;
+    totals.source_capsule_objects += sourceCapsules;
     totals.edge_objects += drafts.filter((draft) => draft.plan.object_type === "edge").length;
-    totals.quarantine_objects += drafts.filter((draft) => draft.plan.access_class === "quarantine").length;
+    totals.quarantine_objects += quarantineObjects;
+    totals.terminal_migrated += counts.terminal_migrated;
+    totals.terminal_skipped += counts.terminal_skipped;
+    totals.terminal_quarantined += counts.terminal_quarantined;
     for (const draft of drafts) {
       increment(decisions, draft.plan.reason_code);
     }
@@ -729,9 +782,15 @@ function ledgerFromDrafts(input: {
     files.push(LogseqSemanticFileLedgerSchema.parse({
       source_path_ref: parsed.source_path_ref,
       source_kind: parsed.source_kind,
+      migration_status: "planned",
+      review_status: quarantineObjects > 0 ? "needs-review" : "not-required",
+      parity_status: "planned",
+      source_capsule_object_id: drafts.find((draft) => draft.plan.semantic_kind === "source-capsule")?.plan.object_id,
       byte_size: parsed.byte_size,
       line_count: parsed.line_count,
       content_hash: parsed.content_hash,
+      source_hash_before: parsed.content_hash,
+      source_hash_after: parsed.content_hash,
       counts,
       objects: drafts.map((draft) => draft.plan)
     }));

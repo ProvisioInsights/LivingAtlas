@@ -42,6 +42,16 @@ const BatchRecordSchema = z.object({
     batch_count: z.number().int().positive().optional(),
     synced_objects: z.number().int().nonnegative().optional()
   }),
+  files: z.array(z.object({
+    source_path_ref: z.string(),
+    content_hash: z.string(),
+    migration_status: z.enum(["migrated", "skipped", "quarantined"]),
+    review_status: z.enum(["not-required", "needs-review", "reviewed"]),
+    parity_status: z.enum(["local-verified", "synced", "blocked"]),
+    source_capsule_object_id: z.string(),
+    planned_objects: z.number().int().nonnegative(),
+    object_plan_hash: z.string()
+  })).default([]),
   decisions: z.record(z.string(), z.number().int().nonnegative()),
   plaintext_policy: z.literal("hash-counts-refs-only")
 });
@@ -134,6 +144,19 @@ function gaps(ranges: Array<{ start: number; end: number }>): Array<{ start: num
   return output;
 }
 
+const ManifestSchema = z.object({
+  manifest_schema: z.literal("living-atlas-logseq-semantic-corpus-manifest:v1"),
+  manifest_id: z.string(),
+  root_ref: z.string(),
+  total_entries: z.number().int().nonnegative(),
+  entries: z.array(z.object({
+    ordinal: z.number().int().nonnegative(),
+    source_path_ref: z.string(),
+    terminal_decision: z.enum(["pending", "migrated", "skipped", "quarantined"]),
+    discovery_status: z.string()
+  }))
+});
+
 async function main(): Promise<void> {
   const path = requireEnv("LIVING_ATLAS_LOGSEQ_SEMANTIC_LEDGER_PATH");
   const content = await readFile(path, "utf8");
@@ -150,6 +173,16 @@ async function main(): Promise<void> {
     }
   }
   const ranges = coverage(latest);
+  const coveredSourceRefs = new Set(latest.flatMap((record) => record.files.map((file) => file.source_path_ref)));
+  const fileStatuses = latest.flatMap((record) => record.files);
+  const manifestPath = envValue("LIVING_ATLAS_LOGSEQ_SEMANTIC_MANIFEST_PATH");
+  const manifest = manifestPath
+    ? ManifestSchema.parse(JSON.parse(await readFile(manifestPath, "utf8")))
+    : undefined;
+  const manifestPending = manifest?.entries.filter((entry) => entry.terminal_decision === "pending" && !coveredSourceRefs.has(entry.source_path_ref)) ?? [];
+  const manifestUnaccounted = manifest?.entries.filter((entry) => entry.terminal_decision !== "pending" && !coveredSourceRefs.has(entry.source_path_ref)) ?? [];
+  const unsynced = latest.filter((record) => record.sync.attempted && record.sync.synced_objects !== record.plan_totals.planned_objects);
+  const localOnly = latest.filter((record) => !record.sync.attempted);
   const synced = latest.filter((record) => record.sync.attempted);
   const latestGeneration = Math.max(0, ...synced.flatMap((record) => [
     record.sync.generation ?? 0,
@@ -164,13 +197,41 @@ async function main(): Promise<void> {
     covered_file_count: latest.reduce((sum, record) => sum + record.actual_file_count, 0),
     synced_batch_count: synced.length,
     latest_sync_generation: latestGeneration,
+    manifest: manifest ? {
+      manifest_id: manifest.manifest_id,
+      total_entries: manifest.total_entries,
+      accounted_entries: coveredSourceRefs.size,
+      pending_entries: manifestPending.length,
+      unaccounted_terminal_entries: manifestUnaccounted.length
+    } : null,
     coverage: ranges,
     gaps: gaps(ranges),
+    file_statuses: {
+      migrated: fileStatuses.filter((file) => file.migration_status === "migrated").length,
+      skipped: fileStatuses.filter((file) => file.migration_status === "skipped").length,
+      quarantined: fileStatuses.filter((file) => file.migration_status === "quarantined").length,
+      needs_review: fileStatuses.filter((file) => file.review_status === "needs-review").length,
+      synced: fileStatuses.filter((file) => file.parity_status === "synced").length,
+      local_verified: fileStatuses.filter((file) => file.parity_status === "local-verified").length,
+      blocked: fileStatuses.filter((file) => file.parity_status === "blocked").length
+    },
     totals,
     decisions
   };
 
   console.log(JSON.stringify(summary, null, 2));
+  if (envValue("LIVING_ATLAS_LOGSEQ_SEMANTIC_REQUIRE_COMPLETE") === "1") {
+    const failures = [
+      ...(gaps(ranges).length > 0 ? ["coverage-gaps"] : []),
+      ...(localOnly.length > 0 ? ["local-only-batches"] : []),
+      ...(unsynced.length > 0 ? ["synced-object-count-mismatch"] : []),
+      ...(manifest && manifestPending.length > 0 ? ["manifest-pending-entries"] : []),
+      ...(manifest && manifestUnaccounted.length > 0 ? ["manifest-unaccounted-terminal-entries"] : [])
+    ];
+    if (failures.length > 0) {
+      throw new Error(`semantic ledger incomplete: ${failures.join(",")}`);
+    }
+  }
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

@@ -169,7 +169,12 @@ describe("markdown importer planning", () => {
     expect(ledger.totals.wikilinks).toBe(2);
     expect(ledger.totals.block_refs).toBe(1);
     expect(ledger.totals.edge_candidates).toBe(1);
-    expect(ledger.totals.valid_edge_candidates).toBe(1);
+    expect(ledger.totals.valid_edge_candidates).toBe(0);
+    expect(ledger.totals.quarantined_edge_candidates).toBe(1);
+    expect(ledger.totals.source_capsule_objects).toBe(1);
+    expect(ledger.files[0]!.source_hash_before).toBe(ledger.files[0]!.content_hash);
+    expect(ledger.files[0]!.source_hash_after).toBe(ledger.files[0]!.content_hash);
+    expect(ledger.files[0]!.review_status).toBe("needs-review");
     expect(ledger.totals.planned_objects).toBeGreaterThan(ledger.totals.pages);
     expect(JSON.stringify(ledger)).not.toContain(file.source_path);
     expect(JSON.stringify(ledger)).not.toContain("Avery North");
@@ -191,7 +196,14 @@ describe("markdown importer planning", () => {
     expect(encrypted.objects).toHaveLength(ledger.totals.planned_objects);
     expect(encrypted.objects.every((object) => object.encryption_class === "client-encrypted")).toBe(true);
     expect(encrypted.objects.every((object) => object.payload.kind === "ciphertext-inline")).toBe(true);
-    expect(encrypted.objects.map((object) => object.object_type)).toEqual(expect.arrayContaining(["page", "block", "index", "edge"]));
+    expect(encrypted.objects.map((object) => object.object_type)).toEqual(expect.arrayContaining(["attachment", "page", "block", "index", "edge"]));
+    expect(encrypted.objects).toContainEqual(expect.objectContaining({
+      object_type: "attachment",
+      visible_metadata: expect.objectContaining({
+        schema_namespace: "import/logseq-semantic/source-capsule",
+        remote_indexable: false
+      })
+    }));
     expect(JSON.stringify(encrypted.objects)).not.toContain("Avery North");
     expect(JSON.stringify(encrypted.objects)).not.toContain("Project Glass Lantern");
   });

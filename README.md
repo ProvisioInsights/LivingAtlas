@@ -280,15 +280,21 @@ Semantic Logseq migration uses bounded, plaintext-free planning and ledger
 commands:
 
 ```bash
+npm run logseq:semantic-manifest
 npm run logseq:semantic-batch-plan
 npm run logseq:semantic-parity
 npm run logseq:semantic-ledger-report
 ```
 
-`logseq:semantic-batch-plan` reads a configured private markdown root and emits
-only counts, offsets, object totals, and opaque root refs. `logseq:semantic-parity`
-can split a large semantic window into multiple sync batches while preserving
-one durable parity-ledger record for the source window.
+`logseq:semantic-manifest` creates a plaintext-free corpus manifest with one
+entry per discovered file, including readable, empty, oversized, and ignored
+files. `logseq:semantic-batch-plan` reads a configured private markdown root and
+emits only counts, offsets, object totals, and opaque root refs.
+`logseq:semantic-parity` preserves each original file as an encrypted source
+capsule, can split a large semantic window into multiple sync batches, and
+writes per-file parity refs into the durable ledger. `logseq:semantic-ledger-report`
+can run as a hard completion gate with
+`LIVING_ATLAS_LOGSEQ_SEMANTIC_REQUIRE_COMPLETE=1`.
 
 Launch the fixture local MCP server with generated synthetic control state:
 

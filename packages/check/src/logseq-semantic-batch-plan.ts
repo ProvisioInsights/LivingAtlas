@@ -97,11 +97,11 @@ async function nextOffsetFromLedger(path: string | undefined): Promise<number | 
   return nextOffset;
 }
 
-async function readMarkdownInput(root: string, path: string): Promise<MarkdownFileInput> {
+async function readMarkdownInput(root: string, path: string, sourceKind: MarkdownFileInput["source_kind"]): Promise<MarkdownFileInput> {
   return {
     source_path: relative(root, path),
     markdown: await readFile(path, "utf8"),
-    source_kind: "logseq"
+    source_kind: sourceKind
   };
 }
 
@@ -162,6 +162,7 @@ async function main(): Promise<void> {
   );
   const authorityId = envValue("LIVING_ATLAS_LIVE_AUTHORITY_ID") ?? "la_authority_logseqsemantic0001";
   const pathRedactionSecret = envValue("LIVING_ATLAS_REAL_DATA_PATH_REDACTION_SECRET") ?? `planner:${digest(`${authorityId}:${root}`, 32)}`;
+  const sourceKind = (envValue("LIVING_ATLAS_REAL_MARKDOWN_SOURCE_KIND") ?? "logseq") as MarkdownFileInput["source_kind"];
   const paths = await walkMarkdown(root, lookaheadFiles, offset);
   if (paths.length === 0) {
     throw new Error(`no markdown files found under configured root at offset ${offset}`);
@@ -170,7 +171,7 @@ async function main(): Promise<void> {
   const entries: PlanEntry[] = [];
 
   for (const [index, path] of paths.entries()) {
-    const input = await readMarkdownInput(root, path);
+    const input = await readMarkdownInput(root, path, sourceKind);
     const ledger = createLogseqSemanticParityLedger([input], {
       authority_id: authorityId,
       created_at: "2026-01-01T00:00:00.000Z",
@@ -193,7 +194,7 @@ async function main(): Promise<void> {
 
   const summary = {
     report_schema: "living-atlas-logseq-semantic-batch-plan:v1",
-    root_ref: `sha256:${digest(root)}`,
+    root_ref: `sha256:${digest(`${pathRedactionSecret}:semantic-root:v1:${root}`)}`,
     authority_id: authorityId,
     start_offset: offset,
     max_objects: maxObjects,
