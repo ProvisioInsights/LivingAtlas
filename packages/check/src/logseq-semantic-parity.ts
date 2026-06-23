@@ -1,7 +1,7 @@
 import { createHash, randomBytes, webcrypto } from "node:crypto";
-import { mkdtemp, readFile, readdir, stat } from "node:fs/promises";
+import { appendFile, mkdir, mkdtemp, readFile, readdir, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, relative } from "node:path";
+import { dirname, join, relative } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
   GraphObjectEnvelopeSchema,
@@ -35,6 +35,48 @@ type CrudCase = {
   name: string;
   ok: boolean;
   detail?: string;
+};
+
+type SemanticBatchLedgerRecord = {
+  record_schema: "living-atlas-logseq-semantic-batch:v1";
+  recorded_at: string;
+  authority_id: string;
+  root_ref: `sha256:${string}`;
+  file_offset: number;
+  requested_file_count: number;
+  actual_file_count: number;
+  ledger_id: string;
+  plan_totals: {
+    bytes: number;
+    pages: number;
+    blocks: number;
+    page_properties: number;
+    block_properties: number;
+    wikilinks: number;
+    hash_tags: number;
+    block_refs: number;
+    edge_candidates: number;
+    valid_edge_candidates: number;
+    quarantined_edge_candidates: number;
+    planned_objects: number;
+    page_objects: number;
+    block_objects: number;
+    reference_index_objects: number;
+    edge_objects: number;
+    quarantine_objects: number;
+  };
+  crud: {
+    ok: boolean;
+    local_generation: number;
+    checked_cases: number;
+  };
+  sync: {
+    attempted: boolean;
+    generation?: number;
+    synced_objects?: number;
+  };
+  decisions: Record<string, number>;
+  plaintext_policy: "hash-counts-refs-only";
 };
 
 function envValue(key: string): string | undefined {
@@ -125,6 +167,15 @@ function assertNoNeedles(label: string, value: unknown, needles: string[]): void
       throw new Error(`${label} leaked sampled plaintext`);
     }
   }
+}
+
+async function appendBatchLedgerRecord(path: string | undefined, record: SemanticBatchLedgerRecord, needles: string[]): Promise<void> {
+  if (!path) {
+    return;
+  }
+  assertNoNeedles("semantic batch ledger record", record, needles);
+  await mkdir(dirname(path), { recursive: true });
+  await appendFile(path, `${JSON.stringify(record)}\n`, { mode: 0o600 });
 }
 
 async function encryptPayload(plaintext: string, aad: string): Promise<{
@@ -421,6 +472,7 @@ async function main(): Promise<void> {
   const root = envValue("LIVING_ATLAS_REAL_MARKDOWN_ROOT") ?? "./logseq";
   const fileCount = parseInteger(envValue("LIVING_ATLAS_LOGSEQ_SEMANTIC_FILE_COUNT"), defaultFileCount, 1, maxFileCount);
   const fileOffset = parseInteger(envValue("LIVING_ATLAS_LOGSEQ_SEMANTIC_FILE_OFFSET"), 0, 0, maxFileOffset);
+  const batchLedgerPath = envValue("LIVING_ATLAS_LOGSEQ_SEMANTIC_LEDGER_PATH");
   const authorityId = envValue("LIVING_ATLAS_LIVE_AUTHORITY_ID") ?? "la_authority_logseqsemantic0001";
   const pathRedactionSecret = envValue("LIVING_ATLAS_REAL_DATA_PATH_REDACTION_SECRET") ?? randomBytes(32).toString("hex");
   const createdAt = new Date().toISOString();
@@ -463,6 +515,45 @@ async function main(): Promise<void> {
   console.log(`bytes=${result.ledger.totals.bytes}; root_ref=sha256:${digest(root, 64)}; store_ref=sha256:${digest(crud.directory, 64)}`);
 
   if (envValue(liveAckEnv) !== liveAckValue) {
+    await appendBatchLedgerRecord(batchLedgerPath, {
+      record_schema: "living-atlas-logseq-semantic-batch:v1",
+      recorded_at: new Date().toISOString(),
+      authority_id: authorityId,
+      root_ref: `sha256:${digest(root, 64)}`,
+      file_offset: fileOffset,
+      requested_file_count: fileCount,
+      actual_file_count: result.ledger.file_count,
+      ledger_id: result.ledger.ledger_id,
+      plan_totals: {
+        bytes: result.ledger.totals.bytes,
+        pages: result.ledger.totals.pages,
+        blocks: result.ledger.totals.blocks,
+        page_properties: result.ledger.totals.page_properties,
+        block_properties: result.ledger.totals.block_properties,
+        wikilinks: result.ledger.totals.wikilinks,
+        hash_tags: result.ledger.totals.hash_tags,
+        block_refs: result.ledger.totals.block_refs,
+        edge_candidates: result.ledger.totals.edge_candidates,
+        valid_edge_candidates: result.ledger.totals.valid_edge_candidates,
+        quarantined_edge_candidates: result.ledger.totals.quarantined_edge_candidates,
+        planned_objects: result.ledger.totals.planned_objects,
+        page_objects: result.ledger.totals.page_objects,
+        block_objects: result.ledger.totals.block_objects,
+        reference_index_objects: result.ledger.totals.reference_index_objects_planned,
+        edge_objects: result.ledger.totals.edge_objects,
+        quarantine_objects: result.ledger.totals.quarantine_objects
+      },
+      crud: {
+        ok: true,
+        local_generation: crud.generation,
+        checked_cases: crud.cases.length
+      },
+      sync: {
+        attempted: false
+      },
+      decisions: result.ledger.decisions,
+      plaintext_policy: "hash-counts-refs-only"
+    }, needles);
     console.log(`live_sync=skipped; set ${liveAckEnv}=${liveAckValue} to sync semantic ciphertext to Cloudflare`);
     return;
   }
@@ -472,6 +563,47 @@ async function main(): Promise<void> {
     needles,
     authorityId
   });
+  await appendBatchLedgerRecord(batchLedgerPath, {
+    record_schema: "living-atlas-logseq-semantic-batch:v1",
+    recorded_at: new Date().toISOString(),
+    authority_id: authorityId,
+    root_ref: `sha256:${digest(root, 64)}`,
+    file_offset: fileOffset,
+    requested_file_count: fileCount,
+    actual_file_count: result.ledger.file_count,
+    ledger_id: result.ledger.ledger_id,
+    plan_totals: {
+      bytes: result.ledger.totals.bytes,
+      pages: result.ledger.totals.pages,
+      blocks: result.ledger.totals.blocks,
+      page_properties: result.ledger.totals.page_properties,
+      block_properties: result.ledger.totals.block_properties,
+      wikilinks: result.ledger.totals.wikilinks,
+      hash_tags: result.ledger.totals.hash_tags,
+      block_refs: result.ledger.totals.block_refs,
+      edge_candidates: result.ledger.totals.edge_candidates,
+      valid_edge_candidates: result.ledger.totals.valid_edge_candidates,
+      quarantined_edge_candidates: result.ledger.totals.quarantined_edge_candidates,
+      planned_objects: result.ledger.totals.planned_objects,
+      page_objects: result.ledger.totals.page_objects,
+      block_objects: result.ledger.totals.block_objects,
+      reference_index_objects: result.ledger.totals.reference_index_objects_planned,
+      edge_objects: result.ledger.totals.edge_objects,
+      quarantine_objects: result.ledger.totals.quarantine_objects
+    },
+    crud: {
+      ok: true,
+      local_generation: crud.generation,
+      checked_cases: crud.cases.length
+    },
+    sync: {
+      attempted: true,
+      generation: synced.generation,
+      synced_objects: synced.synced_objects
+    },
+    decisions: result.ledger.decisions,
+    plaintext_policy: "hash-counts-refs-only"
+  }, needles);
   console.log("Living Atlas Logseq semantic Cloudflare ciphertext sync passed");
   console.log(`authority=${authorityId}; generation=${synced.generation}; synced_objects=${synced.synced_objects}`);
 }
