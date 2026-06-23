@@ -497,7 +497,12 @@ async function main(): Promise<void> {
   const fileOffset = parseInteger(envValue("LIVING_ATLAS_LOGSEQ_SEMANTIC_FILE_OFFSET"), 0, 0, maxFileOffset);
   const batchLedgerPath = envValue("LIVING_ATLAS_LOGSEQ_SEMANTIC_LEDGER_PATH");
   const authorityId = envValue("LIVING_ATLAS_LIVE_AUTHORITY_ID") ?? "la_authority_logseqsemantic0001";
-  const pathRedactionSecret = envValue("LIVING_ATLAS_REAL_DATA_PATH_REDACTION_SECRET") ?? randomBytes(32).toString("hex");
+  const configuredPathRedactionSecret = envValue("LIVING_ATLAS_REAL_DATA_PATH_REDACTION_SECRET");
+  const mutatesOrBackfills = envValue(liveAckEnv) === liveAckValue || envValue(backfillAckEnv) === backfillAckValue;
+  if (mutatesOrBackfills && !configuredPathRedactionSecret) {
+    throw new Error("LIVING_ATLAS_REAL_DATA_PATH_REDACTION_SECRET is required for live semantic sync or ledger backfill");
+  }
+  const pathRedactionSecret = configuredPathRedactionSecret ?? randomBytes(32).toString("hex");
   const createdAt = new Date().toISOString();
   const paths = await walkMarkdown(root, fileCount, fileOffset);
   if (paths.length === 0) {
