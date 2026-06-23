@@ -16,7 +16,11 @@ import {
   fetchSyncEnvelopes,
   fetchSyncStatus,
   nextSyncGenerationFromStatus,
-  submitSyncBatch
+  submitSyncBatch,
+  type FetchSyncEnvelopesOptions,
+  type FetchSyncEnvelopesResult,
+  type FetchSyncStatusOptions,
+  type FetchSyncStatusResult
 } from "@living-atlas/sync-agent";
 import {
   printCloudflareLiveUsageGateResult,
@@ -29,6 +33,7 @@ const maxFileOffset = 1_000_000;
 const maxFileBytes = 256_000;
 const defaultMaxSyncObjectsPerBatch = 240;
 const hardMaxSyncObjectsPerBatch = 250;
+const defaultReadRetryCount = 3;
 const liveAckEnv = "LIVING_ATLAS_LOGSEQ_SEMANTIC_SYNC_ACK";
 const liveAckValue = "sync-semantic-ciphertext-to-cloudflare";
 const backfillAckEnv = "LIVING_ATLAS_LOGSEQ_SEMANTIC_BACKFILL_ACK";
@@ -115,6 +120,38 @@ function parseInteger(value: string | undefined, fallback: number, min: number, 
     throw new Error(`expected integer from ${min} to ${max}, got ${value}`);
   }
   return parsed;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isTransientReadStatus(statusCode: number): boolean {
+  return statusCode === 408 || statusCode === 429 || (statusCode >= 500 && statusCode <= 599);
+}
+
+async function fetchSyncStatusWithRetry(options: FetchSyncStatusOptions): Promise<FetchSyncStatusResult> {
+  const retries = parseInteger(envValue("LIVING_ATLAS_LOGSEQ_SEMANTIC_READ_RETRIES"), defaultReadRetryCount, 0, 10);
+  let result = await fetchSyncStatus(options);
+  for (let attempt = 1; !result.ok && isTransientReadStatus(result.status_code) && attempt <= retries; attempt += 1) {
+    const delayMs = 500 * attempt;
+    console.warn(`semantic sync status read returned HTTP ${result.status_code}; retry ${attempt}/${retries} in ${delayMs}ms`);
+    await sleep(delayMs);
+    result = await fetchSyncStatus(options);
+  }
+  return result;
+}
+
+async function fetchSyncEnvelopesWithRetry(options: FetchSyncEnvelopesOptions): Promise<FetchSyncEnvelopesResult> {
+  const retries = parseInteger(envValue("LIVING_ATLAS_LOGSEQ_SEMANTIC_READ_RETRIES"), defaultReadRetryCount, 0, 10);
+  let result = await fetchSyncEnvelopes(options);
+  for (let attempt = 1; !result.ok && isTransientReadStatus(result.status_code) && attempt <= retries; attempt += 1) {
+    const delayMs = 500 * attempt;
+    console.warn(`semantic envelope pull returned HTTP ${result.status_code}; retry ${attempt}/${retries} in ${delayMs}ms`);
+    await sleep(delayMs);
+    result = await fetchSyncEnvelopes(options);
+  }
+  return result;
 }
 
 async function walkMarkdown(root: string, maxFiles: number, offset: number): Promise<string[]> {
@@ -398,7 +435,7 @@ async function syncSemanticObjects(input: {
     hardMaxSyncObjectsPerBatch
   );
 
-  const status = await fetchSyncStatus({
+  const status = await fetchSyncStatusWithRetry({
     endpoint,
     syncToken,
     clientId: syncClientId,
@@ -469,7 +506,7 @@ async function syncSemanticObjects(input: {
     syncedObjects += submitted.accepted.accepted_objects;
   }
 
-  const pulled = await fetchSyncEnvelopes({
+  const pulled = await fetchSyncEnvelopesWithRetry({
     endpoint,
     authorityId: input.authorityId,
     afterGeneration: initialBaseGeneration,

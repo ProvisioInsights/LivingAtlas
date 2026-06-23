@@ -27,7 +27,11 @@ import {
   fetchSyncStatus,
   nextSyncGenerationFromStatus,
   submitSyncBatch,
-  type ApplyPulledEnvelopeConflict
+  type ApplyPulledEnvelopeConflict,
+  type FetchSyncEnvelopesOptions,
+  type FetchSyncEnvelopesResult,
+  type FetchSyncStatusOptions,
+  type FetchSyncStatusResult
 } from "@living-atlas/sync-agent";
 import {
   printCloudflareLiveUsageGateResult,
@@ -45,6 +49,7 @@ const maxDaemonCycles = 1000;
 const defaultDaemonPollMs = 30_000;
 const defaultDaemonBackoffMs = 5_000;
 const defaultEnvelopePullLimit = 1;
+const defaultReadRetryCount = 3;
 
 type RuntimeSecrets = {
   controlPassphrase: string;
@@ -329,7 +334,7 @@ async function pullAndApplyAll(input: {
   const conflictSamples: ApplyPulledEnvelopeConflict[] = [];
 
   do {
-    const pulled = await fetchSyncEnvelopes({
+    const pulled = await fetchSyncEnvelopesWithRetry({
       endpoint: input.endpoint,
       authorityId: input.authorityId,
       afterGeneration: cursor.generation,
@@ -423,6 +428,34 @@ function parseIntegerEnv(key: string, fallback: number, min: number, max: number
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isTransientReadStatus(statusCode: number): boolean {
+  return statusCode === 408 || statusCode === 429 || (statusCode >= 500 && statusCode <= 599);
+}
+
+async function fetchSyncStatusWithRetry(options: FetchSyncStatusOptions): Promise<FetchSyncStatusResult> {
+  const retries = parseIntegerEnv("LIVING_ATLAS_LIVE_SYNC_READ_RETRIES", defaultReadRetryCount, 0, 10);
+  let result = await fetchSyncStatus(options);
+  for (let attempt = 1; !result.ok && isTransientReadStatus(result.status_code) && attempt <= retries; attempt += 1) {
+    const delayMs = 500 * attempt;
+    console.warn(`live sync status read returned HTTP ${result.status_code}; retry ${attempt}/${retries} in ${delayMs}ms`);
+    await sleep(delayMs);
+    result = await fetchSyncStatus(options);
+  }
+  return result;
+}
+
+async function fetchSyncEnvelopesWithRetry(options: FetchSyncEnvelopesOptions): Promise<FetchSyncEnvelopesResult> {
+  const retries = parseIntegerEnv("LIVING_ATLAS_LIVE_SYNC_READ_RETRIES", defaultReadRetryCount, 0, 10);
+  let result = await fetchSyncEnvelopes(options);
+  for (let attempt = 1; !result.ok && isTransientReadStatus(result.status_code) && attempt <= retries; attempt += 1) {
+    const delayMs = 500 * attempt;
+    console.warn(`live sync envelope pull returned HTTP ${result.status_code}; retry ${attempt}/${retries} in ${delayMs}ms`);
+    await sleep(delayMs);
+    result = await fetchSyncEnvelopes(options);
+  }
+  return result;
 }
 
 async function createRuntimeConfig(): Promise<RuntimeConfig> {
@@ -532,7 +565,7 @@ async function pushOneOutboxFile(config: RuntimeConfig, store: FileLocalGraphSto
     return { pushed: false, cursor, pushed_objects: 0 };
   }
 
-  const status = await fetchSyncStatus({
+  const status = await fetchSyncStatusWithRetry({
     endpoint: config.endpoint,
     syncToken: config.syncToken,
     clientId: config.syncClientId,
@@ -738,7 +771,7 @@ async function main(): Promise<void> {
     secrets: config.secrets
   });
 
-  const status = await fetchSyncStatus({
+  const status = await fetchSyncStatusWithRetry({
     endpoint: config.endpoint,
     syncToken: config.syncToken,
     clientId: config.syncClientId,
