@@ -38,6 +38,8 @@ const BatchRecordSchema = z.object({
   sync: z.object({
     attempted: z.boolean(),
     generation: z.number().int().nonnegative().optional(),
+    generations: z.array(z.number().int().nonnegative()).optional(),
+    batch_count: z.number().int().positive().optional(),
     synced_objects: z.number().int().nonnegative().optional()
   }),
   decisions: z.record(z.string(), z.number().int().nonnegative()),
@@ -149,7 +151,10 @@ async function main(): Promise<void> {
   }
   const ranges = coverage(latest);
   const synced = latest.filter((record) => record.sync.attempted);
-  const latestGeneration = Math.max(0, ...synced.map((record) => record.sync.generation ?? 0));
+  const latestGeneration = Math.max(0, ...synced.flatMap((record) => [
+    record.sync.generation ?? 0,
+    ...(record.sync.generations ?? [])
+  ]));
   const summary = {
     report_schema: "living-atlas-logseq-semantic-ledger-report:v1",
     record_count: records.length,

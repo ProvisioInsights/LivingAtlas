@@ -285,10 +285,12 @@ Command map:
 | `npm run cloudflare:wrangler-smoke` | No | No | Wrangler dry-run bundle validation for the public Worker template. |
 | `npm run cloudflare:live-usage-gate` | No real graph data | No | Read-only deployed usage stoplight before live synthetic mutation. |
 | `npm run cloudflare:live-ops-report` | No real graph data | No | Read-only deployed operator report with gate plus R2 inventory reconciliation. |
+| `npm run cloudflare:live-local-mcp-outbox-proof` | No note plaintext | Yes | Queues one local MCP durable create/update/tombstone sequence into the local sync outbox; requires explicit acknowledgement and usage gate pass. |
 | `npm run cloudflare:live-crud-tiny` | No real graph data | Yes | Tiny deployed CRUD pass; requires gate pass and explicit tiny mutation acknowledgement. |
 | `npm run preflight:synthetic` | No | No | Full synthetic preflight before real Cloudflare work. |
 | `npm run cloudflare:live-concurrency-smoke` | No real graph data | Yes | Optional live deployed-Worker sync race smoke; requires explicit mutation acknowledgement. |
-| `npm run logseq:semantic-parity` | Yes, when pointed at a private local graph | Optional | Converts a bounded markdown window into encrypted semantic objects, runs local CRUD/leakage checks, and can either sync ciphertext or backfill a known synced ledger window with explicit acknowledgement. |
+| `npm run logseq:semantic-batch-plan` | Yes, when pointed at a private local graph | No | Plans the next plaintext-free semantic batch from ledger coverage and object counts, including chunked-sync flags for large single files. |
+| `npm run logseq:semantic-parity` | Yes, when pointed at a private local graph | Optional | Converts a bounded markdown window into encrypted semantic objects, runs local CRUD/leakage checks, and can either sync ciphertext in one or more sync batches or backfill a known synced ledger window with explicit acknowledgement. |
 | `npm run logseq:semantic-ledger-report` | Ledger only | No | Summarizes the plaintext-free semantic migration ledger: coverage, gaps, synced batches, totals, and decisions. |
 
 The deployed Cloudflare usage gate should run before any live mutating smoke or

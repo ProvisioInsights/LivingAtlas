@@ -272,6 +272,20 @@ Workspace packages:
   provider-side inventory available through bound Cloudflare services, including
   R2 object count/byte reconciliation.
 
+Semantic Logseq migration uses bounded, plaintext-free planning and ledger
+commands:
+
+```bash
+npm run logseq:semantic-batch-plan
+npm run logseq:semantic-parity
+npm run logseq:semantic-ledger-report
+```
+
+`logseq:semantic-batch-plan` reads a configured private markdown root and emits
+only counts, offsets, object totals, and opaque root refs. `logseq:semantic-parity`
+can split a large semantic window into multiple sync batches while preserving
+one durable parity-ledger record for the source window.
+
 Launch the fixture local MCP server with generated synthetic control state:
 
 ```bash

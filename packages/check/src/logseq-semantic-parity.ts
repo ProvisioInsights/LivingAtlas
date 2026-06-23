@@ -27,6 +27,8 @@ const defaultFileCount = 5;
 const maxFileCount = 10;
 const maxFileOffset = 1_000_000;
 const maxFileBytes = 256_000;
+const defaultMaxSyncObjectsPerBatch = 240;
+const hardMaxSyncObjectsPerBatch = 250;
 const liveAckEnv = "LIVING_ATLAS_LOGSEQ_SEMANTIC_SYNC_ACK";
 const liveAckValue = "sync-semantic-ciphertext-to-cloudflare";
 const backfillAckEnv = "LIVING_ATLAS_LOGSEQ_SEMANTIC_BACKFILL_ACK";
@@ -75,6 +77,8 @@ type SemanticBatchLedgerRecord = {
   sync: {
     attempted: boolean;
     generation?: number;
+    generations?: number[];
+    batch_count?: number;
     synced_objects?: number;
   };
   decisions: Record<string, number>;
@@ -374,7 +378,7 @@ async function syncSemanticObjects(input: {
   objects: GraphObjectEnvelope[];
   needles: string[];
   authorityId: string;
-}): Promise<{ generation: number; synced_objects: number }> {
+}): Promise<{ generation: number; generations: number[]; batch_count: number; synced_objects: number }> {
   const gate = await runCloudflareLiveUsageGate();
   printCloudflareLiveUsageGateResult(gate);
   if (!gate.ok) {
@@ -387,6 +391,12 @@ async function syncSemanticObjects(input: {
   const syncCapabilityId = requireEnv("LIVING_ATLAS_LIVE_SYNC_CAPABILITY_ID");
   const syncTokenId = envValue("LIVING_ATLAS_LIVE_SYNC_TOKEN_ID");
   const syncDeviceId = envValue("LIVING_ATLAS_LIVE_SYNC_DEVICE_ID") ?? `la_device_logseqsem${digest(syncClientId, 18)}`;
+  const maxObjectsPerBatch = parseInteger(
+    envValue("LIVING_ATLAS_LOGSEQ_SEMANTIC_SYNC_MAX_OBJECTS_PER_BATCH"),
+    defaultMaxSyncObjectsPerBatch,
+    1,
+    hardMaxSyncObjectsPerBatch
+  );
 
   const status = await fetchSyncStatus({
     endpoint,
@@ -399,61 +409,70 @@ async function syncSemanticObjects(input: {
     throw new Error(`sync status failed HTTP ${status.status_code}: ${JSON.stringify(status.error)}`);
   }
 
-  const generation = nextSyncGenerationFromStatus(status.status);
+  const initialBaseGeneration = status.status.latest_generation;
   const controlState = remapControlState(await createFixtureLocalControlState(`logseq-semantic-${digest(new Date().toISOString())}`), {
     authorityId: input.authorityId,
     syncClientId,
     syncCapabilityId,
     syncDeviceId
   });
-  let baseGeneration = generation.base_generation;
-  let targetGeneration = generation.target_generation;
-  let built = buildCiphertextSyncBatch({
-    controlState,
-    graphObjects: input.objects,
-    syncClientId,
-    tokenId: syncTokenId,
-    baseGeneration,
-    targetGeneration,
-    now: new Date().toISOString()
-  });
-  assertNoNeedles("semantic sync batch", built.batch, input.needles);
+  let baseGeneration = initialBaseGeneration;
+  const generations: number[] = [];
+  let syncedObjects = 0;
 
-  let submitted = await submitSyncBatch({
-    endpoint,
-    batch: built.batch,
-    syncToken
-  });
-  if (!submitted.ok && submitted.status === 409) {
-    const latest = latestGenerationFromSyncError(submitted.error);
-    if (latest !== undefined && latest !== baseGeneration) {
-      baseGeneration = latest;
-      targetGeneration = latest + 1;
-      built = buildCiphertextSyncBatch({
-        controlState,
-        graphObjects: input.objects,
-        syncClientId,
-        tokenId: syncTokenId,
-        baseGeneration,
-        targetGeneration,
-        now: new Date().toISOString()
-      });
-      assertNoNeedles("semantic sync batch retry", built.batch, input.needles);
-      submitted = await submitSyncBatch({
-        endpoint,
-        batch: built.batch,
-        syncToken
-      });
+  for (let start = 0; start < input.objects.length; start += maxObjectsPerBatch) {
+    const chunk = input.objects.slice(start, start + maxObjectsPerBatch);
+    let targetGeneration = baseGeneration + 1;
+    let built = buildCiphertextSyncBatch({
+      controlState,
+      graphObjects: chunk,
+      syncClientId,
+      tokenId: syncTokenId,
+      baseGeneration,
+      targetGeneration,
+      now: new Date().toISOString()
+    });
+    assertNoNeedles("semantic sync batch", built.batch, input.needles);
+
+    let submitted = await submitSyncBatch({
+      endpoint,
+      batch: built.batch,
+      syncToken
+    });
+    if (!submitted.ok && submitted.status === 409) {
+      const latest = latestGenerationFromSyncError(submitted.error);
+      if (latest !== undefined && latest !== baseGeneration) {
+        baseGeneration = latest;
+        targetGeneration = latest + 1;
+        built = buildCiphertextSyncBatch({
+          controlState,
+          graphObjects: chunk,
+          syncClientId,
+          tokenId: syncTokenId,
+          baseGeneration,
+          targetGeneration,
+          now: new Date().toISOString()
+        });
+        assertNoNeedles("semantic sync batch retry", built.batch, input.needles);
+        submitted = await submitSyncBatch({
+          endpoint,
+          batch: built.batch,
+          syncToken
+        });
+      }
     }
-  }
-  if (!submitted.ok) {
-    throw new Error(`semantic ciphertext sync failed HTTP ${submitted.status}: ${JSON.stringify(submitted.error)}`);
+    if (!submitted.ok) {
+      throw new Error(`semantic ciphertext sync failed HTTP ${submitted.status}: ${JSON.stringify(submitted.error)}`);
+    }
+    baseGeneration = submitted.accepted.target_generation;
+    generations.push(submitted.accepted.target_generation);
+    syncedObjects += submitted.accepted.accepted_objects;
   }
 
   const pulled = await fetchSyncEnvelopes({
     endpoint,
     authorityId: input.authorityId,
-    afterGeneration: generation.base_generation,
+    afterGeneration: initialBaseGeneration,
     syncToken,
     clientId: syncClientId,
     capabilityId: syncCapabilityId,
@@ -465,8 +484,10 @@ async function syncSemanticObjects(input: {
   assertNoNeedles("semantic pulled envelopes", pulled.response, input.needles);
 
   return {
-    generation: submitted.accepted.target_generation,
-    synced_objects: input.objects.length
+    generation: generations.at(-1) ?? initialBaseGeneration,
+    generations,
+    batch_count: generations.length,
+    synced_objects: syncedObjects
   };
 }
 
@@ -661,11 +682,13 @@ async function main(): Promise<void> {
       local_generation: crud.generation,
       checked_cases: crud.cases.length
     },
-    sync: {
-      attempted: true,
-      generation: synced.generation,
-      synced_objects: synced.synced_objects
-    },
+      sync: {
+        attempted: true,
+        generation: synced.generation,
+        generations: synced.generations,
+        batch_count: synced.batch_count,
+        synced_objects: synced.synced_objects
+      },
     decisions: result.ledger.decisions,
     plaintext_policy: "hash-counts-refs-only"
   }, needles);
