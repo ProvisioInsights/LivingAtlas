@@ -10,9 +10,11 @@
   "scripts": {
     "check": "npm run lint:repo-safety && npm run typecheck && npm test",
     "cloudflare:live-concurrency-smoke": "tsx packages/check/src/cloudflare-live-concurrency-smoke.ts",
+    "cloudflare:live-cloud-unlock-proof": "tsx packages/check/src/cloudflare-live-cloud-unlock-proof.ts",
     "cloudflare:live-crud-stress": "tsx packages/check/src/cloudflare-live-crud-stress.ts",
     "cloudflare:live-crud-tiny": "tsx packages/check/src/cloudflare-live-crud-tiny.ts",
     "cloudflare:live-local-sync": "tsx packages/check/src/cloudflare-live-local-sync.ts",
+    "cloudflare:live-mcp-tiny": "tsx packages/check/src/cloudflare-live-mcp-tiny.ts",
     "cloudflare:live-ops-report": "tsx packages/check/src/cloudflare-live-ops-report.ts",
     "cloudflare:live-usage-gate": "tsx packages/check/src/cloudflare-live-usage-gate.ts",
     "cloudflare:local-smoke": "tsx packages/check/src/local-smoke.ts",

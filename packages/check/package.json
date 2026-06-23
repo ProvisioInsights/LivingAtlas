@@ -8,6 +8,8 @@
   },
   "dependencies": {
     "@living-atlas/contracts": "workspace:*",
+    "@living-atlas/atlas-client": "workspace:*",
+    "@living-atlas/cloudflare-worker": "workspace:*",
     "@living-atlas/fixtures": "workspace:*",
     "@living-atlas/leakage": "workspace:*",
     "@living-atlas/local-control-store": "workspace:*",

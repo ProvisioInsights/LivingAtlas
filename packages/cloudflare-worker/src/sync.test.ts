@@ -1700,6 +1700,62 @@ describe("Worker sync batch acceptance", () => {
     expect(JSON.stringify(auditBody)).not.toContain("Synthetic sensitive note");
   });
 
+  it("allows cloud-unlock MCP credentials through stealth ingress", async () => {
+    const { env } = await createEnv();
+    const rawKey = new Uint8Array(Array.from({ length: 32 }, (_, index) => index + 31));
+    const unlockKey = testToBase64(rawKey);
+    const batch = await cloudUnlockBatch(rawKey);
+
+    const syncResponse = await handleBootstrapRequest(new Request("https://living-atlas.example/api/sync/batch", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-living-atlas-sync-token": syncToken
+      },
+      body: JSON.stringify(batch)
+    }), env);
+    expect(syncResponse.status).toBe(202);
+
+    env.LA_STEALTH_MODE = "1";
+    env.LA_SYNC_CAPABILITY_ID = "la_cap_sync0001";
+
+    const decryptResponse = await handleBootstrapRequest(new Request("https://living-atlas.example/mcp", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-living-atlas-sync-token": syncToken,
+        "x-living-atlas-sync-capability-id": cloudUnlockCapabilityId,
+        "x-living-atlas-cloud-unlock-key": unlockKey
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 91,
+        method: "tools/call",
+        params: {
+          name: "remote_sensitive_decrypt",
+          arguments: {
+            authority_id: "la_authority_worker0001",
+            object_id: "la_object_cloudunlock0001"
+          }
+        }
+      })
+    }), env);
+
+    expect(decryptResponse.status).toBe(200);
+    await expect(decryptResponse.json()).resolves.toMatchObject({
+      jsonrpc: "2.0",
+      id: 91,
+      result: {
+        structuredContent: {
+          ok: true,
+          current_mode: "cloud-unlock-session",
+          key_persisted_by_cloudflare: false,
+          host_blind_sensitive_plaintext: false
+        }
+      }
+    });
+  });
+
   it("supports remote-readable graph CRUD, search, traversal, timeline, and edge CRUD through MCP", async () => {
     const { env } = await createEnv();
     const mcpCall = async (id: number, name: string, args: Record<string, unknown>) => {

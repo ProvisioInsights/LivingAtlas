@@ -5,6 +5,7 @@ import { sha256TokenHash } from "./bootstrap";
 
 const validToken = "fixture-bootstrap-token-0001";
 const fixedNow = "2026-06-22T00:00:00.000Z";
+const fixtureFutureExpiry = "2099-01-01T00:00:00.000Z";
 
 const claimPayload = {
   authority_id: "la_authority_bootstrap0001",
@@ -41,7 +42,7 @@ async function createEnv(): Promise<BootstrapWorkerEnv> {
     LA_GRAPH_BUCKET: {} as R2Bucket,
     LA_CONTROL_DB: {} as D1Database,
     BOOTSTRAP_CLAIM_TOKEN_HASH: tokenHash,
-    BOOTSTRAP_TOKEN_EXPIRES_AT: "2026-06-23T00:00:00.000Z"
+    BOOTSTRAP_TOKEN_EXPIRES_AT: fixtureFutureExpiry
   };
 }
 
@@ -76,7 +77,7 @@ describe("BootstrapClaimLockCore", () => {
 
   it("accepts exactly one concurrent valid first claim and burns the token", async () => {
     const { lock, tokenHash } = await createLock();
-    const config = { claim_token_hash: tokenHash, claim_token_expires_at: "2026-06-23T00:00:00.000Z" };
+    const config = { claim_token_hash: tokenHash, claim_token_expires_at: fixtureFutureExpiry };
     const [first, second] = await Promise.all([
       lock.claim(claimPayload, validToken, config, fixedNow),
       lock.claim(claimPayload, validToken, config, fixedNow)

@@ -51,6 +51,12 @@ importers:
 
   packages/check:
     dependencies:
+      '@living-atlas/atlas-client':
+        specifier: workspace:*
+        version: link:../atlas-client
+      '@living-atlas/cloudflare-worker':
+        specifier: workspace:*
+        version: link:../cloudflare-worker
       '@living-atlas/contracts':
         specifier: workspace:*
         version: link:../contracts

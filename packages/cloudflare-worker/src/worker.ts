@@ -291,7 +291,7 @@ async function shouldStealthDrop(request: Request, env: BootstrapWorkerEnv): Pro
   }
 
   if (url.pathname === "/mcp") {
-    return !(await hasValidSyncToken(request, env));
+    return !(await hasValidRemoteMcpDiscoveryToken(request, env));
   }
 
   return true;
