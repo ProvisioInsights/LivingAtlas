@@ -29,6 +29,8 @@ const maxFileOffset = 1_000_000;
 const maxFileBytes = 256_000;
 const liveAckEnv = "LIVING_ATLAS_LOGSEQ_SEMANTIC_SYNC_ACK";
 const liveAckValue = "sync-semantic-ciphertext-to-cloudflare";
+const backfillAckEnv = "LIVING_ATLAS_LOGSEQ_SEMANTIC_BACKFILL_ACK";
+const backfillAckValue = "record-known-synced-batch";
 const textEncoder = new TextEncoder();
 
 type CrudCase = {
@@ -513,6 +515,69 @@ async function main(): Promise<void> {
   console.log(`pages=${result.ledger.totals.pages}; blocks=${result.ledger.totals.blocks}; indexes=${result.ledger.totals.reference_index_objects_planned}; edges=${result.ledger.totals.edge_objects}; quarantine=${result.ledger.totals.quarantine_objects}`);
   console.log(`wikilinks=${result.ledger.totals.wikilinks}; tags=${result.ledger.totals.hash_tags}; block_refs=${result.ledger.totals.block_refs}; page_properties=${result.ledger.totals.page_properties}; block_properties=${result.ledger.totals.block_properties}`);
   console.log(`bytes=${result.ledger.totals.bytes}; root_ref=sha256:${digest(root, 64)}; store_ref=sha256:${digest(crud.directory, 64)}`);
+
+  if (envValue(backfillAckEnv) === backfillAckValue) {
+    if (envValue(liveAckEnv) === liveAckValue) {
+      throw new Error(`${backfillAckEnv} and ${liveAckEnv} cannot both request mutation modes`);
+    }
+    if (!batchLedgerPath) {
+      throw new Error("LIVING_ATLAS_LOGSEQ_SEMANTIC_LEDGER_PATH is required for semantic ledger backfill");
+    }
+    const backfillGeneration = parseInteger(envValue("LIVING_ATLAS_LOGSEQ_SEMANTIC_BACKFILL_GENERATION"), 0, 1, 1_000_000_000);
+    const backfillSyncedObjects = parseInteger(
+      envValue("LIVING_ATLAS_LOGSEQ_SEMANTIC_BACKFILL_SYNCED_OBJECTS"),
+      result.objects.length,
+      0,
+      10_000_000
+    );
+    if (backfillSyncedObjects !== result.objects.length) {
+      throw new Error(`backfill synced object count ${backfillSyncedObjects} did not match recomputed objects ${result.objects.length}`);
+    }
+    await appendBatchLedgerRecord(batchLedgerPath, {
+      record_schema: "living-atlas-logseq-semantic-batch:v1",
+      recorded_at: new Date().toISOString(),
+      authority_id: authorityId,
+      root_ref: `sha256:${digest(root, 64)}`,
+      file_offset: fileOffset,
+      requested_file_count: fileCount,
+      actual_file_count: result.ledger.file_count,
+      ledger_id: result.ledger.ledger_id,
+      plan_totals: {
+        bytes: result.ledger.totals.bytes,
+        pages: result.ledger.totals.pages,
+        blocks: result.ledger.totals.blocks,
+        page_properties: result.ledger.totals.page_properties,
+        block_properties: result.ledger.totals.block_properties,
+        wikilinks: result.ledger.totals.wikilinks,
+        hash_tags: result.ledger.totals.hash_tags,
+        block_refs: result.ledger.totals.block_refs,
+        edge_candidates: result.ledger.totals.edge_candidates,
+        valid_edge_candidates: result.ledger.totals.valid_edge_candidates,
+        quarantined_edge_candidates: result.ledger.totals.quarantined_edge_candidates,
+        planned_objects: result.ledger.totals.planned_objects,
+        page_objects: result.ledger.totals.page_objects,
+        block_objects: result.ledger.totals.block_objects,
+        reference_index_objects: result.ledger.totals.reference_index_objects_planned,
+        edge_objects: result.ledger.totals.edge_objects,
+        quarantine_objects: result.ledger.totals.quarantine_objects
+      },
+      crud: {
+        ok: true,
+        local_generation: crud.generation,
+        checked_cases: crud.cases.length
+      },
+      sync: {
+        attempted: true,
+        generation: backfillGeneration,
+        synced_objects: backfillSyncedObjects
+      },
+      decisions: result.ledger.decisions,
+      plaintext_policy: "hash-counts-refs-only"
+    }, needles);
+    console.log("Living Atlas Logseq semantic ledger backfill recorded without Cloudflare mutation");
+    console.log(`authority=${authorityId}; known_generation=${backfillGeneration}; synced_objects=${backfillSyncedObjects}`);
+    return;
+  }
 
   if (envValue(liveAckEnv) !== liveAckValue) {
     await appendBatchLedgerRecord(batchLedgerPath, {

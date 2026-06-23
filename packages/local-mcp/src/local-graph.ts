@@ -44,8 +44,22 @@ export type LocalMcpContext = {
   credentialStore: LocalMcpCredentialStore;
   auditSink?: LocalMcpAuditSink;
   activitySink?: LocalMcpActivitySink;
+  outboxSink?: LocalMcpMutationOutboxSink;
   now?: string;
   syntheticStoreLimits?: Partial<LocalGraphSyntheticStoreLimits>;
+};
+
+export type LocalMcpMutationOutboxRecord = {
+  mutation: "created" | "updated" | "tombstoned";
+  object: GraphObjectEnvelope;
+  actor_id: string;
+  recorded_at: string;
+  generation: number;
+  journal_sequence: number;
+};
+
+export type LocalMcpMutationOutboxSink = {
+  enqueue(record: LocalMcpMutationOutboxRecord): Promise<void>;
 };
 
 export type LocalGraphSyntheticStoreLimits = {
@@ -168,6 +182,7 @@ export function createFixtureLocalMcpContext(options: {
   credentialStore: LocalMcpCredentialStore;
   auditSink?: LocalMcpAuditSink;
   activitySink?: LocalMcpActivitySink;
+  outboxSink?: LocalMcpMutationOutboxSink;
   now?: string;
   syntheticStoreLimits?: Partial<LocalGraphSyntheticStoreLimits>;
 }): LocalMcpContext {
@@ -177,6 +192,7 @@ export function createFixtureLocalMcpContext(options: {
     credentialStore: options.credentialStore,
     auditSink: options.auditSink,
     activitySink: options.activitySink,
+    outboxSink: options.outboxSink,
     now: options.now,
     syntheticStoreLimits: options.syntheticStoreLimits
   };
@@ -188,6 +204,7 @@ export function createLocalMcpContextFromControlState(options: {
   graphStore?: FileLocalGraphStore;
   auditSink?: LocalMcpAuditSink;
   activitySink?: LocalMcpActivitySink;
+  outboxSink?: LocalMcpMutationOutboxSink;
   now?: string;
   syntheticStoreLimits?: Partial<LocalGraphSyntheticStoreLimits>;
 }): LocalMcpContext {
@@ -198,6 +215,7 @@ export function createLocalMcpContextFromControlState(options: {
     credentialStore: new InMemoryLocalMcpCredentialStore(options.controlState.local_credentials),
     auditSink: options.auditSink,
     activitySink: options.activitySink,
+    outboxSink: options.outboxSink,
     now: options.now,
     syntheticStoreLimits: options.syntheticStoreLimits
   };
@@ -350,6 +368,29 @@ function sanitizeAuthorizedObject(object: GraphObjectEnvelope, plaintextAllowed:
     payload: object.payload,
     plaintext_available: plaintextAllowed && object.payload.kind === "plaintext-json"
   };
+}
+
+async function enqueueDurableMutationOutbox(input: {
+  context: LocalMcpContext;
+  mutation: LocalMcpMutationOutboxRecord["mutation"];
+  object: GraphObjectEnvelope;
+  actorId: string;
+  recordedAt: string;
+  generation?: number;
+  journalSequence?: number;
+}): Promise<void> {
+  if (!input.context.outboxSink || input.generation === undefined || input.journalSequence === undefined) {
+    return;
+  }
+
+  await input.context.outboxSink.enqueue({
+    mutation: input.mutation,
+    object: input.object,
+    actor_id: input.actorId,
+    recorded_at: input.recordedAt,
+    generation: input.generation,
+    journal_sequence: input.journalSequence
+  });
 }
 
 export async function localGraphStatus(
@@ -616,6 +657,15 @@ export async function localCreateObject(
       allowed: true,
       reason: decision.reason_code
     });
+    await enqueueDurableMutationOutbox({
+      context,
+      mutation: "created",
+      object: mutation.object,
+      actorId: auth.authenticated.client.client_id,
+      recordedAt: mutation.object.updated_at,
+      generation: mutation.generation,
+      journalSequence: mutation.journal_sequence
+    });
 
     return {
       ok: true,
@@ -855,6 +905,15 @@ export async function localUpdateObject(
       allowed: true,
       reason: decision.reason_code
     });
+    await enqueueDurableMutationOutbox({
+      context,
+      mutation: "updated",
+      object: mutation.object,
+      actorId: auth.authenticated.client.client_id,
+      recordedAt: mutation.object.updated_at,
+      generation: mutation.generation,
+      journalSequence: mutation.journal_sequence
+    });
 
     return {
       ok: true,
@@ -1022,6 +1081,15 @@ export async function localTombstoneObject(
       decision,
       allowed: true,
       reason: decision.reason_code
+    });
+    await enqueueDurableMutationOutbox({
+      context,
+      mutation: "tombstoned",
+      object: mutation.object,
+      actorId: auth.authenticated.client.client_id,
+      recordedAt: mutation.object.updated_at,
+      generation: mutation.generation,
+      journalSequence: mutation.journal_sequence
     });
 
     return {

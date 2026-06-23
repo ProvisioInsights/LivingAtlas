@@ -270,7 +270,7 @@ function latestGenerationFromSyncError(error: unknown): number | undefined {
 }
 
 async function main(): Promise<void> {
-  const root = envValue("LIVING_ATLAS_REAL_MARKDOWN_ROOT") ?? "/Users/johnsu/Documents/Obsidian Vault";
+  const root = envValue("LIVING_ATLAS_REAL_MARKDOWN_ROOT") ?? "./private-markdown-root";
   const maxFiles = parsePositiveInt(envValue("LIVING_ATLAS_REAL_DATA_FILE_COUNT"), defaultMaxFiles, maxHardFiles);
   const fileOffset = parseNonNegativeInt(envValue("LIVING_ATLAS_REAL_DATA_FILE_OFFSET"), 0, maxFileOffset);
   const sourceKind = sourceKindForRoot(root);

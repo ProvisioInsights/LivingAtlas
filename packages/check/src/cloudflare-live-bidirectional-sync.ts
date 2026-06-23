@@ -26,7 +26,8 @@ import {
   fetchSyncEnvelopes,
   fetchSyncStatus,
   nextSyncGenerationFromStatus,
-  submitSyncBatch
+  submitSyncBatch,
+  type ApplyPulledEnvelopeConflict
 } from "@living-atlas/sync-agent";
 import {
   printCloudflareLiveUsageGateResult,
@@ -89,6 +90,7 @@ type SyncReport = {
   pushed_batches: number;
   pushed_objects: number;
   outbox_pending: number;
+  conflict_samples: ApplyPulledEnvelopeConflict[];
   last_error?: string;
 };
 
@@ -118,7 +120,8 @@ function randomSecret(label: string): string {
 }
 
 function defaultReplicaDir(): string {
-  return join(homedir(), "Library", "Application Support", "LivingAtlas", "personal-prod");
+  const environmentName = envValue("LIVING_ATLAS_ENV") ?? "default";
+  return join(homedir(), "Library", "Application Support", "LivingAtlas", environmentName);
 }
 
 function runtimePaths(): LocalRuntimePaths {
@@ -312,6 +315,7 @@ async function pullAndApplyAll(input: {
   applied: number;
   skipped: number;
   conflicts: number;
+  conflictSamples: ApplyPulledEnvelopeConflict[];
   pulls: number;
 }> {
   let cursor = input.startCursor;
@@ -319,6 +323,7 @@ async function pullAndApplyAll(input: {
   let applied = 0;
   let skipped = 0;
   let conflicts = 0;
+  const conflictSamples: ApplyPulledEnvelopeConflict[] = [];
 
   do {
     const pulled = await fetchSyncEnvelopes({
@@ -346,6 +351,7 @@ async function pullAndApplyAll(input: {
     applied += result.applied_count;
     skipped += result.skipped_count;
     conflicts += result.conflict_count;
+    conflictSamples.push(...result.conflicts.slice(0, Math.max(0, 10 - conflictSamples.length)));
     if (!result.ok) {
       throw new Error(`local apply failed: ${JSON.stringify(result.conflicts)}`);
     }
@@ -361,6 +367,7 @@ async function pullAndApplyAll(input: {
     applied,
     skipped,
     conflicts,
+    conflictSamples,
     pulls
   };
 }
@@ -587,6 +594,7 @@ async function runDaemonMode(config: RuntimeConfig): Promise<void> {
   let applied = 0;
   let skipped = 0;
   let conflicts = 0;
+  const conflictSamples: ApplyPulledEnvelopeConflict[] = [];
   let pushedBatches = 0;
   let pushedObjects = 0;
   let proofQueued = false;
@@ -610,6 +618,7 @@ async function runDaemonMode(config: RuntimeConfig): Promise<void> {
       applied += pulled.applied;
       skipped += pulled.skipped;
       conflicts += pulled.conflicts;
+      conflictSamples.push(...pulled.conflictSamples.slice(0, Math.max(0, 10 - conflictSamples.length)));
 
       if (queueProof && !proofQueued) {
         await writeProofOutboxObject(config, store);
@@ -636,6 +645,7 @@ async function runDaemonMode(config: RuntimeConfig): Promise<void> {
         applied += afterPushPull.applied;
         skipped += afterPushPull.skipped;
         conflicts += afterPushPull.conflicts;
+        conflictSamples.push(...afterPushPull.conflictSamples.slice(0, Math.max(0, 10 - conflictSamples.length)));
       }
       lastError = undefined;
     } catch (error) {
@@ -656,6 +666,7 @@ async function runDaemonMode(config: RuntimeConfig): Promise<void> {
       applied,
       skipped,
       conflicts,
+      conflict_samples: conflictSamples,
       pushed_batches: pushedBatches,
       pushed_objects: pushedObjects,
       outbox_pending: pending,
@@ -799,6 +810,7 @@ async function main(): Promise<void> {
     applied: pullBefore.applied + pullAfter.applied,
     skipped: pullBefore.skipped + pullAfter.skipped,
     conflicts: pullBefore.conflicts + pullAfter.conflicts,
+    conflict_samples: [...pullBefore.conflictSamples, ...pullAfter.conflictSamples].slice(0, 10),
     pushed_batches: 1,
     pushed_objects: submitted.accepted.accepted_objects,
     outbox_pending: (await queuedOutboxFiles(config.paths)).length

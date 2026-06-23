@@ -217,4 +217,49 @@ describe("markdown importer planning", () => {
     expect(JSON.stringify(ledger)).not.toContain("Acquirer");
     expect(JSON.stringify(ledger)).not.toContain("Target");
   });
+
+  it("promotes explicit typed Logseq edge lines into encrypted temporal edge objects", async () => {
+    const file = {
+      source_path: "/tmp/living-atlas-fixtures/Typed Edge.md",
+      markdown: "## Edges\n\n- [[Avery North]] (person) advises [[Project Glass Lantern]] (project) from 2026-06\n",
+      source_kind: "logseq" as const
+    };
+
+    const encrypted = await createLogseqSemanticGraphObjects([file], {
+      authority_id: fixtureAuthorityId,
+      created_at: "2026-06-22T12:00:00.000Z",
+      path_redaction_secret: "fixture-path-redaction-secret-0001",
+      encrypt: async ({ plaintext, aad }) => ({
+        ciphertext: Buffer.from(`sealed:${aad}:${plaintext.length}`).toString("base64"),
+        nonce: "fixture-semantic-nonce",
+        hash: sha256(`sealed:${aad}:${plaintext.length}`),
+        algorithm: "fixture-aes-gcm"
+      })
+    });
+
+    expect(encrypted.ledger.totals.edge_candidates).toBe(1);
+    expect(encrypted.ledger.totals.valid_edge_candidates).toBe(1);
+    expect(encrypted.ledger.totals.quarantine_objects).toBe(0);
+    expect(encrypted.ledger.decisions["typed-edge-promoted"]).toBe(1);
+    expect(encrypted.ledger.files[0]!.objects).toContainEqual(expect.objectContaining({
+      semantic_kind: "typed-edge",
+      object_type: "edge",
+      decision: "captured-encrypted",
+      plaintext_in_plan: false
+    }));
+    expect(encrypted.objects).toContainEqual(expect.objectContaining({
+      object_type: "edge",
+      visible_metadata: expect.objectContaining({
+        schema_namespace: "import/logseq-semantic/typed-edge",
+        remote_indexable: false
+      }),
+      payload: expect.objectContaining({
+        kind: "ciphertext-inline"
+      })
+    }));
+    expect(JSON.stringify(encrypted.ledger)).not.toContain("Avery North");
+    expect(JSON.stringify(encrypted.ledger)).not.toContain("Project Glass Lantern");
+    expect(JSON.stringify(encrypted.objects)).not.toContain("Avery North");
+    expect(JSON.stringify(encrypted.objects)).not.toContain("Project Glass Lantern");
+  });
 	});

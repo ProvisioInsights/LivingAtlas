@@ -6,6 +6,7 @@ import { syntheticGraphObjects } from "@living-atlas/fixtures";
 import { FileLocalMcpActivitySink } from "./activity";
 import { InMemoryLocalMcpAuditSink } from "./audit";
 import { createLocalMcpContextFromControlState } from "./local-graph";
+import { FileLocalMcpMutationOutboxSink } from "./outbox";
 import { runLivingAtlasLocalMcpStdio } from "./server";
 import type { LocalControlState } from "@living-atlas/contracts";
 
@@ -49,6 +50,9 @@ await runLivingAtlasLocalMcpStdio(
     auditSink: new InMemoryLocalMcpAuditSink(),
     activitySink: process.env.LIVING_ATLAS_ACTIVITY_LOG
       ? new FileLocalMcpActivitySink(process.env.LIVING_ATLAS_ACTIVITY_LOG)
+      : undefined,
+    outboxSink: process.env.LIVING_ATLAS_LOCAL_SYNC_OUTBOX_DIR
+      ? new FileLocalMcpMutationOutboxSink(process.env.LIVING_ATLAS_LOCAL_SYNC_OUTBOX_DIR)
       : undefined
   }),
   {

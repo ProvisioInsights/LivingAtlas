@@ -3,12 +3,15 @@ import { basename } from "node:path";
 import { z } from "zod";
 import {
   AccessClassSchema,
+  EndpointTypeSchema,
   AuthorityIdSchema,
   GraphObjectEnvelopeSchema,
   ObjectIdSchema,
+  TemporalEdgeSchema,
   type AccessClass,
   type GraphObjectEnvelope,
-  type ObjectType
+  type ObjectType,
+  type TemporalEdge
 } from "@living-atlas/contracts";
 import { canonicalizePredicate } from "@living-atlas/contracts";
 import {
@@ -24,7 +27,8 @@ export const LogseqSemanticObjectKindSchema = z.enum([
   "page",
   "block",
   "reference-index",
-  "edge-candidate"
+  "edge-candidate",
+  "typed-edge"
 ]);
 export type LogseqSemanticObjectKind = z.infer<typeof LogseqSemanticObjectKindSchema>;
 
@@ -177,6 +181,11 @@ type EdgeCandidate = {
   canonicalization: "canonical" | "safe-alias" | "unknown-predicate" | "direction-unsafe-alias";
 };
 
+type TypedEdgeEndpoint = {
+  title: string;
+  type: TemporalEdge["source_type"];
+};
+
 type ParsedLogseqFile = {
   source_path_ref: string;
   source_kind: MarkdownImportSourceKind;
@@ -215,6 +224,14 @@ function sizeClass(byteSize: number): "tiny" | "small" | "medium" | "large" | "h
 
 function semanticObjectId(authorityId: string, kind: string, sourcePathRef: string, localRef: string): string {
   return ObjectIdSchema.parse(`la_object_${shortHash(`${authorityId}:logseq-semantic:v1:${kind}:${sourcePathRef}:${localRef}`)}`);
+}
+
+function semanticTitleObjectId(authorityId: string, pathRedactionSecret: string, title: string): string {
+  return ObjectIdSchema.parse(`la_object_${shortHash(`${authorityId}:logseq-title-ref:v1:${pathRedactionSecret}:${title.trim().toLowerCase()}`)}`);
+}
+
+function semanticEdgeId(authorityId: string, sourcePathRef: string, index: number, sourceText: string): string {
+  return `la_edge_${shortHash(`${authorityId}:logseq-edge:v1:${sourcePathRef}:${index}:${sourceText}`, 24)}`;
 }
 
 function sourceBlockRef(sourcePathRef: string, index: number, text: string): string {
@@ -346,6 +363,63 @@ function extractEdgeCandidates(lines: string[]): EdgeCandidate[] {
     });
   }
   return candidates;
+}
+
+function normalizeEndpointTitle(value: string | undefined): string | undefined {
+  const normalized = value?.split("|", 1)[0]?.split("#", 1)[0]?.trim();
+  return normalized && normalized.length > 0 ? normalized : undefined;
+}
+
+function parseTypedEndpoint(title: string | undefined, type: string | undefined): TypedEdgeEndpoint | undefined {
+  const normalizedTitle = normalizeEndpointTitle(title);
+  const parsedType = EndpointTypeSchema.safeParse(type?.toLowerCase());
+  if (!normalizedTitle || !parsedType.success) {
+    return undefined;
+  }
+  return {
+    title: normalizedTitle,
+    type: parsedType.data
+  };
+}
+
+function parseTypedEdgeCandidate(edge: EdgeCandidate, options: {
+  authorityId: string;
+  sourcePathRef: string;
+  pathRedactionSecret: string;
+}): TemporalEdge | undefined {
+  if (!edge.canonical_predicate) {
+    return undefined;
+  }
+
+  const match = /^\s*(?:\[\[([^\]\n]{1,256})\]\]|([^()[\]\n]{1,256}?))\s+\((person|organization|project|location|cluster)\)\s+([A-Za-z][A-Za-z0-9-]{1,64})\s+(?:\[\[([^\]\n]{1,256})\]\]|([^()[\]\n]{1,256}?))\s+\((person|organization|project|location|cluster)\)(?:\s+(?:from|valid-from|valid_from)\s+(unknown|~?\d{4}(?:-\d{2}(?:-\d{2})?)?))?\s*$/i.exec(edge.source_text);
+  if (!match) {
+    return undefined;
+  }
+
+  const source = parseTypedEndpoint(match[1] ?? match[2], match[3]);
+  const target = parseTypedEndpoint(match[5] ?? match[6], match[7]);
+  if (!source || !target) {
+    return undefined;
+  }
+
+  const parsed = TemporalEdgeSchema.safeParse({
+    edge_id: semanticEdgeId(options.authorityId, options.sourcePathRef, edge.index, edge.source_text),
+    source_object_id: semanticTitleObjectId(options.authorityId, options.pathRedactionSecret, source.title),
+    source_type: source.type,
+    target_object_id: semanticTitleObjectId(options.authorityId, options.pathRedactionSecret, target.title),
+    target_type: target.type,
+    predicate: edge.canonical_predicate,
+    valid_from: match[8] ?? "unknown",
+    status: "active",
+    confidence: "medium",
+    source: "logseq-edge-section",
+    attrs: {
+      source_path_ref: options.sourcePathRef,
+      source_text_hash: sha256(edge.source_text),
+      canonicalization: edge.canonicalization
+    }
+  });
+  return parsed.success ? parsed.data : undefined;
 }
 
 function parseLogseqFile(input: MarkdownFileInput, pathRedactionSecret: string): ParsedLogseqFile {
@@ -493,6 +567,33 @@ function draftObjectsForFile(parsed: ParsedLogseqFile, options: {
 
   for (const edge of parsed.edge_candidates) {
     const valid = edge.canonicalization === "canonical" || edge.canonicalization === "safe-alias";
+    const typedEdge = valid
+      ? parseTypedEdgeCandidate(edge, {
+          authorityId: options.authorityId,
+          sourcePathRef: parsed.source_path_ref,
+          pathRedactionSecret: options.pathRedactionSecret
+        })
+      : undefined;
+
+    if (typedEdge) {
+      drafts.push(plannedObject({
+        authorityId: options.authorityId,
+        sourcePathRef: parsed.source_path_ref,
+        semanticKind: "typed-edge",
+        objectType: "edge",
+        localRef: `typed-edge:${edge.index}`,
+        accessClass: options.defaultAccessClass,
+        decision: "captured-encrypted",
+        reasonCode: "typed-edge-promoted",
+        plaintextPayload: {
+          kind: "logseq-temporal-edge",
+          source_path_ref: parsed.source_path_ref,
+          edge: typedEdge
+        }
+      }));
+      continue;
+    }
+
     drafts.push(plannedObject({
       authorityId: options.authorityId,
       sourcePathRef: parsed.source_path_ref,

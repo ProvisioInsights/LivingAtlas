@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import type { ControlPlaneSnapshot, GraphObjectEnvelope } from "@living-atlas/contracts";
@@ -27,6 +27,10 @@ import {
   localUpdateObject,
   type LocalGraphSyntheticStoreLimits
 } from "./local-graph";
+import {
+  FileLocalMcpMutationOutboxSink,
+  InMemoryLocalMcpMutationOutboxSink
+} from "./outbox";
 
 const now = "2026-06-21T12:00:00.000Z";
 
@@ -643,11 +647,13 @@ describe("local fixture graph tools", () => {
       });
       const auditSink = new InMemoryLocalMcpAuditSink();
       const activitySink = new InMemoryLocalMcpActivitySink();
+      const outboxSink = new InMemoryLocalMcpMutationOutboxSink();
       const context = createLocalMcpContextFromControlState({
         controlState,
         graphStore,
         auditSink,
         activitySink,
+        outboxSink,
         now
       });
 
@@ -684,6 +690,7 @@ describe("local fixture graph tools", () => {
       const serializedActivity = JSON.stringify(activitySink.events);
       expect(serializedAudit).not.toContain("Sensitive redacted-mode draft");
       expect(serializedActivity).not.toContain("Sensitive redacted-mode draft");
+      expect(outboxSink.records).toEqual([]);
     } finally {
       await rm(directory, { recursive: true, force: true });
     }
@@ -747,6 +754,126 @@ describe("local fixture graph tools", () => {
       for (const bait of sensitiveBaitRegistry) {
         expect(persisted).not.toContain(bait.value);
       }
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("queues successful durable local MCP mutations for bidirectional sync", async () => {
+    const token = "local-token-graph-outbox-0001";
+    const directory = await mkdtemp(join(tmpdir(), "living-atlas-local-mcp-outbox-"));
+    try {
+      const controlState = await createFixtureLocalControlState(token);
+      const graphStore = await FileLocalGraphStore.open({
+        directory,
+        authorityId: controlState.authority_id,
+        plaintextPersistence: "redact"
+      });
+      const initialized = await graphStore.initializeFromObjects(syntheticGraphObjects, {
+        created_at: now
+      });
+      expect(initialized.ok).toBe(true);
+      const outboxSink = new InMemoryLocalMcpMutationOutboxSink();
+      const context = createLocalMcpContextFromControlState({
+        controlState,
+        graphStore,
+        outboxSink,
+        now
+      });
+
+      const created = await localCreateObject(context, {
+        authorization: `Bearer ${token}`,
+        object: syntheticRemoteSafeObject("la_object_outbox0001")
+      });
+      expect(created.ok).toBe(true);
+
+      const updated = await localUpdateObject(context, {
+        authorization: `Bearer ${token}`,
+        object_id: "la_object_outbox0001",
+        expected_version: 1,
+        patch: {
+          content_hash: fixedHash("e"),
+          visible_metadata: {
+            size_class: "small"
+          }
+        }
+      });
+      expect(updated.ok).toBe(true);
+
+      const tombstoned = await localTombstoneObject(context, {
+        authorization: `Bearer ${token}`,
+        object_id: "la_object_outbox0001",
+        expected_version: 2
+      });
+      expect(tombstoned.ok).toBe(true);
+
+      expect(outboxSink.records.map((record) => record.mutation)).toEqual(["created", "updated", "tombstoned"]);
+      expect(outboxSink.records.map((record) => record.generation)).toEqual([1, 2, 3]);
+      expect(outboxSink.records.map((record) => record.journal_sequence)).toEqual([1, 2, 3]);
+      expect(outboxSink.records.map((record) => record.object.object_id)).toEqual([
+        "la_object_outbox0001",
+        "la_object_outbox0001",
+        "la_object_outbox0001"
+      ]);
+      expect(outboxSink.records.every((record) => record.object.payload.kind !== "plaintext-json")).toBe(true);
+      expect(outboxSink.records[2]!.object.visible_metadata.tombstone).toBe(true);
+      expect(JSON.stringify(outboxSink.records)).not.toContain("Synthetic created object");
+      for (const bait of sensitiveBaitRegistry) {
+        expect(JSON.stringify(outboxSink.records)).not.toContain(bait.value);
+      }
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("writes daemon-compatible outbox files for durable local MCP mutations", async () => {
+    const token = "local-token-graph-file-outbox-0001";
+    const directory = await mkdtemp(join(tmpdir(), "living-atlas-local-mcp-file-outbox-"));
+    const outboxDirectory = join(directory, "outbox");
+    try {
+      const controlState = await createFixtureLocalControlState(token);
+      const graphStore = await FileLocalGraphStore.open({
+        directory: join(directory, "graph"),
+        authorityId: controlState.authority_id,
+        plaintextPersistence: "redact"
+      });
+      const initialized = await graphStore.initializeFromObjects(syntheticGraphObjects, {
+        created_at: now
+      });
+      expect(initialized.ok).toBe(true);
+      const context = createLocalMcpContextFromControlState({
+        controlState,
+        graphStore,
+        outboxSink: new FileLocalMcpMutationOutboxSink(outboxDirectory),
+        now
+      });
+
+      await expect(localCreateObject(context, {
+        authorization: `Bearer ${token}`,
+        object: syntheticRemoteSafeObject("la_object_fileoutbox0001")
+      })).resolves.toMatchObject({
+        ok: true
+      });
+
+      const files = await readdir(outboxDirectory);
+      expect(files).toHaveLength(1);
+      expect(files[0]).toMatch(/^queued-g1-j1-[a-f0-9]{16}\.json$/);
+      const queued = JSON.parse(await readFile(join(outboxDirectory, files[0]!), "utf8")) as {
+        record_schema: string;
+        mutation: string;
+        objects: GraphObjectEnvelope[];
+      };
+      expect(queued).toMatchObject({
+        record_schema: "living-atlas-local-mcp-outbox:v1",
+        mutation: "created",
+        objects: [expect.objectContaining({
+          object_id: "la_object_fileoutbox0001",
+          payload: expect.objectContaining({
+            kind: "ciphertext-inline"
+          })
+        })]
+      });
+      expect(JSON.stringify(queued)).not.toContain("Synthetic created object");
     } finally {
       await rm(directory, { recursive: true, force: true });
     }

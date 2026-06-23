@@ -288,6 +288,8 @@ Command map:
 | `npm run cloudflare:live-crud-tiny` | No real graph data | Yes | Tiny deployed CRUD pass; requires gate pass and explicit tiny mutation acknowledgement. |
 | `npm run preflight:synthetic` | No | No | Full synthetic preflight before real Cloudflare work. |
 | `npm run cloudflare:live-concurrency-smoke` | No real graph data | Yes | Optional live deployed-Worker sync race smoke; requires explicit mutation acknowledgement. |
+| `npm run logseq:semantic-parity` | Yes, when pointed at a private local graph | Optional | Converts a bounded markdown window into encrypted semantic objects, runs local CRUD/leakage checks, and can either sync ciphertext or backfill a known synced ledger window with explicit acknowledgement. |
+| `npm run logseq:semantic-ledger-report` | Ledger only | No | Summarizes the plaintext-free semantic migration ledger: coverage, gaps, synced batches, totals, and decisions. |
 
 The deployed Cloudflare usage gate should run before any live mutating smoke or
 stress:
@@ -367,7 +369,9 @@ The sync replay path has two read levels:
 
 Local apply is intentionally conservative: idempotent same-version envelopes are
 skipped, one-version-forward updates are applied, and version gaps/conflicts are
-reported instead of silently overwriting local state.
+reported instead of silently overwriting local state. Daemon reports include
+bounded conflict samples containing opaque object ids, generations, versions,
+and reason codes, not graph plaintext.
 
 The activity replay package also exposes a compact hash-only replay report over
 audit, activity, and operational streams. It is meant for current CLI/test
@@ -569,9 +573,12 @@ Required tests:
   and local MCP credential
 - local MCP durable graph mode writes redacted snapshot/journal files and
   survives process restart
+- local MCP durable CRUD can enqueue redacted/encrypted outbox files that the
+  bidirectional sync daemon can push
 - Worker envelope pull returns sync envelopes for local catch-up, including
   remote-readable plaintext and sensitive ciphertext envelopes
-- sync-agent applies pulled envelopes idempotently and reports version conflicts
+- sync-agent applies pulled envelopes idempotently and reports bounded version
+  conflict samples
 - remote MCP exposes token-gated sync tools plus remote-readable graph CRUD,
   edge CRUD, search, traversal, and timeline queries
 - replay report summarizes audit/activity/operational streams without raw

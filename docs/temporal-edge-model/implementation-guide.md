@@ -73,6 +73,11 @@ query/index surfaces.
 - No production database is required for the first semantic spike. Any database
   or object store projection must remain rebuildable from graph objects and
   change history.
+- The importer may promote a Logseq `## Edges` line directly into an encrypted
+  temporal edge only when the line names both endpoint types explicitly, for
+  example `[[Person]] (person) advises [[Project]] (project) from 2026-06`.
+  Lines without enough endpoint typing stay encrypted edge candidates; unsafe
+  direction aliases stay quarantined.
 
 ## 3. Locked decisions (v4)
 

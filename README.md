@@ -249,12 +249,13 @@ Workspace packages:
 - `@living-atlas/local-mcp`: local trusted-ingress MCP skeleton with bearer
   token capability checks, sealed control-store loading, fixture graph
   status/list/read plus synthetic CRUD tools backed by in-memory fixtures or the
-  durable local graph store, and redacted audit events.
+  durable local graph store, redacted audit events, and optional durable
+  mutation outbox files for bidirectional sync daemon pickup.
 - `@living-atlas/sync-agent`: local sync-agent skeleton that builds
   ciphertext batches for sensitive local graph changes, tracks an in-memory synthetic
   outbox/daemon plan, submits to the Worker sync route, fetches remote
   summaries/envelopes, and applies pulled envelopes into the local graph store
-  with version-conflict reporting.
+  with version-conflict reporting and bounded conflict samples.
 - `@living-atlas/atlas-client`: dependency-light TypeScript client helpers for
   Praxis and other consumers calling remote MCP, activity, and usage surfaces
   with token headers and redacted error details.
