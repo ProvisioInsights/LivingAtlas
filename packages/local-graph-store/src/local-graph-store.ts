@@ -215,6 +215,17 @@ async function atomicWriteJson(filePath: string, value: unknown): Promise<void> 
   await fsyncDirectory(dirname(filePath));
 }
 
+async function atomicWriteText(filePath: string, value: string): Promise<void> {
+  await mkdir(dirname(filePath), { recursive: true });
+  const tmpPath = `${filePath}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  await writeFile(tmpPath, value, { mode: ownerOnlyMode });
+  await chmod(tmpPath, ownerOnlyMode);
+  await fsyncFile(tmpPath);
+  await rename(tmpPath, filePath);
+  await chmod(filePath, ownerOnlyMode);
+  await fsyncDirectory(dirname(filePath));
+}
+
 async function appendJournalEntry(filePath: string, entry: LocalGraphJournalEntry): Promise<void> {
   await mkdir(dirname(filePath), { recursive: true });
   const handle = await open(filePath, "a", ownerOnlyMode);
@@ -780,8 +791,9 @@ export class FileLocalGraphStore {
 
   async compact(): Promise<LocalGraphStoreStatus> {
     return this.serializeMutation(async () => {
-    await atomicWriteJson(this.paths.snapshotPath, snapshotFromState(this.state, this.plaintextPersistence));
-    return this.status();
+      await atomicWriteJson(this.paths.snapshotPath, snapshotFromState(this.state, this.plaintextPersistence));
+      await atomicWriteText(this.paths.journalPath, "");
+      return this.status();
     });
   }
 

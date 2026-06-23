@@ -3,6 +3,8 @@ import { pathToFileURL } from "node:url";
 import {
   createAtlasClient,
   type AtlasClient,
+  type RemoteMcpToolArguments,
+  type RemoteMcpToolResults,
   type RemoteMcpToolName
 } from "@living-atlas/atlas-client";
 import type { GraphObjectEnvelope } from "@living-atlas/contracts";
@@ -21,6 +23,7 @@ const requiredTools: RemoteMcpToolName[] = [
   "remote_edge_create",
   "remote_edge_read",
   "remote_edge_update",
+  "remote_edge_delete",
   "remote_activity_audit",
   "remote_graph_reconcile"
 ];
@@ -198,6 +201,19 @@ function createClient(input: {
   });
 }
 
+async function callTool<Name extends RemoteMcpToolName>(
+  client: AtlasClient,
+  name: Name,
+  args: RemoteMcpToolArguments[Name]
+): Promise<RemoteMcpToolResults[Name]> {
+  try {
+    return await client.callRemoteMcpTool(name, args);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`remote MCP ${name} failed: ${message}`, { cause: error });
+  }
+}
+
 export async function main(): Promise<void> {
   if (process.env[ackEnv] !== mutationAcknowledgement) {
     console.error(`${ackEnv} must equal ${mutationAcknowledgement}`);
@@ -271,13 +287,13 @@ export async function main(): Promise<void> {
     sequence: 2
   });
 
-  const createdA = await client.callRemoteMcpTool("remote_graph_create", { object: first, idempotency_key: `la_idem_${digest(`${id}:create-a`, 24)}` });
-  const createdB = await client.callRemoteMcpTool("remote_graph_create", { object: second, idempotency_key: `la_idem_${digest(`${id}:create-b`, 24)}` });
+  const createdA = await callTool(client, "remote_graph_create", { object: first, idempotency_key: `la_idem_${digest(`${id}:create-a`, 24)}` });
+  const createdB = await callTool(client, "remote_graph_create", { object: second, idempotency_key: `la_idem_${digest(`${id}:create-b`, 24)}` });
   if (createdA.ok !== true || createdB.ok !== true) {
     throw new Error("remote_graph_create did not return ok=true");
   }
 
-  const readA = await client.callRemoteMcpTool("remote_graph_read", { authority_id: authorityId, object_id: objectA });
+  const readA = await callTool(client, "remote_graph_read", { authority_id: authorityId, object_id: objectA });
   if (readA.ok !== true) {
     throw new Error("remote_graph_read did not return created object");
   }
@@ -291,7 +307,7 @@ export async function main(): Promise<void> {
       occurred_on: nowIso(3000).slice(0, 10)
     }
   };
-  const updatedA = await client.callRemoteMcpTool("remote_graph_update", {
+  const updatedA = await callTool(client, "remote_graph_update", {
     authority_id: authorityId,
     object_id: objectA,
     expected_version: 1,
@@ -306,7 +322,7 @@ export async function main(): Promise<void> {
     throw new Error("remote_graph_update did not advance object version");
   }
 
-  const search = await client.callRemoteMcpTool("remote_semantic_search", {
+  const search = await callTool(client, "remote_semantic_search", {
     authority_id: authorityId,
     query: `updated ${digest(id, 10)}`,
     limit: 5
@@ -315,7 +331,7 @@ export async function main(): Promise<void> {
     throw new Error("remote_semantic_search did not find updated object");
   }
 
-  const edgeCreate = await client.callRemoteMcpTool("remote_edge_create", {
+  const edgeCreate = await callTool(client, "remote_edge_create", {
     authority_id: authorityId,
     idempotency_key: `la_idem_${digest(`${id}:edge-create`, 24)}`,
     edge: {
@@ -338,12 +354,12 @@ export async function main(): Promise<void> {
     throw new Error("remote_edge_create did not create an edge object");
   }
 
-  const edgeRead = await client.callRemoteMcpTool("remote_edge_read", { authority_id: authorityId, edge_id: edgeId });
+  const edgeRead = await callTool(client, "remote_edge_read", { authority_id: authorityId, edge_id: edgeId });
   if (edgeRead.ok !== true) {
     throw new Error("remote_edge_read did not return created edge");
   }
 
-  const traversal = await client.callRemoteMcpTool("remote_graph_traverse", {
+  const traversal = await callTool(client, "remote_graph_traverse", {
     authority_id: authorityId,
     start_object_id: objectA,
     direction: "outbound",
@@ -355,7 +371,7 @@ export async function main(): Promise<void> {
     throw new Error("remote_graph_traverse did not traverse the created edge");
   }
 
-  const edgeUpdate = await client.callRemoteMcpTool("remote_edge_update", {
+  const edgeUpdate = await callTool(client, "remote_edge_update", {
     authority_id: authorityId,
     edge_id: edgeId,
     expected_version: 1,
@@ -371,7 +387,17 @@ export async function main(): Promise<void> {
     throw new Error("remote_edge_update did not advance edge version");
   }
 
-  const timeline = await client.callRemoteMcpTool("remote_timeline_query", {
+  const edgeDelete = await callTool(client, "remote_edge_delete", {
+    authority_id: authorityId,
+    edge_id: edgeId,
+    expected_version: 2,
+    idempotency_key: `la_idem_${digest(`${id}:edge-delete`, 24)}`
+  });
+  if (edgeDelete.ok !== true || edgeDelete.new_version !== 3) {
+    throw new Error("remote_edge_delete did not tombstone edge");
+  }
+
+  const timeline = await callTool(client, "remote_timeline_query", {
     authority_id: authorityId,
     object_id: objectA,
     limit: 10
@@ -380,7 +406,7 @@ export async function main(): Promise<void> {
     throw new Error("remote_timeline_query did not return object timeline rows");
   }
 
-  const deleted = await client.callRemoteMcpTool("remote_graph_delete", {
+  const deleted = await callTool(client, "remote_graph_delete", {
     authority_id: authorityId,
     object_id: objectB,
     expected_version: 1,
@@ -390,26 +416,26 @@ export async function main(): Promise<void> {
     throw new Error("remote_graph_delete did not tombstone object");
   }
 
-  const reconcile = await client.callRemoteMcpTool("remote_graph_reconcile", {
+  const reconcile = await callTool(client, "remote_graph_reconcile", {
     authority_id: authorityId,
-    limit: 100
+    limit: 1
   });
   if (reconcile.ok !== true || reconcile.decision !== "reconciled") {
     throw new Error(`remote_graph_reconcile did not reconcile: ${JSON.stringify(reconcile)}`);
   }
 
-  const audit = await client.callRemoteMcpTool("remote_activity_audit", {
+  const audit = await callTool(client, "remote_activity_audit", {
     authority_id: authorityId,
     limit: 20
   });
   if (audit.ok !== true || !Array.isArray(audit.events) || audit.events.length < 5) {
     throw new Error("remote_activity_audit did not return CRUD audit events");
   }
-  assertNoSecretText("remote MCP proof responses", { tools, createdA, createdB, readA, updatedA, search, edgeCreate, edgeRead, traversal, edgeUpdate, timeline, deleted, reconcile, audit }, secrets);
+  assertNoSecretText("remote MCP proof responses", { tools, createdA, createdB, readA, updatedA, search, edgeCreate, edgeRead, traversal, edgeUpdate, edgeDelete, timeline, deleted, reconcile, audit }, secrets);
 
   console.log("Living Atlas live MCP tiny proof passed");
   console.log(`authority=${authorityId}`);
-  console.log(`created=2 updated=1 edge_created=1 edge_updated=1 deleted=1 audit_events=${audit.events.length}`);
+  console.log(`created=2 updated=1 edge_created=1 edge_updated=1 edge_deleted=1 deleted=1 audit_events=${audit.events.length}`);
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

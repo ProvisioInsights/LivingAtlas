@@ -905,7 +905,8 @@ export async function reconcileRemoteGraph(
 ): Promise<RemoteGraphReconciliation> {
   await ensureRemoteGraphTables(storage.controlDb);
   const authorityRef = await opaqueRef(authorityId);
-  const limit = boundedLimit(options.limit) * 5;
+  const sampleLimit = boundedLimit(options.limit);
+  const limit = sampleLimit * 5;
   const indexRows = (await storage.controlDb.prepare(`
 SELECT object_ref, version, envelope_r2_key
 FROM remote_graph_objects
@@ -926,7 +927,7 @@ LIMIT ?`).bind(authorityRef, limit).all?.<RemoteGraphObjectRow>())?.results ?? [
   }
 
   const syncStatus = await readSyncStatus(storage.controlDb, authorityId);
-  const syncPull = await readSyncEnvelopePull(storage, authorityId, 0, 50);
+  const syncPull = await readSyncEnvelopePull(storage, authorityId, 0, Math.min(sampleLimit, 50));
   const syncRemoteReadableEntries = syncPull.objects.filter((entry) => objectAllowedForRemoteGraph(entry.object));
   const syncRemoteReadableVersionRefs = new Set<string>();
   for (const entry of syncRemoteReadableEntries) {

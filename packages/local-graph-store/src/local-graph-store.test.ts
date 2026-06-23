@@ -432,5 +432,18 @@ describe("file local graph store", () => {
     expect(snapshotContent.generation).toBe(1);
     expect(snapshotContent.journal_sequence).toBe(1);
     expect(snapshotContent.objects.map((object) => object.object_id)).toContain("la_object_compact0001");
+
+    await expect(readFile(join(directory, "journal.jsonl"), "utf8")).resolves.toBe("");
+
+    const reopened = await FileLocalGraphStore.open({
+      directory,
+      authorityId: fixtureAuthorityId,
+      now: () => now
+    });
+    expect(reopened.status()).toEqual(expect.objectContaining({
+      generation: 1,
+      journal_sequence: 1,
+      object_count: syntheticGraphObjects.length + 1
+    }));
   });
 });
