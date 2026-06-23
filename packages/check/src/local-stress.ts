@@ -375,8 +375,9 @@ async function exerciseWorkerSyncStress(outputs: string[]): Promise<void> {
     },
     LA_GRAPH_BUCKET: graphBucket as unknown as R2Bucket,
     LA_CONTROL_DB: controlDb as unknown as D1Database,
+    LA_AUTHORITY_ID: fixtureAuthorityId,
     BOOTSTRAP_CLAIM_TOKEN_HASH: await sha256TokenHash(bootstrapToken),
-    BOOTSTRAP_TOKEN_EXPIRES_AT: "2026-06-23T00:00:00.000Z",
+    BOOTSTRAP_TOKEN_EXPIRES_AT: "2099-01-01T00:00:00.000Z",
     LA_SYNC_TOKEN_HASH: await sha256TokenHash(syncToken),
     LA_SYNC_CLIENT_ID: syncClient.client_id,
     LA_SYNC_CAPABILITY_ID: syncCapability.capability_id,
@@ -434,7 +435,7 @@ async function exerciseWorkerSyncStress(outputs: string[]): Promise<void> {
     firstBatch ??= queued.batch;
 
     const submitted = await daemon.submitNextPending();
-    assert(submitted.ok && submitted.submitted, `stress generation ${generation} submit failed`);
+    assert(submitted.ok && submitted.submitted, `stress generation ${generation} submit failed: ${JSON.stringify(submitted)}`);
     assert(submitted.accepted.target_generation === generation, `stress generation ${generation} target mismatch`);
   }
 

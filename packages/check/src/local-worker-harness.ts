@@ -85,9 +85,11 @@ class LocalPreparedStatement {
   }
 
   async first<T = unknown>(): Promise<T | null> {
-    if (this.query.includes("WHERE idempotency_key = ?")) {
-      const idempotencyKey = String(this.bindings[0]);
-      return (this.committedBatches().find((batch) => batch.idempotency_key === idempotencyKey) ?? null) as T | null;
+    if (this.query.includes("idempotency_key = ?")) {
+      const authorityScoped = this.query.includes("authority_ref = ? AND idempotency_key = ?");
+      const authorityRef = authorityScoped ? String(this.bindings[0]) : undefined;
+      const idempotencyKey = String(this.bindings[authorityScoped ? 1 : 0]);
+      return (this.committedBatches(authorityRef).find((batch) => batch.idempotency_key === idempotencyKey) ?? null) as T | null;
     }
 
     if (this.query.includes("COUNT(*) AS count") && this.query.includes("FROM sync_objects")) {

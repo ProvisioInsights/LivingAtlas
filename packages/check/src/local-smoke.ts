@@ -98,9 +98,11 @@ class LocalPreparedStatement {
   }
 
   async first<T = unknown>(): Promise<T | null> {
-    if (this.query.includes("WHERE idempotency_key = ?")) {
-      const idempotencyKey = String(this.bindings[0]);
-      return (this.committedBatches().find((batch) => batch.idempotency_key === idempotencyKey) ?? null) as T | null;
+    if (this.query.includes("idempotency_key = ?")) {
+      const authorityScoped = this.query.includes("authority_ref = ? AND idempotency_key = ?");
+      const authorityRef = authorityScoped ? String(this.bindings[0]) : undefined;
+      const idempotencyKey = String(this.bindings[authorityScoped ? 1 : 0]);
+      return (this.committedBatches(authorityRef).find((batch) => batch.idempotency_key === idempotencyKey) ?? null) as T | null;
     }
 
     if (this.query.includes("COUNT(*) AS count") && this.query.includes("FROM sync_objects")) {
@@ -331,8 +333,9 @@ async function main(): Promise<void> {
     },
     LA_GRAPH_BUCKET: graphBucket as unknown as R2Bucket,
     LA_CONTROL_DB: controlDb as unknown as D1Database,
+    LA_AUTHORITY_ID: fixtureAuthorityId,
     BOOTSTRAP_CLAIM_TOKEN_HASH: await sha256TokenHash(bootstrapToken),
-    BOOTSTRAP_TOKEN_EXPIRES_AT: "2026-06-23T00:00:00.000Z",
+    BOOTSTRAP_TOKEN_EXPIRES_AT: "2099-01-01T00:00:00.000Z",
     LA_SYNC_TOKEN_HASH: await sha256TokenHash(syncToken),
     LA_SYNC_CLIENT_ID: batch.client_id,
     LA_SYNC_CAPABILITY_ID: batch.capability_id,
@@ -342,7 +345,11 @@ async function main(): Promise<void> {
   const health = await expectJson("health", await workerRequest(env, "/healthz"), 200, outputs);
   assert(health.ok === true, "health route did not report ok");
 
-  const initialStatus = await expectJson("bootstrap status", await workerRequest(env, "/api/bootstrap/status"), 200, outputs);
+  const initialStatus = await expectJson("bootstrap status", await workerRequest(env, "/api/bootstrap/status", {
+    headers: {
+      "x-living-atlas-bootstrap-token": bootstrapToken
+    }
+  }), 200, outputs);
   assert(initialStatus.bootstrap_state === "unclaimed", "bootstrap status should start unclaimed");
 
   const claimPayload = {

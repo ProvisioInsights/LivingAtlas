@@ -277,8 +277,9 @@ async function exerciseLocalWorkerAndSyncDaemon(input: {
     },
     LA_GRAPH_BUCKET: graphBucket as unknown as R2Bucket,
     LA_CONTROL_DB: controlDb as unknown as D1Database,
+    LA_AUTHORITY_ID: fixtureAuthorityId,
     BOOTSTRAP_CLAIM_TOKEN_HASH: await sha256TokenHash(bootstrapToken),
-    BOOTSTRAP_TOKEN_EXPIRES_AT: "2026-06-23T00:00:00.000Z",
+    BOOTSTRAP_TOKEN_EXPIRES_AT: "2099-01-01T00:00:00.000Z",
     LA_SYNC_TOKEN_HASH: await sha256TokenHash(syncToken),
     LA_SYNC_CLIENT_ID: syncClient.client_id,
     LA_SYNC_CAPABILITY_ID: syncCapability.capability_id,
@@ -288,7 +289,11 @@ async function exerciseLocalWorkerAndSyncDaemon(input: {
 
   const bootstrapStatus = await expectWorkerJson<{ bootstrap_state?: string }>(
     "bootstrap status",
-    await workerFetch(new URL("/api/bootstrap/status", baseUrl)),
+    await workerFetch(new URL("/api/bootstrap/status", baseUrl), {
+      headers: {
+        "x-living-atlas-bootstrap-token": bootstrapToken
+      }
+    }),
     200,
     input.outputs
   );

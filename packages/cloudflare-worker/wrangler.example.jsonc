@@ -65,7 +65,7 @@
   ],
   "vars": {
     "BOOTSTRAP_LOCK_NAME": "living-atlas-bootstrap-claim-lock",
-    "BOOTSTRAP_TOKEN_EXPIRES_AT": "2026-06-23T00:00:00.000Z",
+    "BOOTSTRAP_TOKEN_EXPIRES_AT": "2099-01-01T00:00:00.000Z",
     "LA_OBSERVABILITY_CONSOLE": "1",
     "LA_OBSERVABILITY_ENVIRONMENT": "example",
     "LA_OBSERVABILITY_ANALYTICS_DATASET": "living_atlas_operational_metrics_example",
