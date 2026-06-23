@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
-import { chmod, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -37,7 +37,12 @@ const ackEnv = "LIVING_ATLAS_LIVE_BIDIRECTIONAL_SYNC_ACK";
 const ackValue = "mutates-deployed-sync-state";
 const envFileName = "local-runtime.env";
 const cursorFileName = "sync-cursor.json";
+const reportFileName = "sync-report.json";
 const ownerOnlyMode = 0o600;
+const defaultDaemonCycles = 1;
+const maxDaemonCycles = 1000;
+const defaultDaemonPollMs = 30_000;
+const defaultDaemonBackoffMs = 5_000;
 
 type RuntimeSecrets = {
   controlPassphrase: string;
@@ -53,6 +58,38 @@ type LocalRuntimePaths = {
   activityLogPath: string;
   envPath: string;
   cursorPath: string;
+  outboxDir: string;
+  reportPath: string;
+};
+
+type RuntimeConfig = {
+  endpoint: string;
+  syncToken: string;
+  syncClientId: string;
+  syncCapabilityId: string;
+  syncTokenId?: string;
+  authorityId: string;
+  syncDeviceId: string;
+  paths: LocalRuntimePaths;
+  secrets: RuntimeSecrets;
+  controlState: LocalControlState;
+};
+
+type SyncReport = {
+  report_schema: "living-atlas-local-sync-report:v1";
+  mode: "proof" | "daemon";
+  authority_id: string;
+  recorded_at: string;
+  ok: boolean;
+  cursor_generation: number;
+  local_generation: number;
+  applied: number;
+  skipped: number;
+  conflicts: number;
+  pushed_batches: number;
+  pushed_objects: number;
+  outbox_pending: number;
+  last_error?: string;
 };
 
 function envValue(key: string): string | undefined {
@@ -93,7 +130,9 @@ function runtimePaths(): LocalRuntimePaths {
     graphDir: envValue("LIVING_ATLAS_LOCAL_GRAPH_DIR") ?? join(rootDir, "graph"),
     activityLogPath: envValue("LIVING_ATLAS_ACTIVITY_LOG") ?? join(rootDir, "activity.jsonl"),
     envPath: join(rootDir, envFileName),
-    cursorPath: join(rootDir, cursorFileName)
+    cursorPath: join(rootDir, cursorFileName),
+    outboxDir: envValue("LIVING_ATLAS_LOCAL_SYNC_OUTBOX_DIR") ?? join(rootDir, "outbox"),
+    reportPath: join(rootDir, reportFileName)
   };
 }
 
@@ -145,6 +184,7 @@ async function readOrCreateRuntimeSecrets(paths: LocalRuntimePaths): Promise<Run
     `LIVING_ATLAS_LOCAL_KEYRING=${JSON.stringify(paths.keyringPath)}`,
     `LIVING_ATLAS_LOCAL_KEYRING_PASSPHRASE=${JSON.stringify(secrets.keyringPassphrase)}`,
     `LIVING_ATLAS_LOCAL_GRAPH_DIR=${JSON.stringify(paths.graphDir)}`,
+    `LIVING_ATLAS_LOCAL_SYNC_OUTBOX_DIR=${JSON.stringify(paths.outboxDir)}`,
     `LIVING_ATLAS_LOCAL_MCP_TOKEN=${JSON.stringify(secrets.localMcpToken)}`,
     `LIVING_ATLAS_ACTIVITY_LOG=${JSON.stringify(paths.activityLogPath)}`,
     ""
@@ -211,6 +251,7 @@ async function ensureLocalStores(input: {
 }): Promise<void> {
   await mkdir(input.paths.rootDir, { recursive: true });
   await mkdir(input.paths.graphDir, { recursive: true });
+  await mkdir(input.paths.outboxDir, { recursive: true });
   if (!existsSync(input.paths.controlStorePath)) {
     await new FileLocalControlStore(input.paths.controlStorePath).write(input.controlState, input.secrets.controlPassphrase);
   }
@@ -240,6 +281,11 @@ async function readCursor(paths: LocalRuntimePaths, authorityId: string): Promis
 async function writeCursor(paths: LocalRuntimePaths, cursor: SyncPullCursor): Promise<void> {
   await writeFile(paths.cursorPath, `${JSON.stringify(cursor, null, 2)}\n`, { mode: ownerOnlyMode });
   await chmod(paths.cursorPath, ownerOnlyMode);
+}
+
+async function writeReport(paths: LocalRuntimePaths, report: SyncReport): Promise<void> {
+  await writeFile(paths.reportPath, `${JSON.stringify(report, null, 2)}\n`, { mode: ownerOnlyMode });
+  await chmod(paths.reportPath, ownerOnlyMode);
 }
 
 function assertNoSecretText(label: string, value: string, secrets: RuntimeSecrets & { syncToken: string }): void {
@@ -352,20 +398,23 @@ function localProofObject(authorityId: string, seed: string): GraphObjectEnvelop
   });
 }
 
-async function main(): Promise<void> {
-  if (envValue(ackEnv) !== ackValue) {
-    console.error(`${ackEnv} must equal ${ackValue}`);
-    process.exitCode = 2;
-    return;
+function parseIntegerEnv(key: string, fallback: number, min: number, max: number): number {
+  const value = envValue(key);
+  if (!value) {
+    return fallback;
   }
-
-  const gate = await runCloudflareLiveUsageGate();
-  printCloudflareLiveUsageGateResult(gate);
-  if (!gate.ok) {
-    process.exitCode = 2;
-    return;
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < min || parsed > max) {
+    throw new Error(`${key} must be an integer from ${min} to ${max}`);
   }
+  return parsed;
+}
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function createRuntimeConfig(): Promise<RuntimeConfig> {
   const endpoint = requireEnv("LIVING_ATLAS_LIVE_SYNC_ENDPOINT");
   const syncToken = requireEnv("LIVING_ATLAS_LIVE_SYNC_TOKEN");
   const syncClientId = requireEnv("LIVING_ATLAS_LIVE_SYNC_CLIENT_ID");
@@ -387,32 +436,294 @@ async function main(): Promise<void> {
     authorityId,
     controlState
   });
-
-  const store = await FileLocalGraphStore.open({
-    directory: paths.graphDir,
-    authorityId,
-    plaintextPersistence: "redact"
-  });
-  const startingCursor = await readCursor(paths, authorityId);
-  const pullBefore = await pullAndApplyAll({
-    paths,
+  return {
     endpoint,
     syncToken,
     syncClientId,
     syncCapabilityId,
     syncTokenId,
     authorityId,
+    syncDeviceId,
+    paths,
+    secrets,
+    controlState
+  };
+}
+
+async function queuedOutboxFiles(paths: LocalRuntimePaths): Promise<string[]> {
+  await mkdir(paths.outboxDir, { recursive: true });
+  const entries = await readdir(paths.outboxDir, { withFileTypes: true });
+  return entries
+    .filter((entry) => entry.isFile() && entry.name.endsWith(".json") && !entry.name.includes(".accepted.") && !entry.name.includes(".failed."))
+    .map((entry) => join(paths.outboxDir, entry.name))
+    .sort();
+}
+
+async function readQueuedObjects(filePath: string): Promise<GraphObjectEnvelope[]> {
+  const parsed = JSON.parse(await readFile(filePath, "utf8")) as unknown;
+  const values = Array.isArray(parsed)
+    ? parsed
+    : typeof parsed === "object" && parsed !== null && Array.isArray((parsed as { objects?: unknown }).objects)
+      ? (parsed as { objects: unknown[] }).objects
+      : [parsed];
+  return values.map((value) => GraphObjectEnvelopeSchema.parse(value));
+}
+
+async function writeProofOutboxObject(config: RuntimeConfig, store: FileLocalGraphStore): Promise<string> {
+  const object = localProofObject(config.authorityId, `${Date.now()}:${store.status().generation}:daemon-proof`);
+  const filePath = join(config.paths.outboxDir, `queued-${Date.now()}-${digest(object.object_id, 12)}.json`);
+  await writeFile(filePath, `${JSON.stringify({ objects: [object] }, null, 2)}\n`, { mode: ownerOnlyMode });
+  await chmod(filePath, ownerOnlyMode);
+  return filePath;
+}
+
+async function upsertLocalObjectsForOutbox(store: FileLocalGraphStore, objects: GraphObjectEnvelope[], actorId: string): Promise<void> {
+  for (const object of objects) {
+    const existing = store.readObject(object.object_id);
+    if (!existing) {
+      const created = await store.createObject({
+        object,
+        expected_generation: store.status().generation,
+        actor_id: actorId
+      });
+      if (!created.ok) {
+        throw new Error(`local outbox create failed for ${object.object_id}: ${created.reason}`);
+      }
+      continue;
+    }
+
+    if (existing.version >= object.version) {
+      continue;
+    }
+
+    const updated = await store.updateObject({
+      object,
+      expected_generation: store.status().generation,
+      expected_version: existing.version,
+      actor_id: actorId
+    });
+    if (!updated.ok) {
+      throw new Error(`local outbox update failed for ${object.object_id}: ${updated.reason}`);
+    }
+  }
+}
+
+async function pushOneOutboxFile(config: RuntimeConfig, store: FileLocalGraphStore, cursor: SyncPullCursor): Promise<{
+  pushed: boolean;
+  cursor: SyncPullCursor;
+  pushed_objects: number;
+}> {
+  const files = await queuedOutboxFiles(config.paths);
+  const filePath = files[0];
+  if (!filePath) {
+    return { pushed: false, cursor, pushed_objects: 0 };
+  }
+
+  const status = await fetchSyncStatus({
+    endpoint: config.endpoint,
+    syncToken: config.syncToken,
+    clientId: config.syncClientId,
+    capabilityId: config.syncCapabilityId,
+    tokenId: config.syncTokenId
+  });
+  if (!status.ok) {
+    throw new Error(`sync status failed HTTP ${status.status_code}: ${JSON.stringify(status.error)}`);
+  }
+  if (cursor.generation !== status.status.latest_generation) {
+    return { pushed: false, cursor, pushed_objects: 0 };
+  }
+
+  const objects = await readQueuedObjects(filePath);
+  await upsertLocalObjectsForOutbox(store, objects, config.syncClientId);
+  const nextGeneration = nextSyncGenerationFromStatus(status.status);
+  const built = buildCiphertextSyncBatch({
+    controlState: config.controlState,
+    graphObjects: objects,
+    syncClientId: config.syncClientId,
+    tokenId: config.syncTokenId,
+    baseGeneration: nextGeneration.base_generation,
+    targetGeneration: nextGeneration.target_generation,
+    now: new Date().toISOString()
+  });
+  assertNoSecretText("queued sync batch", JSON.stringify(built.batch), {
+    ...config.secrets,
+    syncToken: config.syncToken
+  });
+  const submitted = await submitSyncBatch({
+    endpoint: config.endpoint,
+    batch: built.batch,
+    syncToken: config.syncToken
+  });
+  if (!submitted.ok) {
+    const failedPath = `${filePath}.failed.${Date.now()}`;
+    await rename(filePath, failedPath);
+    throw new Error(`queued sync push failed HTTP ${submitted.status}: ${JSON.stringify(submitted.error)}`);
+  }
+
+  const acceptedPath = `${filePath}.accepted.g${submitted.accepted.target_generation}`;
+  await rename(filePath, acceptedPath);
+  return {
+    pushed: true,
+    cursor: {
+      authority_id: config.authorityId,
+      generation: submitted.accepted.target_generation,
+      batch_id: submitted.accepted.batch_id
+    },
+    pushed_objects: submitted.accepted.accepted_objects
+  };
+}
+
+async function runDaemonMode(config: RuntimeConfig): Promise<void> {
+  const cycles = parseIntegerEnv("LIVING_ATLAS_LIVE_SYNC_DAEMON_CYCLES", defaultDaemonCycles, 1, maxDaemonCycles);
+  const pollMs = parseIntegerEnv("LIVING_ATLAS_LIVE_SYNC_DAEMON_POLL_MS", defaultDaemonPollMs, 100, 3_600_000);
+  const backoffMs = parseIntegerEnv("LIVING_ATLAS_LIVE_SYNC_DAEMON_BACKOFF_MS", defaultDaemonBackoffMs, 100, 3_600_000);
+  const queueProof = envValue("LIVING_ATLAS_LIVE_SYNC_DAEMON_QUEUE_PROOF") === "1";
+  const store = await FileLocalGraphStore.open({
+    directory: config.paths.graphDir,
+    authorityId: config.authorityId,
+    plaintextPersistence: "redact"
+  });
+  let cursor = await readCursor(config.paths, config.authorityId);
+  let applied = 0;
+  let skipped = 0;
+  let conflicts = 0;
+  let pushedBatches = 0;
+  let pushedObjects = 0;
+  let proofQueued = false;
+  let lastError: string | undefined;
+
+  for (let cycle = 1; cycle <= cycles; cycle += 1) {
+    try {
+      const pulled = await pullAndApplyAll({
+        paths: config.paths,
+        endpoint: config.endpoint,
+        syncToken: config.syncToken,
+        syncClientId: config.syncClientId,
+        syncCapabilityId: config.syncCapabilityId,
+        syncTokenId: config.syncTokenId,
+        authorityId: config.authorityId,
+        store,
+        startCursor: cursor,
+        secrets: config.secrets
+      });
+      cursor = pulled.cursor;
+      applied += pulled.applied;
+      skipped += pulled.skipped;
+      conflicts += pulled.conflicts;
+
+      if (queueProof && !proofQueued) {
+        await writeProofOutboxObject(config, store);
+        proofQueued = true;
+      }
+
+      const pushed = await pushOneOutboxFile(config, store, cursor);
+      if (pushed.pushed) {
+        pushedBatches += 1;
+        pushedObjects += pushed.pushed_objects;
+        const afterPushPull = await pullAndApplyAll({
+          paths: config.paths,
+          endpoint: config.endpoint,
+          syncToken: config.syncToken,
+          syncClientId: config.syncClientId,
+          syncCapabilityId: config.syncCapabilityId,
+          syncTokenId: config.syncTokenId,
+          authorityId: config.authorityId,
+          store,
+          startCursor: cursor,
+          secrets: config.secrets
+        });
+        cursor = afterPushPull.cursor;
+        applied += afterPushPull.applied;
+        skipped += afterPushPull.skipped;
+        conflicts += afterPushPull.conflicts;
+      }
+      lastError = undefined;
+    } catch (error) {
+      lastError = error instanceof Error ? error.message : String(error);
+      await sleep(backoffMs);
+    }
+
+    const pending = (await queuedOutboxFiles(config.paths)).length;
+    await store.compact();
+    await writeReport(config.paths, {
+      report_schema: "living-atlas-local-sync-report:v1",
+      mode: "daemon",
+      authority_id: config.authorityId,
+      recorded_at: new Date().toISOString(),
+      ok: lastError === undefined,
+      cursor_generation: cursor.generation,
+      local_generation: store.status().generation,
+      applied,
+      skipped,
+      conflicts,
+      pushed_batches: pushedBatches,
+      pushed_objects: pushedObjects,
+      outbox_pending: pending,
+      ...(lastError ? { last_error: lastError } : {})
+    });
+
+    if (cycle < cycles) {
+      await sleep(lastError ? backoffMs : pollMs);
+    }
+  }
+
+  if (lastError) {
+    throw new Error(lastError);
+  }
+
+  console.log("Living Atlas live sync daemon cycle passed");
+  console.log(`replica_dir=${config.paths.rootDir}`);
+  console.log(`cursor=${cursor.generation}; local_generation=${store.status().generation}; applied=${applied}; skipped=${skipped}; conflicts=${conflicts}`);
+  console.log(`pushed_batches=${pushedBatches}; pushed_objects=${pushedObjects}; outbox_pending=${(await queuedOutboxFiles(config.paths)).length}`);
+  console.log(`sync_report=${config.paths.reportPath}; outbox=${config.paths.outboxDir}`);
+}
+
+async function main(): Promise<void> {
+  if (envValue(ackEnv) !== ackValue) {
+    console.error(`${ackEnv} must equal ${ackValue}`);
+    process.exitCode = 2;
+    return;
+  }
+
+  const gate = await runCloudflareLiveUsageGate();
+  printCloudflareLiveUsageGateResult(gate);
+  if (!gate.ok) {
+    process.exitCode = 2;
+    return;
+  }
+
+  const config = await createRuntimeConfig();
+
+  if (envValue("LIVING_ATLAS_LIVE_BIDIRECTIONAL_SYNC_MODE") === "daemon") {
+    await runDaemonMode(config);
+    return;
+  }
+
+  const store = await FileLocalGraphStore.open({
+    directory: config.paths.graphDir,
+    authorityId: config.authorityId,
+    plaintextPersistence: "redact"
+  });
+  const startingCursor = await readCursor(config.paths, config.authorityId);
+  const pullBefore = await pullAndApplyAll({
+    paths: config.paths,
+    endpoint: config.endpoint,
+    syncToken: config.syncToken,
+    syncClientId: config.syncClientId,
+    syncCapabilityId: config.syncCapabilityId,
+    syncTokenId: config.syncTokenId,
+    authorityId: config.authorityId,
     store,
     startCursor: startingCursor,
-    secrets
+    secrets: config.secrets
   });
 
   const status = await fetchSyncStatus({
-    endpoint,
-    syncToken,
-    clientId: syncClientId,
-    capabilityId: syncCapabilityId,
-    tokenId: syncTokenId
+    endpoint: config.endpoint,
+    syncToken: config.syncToken,
+    clientId: config.syncClientId,
+    capabilityId: config.syncCapabilityId,
+    tokenId: config.syncTokenId
   });
   if (!status.ok) {
     throw new Error(`sync status failed HTTP ${status.status_code}: ${JSON.stringify(status.error)}`);
@@ -422,69 +733,84 @@ async function main(): Promise<void> {
     throw new Error(`local cursor ${pullBefore.cursor.generation} is not caught up to remote ${status.status.latest_generation}`);
   }
 
-  const proofObject = localProofObject(authorityId, `${Date.now()}:${status.status.latest_generation}:${store.status().generation}`);
+  const proofObject = localProofObject(config.authorityId, `${Date.now()}:${status.status.latest_generation}:${store.status().generation}`);
   const created = await store.createObject({
     object: proofObject,
     expected_generation: store.status().generation,
-    actor_id: syncClientId
+    actor_id: config.syncClientId
   });
   if (!created.ok) {
     throw new Error(`local proof create failed: ${created.reason}`);
   }
 
   const built = buildCiphertextSyncBatch({
-    controlState,
+    controlState: config.controlState,
     graphObjects: [created.object],
-    syncClientId,
-    tokenId: syncTokenId,
+    syncClientId: config.syncClientId,
+    tokenId: config.syncTokenId,
     baseGeneration: nextGeneration.base_generation,
     targetGeneration: nextGeneration.target_generation,
     now: new Date().toISOString()
   });
   assertNoSecretText("bidirectional sync batch", JSON.stringify(built.batch), {
-    ...secrets,
-    syncToken
+    ...config.secrets,
+    syncToken: config.syncToken
   });
   const submitted = await submitSyncBatch({
-    endpoint,
+    endpoint: config.endpoint,
     batch: built.batch,
-    syncToken
+    syncToken: config.syncToken
   });
   if (!submitted.ok) {
     throw new Error(`bidirectional sync push failed HTTP ${submitted.status}: ${JSON.stringify(submitted.error)}`);
   }
 
   const pullAfter = await pullAndApplyAll({
-    paths,
-    endpoint,
-    syncToken,
-    syncClientId,
-    syncCapabilityId,
-    syncTokenId,
-    authorityId,
+    paths: config.paths,
+    endpoint: config.endpoint,
+    syncToken: config.syncToken,
+    syncClientId: config.syncClientId,
+    syncCapabilityId: config.syncCapabilityId,
+    syncTokenId: config.syncTokenId,
+    authorityId: config.authorityId,
     store,
     startCursor: pullBefore.cursor,
-    secrets
+    secrets: config.secrets
   });
   if (pullAfter.cursor.generation !== submitted.accepted.target_generation) {
     throw new Error(`round-trip cursor ${pullAfter.cursor.generation} did not reach pushed generation ${submitted.accepted.target_generation}`);
   }
 
   await store.compact();
-  const snapshot = await readFile(join(paths.graphDir, "snapshot.json"), "utf8");
+  const snapshot = await readFile(join(config.paths.graphDir, "snapshot.json"), "utf8");
   assertNoSecretText("local graph snapshot", snapshot, {
-    ...secrets,
-    syncToken
+    ...config.secrets,
+    syncToken: config.syncToken
   });
-  await rm(join(paths.rootDir, ".tmp"), { recursive: true, force: true });
+  await rm(join(config.paths.rootDir, ".tmp"), { recursive: true, force: true });
+  await writeReport(config.paths, {
+    report_schema: "living-atlas-local-sync-report:v1",
+    mode: "proof",
+    authority_id: config.authorityId,
+    recorded_at: new Date().toISOString(),
+    ok: true,
+    cursor_generation: pullAfter.cursor.generation,
+    local_generation: store.status().generation,
+    applied: pullBefore.applied + pullAfter.applied,
+    skipped: pullBefore.skipped + pullAfter.skipped,
+    conflicts: pullBefore.conflicts + pullAfter.conflicts,
+    pushed_batches: 1,
+    pushed_objects: submitted.accepted.accepted_objects,
+    outbox_pending: (await queuedOutboxFiles(config.paths)).length
+  });
 
   console.log("Living Atlas live bidirectional sync passed");
-  console.log(`replica_dir=${paths.rootDir}`);
+  console.log(`replica_dir=${config.paths.rootDir}`);
   console.log(`remote_generation_before=${status.status.latest_generation}; remote_generation_after=${submitted.accepted.target_generation}`);
   console.log(`pull_before_applied=${pullBefore.applied}; pull_before_skipped=${pullBefore.skipped}; pull_before_conflicts=${pullBefore.conflicts}; pull_before_cursor=${pullBefore.cursor.generation}`);
   console.log(`local_create_object=${created.object.object_id}; local_generation=${store.status().generation}`);
   console.log(`push_synced_objects=${submitted.accepted.accepted_objects}; pull_after_applied=${pullAfter.applied}; pull_after_skipped=${pullAfter.skipped}; pull_after_cursor=${pullAfter.cursor.generation}`);
-  console.log(`local_runtime_env=${paths.envPath}; local_cursor=${paths.cursorPath}`);
+  console.log(`local_runtime_env=${config.paths.envPath}; local_cursor=${config.paths.cursorPath}; sync_report=${config.paths.reportPath}`);
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
