@@ -1157,6 +1157,74 @@ describe("Worker sync batch acceptance", () => {
     expect(graphBucket.puts).toHaveLength(1);
   });
 
+  it("falls back to D1 acceptance when a stale sequencer reports a generation gap but D1 is current", async () => {
+    const { env, graphBucket, controlDb } = await createEnv();
+    const firstResponse = await handleBootstrapRequest(new Request("https://living-atlas.example/api/sync/batch", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-living-atlas-sync-token": syncToken
+      },
+      body: JSON.stringify(ciphertextBatch)
+    }), env);
+    expect(firstResponse.status).toBe(202);
+
+    const secondBatch = SyncBatchSchema.parse({
+      ...ciphertextBatch,
+      batch_id: "la_sync_batch_worker0004",
+      operation_id: "la_operation_worker0004",
+      trace_id: "la_trace_worker0004",
+      submitted_at: "2026-06-21T12:00:01.000Z",
+      base_generation: 1,
+      target_generation: 2,
+      objects: [
+        {
+          ...ciphertextBatch.objects[0],
+          object_id: "la_object_worker0004",
+          payload: {
+            ...ciphertextBatch.objects[0].payload,
+            path: "objects/a=1111111111111111/p=44/s=4444444444444444444444444444444444444444.bin"
+          }
+        }
+      ],
+      changes: [
+        {
+          ...ciphertextBatch.changes[0],
+          change_id: "la_change_worker0004",
+          object_id: "la_object_worker0004",
+          generation: 2
+        }
+      ],
+      batch_hash: undefined
+    });
+    env.SYNC_SEQUENCER = {
+      getByName: () => ({
+        acceptBatch: async () => ({
+          ok: false,
+          reason: "generation-gap"
+        })
+      })
+    };
+
+    const response = await handleBootstrapRequest(new Request("https://living-atlas.example/api/sync/batch", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-living-atlas-sync-token": syncToken
+      },
+      body: JSON.stringify(secondBatch)
+    }), env);
+
+    expect(response.status).toBe(202);
+    await expect(response.json()).resolves.toMatchObject({
+      ok: true,
+      batch_id: secondBatch.batch_id,
+      target_generation: 2
+    });
+    expect(graphBucket.puts).toHaveLength(2);
+    expect(controlDb.records.some((record) => record.query.includes("INSERT OR IGNORE INTO sync_batches") && record.bindings[0] === secondBatch.batch_id)).toBe(true);
+  });
+
   it("serves the Worker sync status route from persisted D1 state", async () => {
     const { env } = await createEnv();
     const batchResponse = await handleBootstrapRequest(new Request("https://living-atlas.example/api/sync/batch", {

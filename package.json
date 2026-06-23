@@ -24,6 +24,7 @@
     "local-control:fixture-store": "tsx packages/local-control-store/src/create-fixture.ts",
     "local-keyring:fixture-store": "tsx packages/local-keyring/src/create-fixture.ts",
     "local:deploy-synthetic": "tsx packages/check/src/local-deploy-synthetic.ts",
+    "real-data:readiness": "tsx packages/check/src/real-data-readiness.ts",
     "stress:local": "tsx packages/check/src/local-stress.ts",
     "local:install-smoke": "tsx packages/check/src/local-install-smoke.ts",
     "local-mcp:fixture": "tsx packages/local-mcp/src/cli.ts",

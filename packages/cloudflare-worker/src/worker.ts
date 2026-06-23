@@ -580,7 +580,7 @@ async function routeBootstrapRequest(request: Request, env: BootstrapWorkerEnv):
         : jsonAuthorityMismatch("sync-authority-mismatch");
     }
     const sequencer = authorityId ? await getSyncSequencer(env, authorityId) : undefined;
-    const result = sequencer
+    let result = sequencer
       ? await sequencer.acceptBatch(
           body,
           request.headers.get(syncTokenHeader) ?? undefined,
@@ -597,6 +597,22 @@ async function routeBootstrapRequest(request: Request, env: BootstrapWorkerEnv):
           },
           syncTokenBinding(request)
         );
+    if (!result.ok && result.reason === "generation-gap" && sequencer && authorityId) {
+      const parsedBatch = SyncBatchSchema.safeParse(body);
+      const currentStatus = parsedBatch.success ? await readSyncStatus(env.LA_CONTROL_DB, authorityId) : undefined;
+      if (parsedBatch.success && currentStatus?.latest_generation === parsedBatch.data.base_generation) {
+        result = await acceptSyncBatch(
+          body,
+          request.headers.get(syncTokenHeader) ?? undefined,
+          syncRuntimeConfig(env),
+          {
+            graphBucket: env.LA_GRAPH_BUCKET,
+            controlDb: env.LA_CONTROL_DB
+          },
+          syncTokenBinding(request)
+        );
+      }
+    }
 
     if (result.ok) {
       return json(result.accepted, { status: 202 });
