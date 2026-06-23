@@ -1,6 +1,7 @@
 import { pathToFileURL } from "node:url";
 
 type FetchLike = typeof fetch;
+const defaultReadRetryCount = 3;
 
 type UsageGateBody = {
   ok?: boolean;
@@ -153,6 +154,14 @@ function validateEndpoint(input: string, allowInsecureEndpoint: boolean): string
   return url.toString();
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isTransientReadStatus(statusCode: number): boolean {
+  return statusCode === 408 || statusCode === 429 || (statusCode >= 500 && statusCode <= 599);
+}
+
 export function readCloudflareLiveUsageGateConfig(env: NodeJS.ProcessEnv = process.env): CloudflareLiveUsageGateConfig | CloudflareLiveUsageGateResult {
   const errors: string[] = [];
   const endpoint = envValue(env, liveUsageGateEnv.endpoint);
@@ -216,6 +225,27 @@ function summarize(body: UsageGateBody): CloudflareLiveUsageGateResult["summary"
   };
 }
 
+async function fetchUsageGateBody(config: CloudflareLiveUsageGateConfig, fetchImpl: FetchLike): Promise<{
+  response: Response;
+  body: UsageGateBody;
+}> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), config.requestTimeoutMs);
+  try {
+    const response = await fetchImpl(gateUrl(config), {
+      headers: {
+        "x-living-atlas-usage-token": config.usageToken
+      },
+      signal: controller.signal
+    });
+    const text = await response.text();
+    const body = text.trim() ? JSON.parse(text) as UsageGateBody : {};
+    return { response, body };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 export async function runCloudflareLiveUsageGate(options: {
   env?: NodeJS.ProcessEnv;
   fetchImpl?: FetchLike;
@@ -226,17 +256,32 @@ export async function runCloudflareLiveUsageGate(options: {
   }
 
   const config = configOrError;
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), config.requestTimeoutMs);
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const retries = parseInteger(envValue(options.env ?? process.env, "LIVING_ATLAS_LIVE_USAGE_READ_RETRIES"), defaultReadRetryCount, 0, 10);
   try {
-    const response = await (options.fetchImpl ?? fetch)(gateUrl(config), {
-      headers: {
-        "x-living-atlas-usage-token": config.usageToken
-      },
-      signal: controller.signal
-    });
-    const text = await response.text();
-    const body = text.trim() ? JSON.parse(text) as UsageGateBody : {};
+    let response: Response;
+    let body: UsageGateBody;
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        ({ response, body } = await fetchUsageGateBody(config, fetchImpl));
+      } catch (error) {
+        if (attempt >= retries) {
+          throw error;
+        }
+        const delayMs = 500 * (attempt + 1);
+        console.warn(`usage gate read failed; retry ${attempt + 1}/${retries} in ${delayMs}ms`);
+        await sleep(delayMs);
+        continue;
+      }
+
+      if (response.ok || !isTransientReadStatus(response.status) || attempt >= retries) {
+        break;
+      }
+      const delayMs = 500 * (attempt + 1);
+      console.warn(`usage gate read returned HTTP ${response.status}; retry ${attempt + 1}/${retries} in ${delayMs}ms`);
+      await sleep(delayMs);
+    }
+
     if (!response.ok) {
       return {
         ok: false,
@@ -263,8 +308,6 @@ export async function runCloudflareLiveUsageGate(options: {
       reason_codes: ["usage-gate-request-failed"],
       errors: [error instanceof Error ? error.message : String(error)]
     };
-  } finally {
-    clearTimeout(timeout);
   }
 }
 

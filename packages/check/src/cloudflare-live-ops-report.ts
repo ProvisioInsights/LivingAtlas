@@ -7,6 +7,7 @@ import {
 } from "./cloudflare-live-usage-gate";
 
 type FetchLike = typeof fetch;
+const defaultReadRetryCount = 3;
 
 type ReconciliationBody = {
   ok?: boolean;
@@ -66,6 +67,30 @@ function reconciliationUrl(config: CloudflareLiveUsageGateConfig): URL {
   return url;
 }
 
+function envValue(env: NodeJS.ProcessEnv, key: string): string | undefined {
+  const value = env[key]?.trim();
+  return value ? value : undefined;
+}
+
+function parseInteger(value: string | undefined, fallback: number, min: number, max: number): number {
+  if (!value) {
+    return fallback;
+  }
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < min || parsed > max) {
+    throw new Error(`expected ${value} to be an integer from ${min} to ${max}`);
+  }
+  return parsed;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isTransientReadStatus(statusCode: number): boolean {
+  return statusCode === 408 || statusCode === 429 || (statusCode >= 500 && statusCode <= 599);
+}
+
 async function fetchReconciliation(config: CloudflareLiveUsageGateConfig, fetchImpl: FetchLike): Promise<NonNullable<CloudflareLiveOpsReportResult["reconciliation"]>> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), config.requestTimeoutMs);
@@ -99,6 +124,29 @@ async function fetchReconciliation(config: CloudflareLiveUsageGateConfig, fetchI
   }
 }
 
+async function fetchReconciliationWithRetry(config: CloudflareLiveUsageGateConfig, fetchImpl: FetchLike, env: NodeJS.ProcessEnv): Promise<NonNullable<CloudflareLiveOpsReportResult["reconciliation"]>> {
+  const retries = parseInteger(envValue(env, "LIVING_ATLAS_LIVE_USAGE_READ_RETRIES"), defaultReadRetryCount, 0, 10);
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      const result = await fetchReconciliation(config, fetchImpl);
+      const transientHttp = result.reason_codes.some((reason) => reason.startsWith("http-") && isTransientReadStatus(Number(reason.slice(5))));
+      if (result.ok || !transientHttp || attempt >= retries) {
+        return result;
+      }
+      const delayMs = 500 * (attempt + 1);
+      console.warn(`usage reconciliation read returned ${result.reason_codes.join(",")}; retry ${attempt + 1}/${retries} in ${delayMs}ms`);
+      await sleep(delayMs);
+    } catch (error) {
+      if (attempt >= retries) {
+        throw error;
+      }
+      const delayMs = 500 * (attempt + 1);
+      console.warn(`usage reconciliation read failed; retry ${attempt + 1}/${retries} in ${delayMs}ms`);
+      await sleep(delayMs);
+    }
+  }
+}
+
 export async function runCloudflareLiveOpsReport(options: {
   env?: NodeJS.ProcessEnv;
   fetchImpl?: FetchLike;
@@ -114,7 +162,7 @@ export async function runCloudflareLiveOpsReport(options: {
   }
 
   try {
-    const reconciliation = await fetchReconciliation(config, options.fetchImpl ?? fetch);
+    const reconciliation = await fetchReconciliationWithRetry(config, options.fetchImpl ?? fetch, options.env ?? process.env);
     return {
       ok: gate.ok && reconciliation.ok,
       gate,
