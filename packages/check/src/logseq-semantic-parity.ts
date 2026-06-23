@@ -1,0 +1,484 @@
+import { createHash, randomBytes, webcrypto } from "node:crypto";
+import { mkdtemp, readFile, readdir, stat } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join, relative } from "node:path";
+import { pathToFileURL } from "node:url";
+import {
+  GraphObjectEnvelopeSchema,
+  type GraphObjectEnvelope,
+  type LocalControlState
+} from "@living-atlas/contracts";
+import { createLogseqSemanticGraphObjects, type MarkdownFileInput } from "@living-atlas/importer";
+import { createFixtureLocalControlState } from "@living-atlas/local-control-store";
+import { FileLocalGraphStore } from "@living-atlas/local-graph-store";
+import {
+  buildCiphertextSyncBatch,
+  fetchSyncEnvelopes,
+  fetchSyncStatus,
+  nextSyncGenerationFromStatus,
+  submitSyncBatch
+} from "@living-atlas/sync-agent";
+import {
+  printCloudflareLiveUsageGateResult,
+  runCloudflareLiveUsageGate
+} from "./cloudflare-live-usage-gate";
+
+const defaultFileCount = 5;
+const maxFileCount = 10;
+const maxFileOffset = 1_000_000;
+const maxFileBytes = 256_000;
+const liveAckEnv = "LIVING_ATLAS_LOGSEQ_SEMANTIC_SYNC_ACK";
+const liveAckValue = "sync-semantic-ciphertext-to-cloudflare";
+const textEncoder = new TextEncoder();
+
+type CrudCase = {
+  name: string;
+  ok: boolean;
+  detail?: string;
+};
+
+function envValue(key: string): string | undefined {
+  const value = process.env[key]?.trim();
+  return value ? value : undefined;
+}
+
+function requireEnv(key: string): string {
+  const value = envValue(key);
+  if (!value) {
+    throw new Error(`missing ${key}`);
+  }
+  return value;
+}
+
+function sha256(value: string | Uint8Array): `sha256:${string}` {
+  return `sha256:${createHash("sha256").update(value).digest("hex")}`;
+}
+
+function digest(value: string, length = 24): string {
+  return createHash("sha256").update(value).digest("hex").slice(0, length);
+}
+
+function parseInteger(value: string | undefined, fallback: number, min: number, max: number): number {
+  if (!value) {
+    return fallback;
+  }
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < min || parsed > max) {
+    throw new Error(`expected integer from ${min} to ${max}, got ${value}`);
+  }
+  return parsed;
+}
+
+async function walkMarkdown(root: string, maxFiles: number, offset: number): Promise<string[]> {
+  const selected: string[] = [];
+  const queue = [root];
+  const ignored = new Set([".git", "node_modules", "dist", "build", ".wrangler", ".terraform"]);
+  const scanLimit = offset + maxFiles;
+
+  while (queue.length > 0 && selected.length < scanLimit) {
+    const dir = queue.shift()!;
+    const entries = await readdir(dir, { withFileTypes: true }).catch(() => []);
+    for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
+      const path = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        if (!ignored.has(entry.name)) {
+          queue.push(path);
+        }
+        continue;
+      }
+      if (!entry.isFile() || !entry.name.toLowerCase().endsWith(".md")) {
+        continue;
+      }
+      const info = await stat(path).catch(() => undefined);
+      if (!info || info.size <= 0 || info.size > maxFileBytes) {
+        continue;
+      }
+      selected.push(path);
+      if (selected.length >= scanLimit) {
+        break;
+      }
+    }
+  }
+
+  return selected.slice(offset);
+}
+
+function collectPlaintextNeedles(files: MarkdownFileInput[]): string[] {
+  const needles = new Set<string>();
+  for (const file of files) {
+    const normalized = file.markdown.replace(/\s+/g, " ").trim();
+    for (const match of normalized.matchAll(/[A-Za-z0-9][A-Za-z0-9 ,;:'"()[\]#/_-]{31,160}/g)) {
+      const value = match[0]?.trim();
+      if (value && value.length >= 32) {
+        needles.add(value.slice(0, Math.min(value.length, 80)));
+        break;
+      }
+    }
+  }
+  return [...needles].slice(0, files.length);
+}
+
+function assertNoNeedles(label: string, value: unknown, needles: string[]): void {
+  const serialized = typeof value === "string" ? value : JSON.stringify(value);
+  for (const needle of needles) {
+    if (needle && serialized.includes(needle)) {
+      throw new Error(`${label} leaked sampled plaintext`);
+    }
+  }
+}
+
+async function encryptPayload(plaintext: string, aad: string): Promise<{
+  ciphertext: string;
+  nonce: string;
+  hash: `sha256:${string}`;
+  algorithm: string;
+}> {
+  const key = await webcrypto.subtle.generateKey({ name: "AES-GCM", length: 256 }, true, ["encrypt"]);
+  const nonce = randomBytes(12);
+  const ciphertext = new Uint8Array(await webcrypto.subtle.encrypt({
+    name: "AES-GCM",
+    iv: nonce,
+    additionalData: textEncoder.encode(aad)
+  }, key, textEncoder.encode(plaintext)));
+  const encodedCiphertext = Buffer.from(ciphertext).toString("base64");
+  const encodedNonce = Buffer.from(nonce).toString("base64");
+  return {
+    ciphertext: encodedCiphertext,
+    nonce: encodedNonce,
+    hash: sha256(`${encodedNonce}:${encodedCiphertext}`),
+    algorithm: "aes-256-gcm"
+  };
+}
+
+function nextVersionObject(object: GraphObjectEnvelope, seed: string, tombstone: boolean): GraphObjectEnvelope {
+  const nonce = randomBytes(12).toString("base64");
+  const ciphertext = Buffer.from(`semantic-crud:${seed}:${object.object_id}:v${object.version + 1}`).toString("base64");
+  const contentHash = sha256(`${nonce}:${ciphertext}`);
+  return GraphObjectEnvelopeSchema.parse({
+    ...object,
+    version: object.version + 1,
+    updated_at: new Date().toISOString(),
+    content_hash: contentHash,
+    visible_metadata: {
+      ...object.visible_metadata,
+      tombstone
+    },
+    payload: {
+      kind: "ciphertext-inline",
+      ciphertext,
+      nonce,
+      algorithm: "aes-256-gcm"
+    }
+  });
+}
+
+function addCase(cases: CrudCase[], name: string, ok: boolean, detail?: string): void {
+  cases.push({ name, ok, ...(detail ? { detail } : {}) });
+}
+
+async function runLocalCrudProof(objects: GraphObjectEnvelope[], needles: string[]): Promise<{
+  cases: CrudCase[];
+  directory: string;
+  generation: number;
+}> {
+  const cases: CrudCase[] = [];
+  const directory = await mkdtemp(join(tmpdir(), "living-atlas-logseq-semantic-"));
+  const authorityId = objects[0]?.authority_id;
+  if (!authorityId) {
+    throw new Error("semantic conversion produced no objects");
+  }
+  const store = await FileLocalGraphStore.open({
+    directory,
+    authorityId,
+    now: () => new Date().toISOString()
+  });
+
+  let expectedGeneration = 0;
+  for (const object of objects) {
+    const created = await store.createObject({
+      object,
+      expected_generation: expectedGeneration,
+      actor_id: "la_client_logseqsemcrud0001"
+    });
+    if (!created.ok) {
+      addCase(cases, `create-${object.object_type}`, false, created.reason);
+      continue;
+    }
+    expectedGeneration = created.generation;
+  }
+  addCase(cases, "create-all-semantic-objects", cases.every((testCase) => testCase.ok), `objects=${objects.length}`);
+
+  const listed = store.listObjects({ include_tombstones: true });
+  addCase(cases, "read-list-all-semantic-objects", listed.length === objects.length, `listed=${listed.length}; expected=${objects.length}`);
+
+  const byType = new Map<string, GraphObjectEnvelope>();
+  for (const object of listed) {
+    if (!byType.has(object.object_type)) {
+      byType.set(object.object_type, object);
+    }
+  }
+
+  for (const [objectType, object] of byType) {
+    const read = store.readObject(object.object_id);
+    addCase(cases, `read-${objectType}`, read?.object_id === object.object_id);
+
+    const updated = await store.updateObject({
+      object: nextVersionObject(object, `update:${objectType}`, false),
+      expected_generation: expectedGeneration,
+      expected_version: object.version,
+      actor_id: "la_client_logseqsemcrud0001"
+    });
+    addCase(cases, `update-${objectType}`, updated.ok, updated.ok ? `generation=${updated.generation}` : updated.reason);
+    if (!updated.ok) {
+      continue;
+    }
+    expectedGeneration = updated.generation;
+
+    const tombstoned = await store.tombstoneObject({
+      object_id: object.object_id,
+      expected_generation: expectedGeneration,
+      expected_version: updated.object.version,
+      actor_id: "la_client_logseqsemcrud0001"
+    });
+    addCase(cases, `delete-${objectType}`, tombstoned.ok, tombstoned.ok ? `generation=${tombstoned.generation}` : tombstoned.reason);
+    if (!tombstoned.ok) {
+      continue;
+    }
+    expectedGeneration = tombstoned.generation;
+
+    const restored = await store.updateObject({
+      object: nextVersionObject(tombstoned.object, `restore:${objectType}`, false),
+      expected_generation: expectedGeneration,
+      expected_version: tombstoned.object.version,
+      actor_id: "la_client_logseqsemcrud0001"
+    });
+    addCase(cases, `restore-${objectType}`, restored.ok, restored.ok ? `generation=${restored.generation}` : restored.reason);
+    if (restored.ok) {
+      expectedGeneration = restored.generation;
+    }
+  }
+
+  await store.compact();
+  const persisted = `${await readFile(join(directory, "snapshot.json"), "utf8")}\n${await readFile(join(directory, "journal.jsonl"), "utf8")}`;
+  assertNoNeedles("semantic local graph store files", persisted, needles);
+  addCase(cases, "persisted-store-no-sampled-plaintext", true);
+
+  return {
+    cases,
+    directory,
+    generation: expectedGeneration
+  };
+}
+
+function latestGenerationFromSyncError(error: unknown): number | undefined {
+  if (!error || typeof error !== "object") {
+    return undefined;
+  }
+  const status = (error as { status?: unknown }).status;
+  if (!status || typeof status !== "object") {
+    return undefined;
+  }
+  const latest = (status as { latest_generation?: unknown }).latest_generation;
+  return typeof latest === "number" && Number.isInteger(latest) && latest >= 0 ? latest : undefined;
+}
+
+function remapControlState(input: LocalControlState, options: {
+  authorityId: string;
+  syncClientId: string;
+  syncCapabilityId: string;
+  syncDeviceId: string;
+}): LocalControlState {
+  const next = structuredClone(input);
+  const originalPrimaryDeviceId = next.control_plane.devices[0]?.device_id;
+  next.authority_id = options.authorityId;
+  next.control_plane.authority = {
+    ...next.control_plane.authority,
+    authority_id: options.authorityId
+  };
+  next.control_plane.users = next.control_plane.users.map((user) => ({ ...user, authority_id: options.authorityId }));
+  next.control_plane.devices = next.control_plane.devices.map((device, index) => ({
+    ...device,
+    authority_id: options.authorityId,
+    device_id: index === 0 ? options.syncDeviceId : device.device_id
+  }));
+  next.control_plane.clients = next.control_plane.clients.map((client) => ({
+    ...client,
+    authority_id: options.authorityId,
+    client_id: client.allowed_profile === "sync-device" ? options.syncClientId : client.client_id,
+    device_id: client.device_id === originalPrimaryDeviceId ? options.syncDeviceId : client.device_id
+  }));
+  next.control_plane.capabilities = next.control_plane.capabilities.map((capability) => ({
+    ...capability,
+    authority_id: options.authorityId,
+    capability_id: capability.profile === "sync-device" ? options.syncCapabilityId : capability.capability_id,
+    client_id: capability.profile === "sync-device" ? options.syncClientId : capability.client_id
+  }));
+  next.control_plane.keys = next.control_plane.keys.map((key) => ({ ...key, authority_id: options.authorityId }));
+  return next;
+}
+
+async function syncSemanticObjects(input: {
+  objects: GraphObjectEnvelope[];
+  needles: string[];
+  authorityId: string;
+}): Promise<{ generation: number; synced_objects: number }> {
+  const gate = await runCloudflareLiveUsageGate();
+  printCloudflareLiveUsageGateResult(gate);
+  if (!gate.ok) {
+    throw new Error("usage gate refused semantic ciphertext push");
+  }
+
+  const endpoint = requireEnv("LIVING_ATLAS_LIVE_SYNC_ENDPOINT");
+  const syncToken = requireEnv("LIVING_ATLAS_LIVE_SYNC_TOKEN");
+  const syncClientId = requireEnv("LIVING_ATLAS_LIVE_SYNC_CLIENT_ID");
+  const syncCapabilityId = requireEnv("LIVING_ATLAS_LIVE_SYNC_CAPABILITY_ID");
+  const syncTokenId = envValue("LIVING_ATLAS_LIVE_SYNC_TOKEN_ID");
+  const syncDeviceId = envValue("LIVING_ATLAS_LIVE_SYNC_DEVICE_ID") ?? `la_device_logseqsem${digest(syncClientId, 18)}`;
+
+  const status = await fetchSyncStatus({
+    endpoint,
+    syncToken,
+    clientId: syncClientId,
+    capabilityId: syncCapabilityId,
+    tokenId: syncTokenId
+  });
+  if (!status.ok) {
+    throw new Error(`sync status failed HTTP ${status.status_code}: ${JSON.stringify(status.error)}`);
+  }
+
+  const generation = nextSyncGenerationFromStatus(status.status);
+  const controlState = remapControlState(await createFixtureLocalControlState(`logseq-semantic-${digest(new Date().toISOString())}`), {
+    authorityId: input.authorityId,
+    syncClientId,
+    syncCapabilityId,
+    syncDeviceId
+  });
+  let baseGeneration = generation.base_generation;
+  let targetGeneration = generation.target_generation;
+  let built = buildCiphertextSyncBatch({
+    controlState,
+    graphObjects: input.objects,
+    syncClientId,
+    tokenId: syncTokenId,
+    baseGeneration,
+    targetGeneration,
+    now: new Date().toISOString()
+  });
+  assertNoNeedles("semantic sync batch", built.batch, input.needles);
+
+  let submitted = await submitSyncBatch({
+    endpoint,
+    batch: built.batch,
+    syncToken
+  });
+  if (!submitted.ok && submitted.status === 409) {
+    const latest = latestGenerationFromSyncError(submitted.error);
+    if (latest !== undefined && latest !== baseGeneration) {
+      baseGeneration = latest;
+      targetGeneration = latest + 1;
+      built = buildCiphertextSyncBatch({
+        controlState,
+        graphObjects: input.objects,
+        syncClientId,
+        tokenId: syncTokenId,
+        baseGeneration,
+        targetGeneration,
+        now: new Date().toISOString()
+      });
+      assertNoNeedles("semantic sync batch retry", built.batch, input.needles);
+      submitted = await submitSyncBatch({
+        endpoint,
+        batch: built.batch,
+        syncToken
+      });
+    }
+  }
+  if (!submitted.ok) {
+    throw new Error(`semantic ciphertext sync failed HTTP ${submitted.status}: ${JSON.stringify(submitted.error)}`);
+  }
+
+  const pulled = await fetchSyncEnvelopes({
+    endpoint,
+    authorityId: input.authorityId,
+    afterGeneration: generation.base_generation,
+    syncToken,
+    clientId: syncClientId,
+    capabilityId: syncCapabilityId,
+    tokenId: syncTokenId
+  });
+  if (!pulled.ok) {
+    throw new Error(`semantic envelope pull failed HTTP ${pulled.status_code}: ${JSON.stringify(pulled.error)}`);
+  }
+  assertNoNeedles("semantic pulled envelopes", pulled.response, input.needles);
+
+  return {
+    generation: submitted.accepted.target_generation,
+    synced_objects: input.objects.length
+  };
+}
+
+async function main(): Promise<void> {
+  const root = envValue("LIVING_ATLAS_REAL_MARKDOWN_ROOT") ?? "./logseq";
+  const fileCount = parseInteger(envValue("LIVING_ATLAS_LOGSEQ_SEMANTIC_FILE_COUNT"), defaultFileCount, 1, maxFileCount);
+  const fileOffset = parseInteger(envValue("LIVING_ATLAS_LOGSEQ_SEMANTIC_FILE_OFFSET"), 0, 0, maxFileOffset);
+  const authorityId = envValue("LIVING_ATLAS_LIVE_AUTHORITY_ID") ?? "la_authority_logseqsemantic0001";
+  const pathRedactionSecret = envValue("LIVING_ATLAS_REAL_DATA_PATH_REDACTION_SECRET") ?? randomBytes(32).toString("hex");
+  const createdAt = new Date().toISOString();
+  const paths = await walkMarkdown(root, fileCount, fileOffset);
+  if (paths.length === 0) {
+    throw new Error(`no markdown files found under configured root at offset ${fileOffset}`);
+  }
+
+  const files: MarkdownFileInput[] = [];
+  for (const path of paths) {
+    files.push({
+      source_path: relative(root, path),
+      markdown: await readFile(path, "utf8"),
+      source_kind: "logseq"
+    });
+  }
+  const needles = collectPlaintextNeedles(files);
+  const result = await createLogseqSemanticGraphObjects(files, {
+    authority_id: authorityId,
+    created_at: createdAt,
+    path_redaction_secret: pathRedactionSecret,
+    encrypt: async ({ plaintext, aad }) => encryptPayload(plaintext, aad)
+  });
+
+  assertNoNeedles("semantic parity ledger", result.ledger, needles);
+  assertNoNeedles("semantic encrypted envelopes", result.objects, needles);
+  const crud = await runLocalCrudProof(result.objects, needles);
+  const failed = crud.cases.filter((testCase) => !testCase.ok);
+  if (failed.length > 0) {
+    for (const testCase of crud.cases) {
+      console.error(`- ${testCase.ok ? "ok" : "fail"} ${testCase.name}${testCase.detail ? ` (${testCase.detail})` : ""}`);
+    }
+    throw new Error(`semantic CRUD proof failed: ${failed.map((testCase) => testCase.name).join(", ")}`);
+  }
+
+  console.log("Living Atlas Logseq semantic parity and CRUD passed");
+  console.log(`files=${result.ledger.file_count}; offset=${fileOffset}; objects=${result.objects.length}; local_generation=${crud.generation}`);
+  console.log(`pages=${result.ledger.totals.pages}; blocks=${result.ledger.totals.blocks}; indexes=${result.ledger.totals.reference_index_objects_planned}; edges=${result.ledger.totals.edge_objects}; quarantine=${result.ledger.totals.quarantine_objects}`);
+  console.log(`wikilinks=${result.ledger.totals.wikilinks}; tags=${result.ledger.totals.hash_tags}; block_refs=${result.ledger.totals.block_refs}; page_properties=${result.ledger.totals.page_properties}; block_properties=${result.ledger.totals.block_properties}`);
+  console.log(`bytes=${result.ledger.totals.bytes}; root_ref=sha256:${digest(root, 64)}; store_ref=sha256:${digest(crud.directory, 64)}`);
+
+  if (envValue(liveAckEnv) !== liveAckValue) {
+    console.log(`live_sync=skipped; set ${liveAckEnv}=${liveAckValue} to sync semantic ciphertext to Cloudflare`);
+    return;
+  }
+
+  const synced = await syncSemanticObjects({
+    objects: result.objects,
+    needles,
+    authorityId
+  });
+  console.log("Living Atlas Logseq semantic Cloudflare ciphertext sync passed");
+  console.log(`authority=${authorityId}; generation=${synced.generation}; synced_objects=${synced.synced_objects}`);
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch((error: unknown) => {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exitCode = 1;
+  });
+}

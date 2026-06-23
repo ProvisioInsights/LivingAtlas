@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { fixtureAuthorityId, sensitiveBaitRegistry } from "@living-atlas/fixtures";
 import { scanForBaitStrings } from "@living-atlas/leakage";
@@ -6,6 +7,8 @@ import { scanForBaitStrings } from "@living-atlas/leakage";
 	  createMarkdownObjectId,
 	  createMarkdownSourceRef,
 	  createMarkdownWatcherPlan,
+	  createLogseqSemanticGraphObjects,
+	  createLogseqSemanticParityLedger,
 	  planWatcherFileEvent,
 	  summarizeMarkdownFile
 } from "./index";
@@ -28,6 +31,10 @@ Avery North discussed Project Glass Lantern on 2026-02-14.
 
 - Avery North estranged-from Example Person
 `;
+
+function sha256(value: string): `sha256:${string}` {
+  return `sha256:${createHash("sha256").update(value).digest("hex")}`;
+}
 
 describe("markdown importer planning", () => {
   it("extracts markdown structure without serializing plaintext or source paths into the plan", () => {
@@ -142,4 +149,72 @@ describe("markdown importer planning", () => {
 	    expect(firstPlan.files[0]!.planned_object.object_id).toBe(secondPlan.files[0]!.planned_object.object_id);
 	    expect(JSON.stringify(firstPlan)).not.toContain(sourcePath);
 	  });
+
+  it("builds a plaintext-free Logseq semantic parity ledger and encrypted semantic objects", async () => {
+    const file = {
+      source_path: "/tmp/living-atlas-fixtures/Blue Orchid Salary Negotiation.md",
+      markdown: syntheticSensitiveMarkdown,
+      source_kind: "logseq" as const
+    };
+
+    const ledger = createLogseqSemanticParityLedger([file], {
+      authority_id: fixtureAuthorityId,
+      created_at: "2026-06-22T12:00:00.000Z",
+      path_redaction_secret: "fixture-path-redaction-secret-0001"
+    });
+
+    expect(ledger.file_count).toBe(1);
+    expect(ledger.totals.pages).toBe(1);
+    expect(ledger.totals.blocks).toBeGreaterThan(0);
+    expect(ledger.totals.wikilinks).toBe(2);
+    expect(ledger.totals.block_refs).toBe(1);
+    expect(ledger.totals.edge_candidates).toBe(1);
+    expect(ledger.totals.valid_edge_candidates).toBe(1);
+    expect(ledger.totals.planned_objects).toBeGreaterThan(ledger.totals.pages);
+    expect(JSON.stringify(ledger)).not.toContain(file.source_path);
+    expect(JSON.stringify(ledger)).not.toContain("Avery North");
+    expect(JSON.stringify(ledger)).not.toContain("Project Glass Lantern");
+
+    const encrypted = await createLogseqSemanticGraphObjects([file], {
+      authority_id: fixtureAuthorityId,
+      created_at: "2026-06-22T12:00:00.000Z",
+      path_redaction_secret: "fixture-path-redaction-secret-0001",
+      encrypt: async ({ plaintext, aad }) => ({
+        ciphertext: Buffer.from(`sealed:${aad}:${plaintext.length}`).toString("base64"),
+        nonce: "fixture-semantic-nonce",
+        hash: sha256(`sealed:${aad}:${plaintext.length}`),
+        algorithm: "fixture-aes-gcm"
+      })
+    });
+
+    expect(encrypted.ledger).toEqual(ledger);
+    expect(encrypted.objects).toHaveLength(ledger.totals.planned_objects);
+    expect(encrypted.objects.every((object) => object.encryption_class === "client-encrypted")).toBe(true);
+    expect(encrypted.objects.every((object) => object.payload.kind === "ciphertext-inline")).toBe(true);
+    expect(encrypted.objects.map((object) => object.object_type)).toEqual(expect.arrayContaining(["page", "block", "index", "edge"]));
+    expect(JSON.stringify(encrypted.objects)).not.toContain("Avery North");
+    expect(JSON.stringify(encrypted.objects)).not.toContain("Project Glass Lantern");
+  });
+
+  it("quarantines direction-unsafe Logseq edge candidates instead of reversing them", () => {
+    const ledger = createLogseqSemanticParityLedger([
+      {
+        source_path: "/tmp/living-atlas-fixtures/Unsafe Edge.md",
+        markdown: "## Edges\n\n- [[Acquirer]] acquired [[Target]]\n",
+        source_kind: "logseq"
+      }
+    ], {
+      authority_id: fixtureAuthorityId,
+      created_at: "2026-06-22T12:00:00.000Z",
+      path_redaction_secret: "fixture-path-redaction-secret-0001"
+    });
+
+    expect(ledger.totals.edge_candidates).toBe(1);
+    expect(ledger.totals.valid_edge_candidates).toBe(0);
+    expect(ledger.totals.quarantined_edge_candidates).toBe(1);
+    expect(ledger.totals.quarantine_objects).toBe(1);
+    expect(ledger.decisions["direction-unsafe-alias"]).toBe(1);
+    expect(JSON.stringify(ledger)).not.toContain("Acquirer");
+    expect(JSON.stringify(ledger)).not.toContain("Target");
+  });
 	});

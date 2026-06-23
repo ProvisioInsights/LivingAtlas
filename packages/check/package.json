@@ -11,6 +11,7 @@
     "@living-atlas/atlas-client": "workspace:*",
     "@living-atlas/cloudflare-worker": "workspace:*",
     "@living-atlas/fixtures": "workspace:*",
+    "@living-atlas/importer": "workspace:*",
     "@living-atlas/leakage": "workspace:*",
     "@living-atlas/local-control-store": "workspace:*",
     "@living-atlas/local-graph-store": "workspace:*",

@@ -63,6 +63,9 @@ importers:
       '@living-atlas/fixtures':
         specifier: workspace:*
         version: link:../fixtures
+      '@living-atlas/importer':
+        specifier: workspace:*
+        version: link:../importer
       '@living-atlas/leakage':
         specifier: workspace:*
         version: link:../leakage
