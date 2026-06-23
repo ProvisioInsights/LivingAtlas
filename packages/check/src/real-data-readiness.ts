@@ -18,6 +18,7 @@ import {
 } from "@living-atlas/sync-agent";
 import {
   createMarkdownImportPlan,
+  MarkdownImportSourceKindSchema,
   type MarkdownFileInput
 } from "../../importer/src";
 import {
@@ -26,10 +27,12 @@ import {
 } from "./cloudflare-live-usage-gate";
 
 const liveAckEnv = "LIVING_ATLAS_REAL_DATA_PUSH_ACK";
-const liveAckValue = "sync-real-ciphertext-to-dev";
+const liveAckValue = "sync-real-ciphertext-to-cloudflare";
+const legacyLiveAckValue = "sync-real-ciphertext-to-dev";
 const defaultMaxFiles = 12;
 const maxHardFiles = 25;
 const maxFileBytes = 256_000;
+const maxFileOffset = 1_000_000;
 const textEncoder = new TextEncoder();
 
 function envValue(key: string): string | undefined {
@@ -64,12 +67,24 @@ function parsePositiveInt(value: string | undefined, fallback: number, max: numb
   return parsed;
 }
 
-async function walkMarkdown(root: string, maxFiles: number): Promise<string[]> {
+function parseNonNegativeInt(value: string | undefined, fallback: number, max: number): number {
+  if (!value) {
+    return fallback;
+  }
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 0 || parsed > max) {
+    throw new Error(`expected non-negative integer <= ${max}, got ${value}`);
+  }
+  return parsed;
+}
+
+async function walkMarkdown(root: string, maxFiles: number, offset: number): Promise<string[]> {
   const selected: string[] = [];
   const queue = [root];
   const ignored = new Set([".git", "node_modules", "dist", "build", ".wrangler", ".terraform"]);
+  const scanLimit = offset + maxFiles;
 
-  while (queue.length > 0 && selected.length < maxFiles) {
+  while (queue.length > 0 && selected.length < scanLimit) {
     const dir = queue.shift()!;
     const entries = await readdir(dir, { withFileTypes: true }).catch(() => []);
     for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
@@ -88,16 +103,20 @@ async function walkMarkdown(root: string, maxFiles: number): Promise<string[]> {
         continue;
       }
       selected.push(path);
-      if (selected.length >= maxFiles) {
+      if (selected.length >= scanLimit) {
         break;
       }
     }
   }
 
-  return selected;
+  return selected.slice(offset);
 }
 
 function sourceKindForRoot(root: string): MarkdownFileInput["source_kind"] {
+  const configured = envValue("LIVING_ATLAS_REAL_MARKDOWN_SOURCE_KIND");
+  if (configured) {
+    return MarkdownImportSourceKindSchema.parse(configured);
+  }
   const lower = root.toLowerCase();
   if (lower.includes("logseq")) return "logseq";
   if (lower.includes("obsidian")) return "obsidian";
@@ -253,10 +272,11 @@ function latestGenerationFromSyncError(error: unknown): number | undefined {
 async function main(): Promise<void> {
   const root = envValue("LIVING_ATLAS_REAL_MARKDOWN_ROOT") ?? "/Users/johnsu/Documents/Obsidian Vault";
   const maxFiles = parsePositiveInt(envValue("LIVING_ATLAS_REAL_DATA_FILE_COUNT"), defaultMaxFiles, maxHardFiles);
+  const fileOffset = parseNonNegativeInt(envValue("LIVING_ATLAS_REAL_DATA_FILE_OFFSET"), 0, maxFileOffset);
   const sourceKind = sourceKindForRoot(root);
-  const paths = await walkMarkdown(root, maxFiles);
+  const paths = await walkMarkdown(root, maxFiles, fileOffset);
   if (paths.length === 0) {
-    throw new Error(`no markdown files found under configured root`);
+    throw new Error(`no markdown files found under configured root at offset ${fileOffset}`);
   }
 
   const files: MarkdownFileInput[] = [];
@@ -288,11 +308,12 @@ async function main(): Promise<void> {
   assertNoNeedles("encrypted real graph envelopes", objects, needles);
 
   console.log("Living Atlas real-data local readiness passed");
-  console.log(`files=${files.length}; source_kind=${sourceKind}; objects=${objects.length}; plaintext_needles=${needles.length}`);
+  console.log(`files=${files.length}; offset=${fileOffset}; source_kind=${sourceKind}; objects=${objects.length}; plaintext_needles=${needles.length}`);
   console.log(`bytes=${files.reduce((sum, file) => sum + Buffer.byteLength(file.markdown, "utf8"), 0)}; root_ref=sha256:${digest(root, 64)}`);
 
-  if (envValue(liveAckEnv) !== liveAckValue) {
-    console.log(`live_push=skipped; set ${liveAckEnv}=${liveAckValue} to sync ciphertext to dev`);
+  const liveAck = envValue(liveAckEnv);
+  if (liveAck !== liveAckValue && liveAck !== legacyLiveAckValue) {
+    console.log(`live_push=skipped; set ${liveAckEnv}=${liveAckValue} to sync ciphertext to Cloudflare`);
     return;
   }
 
@@ -400,7 +421,7 @@ async function main(): Promise<void> {
     throw new Error(`remote decrypt unexpectedly succeeded without cloud-unlock key: ${JSON.stringify(decryptProbe)}`);
   }
 
-  console.log("Living Atlas real-data dev ciphertext sync passed");
+  console.log("Living Atlas real-data Cloudflare ciphertext sync passed");
   console.log(`authority=${authorityId}; generation=${submitted.accepted.target_generation}; synced_objects=${objects.length}`);
 }
 
