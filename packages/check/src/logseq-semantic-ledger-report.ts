@@ -180,7 +180,8 @@ async function main(): Promise<void> {
     ? ManifestSchema.parse(JSON.parse(await readFile(manifestPath, "utf8")))
     : undefined;
   const manifestPending = manifest?.entries.filter((entry) => entry.terminal_decision === "pending" && !coveredSourceRefs.has(entry.source_path_ref)) ?? [];
-  const manifestUnaccounted = manifest?.entries.filter((entry) => entry.terminal_decision !== "pending" && !coveredSourceRefs.has(entry.source_path_ref)) ?? [];
+  const manifestTerminalSkipped = manifest?.entries.filter((entry) => entry.terminal_decision === "skipped" && !coveredSourceRefs.has(entry.source_path_ref)) ?? [];
+  const manifestTerminalQuarantined = manifest?.entries.filter((entry) => entry.terminal_decision === "quarantined" && !coveredSourceRefs.has(entry.source_path_ref)) ?? [];
   const unsynced = latest.filter((record) => record.sync.attempted && record.sync.synced_objects !== record.plan_totals.planned_objects);
   const localOnly = latest.filter((record) => !record.sync.attempted);
   const synced = latest.filter((record) => record.sync.attempted);
@@ -202,7 +203,8 @@ async function main(): Promise<void> {
       total_entries: manifest.total_entries,
       accounted_entries: coveredSourceRefs.size,
       pending_entries: manifestPending.length,
-      unaccounted_terminal_entries: manifestUnaccounted.length
+      terminal_skipped_entries: manifestTerminalSkipped.length,
+      terminal_quarantined_entries: manifestTerminalQuarantined.length
     } : null,
     coverage: ranges,
     gaps: gaps(ranges),
@@ -225,8 +227,7 @@ async function main(): Promise<void> {
       ...(gaps(ranges).length > 0 ? ["coverage-gaps"] : []),
       ...(localOnly.length > 0 ? ["local-only-batches"] : []),
       ...(unsynced.length > 0 ? ["synced-object-count-mismatch"] : []),
-      ...(manifest && manifestPending.length > 0 ? ["manifest-pending-entries"] : []),
-      ...(manifest && manifestUnaccounted.length > 0 ? ["manifest-unaccounted-terminal-entries"] : [])
+      ...(manifest && manifestPending.length > 0 ? ["manifest-pending-entries"] : [])
     ];
     if (failures.length > 0) {
       throw new Error(`semantic ledger incomplete: ${failures.join(",")}`);

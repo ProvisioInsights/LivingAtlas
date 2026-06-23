@@ -317,6 +317,11 @@ The parity command records the full recomputed object count in the ledger only
 when the previously synced object count plus the newly pushed source capsules
 accounts for the whole batch.
 
+The ledger completion report treats manifest `skipped` and `quarantined`
+entries as terminal accounting outcomes. `LIVING_ATLAS_LOGSEQ_SEMANTIC_REQUIRE_COMPLETE=1`
+fails on remaining pending entries, coverage gaps, local-only batches, or sync
+count mismatches.
+
 It calls `/api/usage/gate`, fails closed without an endpoint/token, and returns
 `safe-to-test` only when configured budgets remain under the selected threshold,
 Worker request headroom remains above the selected minimum, and no Worker 5xx

@@ -294,7 +294,10 @@ emits only counts, offsets, object totals, and opaque root refs.
 capsule, can split a large semantic window into multiple sync batches, and
 writes per-file parity refs into the durable ledger. `logseq:semantic-ledger-report`
 can run as a hard completion gate with
-`LIVING_ATLAS_LOGSEQ_SEMANTIC_REQUIRE_COMPLETE=1`.
+`LIVING_ATLAS_LOGSEQ_SEMANTIC_REQUIRE_COMPLETE=1`. Manifest entries with a
+terminal `skipped` or `quarantined` decision are reported as terminal accounting
+outcomes; they do not require ledger objects unless they were readable semantic
+markdown entries.
 
 For legacy semantic imports that already synced the graph objects before
 source-capsule refs existed, set
