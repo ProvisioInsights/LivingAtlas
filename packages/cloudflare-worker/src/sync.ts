@@ -300,6 +300,7 @@ export async function getSyncPull(
   controlDb: SyncMetadataStore,
   authorityId: string | undefined,
   afterGeneration: number | undefined,
+  limit?: number,
   binding?: SyncTokenBinding
 ): Promise<SyncPullReadResult> {
   const tokenFailure = await verifySyncToken(token, config, binding, authorityId);
@@ -307,13 +308,19 @@ export async function getSyncPull(
     return tokenFailure;
   }
 
-  if (!authorityId || afterGeneration === undefined || !Number.isInteger(afterGeneration) || afterGeneration < 0) {
+  if (
+    !authorityId
+    || afterGeneration === undefined
+    || !Number.isInteger(afterGeneration)
+    || afterGeneration < 0
+    || (limit !== undefined && (!Number.isInteger(limit) || limit < 1))
+  ) {
     return { ok: false, reason: "invalid-pull-request" };
   }
 
   return {
     ok: true,
-    response: await readSyncPull(controlDb, authorityId, afterGeneration)
+    response: await readSyncPull(controlDb, authorityId, afterGeneration, limit)
   };
 }
 
@@ -323,6 +330,7 @@ export async function getSyncEnvelopePull(
   storage: SyncStorageBindings,
   authorityId: string | undefined,
   afterGeneration: number | undefined,
+  limit?: number,
   binding?: SyncTokenBinding
 ): Promise<SyncEnvelopePullReadResult> {
   const tokenFailure = await verifySyncToken(token, config, binding, authorityId);
@@ -330,12 +338,18 @@ export async function getSyncEnvelopePull(
     return tokenFailure;
   }
 
-  if (!authorityId || afterGeneration === undefined || !Number.isInteger(afterGeneration) || afterGeneration < 0) {
+  if (
+    !authorityId
+    || afterGeneration === undefined
+    || !Number.isInteger(afterGeneration)
+    || afterGeneration < 0
+    || (limit !== undefined && (!Number.isInteger(limit) || limit < 1))
+  ) {
     return { ok: false, reason: "invalid-pull-request" };
   }
 
   return {
     ok: true,
-    response: await readSyncEnvelopePull(storage, authorityId, afterGeneration)
+    response: await readSyncEnvelopePull(storage, authorityId, afterGeneration, limit)
   };
 }

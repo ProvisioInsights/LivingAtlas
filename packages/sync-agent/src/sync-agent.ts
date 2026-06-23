@@ -86,6 +86,7 @@ export type FetchSyncPullOptions = {
   endpoint: string;
   authorityId: string;
   afterGeneration: number;
+  limit?: number;
   syncToken?: string;
   clientId?: string;
   capabilityId?: string;
@@ -640,6 +641,9 @@ export async function fetchSyncPull(options: FetchSyncPullOptions): Promise<Fetc
   const url = new URL("/api/sync/pull", options.endpoint);
   url.searchParams.set("authority_id", options.authorityId);
   url.searchParams.set("after_generation", String(options.afterGeneration));
+  if (options.limit !== undefined) {
+    url.searchParams.set("limit", String(options.limit));
+  }
   const response = await fetchImpl(url, {
     method: "GET",
     headers: {
@@ -670,6 +674,9 @@ export async function fetchSyncEnvelopes(options: FetchSyncEnvelopesOptions): Pr
   const url = new URL("/api/sync/envelopes", options.endpoint);
   url.searchParams.set("authority_id", options.authorityId);
   url.searchParams.set("after_generation", String(options.afterGeneration));
+  if (options.limit !== undefined) {
+    url.searchParams.set("limit", String(options.limit));
+  }
   const response = await fetchImpl(url, {
     method: "GET",
     headers: {

@@ -672,6 +672,7 @@ async function routeBootstrapRequest(request: Request, env: BootstrapWorkerEnv):
     }
 
     const afterGeneration = Number(url.searchParams.get("after_generation"));
+    const limit = url.searchParams.has("limit") ? Number(url.searchParams.get("limit")) : undefined;
     const authorityId = url.searchParams.get("authority_id") ?? undefined;
     if (!(await hasValidSyncToken(request, env))) {
       return json({ ok: false, error: "missing-or-invalid-sync-token" }, { status: 401 });
@@ -689,6 +690,7 @@ async function routeBootstrapRequest(request: Request, env: BootstrapWorkerEnv):
       env.LA_CONTROL_DB,
       authorityId,
       Number.isFinite(afterGeneration) ? afterGeneration : undefined,
+      limit !== undefined && Number.isFinite(limit) ? limit : undefined,
       syncTokenBinding(request)
     );
     if (result.ok) {
@@ -712,6 +714,7 @@ async function routeBootstrapRequest(request: Request, env: BootstrapWorkerEnv):
     }
 
     const afterGeneration = Number(url.searchParams.get("after_generation"));
+    const limit = url.searchParams.has("limit") ? Number(url.searchParams.get("limit")) : undefined;
     const authorityId = url.searchParams.get("authority_id") ?? undefined;
     if (!(await hasValidSyncToken(request, env))) {
       return json({ ok: false, error: "missing-or-invalid-sync-token" }, { status: 401 });
@@ -732,6 +735,7 @@ async function routeBootstrapRequest(request: Request, env: BootstrapWorkerEnv):
       },
       authorityId,
       Number.isFinite(afterGeneration) ? afterGeneration : undefined,
+      limit !== undefined && Number.isFinite(limit) ? limit : undefined,
       syncTokenBinding(request)
     );
     if (result.ok) {
@@ -1239,6 +1243,7 @@ async function callRemoteMcpTool(name: string, args: unknown, request: Request, 
       },
       authorityId,
       0,
+      undefined,
       syncTokenBinding(request)
     );
     if (!pullResult.ok) {
@@ -1757,6 +1762,7 @@ async function callRemoteMcpTool(name: string, args: unknown, request: Request, 
       env.LA_CONTROL_DB,
       authorityId,
       numberParam(args, "after_generation"),
+      numberParam(args, "limit"),
       syncTokenBinding(request)
     );
     if (!result.ok) {
@@ -1784,6 +1790,7 @@ async function callRemoteMcpTool(name: string, args: unknown, request: Request, 
       },
       authorityId,
       numberParam(args, "after_generation"),
+      numberParam(args, "limit"),
       syncTokenBinding(request)
     );
     if (!result.ok) {
@@ -2116,7 +2123,8 @@ async function routeRemoteMcpRequest(request: Request, env: BootstrapWorkerEnv):
             required: ["authority_id", "after_generation"],
             properties: {
               authority_id: { type: "string" },
-              after_generation: { type: "integer", minimum: 0 }
+              after_generation: { type: "integer", minimum: 0 },
+              limit: { type: "integer", minimum: 1, maximum: 50 }
             }
           }
         },
@@ -2129,7 +2137,8 @@ async function routeRemoteMcpRequest(request: Request, env: BootstrapWorkerEnv):
             required: ["authority_id", "after_generation"],
             properties: {
               authority_id: { type: "string" },
-              after_generation: { type: "integer", minimum: 0 }
+              after_generation: { type: "integer", minimum: 0 },
+              limit: { type: "integer", minimum: 1, maximum: 50 }
             }
           }
         },

@@ -1340,7 +1340,44 @@ describe("Worker sync batch acceptance", () => {
     }), env);
     expect(batchResponse.status).toBe(202);
 
-    const response = await handleBootstrapRequest(new Request("https://living-atlas.example/api/sync/envelopes?authority_id=la_authority_worker0001&after_generation=0", {
+    const secondBatch = {
+      ...ciphertextBatch,
+      batch_id: "la_sync_batch_worker0002",
+      operation_id: "la_operation_worker0002",
+      trace_id: "la_trace_worker0002",
+      base_generation: 1,
+      target_generation: 2,
+      objects: [{
+        ...ciphertextBatch.objects[0],
+        object_id: "la_object_worker0002",
+        content_hash: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        payload: {
+          ...ciphertextBatch.objects[0].payload,
+          path: "objects/a=1111111111111111/p=22/s=3333333333333333333333333333333333333333.bin",
+          ciphertext_hash: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        }
+      }],
+      changes: [{
+        ...ciphertextBatch.changes[0],
+        change_id: "la_change_worker0002",
+        operation_id: "la_operation_worker0002",
+        trace_id: "la_trace_worker0002",
+        object_id: "la_object_worker0002",
+        content_hash: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        generation: 2
+      }]
+    };
+    const secondBatchResponse = await handleBootstrapRequest(new Request("https://living-atlas.example/api/sync/batch", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-living-atlas-sync-token": syncToken
+      },
+      body: JSON.stringify(secondBatch)
+    }), env);
+    expect(secondBatchResponse.status).toBe(202);
+
+    const response = await handleBootstrapRequest(new Request("https://living-atlas.example/api/sync/envelopes?authority_id=la_authority_worker0001&after_generation=0&limit=1", {
       method: "GET",
       headers: {
         "x-living-atlas-sync-token": syncToken
@@ -1353,7 +1390,7 @@ describe("Worker sync batch acceptance", () => {
       ok: true,
       authority_id: "la_authority_worker0001",
       from_generation: 0,
-      latest_generation: 1,
+      latest_generation: 2,
       objects: [
         {
           batch_id: ciphertextBatch.batch_id,
@@ -1371,7 +1408,7 @@ describe("Worker sync batch acceptance", () => {
         generation: 1,
         batch_id: ciphertextBatch.batch_id
       },
-      has_more: false
+      has_more: true
     });
     expect(JSON.stringify(body)).not.toContain(syncToken);
   });

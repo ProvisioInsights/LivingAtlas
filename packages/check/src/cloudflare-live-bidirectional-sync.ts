@@ -44,6 +44,7 @@ const defaultDaemonCycles = 1;
 const maxDaemonCycles = 1000;
 const defaultDaemonPollMs = 30_000;
 const defaultDaemonBackoffMs = 5_000;
+const defaultEnvelopePullLimit = 1;
 
 type RuntimeSecrets = {
   controlPassphrase: string;
@@ -71,6 +72,7 @@ type RuntimeConfig = {
   syncTokenId?: string;
   authorityId: string;
   syncDeviceId: string;
+  envelopePullLimit: number;
   paths: LocalRuntimePaths;
   secrets: RuntimeSecrets;
   controlState: LocalControlState;
@@ -307,6 +309,7 @@ async function pullAndApplyAll(input: {
   syncCapabilityId: string;
   syncTokenId?: string;
   authorityId: string;
+  envelopePullLimit: number;
   store: FileLocalGraphStore;
   startCursor: SyncPullCursor;
   secrets: RuntimeSecrets;
@@ -330,6 +333,7 @@ async function pullAndApplyAll(input: {
       endpoint: input.endpoint,
       authorityId: input.authorityId,
       afterGeneration: cursor.generation,
+      limit: input.envelopePullLimit,
       syncToken: input.syncToken,
       clientId: input.syncClientId,
       capabilityId: input.syncCapabilityId,
@@ -429,6 +433,7 @@ async function createRuntimeConfig(): Promise<RuntimeConfig> {
   const syncTokenId = envValue("LIVING_ATLAS_LIVE_SYNC_TOKEN_ID");
   const authorityId = requireEnv("LIVING_ATLAS_LIVE_AUTHORITY_ID");
   const syncDeviceId = envValue("LIVING_ATLAS_LIVE_SYNC_DEVICE_ID") ?? `la_device_localbidir${digest(syncClientId, 16)}`;
+  const envelopePullLimit = parseIntegerEnv("LIVING_ATLAS_LIVE_SYNC_ENVELOPE_PULL_LIMIT", defaultEnvelopePullLimit, 1, 50);
   const paths = runtimePaths();
   const secrets = await readOrCreateRuntimeSecrets(paths);
   const controlState = remapControlState(await createFixtureLocalControlState(secrets.localMcpToken), {
@@ -451,6 +456,7 @@ async function createRuntimeConfig(): Promise<RuntimeConfig> {
     syncTokenId,
     authorityId,
     syncDeviceId,
+    envelopePullLimit,
     paths,
     secrets,
     controlState
@@ -610,6 +616,7 @@ async function runDaemonMode(config: RuntimeConfig): Promise<void> {
         syncCapabilityId: config.syncCapabilityId,
         syncTokenId: config.syncTokenId,
         authorityId: config.authorityId,
+        envelopePullLimit: config.envelopePullLimit,
         store,
         startCursor: cursor,
         secrets: config.secrets
@@ -637,6 +644,7 @@ async function runDaemonMode(config: RuntimeConfig): Promise<void> {
           syncCapabilityId: config.syncCapabilityId,
           syncTokenId: config.syncTokenId,
           authorityId: config.authorityId,
+          envelopePullLimit: config.envelopePullLimit,
           store,
           startCursor: cursor,
           secrets: config.secrets
@@ -724,6 +732,7 @@ async function main(): Promise<void> {
     syncCapabilityId: config.syncCapabilityId,
     syncTokenId: config.syncTokenId,
     authorityId: config.authorityId,
+    envelopePullLimit: config.envelopePullLimit,
     store,
     startCursor: startingCursor,
     secrets: config.secrets
@@ -784,6 +793,7 @@ async function main(): Promise<void> {
     syncCapabilityId: config.syncCapabilityId,
     syncTokenId: config.syncTokenId,
     authorityId: config.authorityId,
+    envelopePullLimit: config.envelopePullLimit,
     store,
     startCursor: pullBefore.cursor,
     secrets: config.secrets

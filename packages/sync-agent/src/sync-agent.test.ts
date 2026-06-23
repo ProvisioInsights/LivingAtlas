@@ -126,6 +126,7 @@ describe("ciphertext sync agent", () => {
       endpoint: "https://living-atlas.example",
       authorityId: batch.authority_id,
       afterGeneration: 0,
+      limit: 1,
       syncToken: "fixture-sync-token-0001",
       clientId: batch.client_id,
       capabilityId: batch.capability_id,
@@ -158,6 +159,7 @@ describe("ciphertext sync agent", () => {
     expect(url.pathname).toBe("/api/sync/envelopes");
     expect(url.searchParams.get("authority_id")).toBe(batch.authority_id);
     expect(url.searchParams.get("after_generation")).toBe("0");
+    expect(url.searchParams.get("limit")).toBe("1");
     expect(calls[0]!.headers.get("x-living-atlas-sync-token")).toBe("fixture-sync-token-0001");
     expect(calls[0]!.url).not.toContain("fixture-sync-token-0001");
 
