@@ -171,12 +171,12 @@ async function main(): Promise<void> {
     const tools = await client.listTools();
     const toolNames = tools.tools.map((tool) => tool.name).sort();
     for (const required of [
-      "local_graph_status",
-      "local_list_objects",
-      "local_read_object",
-      "local_create_object",
-      "local_update_object",
-      "local_tombstone_object"
+      "status",
+      "object_list",
+      "object_read",
+      "object_create",
+      "object_update",
+      "object_delete"
     ]) {
       assert(toolNames.includes(required), `local MCP is missing tool: ${required}`);
     }
@@ -189,10 +189,10 @@ async function main(): Promise<void> {
         profile?: string;
         plaintext_persistence?: string;
       };
-    }>("local_graph_status", await client.callTool({ name: "local_graph_status", arguments: {} }));
-    assert(status.ok === true, "local_graph_status did not succeed");
-    assert(status.result?.object_count === 6, "local_graph_status returned an unexpected object count");
-    assert(status.result?.profile === "local-full", "local_graph_status did not authenticate as local-full");
+    }>("status", await client.callTool({ name: "status", arguments: {} }));
+    assert(status.ok === true, "status did not succeed");
+    assert(status.result?.object_count === 6, "status returned an unexpected object count");
+    assert(status.result?.profile === "local-full", "status did not authenticate as local-full");
     assert(status.result?.plaintext_persistence === "encrypted", "local graph persistence was not encrypted");
     console.log("ok local graph status");
 
@@ -201,11 +201,11 @@ async function main(): Promise<void> {
       result?: {
         objects?: Array<{ object_id?: string; access_class?: string }>;
       };
-    }>("local_list_objects", await client.callTool({ name: "local_list_objects", arguments: {} }));
-    assert(list.ok === true, "local_list_objects did not succeed");
+    }>("object_list", await client.callTool({ name: "object_list", arguments: {} }));
+    assert(list.ok === true, "object_list did not succeed");
     assert(
       list.result?.objects?.some((object) => object.object_id === "la_object_privatepage0001" && object.access_class === "local-private"),
-      "local_list_objects did not include the fixture local-private object"
+      "object_list did not include the fixture local-private object"
     );
     console.log("ok local list objects");
 
@@ -218,15 +218,15 @@ async function main(): Promise<void> {
           payload?: { kind?: string };
         };
       };
-    }>("local_read_object", await client.callTool({
-      name: "local_read_object",
+    }>("object_read", await client.callTool({
+      name: "object_read",
       arguments: {
         object_id: "la_object_privatepage0001"
       }
     }));
-    assert(read.ok === true, "local_read_object did not succeed");
-    assert(read.result?.object?.access_class === "local-private", "local_read_object did not read a local-private object");
-    assert(read.result.object.payload?.kind === "ciphertext-ref", "local_read_object should return the fixture ciphertext envelope");
+    assert(read.ok === true, "object_read did not succeed");
+    assert(read.result?.object?.access_class === "local-private", "object_read did not read a local-private object");
+    assert(read.result.object.payload?.kind === "ciphertext-ref", "object_read should return the fixture ciphertext envelope");
     console.log("ok local read object");
 
     const created = parseToolJson<{
@@ -236,15 +236,15 @@ async function main(): Promise<void> {
         object_count?: number;
         object?: { object_id?: string };
       };
-    }>("local_create_object", await client.callTool({
-      name: "local_create_object",
+    }>("object_create", await client.callTool({
+      name: "object_create",
       arguments: {
         object: syntheticInstallObject()
       }
     }));
-    assert(created.ok === true, "local_create_object did not succeed");
-    assert(created.result?.mutation === "created", "local_create_object did not report created mutation");
-    assert(created.result.object_count === 7, "local_create_object did not add one object");
+    assert(created.ok === true, "object_create did not succeed");
+    assert(created.result?.mutation === "created", "object_create did not report created mutation");
+    assert(created.result.object_count === 7, "object_create did not add one object");
 
     const updated = parseToolJson<{
       ok: boolean;
@@ -253,8 +253,8 @@ async function main(): Promise<void> {
         previous_version?: number;
         new_version?: number;
       };
-    }>("local_update_object", await client.callTool({
-      name: "local_update_object",
+    }>("object_update", await client.callTool({
+      name: "object_update",
       arguments: {
         object_id: "la_object_installsmoke0001",
         expected_version: 1,
@@ -273,9 +273,9 @@ async function main(): Promise<void> {
         }
       }
     }));
-    assert(updated.ok === true, "local_update_object did not succeed");
-    assert(updated.result?.mutation === "updated", "local_update_object did not report updated mutation");
-    assert(updated.result.previous_version === 1 && updated.result.new_version === 2, "local_update_object did not advance version");
+    assert(updated.ok === true, "object_update did not succeed");
+    assert(updated.result?.mutation === "updated", "object_update did not report updated mutation");
+    assert(updated.result.previous_version === 1 && updated.result.new_version === 2, "object_update did not advance version");
 
     const tombstoned = parseToolJson<{
       ok: boolean;
@@ -284,16 +284,16 @@ async function main(): Promise<void> {
         previous_version?: number;
         new_version?: number;
       };
-    }>("local_tombstone_object", await client.callTool({
-      name: "local_tombstone_object",
+    }>("object_delete", await client.callTool({
+      name: "object_delete",
       arguments: {
         object_id: "la_object_installsmoke0001",
         expected_version: 2
       }
     }));
-    assert(tombstoned.ok === true, "local_tombstone_object did not succeed");
-    assert(tombstoned.result?.mutation === "tombstoned", "local_tombstone_object did not report tombstoned mutation");
-    assert(tombstoned.result.previous_version === 2 && tombstoned.result.new_version === 3, "local_tombstone_object did not advance version");
+    assert(tombstoned.ok === true, "object_delete did not succeed");
+    assert(tombstoned.result?.mutation === "tombstoned", "object_delete did not report tombstoned mutation");
+    assert(tombstoned.result.previous_version === 2 && tombstoned.result.new_version === 3, "object_delete did not advance version");
 
     const sensitiveCreated = parseToolJson<{
       ok: boolean;
@@ -307,14 +307,14 @@ async function main(): Promise<void> {
           payload?: { kind?: string; algorithm?: string };
         };
       };
-    }>("local_create_object_private", await client.callTool({
-      name: "local_create_object",
+    }>("object_create_private", await client.callTool({
+      name: "object_create",
       arguments: {
         object: sensitiveInstallObject()
       }
     }));
-    assert(sensitiveCreated.ok === true, "local_create_object did not accept a local-private plaintext draft");
-    assert(sensitiveCreated.result?.mutation === "created", "local_create_object did not create local-private draft");
+    assert(sensitiveCreated.ok === true, "object_create did not accept a local-private plaintext draft");
+    assert(sensitiveCreated.result?.mutation === "created", "object_create did not create local-private draft");
     assert(sensitiveCreated.result?.object?.access_class === "local-private", "local-private draft changed access class");
     assert(sensitiveCreated.result.object.encryption_class === "client-encrypted", "local-private draft was not encrypted");
     assert(sensitiveCreated.result.object.payload?.kind === "ciphertext-inline", "local-private draft did not return ciphertext");
@@ -322,10 +322,10 @@ async function main(): Promise<void> {
 
     assert(existsSync(activityPath), "local MCP activity log was not written");
     const activity = await readFile(activityPath, "utf8");
-    assert(activity.includes("local_read_object"), "local MCP activity log did not record the read");
-    assert(activity.includes("local_create_object"), "local MCP activity log did not record the create");
-    assert(activity.includes("local_update_object"), "local MCP activity log did not record the update");
-    assert(activity.includes("local_tombstone_object"), "local MCP activity log did not record the tombstone");
+    assert(activity.includes("object_read"), "local MCP activity log did not record the read");
+    assert(activity.includes("object_create"), "local MCP activity log did not record the create");
+    assert(activity.includes("object_update"), "local MCP activity log did not record the update");
+    assert(activity.includes("object_delete"), "local MCP activity log did not record the tombstone");
     assertNoSensitiveText("local MCP activity log", activity);
     assertNoSensitiveText("local MCP tool output", JSON.stringify({ status, list, read, created, updated, tombstoned, sensitiveCreated }));
     console.log("ok local MCP activity leakage guard");

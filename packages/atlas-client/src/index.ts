@@ -5,6 +5,7 @@ import type {
   SyncPullResponse,
   SyncStatus
 } from "@living-atlas/contracts";
+import type { LivingAtlasMcpToolName } from "@living-atlas/mcp-contract";
 
 export type FetchLike = (input: URL | RequestInfo, init?: RequestInit) => Promise<Response>;
 
@@ -62,29 +63,7 @@ export class AtlasClientError extends Error {
   }
 }
 
-export type RemoteMcpToolName =
-  | "remote_access_modes"
-  | "remote_activity_audit"
-  | "remote_sensitive_decrypt"
-  | "remote_graph_status"
-  | "remote_graph_reconcile"
-  | "remote_graph_list"
-  | "remote_graph_read"
-  | "remote_graph_create"
-  | "remote_graph_update"
-  | "remote_graph_delete"
-  | "remote_semantic_search"
-  | "remote_graph_traverse"
-  | "remote_timeline_query"
-  | "remote_edge_create"
-  | "remote_edge_read"
-  | "remote_edge_update"
-  | "remote_edge_delete"
-  | "remote_sync_status"
-  | "remote_sync_pull"
-  | "remote_sync_envelopes"
-  | "remote_usage_gate"
-  | "remote_usage_reconcile";
+export type RemoteMcpToolName = LivingAtlasMcpToolName;
 
 export type JsonObject = Record<string, unknown>;
 export type JsonRpcId = string | number | null;
@@ -96,8 +75,8 @@ export type RemoteMcpTool = {
 };
 
 export type RemoteMcpToolArguments = {
-  remote_access_modes: Record<string, never>;
-  remote_activity_audit: {
+  access_modes: Record<string, never>;
+  activity_read: {
     authority_id?: string;
     operation_id?: string;
     trace_id?: string;
@@ -105,53 +84,81 @@ export type RemoteMcpToolArguments = {
     cursor?: string;
     limit?: number;
   };
-  remote_sensitive_decrypt: {
+  sensitive_decrypt: {
     authority_id: string;
     object_id: string;
   };
-  remote_graph_status: {
+  status: {
     authority_id: string;
     include_tombstones?: boolean;
     limit?: number;
   };
-  remote_graph_reconcile: {
+  reconcile: {
     authority_id: string;
     limit?: number;
   };
-  remote_graph_list: {
+  object_list: {
     authority_id: string;
     object_type?: string;
     include_tombstones?: boolean;
     limit?: number;
   };
-  remote_graph_read: {
+  object_read: {
     authority_id: string;
     object_id: string;
   };
-  remote_graph_create: {
+  object_create: {
     object: GraphObjectEnvelope;
     idempotency_key?: string;
   };
-  remote_graph_update: {
+  object_update: {
     authority_id: string;
     object_id: string;
     expected_version?: number;
     idempotency_key?: string;
     patch: JsonObject;
   };
-  remote_graph_delete: {
+  object_delete: {
     authority_id: string;
     object_id: string;
     expected_version?: number;
     idempotency_key?: string;
   };
-  remote_semantic_search: {
+  object_batch: {
+    authority_id: string;
+    idempotency_key?: string;
+    items: Array<
+      | {
+          op: "create";
+          object: GraphObjectEnvelope;
+          idempotency_key?: string;
+        }
+      | {
+          op: "update";
+          object_id: string;
+          patch: JsonObject;
+          expected_version?: number;
+          idempotency_key?: string;
+        }
+      | {
+          op: "delete";
+          object_id: string;
+          expected_version?: number;
+          idempotency_key?: string;
+        }
+    >;
+    limits?: {
+      max_items?: number;
+      max_bytes?: number;
+    };
+  };
+  search: {
     authority_id: string;
     query: string;
     object_type?: string;
     limit?: number;
   };
-  remote_graph_traverse: {
+  traverse: {
     authority_id: string;
     start_object_id: string;
     direction?: "outbound" | "inbound" | "both";
@@ -159,7 +166,7 @@ export type RemoteMcpToolArguments = {
     predicates?: string[];
     limit?: number;
   };
-  remote_timeline_query: {
+  timeline: {
     authority_id: string;
     from?: string;
     to?: string;
@@ -167,64 +174,94 @@ export type RemoteMcpToolArguments = {
     predicate?: string;
     limit?: number;
   };
-  remote_edge_create: {
+  edge_create: {
     authority_id: string;
     edge: JsonObject;
     idempotency_key?: string;
   };
-  remote_edge_read: {
+  edge_read: {
     authority_id: string;
     edge_id: string;
   };
-  remote_edge_update: {
+  edge_update: {
     authority_id: string;
     edge_id: string;
     expected_version?: number;
     idempotency_key?: string;
     patch: JsonObject;
   };
-  remote_edge_delete: {
+  edge_delete: {
     authority_id: string;
     edge_id: string;
     expected_version?: number;
     idempotency_key?: string;
   };
-  remote_sync_status: Record<string, never>;
-  remote_sync_pull: {
+  edge_batch: {
+    authority_id: string;
+    idempotency_key?: string;
+    items: Array<
+      | {
+          op: "create";
+          edge: JsonObject;
+          idempotency_key?: string;
+        }
+      | {
+          op: "update";
+          edge_id: string;
+          patch: JsonObject;
+          expected_version?: number;
+          idempotency_key?: string;
+        }
+      | {
+          op: "delete";
+          edge_id: string;
+          expected_version?: number;
+          idempotency_key?: string;
+        }
+    >;
+    limits?: {
+      max_items?: number;
+      max_bytes?: number;
+    };
+  };
+  sync_status: Record<string, never>;
+  sync_pull: {
     authority_id: string;
     after_generation: number;
   };
-  remote_sync_envelopes: {
+  sync_envelopes: {
     authority_id: string;
     after_generation: number;
   };
-  remote_usage_gate: RemoteUsageGateArguments;
-  remote_usage_reconcile: RemoteUsageReconciliationArguments;
+  usage_gate: RemoteUsageGateArguments;
+  usage_reconcile: RemoteUsageReconciliationArguments;
 };
 
 export type RemoteMcpToolResults = {
-  remote_access_modes: JsonObject;
-  remote_activity_audit: PraxisActivityAuditStreamResponse;
-  remote_sensitive_decrypt: JsonObject;
-  remote_graph_status: JsonObject;
-  remote_graph_reconcile: JsonObject;
-  remote_graph_list: JsonObject;
-  remote_graph_read: JsonObject;
-  remote_graph_create: JsonObject;
-  remote_graph_update: JsonObject;
-  remote_graph_delete: JsonObject;
-  remote_semantic_search: JsonObject;
-  remote_graph_traverse: JsonObject;
-  remote_timeline_query: JsonObject;
-  remote_edge_create: JsonObject;
-  remote_edge_read: JsonObject;
-  remote_edge_update: JsonObject;
-  remote_edge_delete: JsonObject;
-  remote_sync_status: SyncStatus;
-  remote_sync_pull: SyncPullResponse;
-  remote_sync_envelopes: SyncEnvelopePullResponse;
-  remote_usage_gate: UsageGateResponse;
-  remote_usage_reconcile: UsageReconciliationResponse;
+  access_modes: JsonObject;
+  activity_read: PraxisActivityAuditStreamResponse;
+  sensitive_decrypt: JsonObject;
+  status: JsonObject;
+  reconcile: JsonObject;
+  object_list: JsonObject;
+  object_read: JsonObject;
+  object_create: JsonObject;
+  object_update: JsonObject;
+  object_delete: JsonObject;
+  object_batch: JsonObject;
+  search: JsonObject;
+  traverse: JsonObject;
+  timeline: JsonObject;
+  edge_create: JsonObject;
+  edge_read: JsonObject;
+  edge_update: JsonObject;
+  edge_delete: JsonObject;
+  edge_batch: JsonObject;
+  sync_status: SyncStatus;
+  sync_pull: SyncPullResponse;
+  sync_envelopes: SyncEnvelopePullResponse;
+  usage_gate: UsageGateResponse;
+  usage_reconcile: UsageReconciliationResponse;
 };
 
 export type UsageStatusQuery = {

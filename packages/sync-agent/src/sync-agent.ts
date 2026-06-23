@@ -1,6 +1,9 @@
 import { createHash } from "node:crypto";
+import { readdir, readFile, rename } from "node:fs/promises";
+import { join } from "node:path";
 import {
   canonicalSyncBatchHashPayload,
+  GraphObjectEnvelopeSchema,
   SyncBatchAcceptedSchema,
   SyncBatchSchema,
   SyncEnvelopePullResponseSchema,
@@ -275,6 +278,47 @@ export type FetchPlannedPullResult =
       error: unknown;
     };
 
+export type FileOutboxPushHandshakeOptions = {
+  outboxDir: string;
+  store: FileLocalGraphStore;
+  controlState: LocalControlState;
+  cursor: SyncPullCursor;
+  endpoint: string;
+  syncToken?: string;
+  syncClientId?: string;
+  tokenId?: string;
+  fetchImpl?: typeof fetch;
+  now?: string;
+};
+
+export type FileOutboxPushHandshakeResult =
+  | {
+      ok: true;
+      cursor: SyncPullCursor;
+      pushed_batches: number;
+      pushed_objects: number;
+      applied: number;
+      skipped: number;
+      conflicts: 0;
+      conflict_samples: [];
+      outbox_pending: number;
+      accepted_files: string[];
+    }
+  | {
+      ok: false;
+      cursor: SyncPullCursor;
+      pushed_batches: number;
+      pushed_objects: number;
+      applied: number;
+      skipped: number;
+      conflicts: number;
+      conflict_samples: ApplyPulledEnvelopeConflict[];
+      outbox_pending: number;
+      accepted_files: string[];
+      reason: "remote-status-failed" | "remote-apply-conflict" | "push-failed";
+      error?: unknown;
+    };
+
 function digest(value: string, length = 24): string {
   return createHash("sha256").update(value).digest("hex").slice(0, length);
 }
@@ -313,6 +357,33 @@ function requireInjectedFetch(fetchImpl: typeof fetch | undefined): typeof fetch
   }
 
   return fetchImpl;
+}
+
+function isNodeError(error: unknown): error is NodeJS.ErrnoException {
+  return typeof error === "object" && error !== null && "code" in error;
+}
+
+async function queuedOutboxFiles(outboxDir: string): Promise<string[]> {
+  const entries = await readdir(outboxDir, { withFileTypes: true }).catch((error: unknown) => {
+    if (isNodeError(error) && error.code === "ENOENT") {
+      return [];
+    }
+    throw error;
+  });
+  return entries
+    .filter((entry) => entry.isFile() && entry.name.endsWith(".json") && !entry.name.includes(".accepted.") && !entry.name.includes(".failed."))
+    .map((entry) => join(outboxDir, entry.name))
+    .sort();
+}
+
+async function readQueuedObjects(filePath: string): Promise<GraphObjectEnvelope[]> {
+  const parsed = JSON.parse(await readFile(filePath, "utf8")) as unknown;
+  const values = Array.isArray(parsed)
+    ? parsed
+    : typeof parsed === "object" && parsed !== null && Array.isArray((parsed as { objects?: unknown }).objects)
+      ? (parsed as { objects: unknown[] }).objects
+      : [parsed];
+  return values.map((value) => GraphObjectEnvelopeSchema.parse(value));
 }
 
 function isExpired(timestamp: string | undefined, now: string): boolean {
@@ -731,6 +802,18 @@ export async function applyPulledEnvelopes(options: ApplyPulledEnvelopesOptions)
     for (const pulled of generationObjects) {
       generationBatchId = pulled.batch_id;
       const existing = options.store.readObject(pulled.object.object_id);
+      if (existing && existing.version === pulled.object.version && existing.content_hash !== pulled.object.content_hash) {
+        conflicts.push({
+          object_id: pulled.object.object_id,
+          remote_generation: pulled.generation,
+          remote_version: pulled.object.version,
+          local_version: existing.version,
+          reason: "version-conflict"
+        });
+        generationOk = false;
+        break;
+      }
+
       if (existing && existing.version >= pulled.object.version) {
         skippedCount += 1;
         continue;
@@ -809,6 +892,191 @@ export async function applyPulledEnvelopes(options: ApplyPulledEnvelopesOptions)
     cursor: conflicts.length === 0 ? options.response.next_cursor : cursor,
     conflicts
   };
+}
+
+export async function runFileOutboxPushHandshake(options: FileOutboxPushHandshakeOptions): Promise<FileOutboxPushHandshakeResult> {
+  const now = options.now ?? new Date().toISOString();
+  const syncClient = findSyncClient(options.controlState, options.syncClientId, now);
+  const syncCapability = findSyncCapability(options.controlState, syncClient, now);
+  const fetchImpl = options.fetchImpl ?? fetch;
+  let cursor = options.cursor;
+  let pushedBatches = 0;
+  let pushedObjects = 0;
+  let applied = 0;
+  let skipped = 0;
+  let conflicts = 0;
+  const conflictSamples: ApplyPulledEnvelopeConflict[] = [];
+  const acceptedFiles: string[] = [];
+
+  const pendingCount = async () => (await queuedOutboxFiles(options.outboxDir)).length;
+  const fail = async (
+    reason: Extract<FileOutboxPushHandshakeResult, { ok: false }>["reason"],
+    error?: unknown
+  ): Promise<FileOutboxPushHandshakeResult> => ({
+    ok: false,
+    cursor,
+    pushed_batches: pushedBatches,
+    pushed_objects: pushedObjects,
+    applied,
+    skipped,
+    conflicts,
+    conflict_samples: conflictSamples,
+    outbox_pending: await pendingCount(),
+    accepted_files: acceptedFiles,
+    reason,
+    ...(error !== undefined ? { error } : {})
+  });
+
+  const pullRemoteThrough = async (latestGeneration: number): Promise<true | FileOutboxPushHandshakeResult> => {
+    while (latestGeneration > cursor.generation) {
+      const pulled = await fetchSyncEnvelopes({
+        endpoint: options.endpoint,
+        authorityId: options.controlState.authority_id,
+        afterGeneration: cursor.generation,
+        syncToken: options.syncToken,
+        clientId: syncClient.client_id,
+        capabilityId: syncCapability.capability_id,
+        tokenId: options.tokenId,
+        fetchImpl
+      });
+      if (!pulled.ok) {
+        return fail("remote-status-failed", pulled.error);
+      }
+
+      const appliedResult = await applyPulledEnvelopes({
+        store: options.store,
+        response: pulled.response,
+        actorId: syncClient.client_id
+      });
+      applied += appliedResult.applied_count;
+      skipped += appliedResult.skipped_count;
+      conflicts += appliedResult.conflict_count;
+      conflictSamples.push(...appliedResult.conflicts.slice(0, Math.max(0, 10 - conflictSamples.length)));
+      cursor = appliedResult.cursor;
+
+      if (!appliedResult.ok) {
+        return fail("remote-apply-conflict");
+      }
+
+      if (!pulled.response.has_more || pulled.response.next_cursor.generation <= cursor.generation) {
+        break;
+      }
+    }
+    return true;
+  };
+
+  const initialStatus = await fetchSyncStatus({
+    endpoint: options.endpoint,
+    syncToken: options.syncToken,
+    clientId: syncClient.client_id,
+    capabilityId: syncCapability.capability_id,
+    tokenId: options.tokenId,
+    fetchImpl
+  });
+  if (!initialStatus.ok) {
+    return fail("remote-status-failed", initialStatus.error);
+  }
+
+  const initialPull = await pullRemoteThrough(initialStatus.status.latest_generation);
+  if (initialPull !== true) {
+    return initialPull;
+  }
+
+  const filePath = (await queuedOutboxFiles(options.outboxDir))[0];
+  if (!filePath) {
+    return {
+      ok: true,
+      cursor,
+      pushed_batches: pushedBatches,
+      pushed_objects: pushedObjects,
+      applied,
+      skipped,
+      conflicts: 0,
+      conflict_samples: [],
+      outbox_pending: 0,
+      accepted_files: acceptedFiles
+    };
+  }
+
+  const objects = await readQueuedObjects(filePath);
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const status = await fetchSyncStatus({
+      endpoint: options.endpoint,
+      syncToken: options.syncToken,
+      clientId: syncClient.client_id,
+      capabilityId: syncCapability.capability_id,
+      tokenId: options.tokenId,
+      fetchImpl
+    });
+    if (!status.ok) {
+      return fail("remote-status-failed", status.error);
+    }
+
+    const pull = await pullRemoteThrough(status.status.latest_generation);
+    if (pull !== true) {
+      return pull;
+    }
+
+    const targetGeneration = cursor.generation + 1;
+    const built = buildCiphertextSyncBatch({
+      controlState: options.controlState,
+      graphObjects: objects,
+      syncClientId: syncClient.client_id,
+      tokenId: options.tokenId,
+      baseGeneration: cursor.generation,
+      targetGeneration,
+      now
+    });
+    const submitted = await submitSyncBatch({
+      endpoint: options.endpoint,
+      batch: built.batch,
+      syncToken: options.syncToken,
+      fetchImpl
+    });
+
+    if (submitted.ok) {
+      pushedBatches += 1;
+      pushedObjects += submitted.accepted.accepted_objects;
+      const acceptedPath = `${filePath}.accepted.g${submitted.accepted.target_generation}`;
+      await rename(filePath, acceptedPath);
+      acceptedFiles.push(acceptedPath);
+
+      const confirmStatus = await fetchSyncStatus({
+        endpoint: options.endpoint,
+        syncToken: options.syncToken,
+        clientId: syncClient.client_id,
+        capabilityId: syncCapability.capability_id,
+        tokenId: options.tokenId,
+        fetchImpl
+      });
+      if (!confirmStatus.ok) {
+        return fail("remote-status-failed", confirmStatus.error);
+      }
+      const confirmPull = await pullRemoteThrough(confirmStatus.status.latest_generation);
+      if (confirmPull !== true) {
+        return confirmPull;
+      }
+
+      return {
+        ok: true,
+        cursor,
+        pushed_batches: pushedBatches,
+        pushed_objects: pushedObjects,
+        applied,
+        skipped,
+        conflicts: 0,
+        conflict_samples: [],
+        outbox_pending: await pendingCount(),
+        accepted_files: acceptedFiles
+      };
+    }
+
+    if (submitted.status !== 409 || attempt === 1) {
+      return fail("push-failed", submitted.error);
+    }
+  }
+
+  return fail("push-failed");
 }
 
 export class InMemorySyncOutbox {

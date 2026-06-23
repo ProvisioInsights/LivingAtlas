@@ -154,11 +154,12 @@ An edge is **one bullet inside a reserved, machine-managed `## Edges` section** 
   valid-from:: 2026-05-01
   status:: pending
   amount:: synthetic
+  investment-status:: pending
   condition:: operator confirmed scope
   source:: synthetic fixture
 ```
 
-Spine (required unless noted): `predicate::` (registry); object (the wikilink); `valid-from::` (date or `unknown`); `valid-to::` (absent = ongoing); `status::` (derived, machine-written); `source::` (required). **System time is NOT in the page** — it lives in the event log, written only on correction. Open attrs: any other `key:: value`.
+Spine (required unless noted): `predicate::` (registry); object (the wikilink); `valid-from::` (date or `unknown`); `valid-to::` (absent = ongoing); `status::` (derived, machine-written); `source::` (required). **System time is NOT in the page** — it lives in the event log, written only on correction. Open attrs may use non-reserved keys such as `amount`, `investment-status`, `role`, `via`, `relation`, `note`, `scope`, `condition`, `relationship`, `relationship-origin`, and `comparable-to`.
 
 ### 5.2 Predicate registry v1 (empirically grounded — evidence in the right column)
 
@@ -169,7 +170,7 @@ Spine (required unless noted): `predicate::` (registry); object (the wikilink); 
 | founder-of | employment | dir (inv: founded-by) | person -> organization, project | valid-from | renamed off founded:: collision |
 | board-member-of | governance | dir (inv: board-includes) | person -> organization | valid-from | chair-style governance role |
 | advises | advisory | dir (inv: advised-by) | person -> organization, project | valid-from | -advisory-past |
-| invests-in | capital | dir (inv: funded-by) | person, organization -> organization, project | amount, status | -fundraise-channel, -portfolio |
+| invests-in | capital | dir (inv: funded-by) | person, organization -> organization, project | amount, investment-status | -fundraise-channel, -portfolio |
 | customer-of | customer | dir (inv: vendor-to) | organization -> organization | — | -revenue, -vendor, customer-of |
 | engaged | customer | dir | person -> organization | valid-from | customer roster (era engagements) |
 | acquired-by | structural | dir (inv: acquired) | organization -> organization | valid-from | acquired-by |
@@ -177,7 +178,7 @@ Spine (required unless noted): `predicate::` (registry); object (the wikilink); 
 | introduced-by | network | dir (inv: introduced) | person -> person | — | -warm-intro-* |
 | intro-path-to | network | dir | person -> organization, person | via | -fundraise-channel |
 | connects | network | **sym** | person -> person | note | -adjacent, -orbit (LAST-RESORT, requires note) |
-| member-of | affiliation | dir | person -> organization, cluster | — | cohort and cluster memberships |
+| member-of | affiliation | dir | person -> organization | — | cohort memberships |
 | alumnus-of | affiliation | dir | person -> organization | — | -education |
 | based-in | geography | dir | person, organization -> location | — | plain-text location/headquarters values |
 | spouse-of | personal | **sym** | person -> person | — | family fixture |
@@ -192,11 +193,64 @@ Demote `advises-on` to a `scope::` attribute on `advises` (don't make it a predi
 
 ### 5.3 Endpoint types
 
-Valid edge endpoints (from `schema-properties.md` `type::`): **person, organization, project, location, cluster**. `location` and `cluster` are ADDED vs the earlier draft (location for `based-in`, cluster for `member-of`). V1 decision: defer `event` endpoints such as `attended`/`spoke-at` to V1.1.
+Implemented edge endpoints (from `schema-properties.md` `type::`): **person, organization, project, location, occurrence, topic**. `location` was ADDED vs the earlier draft (location for `based-in`).
+
+Use **occurrence** for knowledge happenings
+such as a meeting, appointment, trip, dinner, visit, party, or other bounded
+thing that happened or is scheduled to happen. Prefer `occurrence` over
+`event` so knowledge happenings do not collide with runtime audit/sync/change
+events.
+
+Use **topic** for controlled subjects/themes that need traversal, for example
+when a subject was discussed at an occurrence or a project is about a durable
+theme. Prefer `topic` over broad `concept`; do not auto-create topics from
+every noun phrase or model-generated keyword.
+
+Deferred/non-endpoint concepts:
+
+- `artifact`: stored/encrypted evidence or content first; graph endpoint later
+  after artifact predicates and leakage rules are designed.
+- broad `concept`: tag/index/attribute unless explicitly promoted to controlled `topic`.
+- `source`: provenance metadata (`source`, `source_ref`, `source_path_ref`),
+  not a relationship endpoint.
+- `cluster`: not persisted; derived dynamically from graph edges. Manual
+  cohorts/groups should be represented as `organization` or `project` nodes.
+
+### 5.3.1 iCalendar recurrence and schedules
+
+Recurring patterns must not create infinite future occurrence objects.
+
+Use `schedule` on the temporal edge attrs and `recurrence` on an occurrence
+series. Each contains a `recurrence_set` value: a
+newline-delimited RFC 5545 recurrence block containing only `DTSTART`, `RRULE`,
+`RDATE`, and `EXDATE` lines. Do not split those values across separate
+ad hoc fields.
+
+| field | meaning |
+|---|---|
+| `timezone` | IANA timezone required for local recurring times |
+| `recurrence_set` | RFC 5545 recurrence lines; must include at least one `RRULE` or `RDATE`; `RRULE` requires `DTSTART`; any `TZID` must match `timezone` |
+| `duration` | RFC 5545 planned duration such as `PT2H` or `P1D` |
+| `exceptions` | canceled, moved, skipped, or extra instances |
+
+Materialize a concrete occurrence only when it actually happens, is edited,
+is canceled, needs audit, has participants/details, or is needed as evidence.
 
 ### 5.4 Enums (closed)
 
-`status` = active | pending | ended | dormant · `confidence` = high | medium | low · `category` = employment | governance | advisory | capital | structural | customer | network | affiliation | geography | personal.
+`status` = active | pending | ended | dormant · `confidence` = high | medium | low · `category` = employment | governance | advisory | capital | structural | customer | network | affiliation | geography | occurrence | taxonomy | personal.
+
+Occurrence and topic predicates:
+
+| predicate | category | direction | domain -> range | required | meaning |
+|---|---|---|---|---|---|
+| participant-in | occurrence | dir | person, organization -> occurrence | — | endpoint participated in the happening |
+| occurred-at | occurrence | dir | occurrence -> location | — | happening took place at a location |
+| hosted | occurrence | dir | person, organization -> occurrence | — | endpoint hosted the happening |
+| discussed-at | occurrence | dir | organization, project, topic -> occurrence | — | entity/topic was discussed during the happening |
+| about | taxonomy | dir | person, organization, project, occurrence -> topic | — | entity/happening is about a controlled topic |
+| related-topic | taxonomy | sym | topic -> topic | — | controlled topic association |
+| part-of-topic | taxonomy | dir | topic -> topic | — | controlled topic hierarchy |
 
 ### 5.5 Alias map (canonicalize synonyms; NEVER silently reverse direction)
 
@@ -207,7 +261,7 @@ to `invests-in`; reject it or echo the stored `invests-in` edge with swapped
 endpoints. `funded-by` is an inverse label for `invests-in`, not a forward
 predicate.
 
-**Direction-safety (HARD RULE):** any alias whose voice flips subject/object (`manages` -> reports-to; active-voice `acquired`/`bought` -> acquired-by) must NOT be silently reversed. The writer must either (a) reject with "use `<canonical>` with swapped endpoints, confirm direction," or (b) accept and **echo the stored edge back** (`stored: Bob -> reports-to -> Jane`) so the reversal is visible and auditable. Inverse labels (`employs`, `manages`, `acquired`, `led-by`, `board-includes`) must be rejected as forward `predicate::` values.
+**Direction-safety (HARD RULE):** any alias whose voice flips subject/object (`manages` -> reports-to; active-voice `acquired`/`bought` -> acquired-by) must NOT be silently reversed. The writer must either (a) reject with "use `<canonical>` with swapped endpoints, confirm direction," or (b) accept and **echo the stored edge back** (`stored: Person A -> reports-to -> Person B`) so the reversal is visible and auditable. Inverse labels (`employs`, `manages`, `acquired`, `led-by`, `board-includes`) must be rejected as forward `predicate::` values.
 
 ### 5.6 Event shape + kind registry
 

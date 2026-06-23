@@ -186,6 +186,11 @@ type TypedEdgeEndpoint = {
   type: TemporalEdge["source_type"];
 };
 
+type TypedEdgeParseResult =
+  | { kind: "not-typed-edge" }
+  | { kind: "promoted"; edge: TemporalEdge }
+  | { kind: "rejected"; reason: "invalid-endpoint-type" | "invalid-temporal-edge-schema" };
+
 type ParsedLogseqFile = {
   source_path_ref: string;
   source_kind: MarkdownImportSourceKind;
@@ -386,20 +391,20 @@ function parseTypedEdgeCandidate(edge: EdgeCandidate, options: {
   authorityId: string;
   sourcePathRef: string;
   pathRedactionSecret: string;
-}): TemporalEdge | undefined {
+}): TypedEdgeParseResult {
   if (!edge.canonical_predicate) {
-    return undefined;
+    return { kind: "not-typed-edge" };
   }
 
-  const match = /^\s*(?:\[\[([^\]\n]{1,256})\]\]|([^()[\]\n]{1,256}?))\s+\((person|organization|project|location|cluster)\)\s+([A-Za-z][A-Za-z0-9-]{1,64})\s+(?:\[\[([^\]\n]{1,256})\]\]|([^()[\]\n]{1,256}?))\s+\((person|organization|project|location|cluster)\)(?:\s+(?:from|valid-from|valid_from)\s+(unknown|~?\d{4}(?:-\d{2}(?:-\d{2})?)?))?\s*$/i.exec(edge.source_text);
+  const match = /^\s*(?:\[\[([^\]\n]{1,256})\]\]|([^()[\]\n]{1,256}?))\s+\(([A-Za-z][A-Za-z0-9-]{1,64})\)\s+([A-Za-z][A-Za-z0-9-]{1,64})\s+(?:\[\[([^\]\n]{1,256})\]\]|([^()[\]\n]{1,256}?))\s+\(([A-Za-z][A-Za-z0-9-]{1,64})\)(?:\s+(?:from|valid-from|valid_from)\s+(unknown|~?\d{4}(?:-\d{2}(?:-\d{2})?)?))?\s*$/i.exec(edge.source_text);
   if (!match) {
-    return undefined;
+    return { kind: "not-typed-edge" };
   }
 
   const source = parseTypedEndpoint(match[1] ?? match[2], match[3]);
   const target = parseTypedEndpoint(match[5] ?? match[6], match[7]);
   if (!source || !target) {
-    return undefined;
+    return { kind: "rejected", reason: "invalid-endpoint-type" };
   }
 
   const parsed = TemporalEdgeSchema.safeParse({
@@ -419,7 +424,9 @@ function parseTypedEdgeCandidate(edge: EdgeCandidate, options: {
       canonicalization: edge.canonicalization
     }
   });
-  return parsed.success ? parsed.data : undefined;
+  return parsed.success
+    ? { kind: "promoted", edge: parsed.data }
+    : { kind: "rejected", reason: "invalid-temporal-edge-schema" };
 }
 
 function parseLogseqFile(input: MarkdownFileInput, pathRedactionSecret: string): ParsedLogseqFile {
@@ -575,7 +582,7 @@ function draftObjectsForFile(parsed: ParsedLogseqFile, options: {
         })
       : undefined;
 
-    if (typedEdge) {
+    if (typedEdge?.kind === "promoted") {
       drafts.push(plannedObject({
         authorityId: options.authorityId,
         sourcePathRef: parsed.source_path_ref,
@@ -588,7 +595,30 @@ function draftObjectsForFile(parsed: ParsedLogseqFile, options: {
         plaintextPayload: {
           kind: "logseq-temporal-edge",
           source_path_ref: parsed.source_path_ref,
-          edge: typedEdge
+          edge: typedEdge.edge
+        }
+      }));
+      continue;
+    }
+
+    if (typedEdge?.kind === "rejected") {
+      drafts.push(plannedObject({
+        authorityId: options.authorityId,
+        sourcePathRef: parsed.source_path_ref,
+        semanticKind: "edge-candidate",
+        objectType: "edge",
+        localRef: `edge:${edge.index}`,
+        accessClass: "quarantine",
+        decision: "quarantined",
+        reasonCode: typedEdge.reason,
+        plaintextPayload: {
+          kind: "logseq-edge-candidate",
+          source_path_ref: parsed.source_path_ref,
+          index: edge.index,
+          source_text: edge.source_text,
+          predicate_text: edge.predicate_text,
+          canonical_predicate: edge.canonical_predicate,
+          canonicalization: edge.canonicalization
         }
       }));
       continue;
@@ -654,8 +684,9 @@ function ledgerFromDrafts(input: {
 
   for (const parsed of input.parsedFiles) {
     const drafts = input.draftsBySourceRef.get(parsed.source_path_ref) ?? [];
-    const validEdgeCandidates = parsed.edge_candidates.filter((edge) => edge.canonicalization === "canonical" || edge.canonicalization === "safe-alias").length;
-    const quarantinedEdgeCandidates = parsed.edge_candidates.length - validEdgeCandidates;
+    const edgeDrafts = drafts.filter((draft) => draft.plan.object_type === "edge");
+    const quarantinedEdgeCandidates = edgeDrafts.filter((draft) => draft.plan.access_class === "quarantine").length;
+    const validEdgeCandidates = edgeDrafts.length - quarantinedEdgeCandidates;
     const referenceIndexes = drafts.filter((draft) => draft.plan.semantic_kind === "reference-index").length;
     const blockPropertyCount = parsed.blocks.reduce((sum, block) => sum + block.properties.length, 0);
     const counts = {

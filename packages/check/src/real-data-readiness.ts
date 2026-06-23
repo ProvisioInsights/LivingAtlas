@@ -412,7 +412,7 @@ async function main(): Promise<void> {
     capabilityId: syncCapabilityId,
     tokenId: syncTokenId
   });
-  const decryptProbe = await client.callRemoteMcpTool("remote_sensitive_decrypt", {
+  const decryptProbe = await client.callRemoteMcpTool("sensitive_decrypt", {
     authority_id: authorityId,
     object_id: objects[0]!.object_id
   });

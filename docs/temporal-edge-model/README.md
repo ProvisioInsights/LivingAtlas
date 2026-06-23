@@ -8,7 +8,9 @@ Date: 2026-06-21
 This folder contains the knowledge semantics for Living Atlas:
 
 - typed edge ontology
+- entity/endpoint schema
 - event ontology
+- occurrence and recurrence design
 - bitemporal time semantics
 - predicate registry
 - migration rules from the existing Logseq/Obsidian-style graph
@@ -23,9 +25,10 @@ objects. Those concerns are governed by the architecture docs under
 ## Read Order
 
 1. `implementation-guide.md`
-2. `schema-properties.md`
-3. `schema-edges.md`
-4. `schema-events.md`
+2. `entity-temporal-schema-map.md`
+3. `schema-properties.md`
+4. `schema-edges.md`
+5. `schema-events.md`
 
 Historical rationale:
 
@@ -52,7 +55,14 @@ bridge between this package and the Living Atlas runtime.
 
 ## Safe V1 Defaults
 
-- `event` as edge endpoint: defer to V1.1.
+- Implemented temporal edge endpoints are `person`, `organization`, `project`,
+  `location`, `occurrence`, and `topic`.
+- Use `occurrence`, not `event`, for graph happenings so knowledge happenings
+  remain distinct from runtime audit/sync/change events.
+- `artifact`, broad `concept`, `source`, and `cluster` are not temporal edge
+  endpoints. Artifacts and sources remain provenance/storage concepts;
+  concepts remain tags/indexes unless explicitly promoted to controlled
+  `topic`; clusters remain derived views.
 - Dormancy threshold: 365 days.
 - `comparable-to`: attribute, not predicate.
 - Edge embeddings: deferred.

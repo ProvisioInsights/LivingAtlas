@@ -3,7 +3,7 @@ status:: draft v4 - finalize with the edge registry in Phase 0.5
 authority:: implementation-guide.md is authoritative for full semantics
 created:: 2026-06-17
 
-- **Namespace:** `schema/events` — the closed ontology for events, the append-only time spine. Events are instants; edges are spans (see `schema-edges.md`).
+- **Namespace:** `schema/events` — the closed ontology for temporal event records, the append-only time spine. Event records are instants or bounded happenings; edges are spans (see `schema-edges.md`). Use `occurrence` for the graph endpoint name so knowledge happenings are not confused with runtime audit/sync/change events.
 - **Rules:** only registry `kind` values are valid. The logical temporal event stream is append-only and immutable; a mistake is fixed by appending a compensating event (`correction`/`split` with `supersedes`), never by editing or deleting history. Generated mirrors such as `generated/events.jsonl` are rebuildable compatibility artifacts, not the runtime master. System-time values are always full machine timestamps (never mixed-precision / `~`).
 - ## Event shape
 	- Authored as a dated journal bullet tagged `#event`; the MCP maintains a derived `generated/events.jsonl` mirror (rebuildable, not a master).
@@ -17,6 +17,11 @@ created:: 2026-06-17
 		- `source::` — provenance (required)
 		- `detail::` — free text (opt)
 		- `supersedes::` — **list** of event ids this corrects/splits (required when `kind` = correction | split)
+- ## Occurrences and recurrence
+	- A temporal event record captures a thing that happened or changed. The graph endpoint named `occurrence` represents meetings, appointments, trips, rituals, social events, observations, or other bounded happenings when they need participants, location links, or event-scoped relationships.
+	- A recurring pattern is represented by an `IcalendarRecurrenceSchema` object, not by creating infinite future event records.
+	- Recurrence fields belong on an occurrence series or on the temporal edge they qualify: `timezone`, `recurrence_set`, `duration`, and `exceptions`. `recurrence_set` is the single RFC 5545 recurrence block for `DTSTART`, `RRULE`, `RDATE`, and `EXDATE`; `RRULE` requires `DTSTART`, and `TZID` must match `timezone`.
+	- Materialize concrete occurrence instances only when observed, changed, canceled, audited, or needed as evidence.
 - ## kind registry (closed)
 
 	| kind | meaning | typically forms / changes |
@@ -37,5 +42,6 @@ created:: 2026-06-17
 - ## Enforcement
 	- Unknown `kind` is rejected at the MCP write path and quarantined on batch ingest. A `predicate::`, if present, must exist in `schema-edges.md`. The edge-scoped audit hard-fails a `correction`/`split` event missing `supersedes::`, and a `split` whose replacements do not tile the original span exactly.
 - ## Changelog
+	- 2026-06-23: clarified event-record vs occurrence endpoint language and added recurrence modeling rules.
 	- 2026-06-17 v4: added `split` kind + tiling invariant; `supersedes::` is a list; system-time is full-timestamp/lazy; deterministic replay rule; org-change flags related open edges.
 	- 2026-06-17 v1: initial kind registry (superseded).

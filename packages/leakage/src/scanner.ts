@@ -105,6 +105,40 @@ const ForbiddenContentRules: Array<{ rule: string; pattern: RegExp; detail: stri
   { rule: "private-key", pattern: /-----BEGIN (?:RSA |EC |OPENSSH |)PRIVATE KEY-----/, detail: "Private keys must not be committed" }
 ];
 
+const SchemaGuardSkippedPaths = [
+  /^packages\/contracts\/src\/temporal\.ts$/,
+  /^packages\/contracts\/src\/contracts\.test\.ts$/,
+  /^packages\/contracts\/package\.json$/,
+  /^packages\/cloudflare-worker\/src\/sync\.test\.ts$/,
+  /^packages\/leakage\/src\/scanner\.ts$/,
+  /^packages\/leakage\/src\/scanner\.test\.ts$/,
+  /^packages\/mcp-contract\/src\/index\.ts$/,
+  /^pnpm-lock\.yaml$/
+];
+
+const ForbiddenSchemaContentRules: Array<{ rule: string; pattern: RegExp; detail: string }> = [
+  {
+    rule: "old-recurrence-schema-name",
+    pattern: /\b(?:RRuleSchema|RecurrenceRuleSchema)\b/,
+    detail: "Use only IcalendarRecurrenceSchema/IcalendarRecurrenceSetTextSchema/IcalendarRRuleTextSchema"
+  },
+  {
+    rule: "split-recurrence-field-name",
+    pattern: /\b(?:dtstart|rdate|exdate|starts_at_local|starts-at-local)\b|["']rrule["']\s*:|\brrule\s*:/,
+    detail: "Store recurrence components inside recurrence_set, not split fields"
+  },
+  {
+    rule: "ambiguous-capital-status-attr",
+    pattern: /amount\s*,\s*status|status\s*,\s*amount/,
+    detail: "Use investment_status for capital edge state; edge status is lifecycle state"
+  },
+  {
+    rule: "ambiguous-edge-recurrence-attr",
+    pattern: /attrs\.(?:recurrence)|attrs\]\["recurrence"\]|attrs\]\['recurrence'\]/,
+    detail: "Use attrs.schedule for temporal edge recurrence"
+  }
+];
+
 function walkFiles(root: string, current = root): string[] {
   const entries = readdirSync(current, { withFileTypes: true });
   const files: string[] = [];
@@ -148,6 +182,14 @@ export function scanRepoSafety(repoRoot: string): RepoSafetyResult {
     for (const rule of ForbiddenContentRules) {
       if (rule.pattern.test(content)) {
         findings.push({ path: relPath, rule: rule.rule, detail: rule.detail });
+      }
+    }
+
+    if (!SchemaGuardSkippedPaths.some((pattern) => pattern.test(relPath))) {
+      for (const rule of ForbiddenSchemaContentRules) {
+        if (rule.pattern.test(content)) {
+          findings.push({ path: relPath, rule: rule.rule, detail: rule.detail });
+        }
       }
     }
   }

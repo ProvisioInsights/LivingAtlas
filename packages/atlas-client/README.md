@@ -21,7 +21,7 @@ const atlas = createAtlasClient({
 
 const tools = await atlas.listRemoteMcpTools();
 
-const status = await atlas.callRemoteMcpTool("remote_sync_status", {});
+const status = await atlas.callRemoteMcpTool("sync_status", {});
 
 const gate = await atlas.fetchUsageGate({
   windowHours: 6,

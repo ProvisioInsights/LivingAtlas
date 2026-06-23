@@ -5,6 +5,12 @@ Living Atlas separates identity profile from access mode.
 - Profile answers: who is calling and what capability grant do they hold?
 - Access mode answers: where is sensitive plaintext allowed to exist?
 
+The MCP contract is transport-neutral. Remote HTTP MCP and local stdio MCP expose
+the same canonical tool names; only delivery, policy enforcement, and available
+key custody differ. Tool names must not encode `remote` or `local`.
+See `docs/architecture/dual-ingress-shared-graph-service.md` for the shared
+service diagram.
+
 V1 defines three modes.
 
 ## Mode A: Remote-Safe Only
@@ -73,6 +79,6 @@ This remains the default for truly sensitive graph work.
 - `remote-cloud-unlock` capabilities must use `cloud-unlock-session`.
 - Local/keyholding profiles use `local-keyholding-only`.
 - Remote MCP query strings reject unlock keys and tokens.
-- Remote MCP mode discovery uses `remote_access_modes`.
-- Remote MCP sensitive decrypt uses `remote_sensitive_decrypt` with
+- Remote MCP mode discovery uses `access_modes`.
+- Remote MCP sensitive decrypt uses `sensitive_decrypt` with
   `authority_id` and `object_id`.

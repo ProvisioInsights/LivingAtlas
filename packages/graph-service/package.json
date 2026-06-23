@@ -1,5 +1,5 @@
 {
-  "name": "@living-atlas/atlas-client",
+  "name": "@living-atlas/graph-service",
   "version": "0.1.0",
   "private": true,
   "type": "module",

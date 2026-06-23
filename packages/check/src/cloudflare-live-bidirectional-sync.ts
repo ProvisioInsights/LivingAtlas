@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
-import { chmod, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -26,6 +26,7 @@ import {
   fetchSyncEnvelopes,
   fetchSyncStatus,
   nextSyncGenerationFromStatus,
+  runFileOutboxPushHandshake,
   submitSyncBatch,
   type ApplyPulledEnvelopeConflict,
   type FetchSyncEnvelopesOptions,
@@ -85,7 +86,7 @@ type RuntimeConfig = {
 
 type SyncReport = {
   report_schema: "living-atlas-local-sync-report:v1";
-  mode: "proof" | "daemon";
+  mode: "proof" | "daemon" | "drain";
   authority_id: string;
   recorded_at: string;
   ok: boolean;
@@ -505,16 +506,6 @@ async function queuedOutboxFiles(paths: LocalRuntimePaths): Promise<string[]> {
     .sort();
 }
 
-async function readQueuedObjects(filePath: string): Promise<GraphObjectEnvelope[]> {
-  const parsed = JSON.parse(await readFile(filePath, "utf8")) as unknown;
-  const values = Array.isArray(parsed)
-    ? parsed
-    : typeof parsed === "object" && parsed !== null && Array.isArray((parsed as { objects?: unknown }).objects)
-      ? (parsed as { objects: unknown[] }).objects
-      : [parsed];
-  return values.map((value) => GraphObjectEnvelopeSchema.parse(value));
-}
-
 async function writeProofOutboxObject(config: RuntimeConfig, store: FileLocalGraphStore): Promise<string> {
   const object = localProofObject(config.authorityId, `${Date.now()}:${store.status().generation}:daemon-proof`);
   const filePath = join(config.paths.outboxDir, `queued-${Date.now()}-${digest(object.object_id, 12)}.json`);
@@ -523,99 +514,68 @@ async function writeProofOutboxObject(config: RuntimeConfig, store: FileLocalGra
   return filePath;
 }
 
-async function upsertLocalObjectsForOutbox(store: FileLocalGraphStore, objects: GraphObjectEnvelope[], actorId: string): Promise<void> {
-  for (const object of objects) {
-    const existing = store.readObject(object.object_id);
-    if (!existing) {
-      const created = await store.createObject({
-        object,
-        expected_generation: store.status().generation,
-        actor_id: actorId
-      });
-      if (!created.ok) {
-        throw new Error(`local outbox create failed for ${object.object_id}: ${created.reason}`);
-      }
-      continue;
-    }
-
-    if (existing.version >= object.version) {
-      continue;
-    }
-
-    const updated = await store.updateObject({
-      object,
-      expected_generation: store.status().generation,
-      expected_version: existing.version,
-      actor_id: actorId
-    });
-    if (!updated.ok) {
-      throw new Error(`local outbox update failed for ${object.object_id}: ${updated.reason}`);
-    }
-  }
-}
-
-async function pushOneOutboxFile(config: RuntimeConfig, store: FileLocalGraphStore, cursor: SyncPullCursor): Promise<{
-  pushed: boolean;
+async function runImmediateDrain(config: RuntimeConfig, mode: "daemon" | "drain"): Promise<{
   cursor: SyncPullCursor;
-  pushed_objects: number;
+  localGeneration: number;
+  applied: number;
+  skipped: number;
+  conflicts: number;
+  conflictSamples: ApplyPulledEnvelopeConflict[];
+  pushedBatches: number;
+  pushedObjects: number;
+  outboxPending: number;
 }> {
-  const files = await queuedOutboxFiles(config.paths);
-  const filePath = files[0];
-  if (!filePath) {
-    return { pushed: false, cursor, pushed_objects: 0 };
-  }
-
-  const status = await fetchSyncStatusWithRetry({
+  const store = await FileLocalGraphStore.open({
+    directory: config.paths.graphDir,
+    authorityId: config.authorityId,
+    plaintextPersistence: "redact"
+  });
+  const cursor = await readCursor(config.paths, config.authorityId);
+  const result = await runFileOutboxPushHandshake({
+    outboxDir: config.paths.outboxDir,
+    store,
+    controlState: config.controlState,
+    cursor,
     endpoint: config.endpoint,
     syncToken: config.syncToken,
-    clientId: config.syncClientId,
-    capabilityId: config.syncCapabilityId,
+    syncClientId: config.syncClientId,
     tokenId: config.syncTokenId
   });
-  if (!status.ok) {
-    throw new Error(`sync status failed HTTP ${status.status_code}: ${JSON.stringify(status.error)}`);
-  }
-  if (cursor.generation !== status.status.latest_generation) {
-    return { pushed: false, cursor, pushed_objects: 0 };
+  await writeCursor(config.paths, result.cursor);
+  await store.compact();
+  const localGeneration = store.status().generation;
+  await writeReport(config.paths, {
+    report_schema: "living-atlas-local-sync-report:v1",
+    mode,
+    authority_id: config.authorityId,
+    recorded_at: new Date().toISOString(),
+    ok: result.ok,
+    cursor_generation: result.cursor.generation,
+    local_generation: localGeneration,
+    applied: result.applied,
+    skipped: result.skipped,
+    conflicts: result.conflicts,
+    conflict_samples: result.conflict_samples,
+    pushed_batches: result.pushed_batches,
+    pushed_objects: result.pushed_objects,
+    outbox_pending: result.outbox_pending,
+    ...(!result.ok ? { last_error: result.reason } : {})
+  });
+
+  if (!result.ok) {
+    throw new Error(`local outbox push handshake failed: ${result.reason}${result.error ? ` ${JSON.stringify(result.error)}` : ""}`);
   }
 
-  const objects = await readQueuedObjects(filePath);
-  await upsertLocalObjectsForOutbox(store, objects, config.syncClientId);
-  const nextGeneration = nextSyncGenerationFromStatus(status.status);
-  const built = buildCiphertextSyncBatch({
-    controlState: config.controlState,
-    graphObjects: objects,
-    syncClientId: config.syncClientId,
-    tokenId: config.syncTokenId,
-    baseGeneration: nextGeneration.base_generation,
-    targetGeneration: nextGeneration.target_generation,
-    now: new Date().toISOString()
-  });
-  assertNoSecretText("queued sync batch", JSON.stringify(built.batch), {
-    ...config.secrets,
-    syncToken: config.syncToken
-  });
-  const submitted = await submitSyncBatch({
-    endpoint: config.endpoint,
-    batch: built.batch,
-    syncToken: config.syncToken
-  });
-  if (!submitted.ok) {
-    const failedPath = `${filePath}.failed.${Date.now()}`;
-    await rename(filePath, failedPath);
-    throw new Error(`queued sync push failed HTTP ${submitted.status}: ${JSON.stringify(submitted.error)}`);
-  }
-
-  const acceptedPath = `${filePath}.accepted.g${submitted.accepted.target_generation}`;
-  await rename(filePath, acceptedPath);
   return {
-    pushed: true,
-    cursor: {
-      authority_id: config.authorityId,
-      generation: submitted.accepted.target_generation,
-      batch_id: submitted.accepted.batch_id
-    },
-    pushed_objects: submitted.accepted.accepted_objects
+    cursor: result.cursor,
+    localGeneration,
+    applied: result.applied,
+    skipped: result.skipped,
+    conflicts: result.conflicts,
+    conflictSamples: result.conflict_samples,
+    pushedBatches: result.pushed_batches,
+    pushedObjects: result.pushed_objects,
+    outboxPending: result.outbox_pending
   };
 }
 
@@ -624,11 +584,6 @@ async function runDaemonMode(config: RuntimeConfig): Promise<void> {
   const pollMs = parseIntegerEnv("LIVING_ATLAS_LIVE_SYNC_DAEMON_POLL_MS", defaultDaemonPollMs, 100, 3_600_000);
   const backoffMs = parseIntegerEnv("LIVING_ATLAS_LIVE_SYNC_DAEMON_BACKOFF_MS", defaultDaemonBackoffMs, 100, 3_600_000);
   const queueProof = envValue("LIVING_ATLAS_LIVE_SYNC_DAEMON_QUEUE_PROOF") === "1";
-  const store = await FileLocalGraphStore.open({
-    directory: config.paths.graphDir,
-    authorityId: config.authorityId,
-    plaintextPersistence: "redact"
-  });
   let cursor = await readCursor(config.paths, config.authorityId);
   let applied = 0;
   let skipped = 0;
@@ -636,58 +591,31 @@ async function runDaemonMode(config: RuntimeConfig): Promise<void> {
   const conflictSamples: ApplyPulledEnvelopeConflict[] = [];
   let pushedBatches = 0;
   let pushedObjects = 0;
+  let localGeneration = 0;
   let proofQueued = false;
   let lastError: string | undefined;
 
   for (let cycle = 1; cycle <= cycles; cycle += 1) {
     try {
-      const pulled = await pullAndApplyAll({
-        paths: config.paths,
-        endpoint: config.endpoint,
-        syncToken: config.syncToken,
-        syncClientId: config.syncClientId,
-        syncCapabilityId: config.syncCapabilityId,
-        syncTokenId: config.syncTokenId,
-        authorityId: config.authorityId,
-        envelopePullLimit: config.envelopePullLimit,
-        store,
-        startCursor: cursor,
-        secrets: config.secrets
-      });
-      cursor = pulled.cursor;
-      applied += pulled.applied;
-      skipped += pulled.skipped;
-      conflicts += pulled.conflicts;
-      conflictSamples.push(...pulled.conflictSamples.slice(0, Math.max(0, 10 - conflictSamples.length)));
-
       if (queueProof && !proofQueued) {
+        const store = await FileLocalGraphStore.open({
+          directory: config.paths.graphDir,
+          authorityId: config.authorityId,
+          plaintextPersistence: "redact"
+        });
         await writeProofOutboxObject(config, store);
         proofQueued = true;
       }
 
-      const pushed = await pushOneOutboxFile(config, store, cursor);
-      if (pushed.pushed) {
-        pushedBatches += 1;
-        pushedObjects += pushed.pushed_objects;
-        const afterPushPull = await pullAndApplyAll({
-          paths: config.paths,
-          endpoint: config.endpoint,
-          syncToken: config.syncToken,
-          syncClientId: config.syncClientId,
-          syncCapabilityId: config.syncCapabilityId,
-          syncTokenId: config.syncTokenId,
-          authorityId: config.authorityId,
-          envelopePullLimit: config.envelopePullLimit,
-          store,
-          startCursor: cursor,
-          secrets: config.secrets
-        });
-        cursor = afterPushPull.cursor;
-        applied += afterPushPull.applied;
-        skipped += afterPushPull.skipped;
-        conflicts += afterPushPull.conflicts;
-        conflictSamples.push(...afterPushPull.conflictSamples.slice(0, Math.max(0, 10 - conflictSamples.length)));
-      }
+      const drained = await runImmediateDrain(config, "daemon");
+      cursor = drained.cursor;
+      localGeneration = drained.localGeneration;
+      applied += drained.applied;
+      skipped += drained.skipped;
+      conflicts += drained.conflicts;
+      pushedBatches += drained.pushedBatches;
+      pushedObjects += drained.pushedObjects;
+      conflictSamples.push(...drained.conflictSamples.slice(0, Math.max(0, 10 - conflictSamples.length)));
       lastError = undefined;
     } catch (error) {
       lastError = error instanceof Error ? error.message : String(error);
@@ -695,7 +623,6 @@ async function runDaemonMode(config: RuntimeConfig): Promise<void> {
     }
 
     const pending = (await queuedOutboxFiles(config.paths)).length;
-    await store.compact();
     await writeReport(config.paths, {
       report_schema: "living-atlas-local-sync-report:v1",
       mode: "daemon",
@@ -703,7 +630,7 @@ async function runDaemonMode(config: RuntimeConfig): Promise<void> {
       recorded_at: new Date().toISOString(),
       ok: lastError === undefined,
       cursor_generation: cursor.generation,
-      local_generation: store.status().generation,
+      local_generation: localGeneration,
       applied,
       skipped,
       conflicts,
@@ -725,8 +652,17 @@ async function runDaemonMode(config: RuntimeConfig): Promise<void> {
 
   console.log("Living Atlas live sync daemon cycle passed");
   console.log(`replica_dir=${config.paths.rootDir}`);
-  console.log(`cursor=${cursor.generation}; local_generation=${store.status().generation}; applied=${applied}; skipped=${skipped}; conflicts=${conflicts}`);
+  console.log(`cursor=${cursor.generation}; local_generation=${localGeneration}; applied=${applied}; skipped=${skipped}; conflicts=${conflicts}`);
   console.log(`pushed_batches=${pushedBatches}; pushed_objects=${pushedObjects}; outbox_pending=${(await queuedOutboxFiles(config.paths)).length}`);
+  console.log(`sync_report=${config.paths.reportPath}; outbox=${config.paths.outboxDir}`);
+}
+
+async function runDrainMode(config: RuntimeConfig): Promise<void> {
+  const drained = await runImmediateDrain(config, "drain");
+  console.log("Living Atlas live local outbox drain passed");
+  console.log(`replica_dir=${config.paths.rootDir}`);
+  console.log(`cursor=${drained.cursor.generation}; local_generation=${drained.localGeneration}; applied=${drained.applied}; skipped=${drained.skipped}; conflicts=${drained.conflicts}`);
+  console.log(`pushed_batches=${drained.pushedBatches}; pushed_objects=${drained.pushedObjects}; outbox_pending=${drained.outboxPending}`);
   console.log(`sync_report=${config.paths.reportPath}; outbox=${config.paths.outboxDir}`);
 }
 
@@ -746,8 +682,13 @@ async function main(): Promise<void> {
 
   const config = await createRuntimeConfig();
 
-  if (envValue("LIVING_ATLAS_LIVE_BIDIRECTIONAL_SYNC_MODE") === "daemon") {
+  const syncMode = envValue("LIVING_ATLAS_LIVE_BIDIRECTIONAL_SYNC_MODE");
+  if (syncMode === "daemon") {
     await runDaemonMode(config);
+    return;
+  }
+  if (syncMode === "drain") {
+    await runDrainMode(config);
     return;
   }
 
@@ -863,7 +804,7 @@ async function main(): Promise<void> {
   console.log(`replica_dir=${config.paths.rootDir}`);
   console.log(`remote_generation_before=${status.status.latest_generation}; remote_generation_after=${submitted.accepted.target_generation}`);
   console.log(`pull_before_applied=${pullBefore.applied}; pull_before_skipped=${pullBefore.skipped}; pull_before_conflicts=${pullBefore.conflicts}; pull_before_cursor=${pullBefore.cursor.generation}`);
-  console.log(`local_create_object=${created.object.object_id}; local_generation=${store.status().generation}`);
+  console.log(`object_create=${created.object.object_id}; local_generation=${store.status().generation}`);
   console.log(`push_synced_objects=${submitted.accepted.accepted_objects}; pull_after_applied=${pullAfter.applied}; pull_after_skipped=${pullAfter.skipped}; pull_after_cursor=${pullAfter.cursor.generation}`);
   console.log(`local_runtime_env=${config.paths.envPath}; local_cursor=${config.paths.cursorPath}; sync_report=${config.paths.reportPath}`);
 }

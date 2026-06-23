@@ -1,9 +1,11 @@
+import { createHash } from "node:crypto";
 import type {
   CapabilityGrant,
   ControlPlaneSnapshot,
   GraphObjectEnvelope,
   LocalControlState,
   ObjectId,
+  ObjectType,
   Operation
 } from "@living-atlas/contracts";
 import {
@@ -15,7 +17,10 @@ import {
   KeyIdSchema,
   ObjectIdSchema,
   ObjectTypeSchema,
-  Sha256HashSchema
+  Sha256HashSchema,
+  TemporalEdgeSchema,
+  canonicalizePredicate,
+  type TemporalEdge
 } from "@living-atlas/contracts";
 import { controlPlaneFixture, syntheticGraphObjects } from "@living-atlas/fixtures";
 import type { FileLocalGraphStore } from "@living-atlas/local-graph-store";
@@ -157,6 +162,51 @@ export type LocalGraphTombstoneToolInput = LocalGraphToolInput & {
   expected_version?: number;
 };
 
+export type LocalGraphAuthorityToolInput = LocalGraphToolInput & {
+  authority_id?: string;
+};
+
+export type LocalGraphSearchToolInput = LocalGraphAuthorityToolInput & {
+  query?: string;
+  object_type?: ObjectType;
+  limit?: number;
+};
+
+export type LocalGraphTraverseToolInput = LocalGraphAuthorityToolInput & {
+  start_object_id?: ObjectId;
+  direction?: "outbound" | "inbound" | "both";
+  max_depth?: number;
+  predicates?: string[];
+  limit?: number;
+};
+
+export type LocalGraphTimelineToolInput = LocalGraphAuthorityToolInput & {
+  from?: string;
+  to?: string;
+  object_id?: ObjectId;
+  predicate?: string;
+  limit?: number;
+};
+
+export type LocalGraphEdgeCreateToolInput = LocalGraphAuthorityToolInput & {
+  edge?: unknown;
+};
+
+export type LocalGraphEdgeReadToolInput = LocalGraphAuthorityToolInput & {
+  edge_id?: string;
+};
+
+export type LocalGraphEdgeUpdateToolInput = LocalGraphAuthorityToolInput & {
+  edge_id?: string;
+  expected_version?: number;
+  patch?: unknown;
+};
+
+export type LocalGraphEdgeDeleteToolInput = LocalGraphAuthorityToolInput & {
+  edge_id?: string;
+  expected_version?: number;
+};
+
 export type LocalGraphMutationResult = {
   object: AuthorizedLocalObject;
   mutation: "created" | "updated" | "tombstoned";
@@ -168,6 +218,26 @@ export type LocalGraphMutationResult = {
   journal_sequence?: number;
 };
 
+export type LocalGraphSearchResult = {
+  object: AuthorizedLocalObject;
+  score: number;
+  matched_fields: string[];
+  snippet?: string;
+};
+
+export type LocalGraphTraverseResult = {
+  start_object_id: string;
+  max_depth: number;
+  visited_object_ids: string[];
+  edges: AuthorizedLocalObject[];
+};
+
+export type LocalGraphTimelineResult = {
+  object: AuthorizedLocalObject;
+  timeline_at: string;
+  field: string;
+};
+
 export type LocalGraphToolResult<T> =
   | {
       ok: true;
@@ -176,6 +246,7 @@ export type LocalGraphToolResult<T> =
   | {
       ok: false;
       reason: string;
+      result?: unknown;
     };
 
 export function createFixtureLocalMcpContext(options: {
@@ -317,6 +388,151 @@ function objectWithinSyntheticLimit(context: LocalMcpContext, object: unknown): 
   return envelopeByteSize(object) <= syntheticStoreLimits(context).maxEnvelopeBytes;
 }
 
+function sha256(value: string): `sha256:${string}` {
+  return `sha256:${createHash("sha256").update(value).digest("hex")}`;
+}
+
+function boundedLimit(limit: number | undefined, max = 1000): number {
+  return Math.min(Math.max(limit ?? 100, 1), max);
+}
+
+function textFromValue(value: unknown): string {
+  if (typeof value === "string") {
+    return value;
+  }
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+  if (Array.isArray(value)) {
+    return value.map(textFromValue).join(" ");
+  }
+  if (value && typeof value === "object") {
+    return Object.entries(value)
+      .map(([key, nested]) => `${key} ${textFromValue(nested)}`)
+      .join(" ");
+  }
+  return "";
+}
+
+function plaintextData(object: GraphObjectEnvelope): Record<string, unknown> | undefined {
+  return object.payload.kind === "plaintext-json" ? object.payload.data : undefined;
+}
+
+function searchText(object: GraphObjectEnvelope): string {
+  return [
+    object.object_id,
+    object.object_type,
+    object.access_class,
+    object.visible_metadata.schema_namespace,
+    textFromValue(object.visible_metadata),
+    textFromValue(plaintextData(object))
+  ].filter(Boolean).join(" ").toLowerCase();
+}
+
+function edgeData(object: GraphObjectEnvelope): TemporalEdge | undefined {
+  if (object.object_type !== "edge") {
+    return undefined;
+  }
+  const data = plaintextData(object);
+  if (!data) {
+    return undefined;
+  }
+  const candidate = data.edge && typeof data.edge === "object" && !Array.isArray(data.edge) ? data.edge : data;
+  const parsed = TemporalEdgeSchema.safeParse(candidate);
+  return parsed.success ? parsed.data : undefined;
+}
+
+function timelineCandidates(object: GraphObjectEnvelope): Array<{ field: string; value: string }> {
+  const data = plaintextData(object);
+  const candidates: Array<{ field: string; value: string }> = [
+    { field: "created_at", value: object.created_at },
+    { field: "updated_at", value: object.updated_at }
+  ];
+  if (data) {
+    for (const field of ["occurred_on", "occurred_until", "recorded_at", "valid_from", "valid_to"] as const) {
+      const value = data[field];
+      if (typeof value === "string") {
+        candidates.push({ field, value });
+      }
+    }
+    const edge = edgeData(object);
+    if (edge) {
+      candidates.push({ field: "edge.valid_from", value: edge.valid_from });
+      if (edge.valid_to) {
+        candidates.push({ field: "edge.valid_to", value: edge.valid_to });
+      }
+    }
+  }
+  return candidates;
+}
+
+function normalizedDateKey(value: string): string {
+  if (value === "unknown") {
+    return "9999";
+  }
+  return value.replace(/^~/, "");
+}
+
+function canonicalPredicate(input: string): string {
+  const result = canonicalizePredicate(input);
+  if (!result.ok) {
+    throw new Error(result.reason);
+  }
+  return result.predicate;
+}
+
+function validateAuthority(context: LocalMcpContext, authorityId: string | undefined): boolean {
+  return !authorityId || authorityId === context.controlPlane.authority.authority_id;
+}
+
+function localEdgeObjectId(edgeId: string): ObjectId {
+  return ObjectIdSchema.parse(`la_object_${createHash("sha256").update(edgeId).digest("hex").slice(0, 24)}`);
+}
+
+function edgeObjectFromTemporalEdge(context: LocalMcpContext, edge: TemporalEdge, now: string): GraphObjectEnvelope {
+  return GraphObjectEnvelopeSchema.parse({
+    schema_version: 1,
+    authority_id: context.controlPlane.authority.authority_id,
+    object_id: localEdgeObjectId(edge.edge_id),
+    object_type: "edge",
+    version: 1,
+    access_class: "remote-safe",
+    encryption_class: "plaintext",
+    created_at: now,
+    updated_at: now,
+    content_hash: sha256(JSON.stringify(edge)),
+    visible_metadata: {
+      schema_namespace: "edge/temporal",
+      tombstone: false,
+      size_class: "tiny",
+      remote_indexable: true
+    },
+    payload: {
+      kind: "plaintext-json",
+      data: edge
+    }
+  });
+}
+
+function findEdgeObject(context: LocalMcpContext, edgeId: string): GraphObjectEnvelope | undefined {
+  return contextObjects(context).find((object) => edgeData(object)?.edge_id === edgeId);
+}
+
+function operationDecision(input: {
+  context: LocalMcpContext;
+  authenticated: LocalMcpAuthenticatedClient;
+  operation: Operation;
+  object: GraphObjectEnvelope;
+}): PolicyDecision {
+  return evaluatePolicy({
+    profile: input.authenticated.capability.profile,
+    operation: input.operation,
+    actor_id: input.authenticated.client.client_id,
+    capability: input.authenticated.capability,
+    now: input.context.now
+  }, input.object);
+}
+
 function policyEnvelopeForDraft(draft: PlaintextGraphObjectDraft): GraphObjectEnvelope {
   return GraphObjectEnvelopeSchema.parse({
     ...draft,
@@ -405,7 +621,7 @@ export async function localGraphStatus(
   recordToolDecision({
     context,
     authenticated: auth.authenticated,
-    toolName: "local_graph_status",
+    toolName: "status",
     operation: "audit-read",
     allowed: true,
     reason: "allowed"
@@ -450,7 +666,7 @@ export async function localListObjects(
     recordToolDecision({
       context,
       authenticated: auth.authenticated,
-      toolName: "local_list_objects",
+      toolName: "object_list",
       operation: "read",
       object,
       decision,
@@ -489,7 +705,7 @@ export async function localReadObject(
     recordToolDecision({
       context,
       authenticated: auth.authenticated,
-      toolName: "local_read_object",
+      toolName: "object_read",
       operation: "read",
       allowed: false,
       reason: "object-missing"
@@ -508,7 +724,7 @@ export async function localReadObject(
   recordToolDecision({
     context,
     authenticated: auth.authenticated,
-    toolName: "local_read_object",
+    toolName: "object_read",
     operation: "read",
     object,
     decision,
@@ -542,7 +758,7 @@ export async function localCreateObject(
     recordToolDecision({
       context,
       authenticated: auth.authenticated,
-      toolName: "local_create_object",
+      toolName: "object_create",
       operation: "create",
       allowed: false,
       reason: "invalid-object"
@@ -556,7 +772,7 @@ export async function localCreateObject(
     recordToolDecision({
       context,
       authenticated: auth.authenticated,
-      toolName: "local_create_object",
+      toolName: "object_create",
       operation: "create",
       object: policyObject,
       allowed: false,
@@ -569,7 +785,7 @@ export async function localCreateObject(
     recordToolDecision({
       context,
       authenticated: auth.authenticated,
-      toolName: "local_create_object",
+      toolName: "object_create",
       operation: "create",
       object: policyObject,
       allowed: false,
@@ -582,7 +798,7 @@ export async function localCreateObject(
     recordToolDecision({
       context,
       authenticated: auth.authenticated,
-      toolName: "local_create_object",
+      toolName: "object_create",
       operation: "create",
       object: policyObject,
       allowed: false,
@@ -595,7 +811,7 @@ export async function localCreateObject(
     recordToolDecision({
       context,
       authenticated: auth.authenticated,
-      toolName: "local_create_object",
+      toolName: "object_create",
       operation: "create",
       object: policyObject,
       allowed: false,
@@ -616,7 +832,7 @@ export async function localCreateObject(
     recordToolDecision({
       context,
       authenticated: auth.authenticated,
-      toolName: "local_create_object",
+      toolName: "object_create",
       operation: "create",
       object: policyObject,
       decision,
@@ -637,7 +853,7 @@ export async function localCreateObject(
       recordToolDecision({
         context,
         authenticated: auth.authenticated,
-        toolName: "local_create_object",
+        toolName: "object_create",
         operation: "create",
         object: policyObject,
         decision,
@@ -650,7 +866,7 @@ export async function localCreateObject(
     recordToolDecision({
       context,
       authenticated: auth.authenticated,
-      toolName: "local_create_object",
+      toolName: "object_create",
       operation: "create",
       object: mutation.object,
       decision,
@@ -686,7 +902,7 @@ export async function localCreateObject(
   recordToolDecision({
     context,
     authenticated: auth.authenticated,
-    toolName: "local_create_object",
+    toolName: "object_create",
     operation: "create",
     object: storedObject,
     decision,
@@ -720,7 +936,7 @@ export async function localUpdateObject(
     recordToolDecision({
       context,
       authenticated: auth.authenticated,
-      toolName: "local_update_object",
+      toolName: "object_update",
       operation: "update",
       allowed: false,
       reason: "invalid-object-id"
@@ -733,7 +949,7 @@ export async function localUpdateObject(
     recordToolDecision({
       context,
       authenticated: auth.authenticated,
-      toolName: "local_update_object",
+      toolName: "object_update",
       operation: "update",
       allowed: false,
       reason: "invalid-expected-version"
@@ -746,7 +962,7 @@ export async function localUpdateObject(
     recordToolDecision({
       context,
       authenticated: auth.authenticated,
-      toolName: "local_update_object",
+      toolName: "object_update",
       operation: "update",
       allowed: false,
       reason: "invalid-patch"
@@ -761,7 +977,7 @@ export async function localUpdateObject(
     recordToolDecision({
       context,
       authenticated: auth.authenticated,
-      toolName: "local_update_object",
+      toolName: "object_update",
       operation: "update",
       allowed: false,
       reason: "object-missing"
@@ -773,7 +989,7 @@ export async function localUpdateObject(
     recordToolDecision({
       context,
       authenticated: auth.authenticated,
-      toolName: "local_update_object",
+      toolName: "object_update",
       operation: "update",
       object: existingObject,
       allowed: false,
@@ -795,7 +1011,7 @@ export async function localUpdateObject(
     recordToolDecision({
       context,
       authenticated: auth.authenticated,
-      toolName: "local_update_object",
+      toolName: "object_update",
       operation: "update",
       object: existingObject,
       decision: existingDecision,
@@ -827,7 +1043,7 @@ export async function localUpdateObject(
     recordToolDecision({
       context,
       authenticated: auth.authenticated,
-      toolName: "local_update_object",
+      toolName: "object_update",
       operation: "update",
       object: existingObject,
       allowed: false,
@@ -842,7 +1058,7 @@ export async function localUpdateObject(
     recordToolDecision({
       context,
       authenticated: auth.authenticated,
-      toolName: "local_update_object",
+      toolName: "object_update",
       operation: "update",
       object: policyObject,
       allowed: false,
@@ -863,7 +1079,7 @@ export async function localUpdateObject(
     recordToolDecision({
       context,
       authenticated: auth.authenticated,
-      toolName: "local_update_object",
+      toolName: "object_update",
       operation: "update",
       object: policyObject,
       decision,
@@ -885,7 +1101,7 @@ export async function localUpdateObject(
       recordToolDecision({
         context,
         authenticated: auth.authenticated,
-        toolName: "local_update_object",
+        toolName: "object_update",
         operation: "update",
         object: policyObject,
         decision,
@@ -898,7 +1114,7 @@ export async function localUpdateObject(
     recordToolDecision({
       context,
       authenticated: auth.authenticated,
-      toolName: "local_update_object",
+      toolName: "object_update",
       operation: "update",
       object: mutation.object,
       decision,
@@ -934,7 +1150,7 @@ export async function localUpdateObject(
   recordToolDecision({
     context,
     authenticated: auth.authenticated,
-    toolName: "local_update_object",
+    toolName: "object_update",
     operation: "update",
     object: nextObject,
     decision,
@@ -969,7 +1185,7 @@ export async function localTombstoneObject(
     recordToolDecision({
       context,
       authenticated: auth.authenticated,
-      toolName: "local_tombstone_object",
+      toolName: "object_delete",
       operation: "delete",
       allowed: false,
       reason: "invalid-object-id"
@@ -982,7 +1198,7 @@ export async function localTombstoneObject(
     recordToolDecision({
       context,
       authenticated: auth.authenticated,
-      toolName: "local_tombstone_object",
+      toolName: "object_delete",
       operation: "delete",
       allowed: false,
       reason: "invalid-expected-version"
@@ -997,7 +1213,7 @@ export async function localTombstoneObject(
     recordToolDecision({
       context,
       authenticated: auth.authenticated,
-      toolName: "local_tombstone_object",
+      toolName: "object_delete",
       operation: "delete",
       allowed: false,
       reason: "object-missing"
@@ -1009,7 +1225,7 @@ export async function localTombstoneObject(
     recordToolDecision({
       context,
       authenticated: auth.authenticated,
-      toolName: "local_tombstone_object",
+      toolName: "object_delete",
       operation: "delete",
       object: existingObject,
       allowed: false,
@@ -1040,7 +1256,7 @@ export async function localTombstoneObject(
     recordToolDecision({
       context,
       authenticated: auth.authenticated,
-      toolName: "local_tombstone_object",
+      toolName: "object_delete",
       operation: "delete",
       object: nextObject,
       decision,
@@ -1062,7 +1278,7 @@ export async function localTombstoneObject(
       recordToolDecision({
         context,
         authenticated: auth.authenticated,
-        toolName: "local_tombstone_object",
+        toolName: "object_delete",
         operation: "delete",
         object: nextObject,
         decision,
@@ -1075,7 +1291,7 @@ export async function localTombstoneObject(
     recordToolDecision({
       context,
       authenticated: auth.authenticated,
-      toolName: "local_tombstone_object",
+      toolName: "object_delete",
       operation: "delete",
       object: mutation.object,
       decision,
@@ -1111,7 +1327,7 @@ export async function localTombstoneObject(
   recordToolDecision({
     context,
     authenticated: auth.authenticated,
-    toolName: "local_tombstone_object",
+    toolName: "object_delete",
     operation: "delete",
     object: nextObject,
     decision,
@@ -1128,6 +1344,523 @@ export async function localTombstoneObject(
       object_count: context.graphObjects.length,
       previous_version: existingObject.version,
       new_version: nextObject.version
+    }
+  };
+}
+
+export async function localAccessModes(
+  context: LocalMcpContext,
+  input: LocalGraphToolInput
+): Promise<LocalGraphToolResult<Record<string, unknown>>> {
+  const auth = await authenticateToolCall(context, input.authorization);
+  if (!auth.ok) {
+    return { ok: false, reason: auth.reason };
+  }
+
+  recordToolDecision({
+    context,
+    authenticated: auth.authenticated,
+    toolName: "access_modes",
+    operation: "audit-read",
+    allowed: true,
+    reason: "allowed"
+  });
+
+  return {
+    ok: true,
+    result: {
+      current_mode: "local-keyholding-only",
+      key_persisted_by_cloudflare: false,
+      host_blind_sensitive_plaintext: true,
+      sensitive_plaintext_available: true,
+      profile: auth.authenticated.capability.profile
+    }
+  };
+}
+
+export async function localSensitiveDecrypt(
+  context: LocalMcpContext,
+  input: LocalGraphReadToolInput & { authority_id?: string }
+): Promise<LocalGraphToolResult<Record<string, unknown>>> {
+  if (!validateAuthority(context, input.authority_id)) {
+    return { ok: false, reason: "authority-mismatch" };
+  }
+
+  const result = await localReadObject(context, input);
+  if (!result.ok) {
+    return result;
+  }
+  if (result.result.object.payload.kind !== "plaintext-json") {
+    return {
+      ok: false,
+      reason: "plaintext-not-available-through-local-mcp",
+      result: {
+        object_id: result.result.object.object_id,
+        payload_kind: result.result.object.payload.kind,
+        key_persisted_by_cloudflare: false
+      }
+    };
+  }
+
+  return {
+    ok: true,
+    result: {
+      object_id: result.result.object.object_id,
+      object_type: result.result.object.object_type,
+      version: result.result.object.version,
+      access_class: result.result.object.access_class,
+      visible_metadata: result.result.object.visible_metadata,
+      payload: result.result.object.payload.data,
+      key_persisted_by_cloudflare: false
+    }
+  };
+}
+
+export async function localSearchObjects(
+  context: LocalMcpContext,
+  input: LocalGraphSearchToolInput
+): Promise<LocalGraphToolResult<{ query: string; search_mode: string; results: LocalGraphSearchResult[] }>> {
+  const auth = await authenticateToolCall(context, input.authorization);
+  if (!auth.ok) {
+    return { ok: false, reason: auth.reason };
+  }
+  if (!validateAuthority(context, input.authority_id)) {
+    return { ok: false, reason: "authority-mismatch" };
+  }
+  const query = input.query?.trim();
+  if (!query) {
+    return { ok: false, reason: "invalid-search-request" };
+  }
+
+  const terms = query.toLowerCase().split(/\s+/).map((term) => term.trim()).filter(Boolean);
+  const results: LocalGraphSearchResult[] = [];
+  for (const object of contextObjects(context)) {
+    if (object.visible_metadata.tombstone || (input.object_type && object.object_type !== input.object_type)) {
+      continue;
+    }
+    const decision = operationDecision({ context, authenticated: auth.authenticated, operation: "search", object });
+    recordToolDecision({
+      context,
+      authenticated: auth.authenticated,
+      toolName: "search",
+      operation: "search",
+      object,
+      decision,
+      allowed: decision.allowed,
+      reason: decision.reason_code
+    });
+    if (!decision.allowed) {
+      continue;
+    }
+    const text = searchText(object);
+    const matched = terms.filter((term) => text.includes(term));
+    const score = matched.reduce((sum, term) => sum + (text.split(term).length - 1), 0);
+    if (score > 0) {
+      results.push({
+        object: sanitizeAuthorizedObject(object, decision.plaintext_allowed),
+        score,
+        matched_fields: matched,
+        snippet: text.slice(0, 240)
+      });
+    }
+  }
+
+  return {
+    ok: true,
+    result: {
+      query,
+      search_mode: "deterministic-text-v1",
+      results: results
+        .sort((left, right) => right.score - left.score || right.object.version - left.object.version)
+        .slice(0, boundedLimit(input.limit))
+    }
+  };
+}
+
+export async function localTraverseGraph(
+  context: LocalMcpContext,
+  input: LocalGraphTraverseToolInput
+): Promise<LocalGraphToolResult<LocalGraphTraverseResult>> {
+  const auth = await authenticateToolCall(context, input.authorization);
+  if (!auth.ok) {
+    return { ok: false, reason: auth.reason };
+  }
+  if (!validateAuthority(context, input.authority_id)) {
+    return { ok: false, reason: "authority-mismatch" };
+  }
+  const startObjectId = input.start_object_id;
+  if (!startObjectId) {
+    return { ok: false, reason: "invalid-traverse-request" };
+  }
+
+  const direction = input.direction ?? "both";
+  const maxDepth = Math.min(Math.max(input.max_depth ?? 1, 1), 5);
+  const limit = boundedLimit(input.limit);
+  const allowedPredicates = input.predicates ? new Set(input.predicates.map(canonicalPredicate)) : undefined;
+  const edges = contextObjects(context)
+    .map((object) => ({ object, edge: edgeData(object) }))
+    .filter((entry): entry is { object: GraphObjectEnvelope; edge: TemporalEdge } => !!entry.edge)
+    .filter((entry) => !entry.object.visible_metadata.tombstone)
+    .filter((entry) => !allowedPredicates || allowedPredicates.has(entry.edge.predicate));
+  const visited = new Set<string>([startObjectId]);
+  const frontier = new Set<string>([startObjectId]);
+  const traversed: AuthorizedLocalObject[] = [];
+
+  for (let depth = 0; depth < maxDepth && frontier.size > 0 && traversed.length < limit; depth += 1) {
+    const next = new Set<string>();
+    for (const entry of edges) {
+      const decision = operationDecision({ context, authenticated: auth.authenticated, operation: "traverse", object: entry.object });
+      recordToolDecision({
+        context,
+        authenticated: auth.authenticated,
+        toolName: "traverse",
+        operation: "traverse",
+        object: entry.object,
+        decision,
+        allowed: decision.allowed,
+        reason: decision.reason_code
+      });
+      if (!decision.allowed) {
+        continue;
+      }
+      const outbound = frontier.has(entry.edge.source_object_id);
+      const inbound = frontier.has(entry.edge.target_object_id);
+      if ((direction === "outbound" || direction === "both") && outbound) {
+        next.add(entry.edge.target_object_id);
+        traversed.push(sanitizeAuthorizedObject(entry.object, decision.plaintext_allowed));
+      }
+      if ((direction === "inbound" || direction === "both") && inbound) {
+        next.add(entry.edge.source_object_id);
+        traversed.push(sanitizeAuthorizedObject(entry.object, decision.plaintext_allowed));
+      }
+      if (traversed.length >= limit) {
+        break;
+      }
+    }
+    frontier.clear();
+    for (const objectId of next) {
+      if (!visited.has(objectId)) {
+        visited.add(objectId);
+        frontier.add(objectId);
+      }
+    }
+  }
+
+  return {
+    ok: true,
+    result: {
+      start_object_id: startObjectId,
+      max_depth: maxDepth,
+      visited_object_ids: [...visited],
+      edges: [...new Map(traversed.map((edge) => [edge.object_id, edge])).values()]
+    }
+  };
+}
+
+export async function localTimelineQuery(
+  context: LocalMcpContext,
+  input: LocalGraphTimelineToolInput
+): Promise<LocalGraphToolResult<{ results: LocalGraphTimelineResult[] }>> {
+  const auth = await authenticateToolCall(context, input.authorization);
+  if (!auth.ok) {
+    return { ok: false, reason: auth.reason };
+  }
+  if (!validateAuthority(context, input.authority_id)) {
+    return { ok: false, reason: "authority-mismatch" };
+  }
+
+  const from = input.from ? normalizedDateKey(input.from) : undefined;
+  const to = input.to ? normalizedDateKey(input.to) : undefined;
+  const results: LocalGraphTimelineResult[] = [];
+  for (const object of contextObjects(context)) {
+    if (object.visible_metadata.tombstone) {
+      continue;
+    }
+    if (input.object_id && object.object_id !== input.object_id) {
+      continue;
+    }
+    const edge = edgeData(object);
+    if (input.predicate && edge?.predicate !== canonicalPredicate(input.predicate)) {
+      continue;
+    }
+    const decision = operationDecision({ context, authenticated: auth.authenticated, operation: "read", object });
+    recordToolDecision({
+      context,
+      authenticated: auth.authenticated,
+      toolName: "timeline",
+      operation: "read",
+      object,
+      decision,
+      allowed: decision.allowed,
+      reason: decision.reason_code
+    });
+    if (!decision.allowed) {
+      continue;
+    }
+    for (const candidate of timelineCandidates(object)) {
+      const key = normalizedDateKey(candidate.value);
+      if (from && key < from) {
+        continue;
+      }
+      if (to && key > to) {
+        continue;
+      }
+      results.push({
+        object: sanitizeAuthorizedObject(object, decision.plaintext_allowed),
+        timeline_at: candidate.value,
+        field: candidate.field
+      });
+    }
+  }
+
+  return {
+    ok: true,
+    result: {
+      results: results
+        .sort((left, right) => normalizedDateKey(left.timeline_at).localeCompare(normalizedDateKey(right.timeline_at)))
+        .slice(0, boundedLimit(input.limit))
+    }
+  };
+}
+
+export async function localCreateEdgeObject(
+  context: LocalMcpContext,
+  input: LocalGraphEdgeCreateToolInput
+): Promise<LocalGraphToolResult<LocalGraphMutationResult>> {
+  const edge = TemporalEdgeSchema.safeParse(input.edge);
+  if (!edge.success) {
+    return { ok: false, reason: "invalid-edge" };
+  }
+  const object = edgeObjectFromTemporalEdge(context, edge.data, nowForMutation(context));
+  const result = await localCreateObject(context, {
+    authorization: input.authorization,
+    object
+  });
+  if (result.ok) {
+    const auth = await authenticateToolCall(context, input.authorization);
+    if (auth.ok) {
+      recordToolDecision({
+        context,
+        authenticated: auth.authenticated,
+        toolName: "edge_create",
+        operation: "create",
+        object,
+        allowed: true,
+        reason: "allowed"
+      });
+    }
+  }
+  return result;
+}
+
+export async function localReadEdgeObject(
+  context: LocalMcpContext,
+  input: LocalGraphEdgeReadToolInput
+): Promise<LocalGraphToolResult<LocalGraphReadResult>> {
+  if (!validateAuthority(context, input.authority_id)) {
+    return { ok: false, reason: "authority-mismatch" };
+  }
+  if (!input.edge_id) {
+    return { ok: false, reason: "invalid-edge-read-request" };
+  }
+  const object = findEdgeObject(context, input.edge_id);
+  if (!object || object.visible_metadata.tombstone) {
+    return { ok: false, reason: "edge-not-found" };
+  }
+  return localReadObject(context, {
+    authorization: input.authorization,
+    object_id: object.object_id
+  });
+}
+
+export async function localUpdateEdgeObject(
+  context: LocalMcpContext,
+  input: LocalGraphEdgeUpdateToolInput
+): Promise<LocalGraphToolResult<LocalGraphMutationResult>> {
+  if (!validateAuthority(context, input.authority_id)) {
+    return { ok: false, reason: "authority-mismatch" };
+  }
+  if (!input.edge_id || !input.patch || typeof input.patch !== "object" || Array.isArray(input.patch)) {
+    return { ok: false, reason: "invalid-edge-update-request" };
+  }
+  const object = findEdgeObject(context, input.edge_id);
+  const existingEdge = object ? edgeData(object) : undefined;
+  if (!object || !existingEdge || object.visible_metadata.tombstone) {
+    return { ok: false, reason: "edge-not-found" };
+  }
+  const updatedEdge = TemporalEdgeSchema.safeParse({
+    ...existingEdge,
+    ...input.patch
+  });
+  if (!updatedEdge.success) {
+    return { ok: false, reason: "invalid-edge" };
+  }
+  const result = await localUpdateObject(context, {
+    authorization: input.authorization,
+    object_id: object.object_id,
+    expected_version: input.expected_version,
+    patch: {
+      content_hash: sha256(JSON.stringify(updatedEdge.data)),
+      payload: {
+        kind: "plaintext-json",
+        data: updatedEdge.data
+      }
+    }
+  });
+  if (result.ok) {
+    const auth = await authenticateToolCall(context, input.authorization);
+    if (auth.ok) {
+      recordToolDecision({
+        context,
+        authenticated: auth.authenticated,
+        toolName: "edge_update",
+        operation: "update",
+        object: object,
+        allowed: true,
+        reason: "allowed"
+      });
+    }
+  }
+  return result;
+}
+
+export async function localDeleteEdgeObject(
+  context: LocalMcpContext,
+  input: LocalGraphEdgeDeleteToolInput
+): Promise<LocalGraphToolResult<LocalGraphMutationResult>> {
+  if (!validateAuthority(context, input.authority_id)) {
+    return { ok: false, reason: "authority-mismatch" };
+  }
+  if (!input.edge_id) {
+    return { ok: false, reason: "invalid-edge-delete-request" };
+  }
+  const object = findEdgeObject(context, input.edge_id);
+  if (!object || object.visible_metadata.tombstone) {
+    return { ok: false, reason: "edge-not-found" };
+  }
+  const result = await localTombstoneObject(context, {
+    authorization: input.authorization,
+    object_id: object.object_id,
+    expected_version: input.expected_version
+  });
+  if (result.ok) {
+    const auth = await authenticateToolCall(context, input.authorization);
+    if (auth.ok) {
+      recordToolDecision({
+        context,
+        authenticated: auth.authenticated,
+        toolName: "edge_delete",
+        operation: "delete",
+        object,
+        allowed: true,
+        reason: "allowed"
+      });
+    }
+  }
+  return result;
+}
+
+export async function localReconcileGraph(
+  context: LocalMcpContext,
+  input: LocalGraphAuthorityToolInput
+): Promise<LocalGraphToolResult<Record<string, unknown>>> {
+  const status = await localGraphStatus(context, input);
+  if (!status.ok) {
+    return status;
+  }
+  return {
+    ok: true,
+    result: {
+      reconciliation_schema: "living-atlas-local-graph-reconciliation:v1",
+      decision: "reconciled",
+      authority_id: status.result.authority_id,
+      local_graph: {
+        object_count: status.result.object_count,
+        persistence: status.result.plaintext_persistence ?? "synthetic-in-memory"
+      }
+    }
+  };
+}
+
+export async function localSyncStatus(
+  context: LocalMcpContext,
+  input: LocalGraphToolInput
+): Promise<LocalGraphToolResult<Record<string, unknown>>> {
+  const status = await localGraphStatus(context, input);
+  if (!status.ok) {
+    return status;
+  }
+  const graphStoreStatus = context.graphStore?.status();
+  return {
+    ok: true,
+    result: {
+      authority_id: status.result.authority_id,
+      latest_generation: graphStoreStatus?.generation ?? 0,
+      object_count: status.result.object_count,
+      change_count: graphStoreStatus?.journal_sequence ?? 0,
+      latest_batch_id: undefined,
+      latest_withheld_plaintext_count: 0,
+      local_persistence: status.result.plaintext_persistence ?? "synthetic-in-memory"
+    }
+  };
+}
+
+export async function localActivityRead(
+  context: LocalMcpContext,
+  input: LocalGraphAuthorityToolInput & { limit?: number }
+): Promise<LocalGraphToolResult<Record<string, unknown>>> {
+  const auth = await authenticateToolCall(context, input.authorization);
+  if (!auth.ok) {
+    return { ok: false, reason: auth.reason };
+  }
+  if (!validateAuthority(context, input.authority_id)) {
+    return { ok: false, reason: "authority-mismatch" };
+  }
+  const events = context.activitySink && "events" in context.activitySink && Array.isArray(context.activitySink.events)
+    ? context.activitySink.events.slice(-boundedLimit(input.limit, 100))
+    : [];
+  recordToolDecision({
+    context,
+    authenticated: auth.authenticated,
+    toolName: "activity_read",
+    operation: "audit-read",
+    allowed: true,
+    reason: "allowed"
+  });
+  return {
+    ok: true,
+    result: {
+      ok: true,
+      stream_schema: "living-atlas-praxis-activity-audit-stream:v1",
+      plane: "local",
+      events
+    }
+  };
+}
+
+export async function localUnsupportedTool(
+  context: LocalMcpContext,
+  input: LocalGraphToolInput,
+  toolName: string
+): Promise<LocalGraphToolResult<Record<string, unknown>>> {
+  const auth = await authenticateToolCall(context, input.authorization);
+  if (!auth.ok) {
+    return { ok: false, reason: auth.reason };
+  }
+  recordToolDecision({
+    context,
+    authenticated: auth.authenticated,
+    toolName,
+    operation: "audit-read",
+    allowed: false,
+    reason: "not-applicable-local-transport"
+  });
+  return {
+    ok: false,
+    reason: "not-applicable-local-transport",
+    result: {
+      tool: toolName,
+      plane: "local"
     }
   };
 }

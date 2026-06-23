@@ -128,10 +128,6 @@ function sha256Hash(value: string): `sha256:${string}` {
   return `sha256:${sha256Hex(value)}`;
 }
 
-function derivedOpaqueId(prefix: "la_cap" | "la_idem", seed: string): string {
-  return `${prefix}_${sha256Hex(seed).slice(0, 24)}`;
-}
-
 function encodedByteLength(value: unknown): number {
   return new TextEncoder().encode(JSON.stringify(value)).byteLength;
 }
@@ -182,17 +178,7 @@ function withDerivedSyncBatchFields(input: unknown): unknown {
 
   const batch = { ...input };
   batch.objects = normalizeGraphObjects(batch.objects);
-  const batchSeed = JSON.stringify({
-    batch_id: batch.batch_id,
-    authority_id: batch.authority_id,
-    device_id: batch.device_id,
-    client_id: batch.client_id,
-    base_generation: batch.base_generation,
-    target_generation: batch.target_generation
-  });
 
-  batch.capability_id ??= derivedOpaqueId("la_cap", `legacy-capability:${String(batch.client_id ?? batch.batch_id ?? batchSeed)}`);
-  batch.idempotency_key ??= derivedOpaqueId("la_idem", `legacy-idempotency:${String(batch.batch_id ?? batchSeed)}`);
   batch.object_payloads ??= deriveObjectPayloadRefs(batch.objects);
   batch.estimated_batch_bytes ??= encodedByteLength(batch.objects ?? []);
   batch.limits ??= DefaultSyncBatchLimits;

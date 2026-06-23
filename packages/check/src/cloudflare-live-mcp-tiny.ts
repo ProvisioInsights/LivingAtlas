@@ -13,19 +13,21 @@ import { printCloudflareLiveUsageGateResult, runCloudflareLiveUsageGate } from "
 const ackEnv = "LIVING_ATLAS_LIVE_MCP_TINY_ACK";
 const mutationAcknowledgement = "mutates-deployed-sync-state";
 const requiredTools: RemoteMcpToolName[] = [
-  "remote_graph_create",
-  "remote_graph_read",
-  "remote_graph_update",
-  "remote_graph_delete",
-  "remote_semantic_search",
-  "remote_graph_traverse",
-  "remote_timeline_query",
-  "remote_edge_create",
-  "remote_edge_read",
-  "remote_edge_update",
-  "remote_edge_delete",
-  "remote_activity_audit",
-  "remote_graph_reconcile"
+  "object_create",
+  "object_read",
+  "object_update",
+  "object_delete",
+  "object_batch",
+  "search",
+  "traverse",
+  "timeline",
+  "edge_create",
+  "edge_read",
+  "edge_update",
+  "edge_delete",
+  "edge_batch",
+  "activity_read",
+  "reconcile"
 ];
 
 function envValue(key: string): string | undefined {
@@ -263,13 +265,13 @@ export async function main(): Promise<void> {
     capabilityId,
     tokenId,
     id: 20,
-    name: "remote_graph_create",
+    name: "object_create",
     args: {
       object: encryptedProbeObject(authorityId, `la_object_livemcp${digest(`${id}:encrypted`, 18)}`)
     }
   });
   if (encryptedCreate.status !== 200 || !encryptedCreate.text.includes("remote graph objects must be remote-readable plaintext")) {
-    throw new Error(`expected encrypted remote_graph_create to be rejected, got HTTP ${encryptedCreate.status}: ${encryptedCreate.text}`);
+    throw new Error(`expected encrypted object_create to be rejected, got HTTP ${encryptedCreate.status}: ${encryptedCreate.text}`);
   }
 
   const first = plaintextObject({
@@ -287,15 +289,15 @@ export async function main(): Promise<void> {
     sequence: 2
   });
 
-  const createdA = await callTool(client, "remote_graph_create", { object: first, idempotency_key: `la_idem_${digest(`${id}:create-a`, 24)}` });
-  const createdB = await callTool(client, "remote_graph_create", { object: second, idempotency_key: `la_idem_${digest(`${id}:create-b`, 24)}` });
+  const createdA = await callTool(client, "object_create", { object: first, idempotency_key: `la_idem_${digest(`${id}:create-a`, 24)}` });
+  const createdB = await callTool(client, "object_create", { object: second, idempotency_key: `la_idem_${digest(`${id}:create-b`, 24)}` });
   if (createdA.ok !== true || createdB.ok !== true) {
-    throw new Error("remote_graph_create did not return ok=true");
+    throw new Error("object_create did not return ok=true");
   }
 
-  const readA = await callTool(client, "remote_graph_read", { authority_id: authorityId, object_id: objectA });
+  const readA = await callTool(client, "object_read", { authority_id: authorityId, object_id: objectA });
   if (readA.ok !== true) {
-    throw new Error("remote_graph_read did not return created object");
+    throw new Error("object_read did not return created object");
   }
 
   const updatedPayload = {
@@ -307,7 +309,7 @@ export async function main(): Promise<void> {
       occurred_on: nowIso(3000).slice(0, 10)
     }
   };
-  const updatedA = await callTool(client, "remote_graph_update", {
+  const updatedA = await callTool(client, "object_update", {
     authority_id: authorityId,
     object_id: objectA,
     expected_version: 1,
@@ -319,19 +321,19 @@ export async function main(): Promise<void> {
     }
   });
   if (updatedA.ok !== true || updatedA.new_version !== 2) {
-    throw new Error("remote_graph_update did not advance object version");
+    throw new Error("object_update did not advance object version");
   }
 
-  const search = await callTool(client, "remote_semantic_search", {
+  const search = await callTool(client, "search", {
     authority_id: authorityId,
     query: `updated ${digest(id, 10)}`,
     limit: 5
   });
   if (search.ok !== true || !Array.isArray(search.results) || search.results.length < 1) {
-    throw new Error("remote_semantic_search did not find updated object");
+    throw new Error("search did not find updated object");
   }
 
-  const edgeCreate = await callTool(client, "remote_edge_create", {
+  const edgeCreate = await callTool(client, "edge_create", {
     authority_id: authorityId,
     idempotency_key: `la_idem_${digest(`${id}:edge-create`, 24)}`,
     edge: {
@@ -351,15 +353,15 @@ export async function main(): Promise<void> {
     }
   });
   if (edgeCreate.ok !== true || !edgeCreate.object || typeof edgeCreate.object !== "object") {
-    throw new Error("remote_edge_create did not create an edge object");
+    throw new Error("edge_create did not create an edge object");
   }
 
-  const edgeRead = await callTool(client, "remote_edge_read", { authority_id: authorityId, edge_id: edgeId });
+  const edgeRead = await callTool(client, "edge_read", { authority_id: authorityId, edge_id: edgeId });
   if (edgeRead.ok !== true) {
-    throw new Error("remote_edge_read did not return created edge");
+    throw new Error("edge_read did not return created edge");
   }
 
-  const traversal = await callTool(client, "remote_graph_traverse", {
+  const traversal = await callTool(client, "traverse", {
     authority_id: authorityId,
     start_object_id: objectA,
     direction: "outbound",
@@ -368,10 +370,10 @@ export async function main(): Promise<void> {
     limit: 5
   });
   if (traversal.ok !== true || !Array.isArray(traversal.visited_object_ids) || !traversal.visited_object_ids.includes(objectB)) {
-    throw new Error("remote_graph_traverse did not traverse the created edge");
+    throw new Error("traverse did not traverse the created edge");
   }
 
-  const edgeUpdate = await callTool(client, "remote_edge_update", {
+  const edgeUpdate = await callTool(client, "edge_update", {
     authority_id: authorityId,
     edge_id: edgeId,
     expected_version: 1,
@@ -384,52 +386,52 @@ export async function main(): Promise<void> {
     }
   });
   if (edgeUpdate.ok !== true || edgeUpdate.new_version !== 2) {
-    throw new Error("remote_edge_update did not advance edge version");
+    throw new Error("edge_update did not advance edge version");
   }
 
-  const edgeDelete = await callTool(client, "remote_edge_delete", {
+  const edgeDelete = await callTool(client, "edge_delete", {
     authority_id: authorityId,
     edge_id: edgeId,
     expected_version: 2,
     idempotency_key: `la_idem_${digest(`${id}:edge-delete`, 24)}`
   });
   if (edgeDelete.ok !== true || edgeDelete.new_version !== 3) {
-    throw new Error("remote_edge_delete did not tombstone edge");
+    throw new Error("edge_delete did not tombstone edge");
   }
 
-  const timeline = await callTool(client, "remote_timeline_query", {
+  const timeline = await callTool(client, "timeline", {
     authority_id: authorityId,
     object_id: objectA,
     limit: 10
   });
   if (timeline.ok !== true || !Array.isArray(timeline.results) || timeline.results.length < 1) {
-    throw new Error("remote_timeline_query did not return object timeline rows");
+    throw new Error("timeline did not return object timeline rows");
   }
 
-  const deleted = await callTool(client, "remote_graph_delete", {
+  const deleted = await callTool(client, "object_delete", {
     authority_id: authorityId,
     object_id: objectB,
     expected_version: 1,
     idempotency_key: `la_idem_${digest(`${id}:delete-b`, 24)}`
   });
   if (deleted.ok !== true || deleted.new_version !== 2) {
-    throw new Error("remote_graph_delete did not tombstone object");
+    throw new Error("object_delete did not tombstone object");
   }
 
-  const reconcile = await callTool(client, "remote_graph_reconcile", {
+  const reconcile = await callTool(client, "reconcile", {
     authority_id: authorityId,
     limit: 1
   });
   if (reconcile.ok !== true || reconcile.decision !== "reconciled") {
-    throw new Error(`remote_graph_reconcile did not reconcile: ${JSON.stringify(reconcile)}`);
+    throw new Error(`reconcile did not reconcile: ${JSON.stringify(reconcile)}`);
   }
 
-  const audit = await callTool(client, "remote_activity_audit", {
+  const audit = await callTool(client, "activity_read", {
     authority_id: authorityId,
     limit: 20
   });
   if (audit.ok !== true || !Array.isArray(audit.events) || audit.events.length < 5) {
-    throw new Error("remote_activity_audit did not return CRUD audit events");
+    throw new Error("activity_read did not return CRUD audit events");
   }
   assertNoSecretText("remote MCP proof responses", { tools, createdA, createdB, readA, updatedA, search, edgeCreate, edgeRead, traversal, edgeUpdate, edgeDelete, timeline, deleted, reconcile, audit }, secrets);
 

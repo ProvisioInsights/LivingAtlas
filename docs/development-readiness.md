@@ -286,6 +286,7 @@ Command map:
 | `npm run cloudflare:live-usage-gate` | No real graph data | No | Read-only deployed usage stoplight before live synthetic mutation. |
 | `npm run cloudflare:live-ops-report` | No real graph data | No | Read-only deployed operator report with gate plus R2 inventory reconciliation. |
 | `npm run cloudflare:live-local-mcp-outbox-proof` | No note plaintext | Yes | Queues one local MCP durable create/update/tombstone sequence into the local sync outbox; requires explicit acknowledgement and usage gate pass. |
+| `npm run cloudflare:live-local-outbox-drain` | No note plaintext | Yes | One-shot local replica outbox drain through the bidirectional push handshake; requires explicit acknowledgement and usage gate pass. |
 | `npm run cloudflare:live-crud-tiny` | No real graph data | Yes | Tiny deployed CRUD pass; requires gate pass and explicit tiny mutation acknowledgement. |
 | `npm run preflight:synthetic` | No | No | Full synthetic preflight before real Cloudflare work. |
 | `npm run cloudflare:live-concurrency-smoke` | No real graph data | Yes | Optional live deployed-Worker sync race smoke; requires explicit mutation acknowledgement. |
@@ -311,6 +312,21 @@ app-observed sync/R2 metadata to provider inventory available through bound
 Cloudflare services. Today that includes R2 object count and byte inventory via
 the bucket binding. Workers billing counters, KV billing counters, and Durable
 Object billing counters still require Cloudflare analytics/dashboard checks.
+
+The local-to-Cloudflare sync path is push-triggered. Local MCP durable CRUD
+writes encrypted/redacted outbox files, and the one-shot drain sends at most one
+pending outbox file through the same bidirectional handshake used by daemon
+mode:
+
+```bash
+LIVING_ATLAS_LIVE_BIDIRECTIONAL_SYNC_ACK=mutates-deployed-sync-state \
+npm run cloudflare:live-local-outbox-drain
+```
+
+The drain first catches the local replica up to the remote sync generation,
+then pushes the next local outbox file, then pulls the accepted remote
+generation back into the local graph. If there is nothing queued, it performs
+only the catch-up/read side and exits.
 
 The tiny live CRUD tier runs the gate first, then mutates only a small synthetic
 set by default:
@@ -357,7 +373,7 @@ status, pull summaries, ciphertext envelope pulls, usage gates, remote-readable
 graph CRUD, edge-specific CRUD, deterministic text search, bounded graph
 traversal, and timeline queries.
 
-The current `remote_semantic_search` implementation is intentionally
+The current `search` implementation is intentionally
 provider-free deterministic text scoring over remote-readable plaintext and
 visible metadata. It gives MCP clients a useful knowledge search contract now;
 Vectorize/embedding search can later replace the scorer without changing the
@@ -577,9 +593,15 @@ Required tests:
   survives process restart
 - local MCP durable CRUD can enqueue redacted/encrypted outbox files that the
   bidirectional sync daemon can push
+- local MCP durable CRUD wakes or directly invokes a bidirectional push
+  handshake immediately after commit when online; polling is only a
+  missed-wakeup/reconnect watchdog
+- simultaneous local and remote CRUD tests cover both independent-object
+  convergence and same-object conflict creation
 - Worker envelope pull returns sync envelopes for local catch-up, including
   remote-readable plaintext and sensitive ciphertext envelopes
-- sync-agent applies pulled envelopes idempotently and reports bounded version
+- sync-agent drains durable local MCP outbox files through a bidirectional push
+  handshake, applies pulled envelopes idempotently, and reports bounded version
   conflict samples
 - remote MCP exposes token-gated sync tools plus remote-readable graph CRUD,
   edge CRUD, search, traversal, and timeline queries

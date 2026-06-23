@@ -48,6 +48,9 @@ importers:
       '@living-atlas/contracts':
         specifier: workspace:*
         version: link:../contracts
+      '@living-atlas/mcp-contract':
+        specifier: workspace:*
+        version: link:../mcp-contract
 
   packages/check:
     dependencies:
@@ -96,17 +99,36 @@ importers:
       '@living-atlas/contracts':
         specifier: workspace:*
         version: link:../contracts
+      '@living-atlas/graph-service':
+        specifier: workspace:*
+        version: link:../graph-service
+      '@living-atlas/mcp-contract':
+        specifier: workspace:*
+        version: link:../mcp-contract
       zod:
         specifier: 4.4.3
         version: 4.4.3
 
-  packages/contracts: {}
+  packages/contracts:
+    dependencies:
+      rrule:
+        specifier: ^2.8.1
+        version: 2.8.1
 
   packages/fixtures:
     dependencies:
       '@living-atlas/contracts':
         specifier: workspace:*
         version: link:../contracts
+
+  packages/graph-service:
+    dependencies:
+      '@living-atlas/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+      '@living-atlas/mcp-contract':
+        specifier: workspace:*
+        version: link:../mcp-contract
 
   packages/importer:
     dependencies:
@@ -185,6 +207,9 @@ importers:
       '@living-atlas/fixtures':
         specifier: workspace:*
         version: link:../fixtures
+      '@living-atlas/graph-service':
+        specifier: workspace:*
+        version: link:../graph-service
       '@living-atlas/local-control-store':
         specifier: workspace:*
         version: link:../local-control-store
@@ -194,6 +219,9 @@ importers:
       '@living-atlas/local-keyring':
         specifier: workspace:*
         version: link:../local-keyring
+      '@living-atlas/mcp-contract':
+        specifier: workspace:*
+        version: link:../mcp-contract
       '@living-atlas/policy':
         specifier: workspace:*
         version: link:../policy
@@ -203,6 +231,8 @@ importers:
       zod:
         specifier: 4.4.3
         version: 4.4.3
+
+  packages/mcp-contract: {}
 
   packages/policy:
     dependencies:
@@ -1003,6 +1033,9 @@ packages:
   router@2.2.0:
     resolution: {integrity: sha512-nLTrUKm2UyiL7rlhapu/Zl45FwNgkZGaCpZbIHajDYgwlJCOzLSk+cIPAnsEqV955GjILJnKbdQC1nVPz+gAYQ==}
     engines: {node: '>= 18'}
+
+  rrule@2.8.1:
+    resolution: {integrity: sha512-hM3dHSBMeaJ0Ktp7W38BJZ7O1zOgaFEsn41PDk+yHoEtfLV+PoJt9E9xAlZiWgf/iqEqionN0ebHFZIDAp+iGw==}
 
   safer-buffer@2.1.2:
     resolution: {integrity: sha512-YZo3K82SD7Riyi0E1EQPojLz7kpepnSQI9IyPbHHg1XXXevb5dJI7tpyN2ADxGcQbHG7vcyRHk0cbwqcQriUtg==}
@@ -1878,6 +1911,10 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
+  rrule@2.8.1:
+    dependencies:
+      tslib: 2.8.1
+
   safer-buffer@2.1.2: {}
 
   send@1.2.1:
@@ -1964,8 +2001,7 @@ snapshots:
 
   toidentifier@1.0.1: {}
 
-  tslib@2.8.1:
-    optional: true
+  tslib@2.8.1: {}
 
   tsx@4.22.4:
     dependencies:

@@ -1,21 +1,49 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { ObjectIdSchema } from "@living-atlas/contracts";
+import { AuthorityIdSchema, ObjectIdSchema, TemporalEdgeSchema } from "@living-atlas/contracts";
+import { createLivingAtlasGraphService } from "@living-atlas/graph-service";
+import {
+  LivingAtlasMcpToolDefinitions,
+  livingAtlasMcpToolDefinition,
+  type LivingAtlasMcpToolName
+} from "@living-atlas/mcp-contract";
+import { z } from "zod";
 import {
   LocalGraphExpectedVersionSchema,
   LocalGraphObjectInputSchema,
   LocalGraphUpdatePatchSchema,
+  localAccessModes,
+  localActivityRead,
   localCreateObject,
+  localCreateEdgeObject,
+  localDeleteEdgeObject,
   localGraphStatus,
   localListObjects,
   localReadObject,
+  localReadEdgeObject,
+  localReconcileGraph,
+  localSearchObjects,
+  localSensitiveDecrypt,
+  localSyncStatus,
   localTombstoneObject,
+  localTimelineQuery,
+  localTraverseGraph,
+  localUnsupportedTool,
+  localUpdateEdgeObject,
   localUpdateObject,
   type LocalMcpContext,
+  type LocalGraphAuthorityToolInput,
   type LocalGraphCreateToolInput,
+  type LocalGraphEdgeCreateToolInput,
+  type LocalGraphEdgeDeleteToolInput,
+  type LocalGraphEdgeReadToolInput,
+  type LocalGraphEdgeUpdateToolInput,
   type LocalGraphReadToolInput,
+  type LocalGraphSearchToolInput,
   type LocalGraphTombstoneToolInput,
   type LocalGraphToolInput,
+  type LocalGraphTimelineToolInput,
+  type LocalGraphTraverseToolInput,
   type LocalGraphUpdateToolInput
 } from "./local-graph";
 
@@ -24,29 +52,162 @@ export type LocalMcpServerAuthOptions = {
 };
 
 const EmptyInputSchema = {};
+const AuthorityInputSchema = {
+  authority_id: AuthorityIdSchema.describe("Living Atlas authority id.")
+};
 const ReadObjectInputSchema = {
+  authority_id: AuthorityIdSchema.describe("Living Atlas authority id.").optional(),
   object_id: ObjectIdSchema.describe("Living Atlas graph object id.")
 };
 const CreateObjectInputSchema = {
   object: LocalGraphObjectInputSchema.describe("Complete graph object envelope or local plaintext draft to create.")
 };
 const UpdateObjectInputSchema = {
+  authority_id: AuthorityIdSchema.describe("Living Atlas authority id.").optional(),
   object_id: ObjectIdSchema.describe("Living Atlas graph object id."),
   expected_version: LocalGraphExpectedVersionSchema.describe("Optional optimistic version guard."),
   patch: LocalGraphUpdatePatchSchema.describe("Synthetic in-memory graph object fields to merge into the existing envelope.")
 };
 const TombstoneObjectInputSchema = {
+  authority_id: AuthorityIdSchema.describe("Living Atlas authority id.").optional(),
   object_id: ObjectIdSchema.describe("Living Atlas graph object id."),
   expected_version: LocalGraphExpectedVersionSchema.describe("Optional optimistic version guard.")
 };
+const BatchLimitsInputSchema = {
+  max_items: z.number().int().min(1).max(100).optional(),
+  max_bytes: z.number().int().min(1024).max(1024 * 1024).optional()
+};
+const BatchItemCommonInputSchema = {
+  idempotency_key: z.string().optional(),
+  authority_id: AuthorityIdSchema.optional()
+};
+const ObjectBatchItemInputSchema = z.discriminatedUnion("op", [
+  z.object({
+    ...BatchItemCommonInputSchema,
+    op: z.literal("create"),
+    object: LocalGraphObjectInputSchema
+  }).strict(),
+  z.object({
+    ...BatchItemCommonInputSchema,
+    op: z.literal("update"),
+    object_id: ObjectIdSchema,
+    expected_version: LocalGraphExpectedVersionSchema,
+    patch: LocalGraphUpdatePatchSchema
+  }).strict(),
+  z.object({
+    ...BatchItemCommonInputSchema,
+    op: z.literal("delete"),
+    object_id: ObjectIdSchema,
+    expected_version: LocalGraphExpectedVersionSchema
+  }).strict()
+]);
+const ObjectBatchInputSchema = {
+  authority_id: AuthorityIdSchema.describe("Living Atlas authority id.").optional(),
+  idempotency_key: z.string().optional(),
+  items: z.array(ObjectBatchItemInputSchema).min(1).max(100),
+  limits: z.object(BatchLimitsInputSchema).strict().optional()
+};
+const ActivityReadInputSchema = {
+  authority_id: AuthorityIdSchema.describe("Living Atlas authority id.").optional(),
+  operation_id: z.string().optional(),
+  trace_id: z.string().optional(),
+  event_type: z.string().optional(),
+  cursor: z.string().optional(),
+  limit: z.number().int().min(1).max(100).optional()
+};
+const SearchInputSchema = {
+  authority_id: AuthorityIdSchema.describe("Living Atlas authority id.").optional(),
+  query: z.string().min(1),
+  object_type: z.string().optional(),
+  limit: z.number().int().min(1).max(1000).optional()
+};
+const TraverseInputSchema = {
+  authority_id: AuthorityIdSchema.describe("Living Atlas authority id.").optional(),
+  start_object_id: ObjectIdSchema.describe("Living Atlas graph object id."),
+  direction: z.enum(["outbound", "inbound", "both"]).optional(),
+  max_depth: z.number().int().min(1).max(5).optional(),
+  predicates: z.array(z.string().min(1)).optional(),
+  limit: z.number().int().min(1).max(1000).optional()
+};
+const TimelineInputSchema = {
+  authority_id: AuthorityIdSchema.describe("Living Atlas authority id.").optional(),
+  from: z.string().optional(),
+  to: z.string().optional(),
+  object_id: ObjectIdSchema.describe("Living Atlas graph object id.").optional(),
+  predicate: z.string().optional(),
+  limit: z.number().int().min(1).max(1000).optional()
+};
+const EdgeCreateInputSchema = {
+  authority_id: AuthorityIdSchema.describe("Living Atlas authority id.").optional(),
+  edge: TemporalEdgeSchema.describe("Typed temporal edge to create.")
+};
+const EdgeReadInputSchema = {
+  authority_id: AuthorityIdSchema.describe("Living Atlas authority id.").optional(),
+  edge_id: z.string().regex(/^la_edge_[A-Za-z0-9_-]{8,}$/)
+};
+const EdgeUpdateInputSchema = {
+  authority_id: AuthorityIdSchema.describe("Living Atlas authority id.").optional(),
+  edge_id: z.string().regex(/^la_edge_[A-Za-z0-9_-]{8,}$/),
+  expected_version: LocalGraphExpectedVersionSchema.describe("Optional optimistic version guard."),
+  patch: z.record(z.string(), z.unknown()).describe("Temporal edge fields to merge into the existing edge.")
+};
+const EdgeBatchItemInputSchema = z.discriminatedUnion("op", [
+  z.object({
+    ...BatchItemCommonInputSchema,
+    op: z.literal("create"),
+    edge: TemporalEdgeSchema
+  }).strict(),
+  z.object({
+    ...BatchItemCommonInputSchema,
+    op: z.literal("update"),
+    edge_id: z.string().regex(/^la_edge_[A-Za-z0-9_-]{8,}$/),
+    expected_version: LocalGraphExpectedVersionSchema,
+    patch: z.record(z.string(), z.unknown())
+  }).strict(),
+  z.object({
+    ...BatchItemCommonInputSchema,
+    op: z.literal("delete"),
+    edge_id: z.string().regex(/^la_edge_[A-Za-z0-9_-]{8,}$/),
+    expected_version: LocalGraphExpectedVersionSchema
+  }).strict()
+]);
+const EdgeBatchInputSchema = {
+  authority_id: AuthorityIdSchema.describe("Living Atlas authority id.").optional(),
+  idempotency_key: z.string().optional(),
+  items: z.array(EdgeBatchItemInputSchema).min(1).max(100),
+  limits: z.object(BatchLimitsInputSchema).strict().optional()
+};
+const SyncReadInputSchema = {
+  authority_id: AuthorityIdSchema.describe("Living Atlas authority id.").optional(),
+  after_generation: z.number().int().nonnegative(),
+  limit: z.number().int().min(1).max(50).optional()
+};
 
 export const LocalMcpToolInputSchemas = {
-  local_graph_status: EmptyInputSchema,
-  local_list_objects: EmptyInputSchema,
-  local_read_object: ReadObjectInputSchema,
-  local_create_object: CreateObjectInputSchema,
-  local_update_object: UpdateObjectInputSchema,
-  local_tombstone_object: TombstoneObjectInputSchema
+  access_modes: EmptyInputSchema,
+  activity_read: ActivityReadInputSchema,
+  sensitive_decrypt: ReadObjectInputSchema,
+  status: EmptyInputSchema,
+  reconcile: AuthorityInputSchema,
+  object_list: AuthorityInputSchema,
+  object_read: ReadObjectInputSchema,
+  object_create: CreateObjectInputSchema,
+  object_update: UpdateObjectInputSchema,
+  object_delete: TombstoneObjectInputSchema,
+  object_batch: ObjectBatchInputSchema,
+  search: SearchInputSchema,
+  traverse: TraverseInputSchema,
+  timeline: TimelineInputSchema,
+  edge_create: EdgeCreateInputSchema,
+  edge_read: EdgeReadInputSchema,
+  edge_update: EdgeUpdateInputSchema,
+  edge_delete: EdgeReadInputSchema,
+  edge_batch: EdgeBatchInputSchema,
+  sync_status: EmptyInputSchema,
+  sync_pull: SyncReadInputSchema,
+  sync_envelopes: SyncReadInputSchema,
+  usage_gate: EmptyInputSchema,
+  usage_reconcile: EmptyInputSchema
 };
 
 function asToolContent(result: unknown) {
@@ -67,6 +228,10 @@ function withAuthorization(input: unknown, options: LocalMcpServerAuthOptions): 
   } as LocalGraphToolInput;
 }
 
+function withAuthorityAuthorization(input: unknown, options: LocalMcpServerAuthOptions): LocalGraphAuthorityToolInput {
+  return withAuthorization(input, options) as LocalGraphAuthorityToolInput;
+}
+
 function withReadAuthorization(input: unknown, options: LocalMcpServerAuthOptions): LocalGraphReadToolInput {
   return withAuthorization(input, options) as LocalGraphReadToolInput;
 }
@@ -83,6 +248,38 @@ function withTombstoneAuthorization(input: unknown, options: LocalMcpServerAuthO
   return withAuthorization(input, options) as LocalGraphTombstoneToolInput;
 }
 
+function withSearchAuthorization(input: unknown, options: LocalMcpServerAuthOptions): LocalGraphSearchToolInput {
+  return withAuthorization(input, options) as LocalGraphSearchToolInput;
+}
+
+function withTraverseAuthorization(input: unknown, options: LocalMcpServerAuthOptions): LocalGraphTraverseToolInput {
+  return withAuthorization(input, options) as LocalGraphTraverseToolInput;
+}
+
+function withTimelineAuthorization(input: unknown, options: LocalMcpServerAuthOptions): LocalGraphTimelineToolInput {
+  return withAuthorization(input, options) as LocalGraphTimelineToolInput;
+}
+
+function withEdgeCreateAuthorization(input: unknown, options: LocalMcpServerAuthOptions): LocalGraphEdgeCreateToolInput {
+  return withAuthorization(input, options) as LocalGraphEdgeCreateToolInput;
+}
+
+function withEdgeReadAuthorization(input: unknown, options: LocalMcpServerAuthOptions): LocalGraphEdgeReadToolInput {
+  return withAuthorization(input, options) as LocalGraphEdgeReadToolInput;
+}
+
+function withEdgeUpdateAuthorization(input: unknown, options: LocalMcpServerAuthOptions): LocalGraphEdgeUpdateToolInput {
+  return withAuthorization(input, options) as LocalGraphEdgeUpdateToolInput;
+}
+
+function withEdgeDeleteAuthorization(input: unknown, options: LocalMcpServerAuthOptions): LocalGraphEdgeDeleteToolInput {
+  return withAuthorization(input, options) as LocalGraphEdgeDeleteToolInput;
+}
+
+function toolMetadata(name: LivingAtlasMcpToolName) {
+  return livingAtlasMcpToolDefinition(name);
+}
+
 export function createLivingAtlasLocalMcpServer(
   context: LocalMcpContext,
   options: LocalMcpServerAuthOptions = {}
@@ -92,12 +289,123 @@ export function createLivingAtlasLocalMcpServer(
     version: "0.1.0"
   });
 
+  const knownNames = new Set(LivingAtlasMcpToolDefinitions.map((tool) => tool.name));
+  for (const name of Object.keys(LocalMcpToolInputSchemas)) {
+    if (!knownNames.has(name as LivingAtlasMcpToolName)) {
+      throw new Error(`Local MCP schema is not in shared contract: ${name}`);
+    }
+  }
+  const graphService = createLivingAtlasGraphService({
+    async execute(toolName, input) {
+      switch (toolName) {
+        case "access_modes":
+          return localAccessModes(context, withAuthorization(input, options));
+        case "activity_read":
+          return localActivityRead(context, withAuthorityAuthorization(input, options));
+        case "sensitive_decrypt":
+          return localSensitiveDecrypt(context, withReadAuthorization(input, options));
+        case "status":
+          return localGraphStatus(context, withAuthorization(input, options));
+        case "reconcile":
+          return localReconcileGraph(context, withAuthorityAuthorization(input, options));
+        case "object_list":
+          return localListObjects(context, withAuthorization(input, options));
+        case "object_read":
+          return localReadObject(context, withReadAuthorization(input, options));
+        case "object_create":
+          return localCreateObject(context, withCreateAuthorization(input, options));
+        case "object_update":
+          return localUpdateObject(context, withUpdateAuthorization(input, options));
+        case "object_delete":
+          return localTombstoneObject(context, withTombstoneAuthorization(input, options));
+        case "object_batch":
+        case "edge_batch":
+          throw new Error("batch-tools-are-handled-by-graph-service");
+        case "search":
+          return localSearchObjects(context, withSearchAuthorization(input, options));
+        case "traverse":
+          return localTraverseGraph(context, withTraverseAuthorization(input, options));
+        case "timeline":
+          return localTimelineQuery(context, withTimelineAuthorization(input, options));
+        case "edge_create":
+          return localCreateEdgeObject(context, withEdgeCreateAuthorization(input, options));
+        case "edge_read":
+          return localReadEdgeObject(context, withEdgeReadAuthorization(input, options));
+        case "edge_update":
+          return localUpdateEdgeObject(context, withEdgeUpdateAuthorization(input, options));
+        case "edge_delete":
+          return localDeleteEdgeObject(context, withEdgeDeleteAuthorization(input, options));
+        case "sync_status":
+          return localSyncStatus(context, withAuthorization(input, options));
+        case "sync_pull":
+        case "sync_envelopes":
+        case "usage_gate":
+        case "usage_reconcile":
+          return localUnsupportedTool(context, withAuthorization(input, options), toolName);
+      }
+    }
+  });
+  const callLocalTool = (toolName: LivingAtlasMcpToolName, input: unknown) =>
+    graphService.callTool(toolName, input, {
+      ingress: "local-stdio",
+      access_mode: "local-keyholding-only",
+      authority_id: context.controlPlane.authority.authority_id
+    });
+
   server.registerTool(
-    "local_graph_status",
+    "access_modes",
+    {
+      title: "Access modes",
+      description: toolMetadata("access_modes").description,
+      inputSchema: LocalMcpToolInputSchemas.access_modes,
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false
+      }
+    },
+    async (input: unknown) => asToolContent(await callLocalTool("access_modes", input))
+  );
+
+  server.registerTool(
+    "activity_read",
+    {
+      title: "Read activity stream",
+      description: toolMetadata("activity_read").description,
+      inputSchema: LocalMcpToolInputSchemas.activity_read,
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false
+      }
+    },
+    async (input: unknown) => asToolContent(await callLocalTool("activity_read", input))
+  );
+
+  server.registerTool(
+    "sensitive_decrypt",
+    {
+      title: "Decrypt sensitive object",
+      description: toolMetadata("sensitive_decrypt").description,
+      inputSchema: LocalMcpToolInputSchemas.sensitive_decrypt,
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false
+      }
+    },
+    async (input: unknown) => asToolContent(await callLocalTool("sensitive_decrypt", input))
+  );
+
+  server.registerTool(
+    "status",
     {
       title: "Local graph status",
-      description: "Return fixture-backed local graph status for an authenticated local Living Atlas client.",
-      inputSchema: LocalMcpToolInputSchemas.local_graph_status,
+      description: toolMetadata("status").description,
+      inputSchema: LocalMcpToolInputSchemas.status,
       annotations: {
         readOnlyHint: true,
         destructiveHint: false,
@@ -105,15 +413,31 @@ export function createLivingAtlasLocalMcpServer(
         openWorldHint: false
       }
     },
-    async (input: unknown) => asToolContent(await localGraphStatus(context, withAuthorization(input, options)))
+    async (input: unknown) => asToolContent(await callLocalTool("status", input))
   );
 
   server.registerTool(
-    "local_list_objects",
+    "reconcile",
+    {
+      title: "Reconcile local graph",
+      description: toolMetadata("reconcile").description,
+      inputSchema: LocalMcpToolInputSchemas.reconcile,
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false
+      }
+    },
+    async (input: unknown) => asToolContent(await callLocalTool("reconcile", input))
+  );
+
+  server.registerTool(
+    "object_list",
     {
       title: "List local graph objects",
-      description: "List graph object envelopes visible to an authenticated local Living Atlas client.",
-      inputSchema: LocalMcpToolInputSchemas.local_list_objects,
+      description: toolMetadata("object_list").description,
+      inputSchema: LocalMcpToolInputSchemas.object_list,
       annotations: {
         readOnlyHint: true,
         destructiveHint: false,
@@ -121,15 +445,15 @@ export function createLivingAtlasLocalMcpServer(
         openWorldHint: false
       }
     },
-    async (input: unknown) => asToolContent(await localListObjects(context, withAuthorization(input, options)))
+    async (input: unknown) => asToolContent(await callLocalTool("object_list", input))
   );
 
   server.registerTool(
-    "local_read_object",
+    "object_read",
     {
       title: "Read local graph object",
-      description: "Read one graph object envelope through local Living Atlas policy enforcement.",
-      inputSchema: LocalMcpToolInputSchemas.local_read_object,
+      description: toolMetadata("object_read").description,
+      inputSchema: LocalMcpToolInputSchemas.object_read,
       annotations: {
         readOnlyHint: true,
         destructiveHint: false,
@@ -137,15 +461,15 @@ export function createLivingAtlasLocalMcpServer(
         openWorldHint: false
       }
     },
-    async (input: unknown) => asToolContent(await localReadObject(context, withReadAuthorization(input, options)))
+    async (input: unknown) => asToolContent(await callLocalTool("object_read", input))
   );
 
   server.registerTool(
-    "local_create_object",
+    "object_create",
     {
       title: "Create synthetic local graph object",
-      description: "Create one authenticated synthetic in-memory graph object envelope. This is not durable persistence.",
-      inputSchema: LocalMcpToolInputSchemas.local_create_object,
+      description: toolMetadata("object_create").description,
+      inputSchema: LocalMcpToolInputSchemas.object_create,
       annotations: {
         readOnlyHint: false,
         destructiveHint: false,
@@ -153,15 +477,15 @@ export function createLivingAtlasLocalMcpServer(
         openWorldHint: false
       }
     },
-    async (input: unknown) => asToolContent(await localCreateObject(context, withCreateAuthorization(input, options)))
+    async (input: unknown) => asToolContent(await callLocalTool("object_create", input))
   );
 
   server.registerTool(
-    "local_update_object",
+    "object_update",
     {
       title: "Update synthetic local graph object",
-      description: "Update one authenticated synthetic in-memory graph object envelope. This is not durable persistence.",
-      inputSchema: LocalMcpToolInputSchemas.local_update_object,
+      description: toolMetadata("object_update").description,
+      inputSchema: LocalMcpToolInputSchemas.object_update,
       annotations: {
         readOnlyHint: false,
         destructiveHint: false,
@@ -169,15 +493,15 @@ export function createLivingAtlasLocalMcpServer(
         openWorldHint: false
       }
     },
-    async (input: unknown) => asToolContent(await localUpdateObject(context, withUpdateAuthorization(input, options)))
+    async (input: unknown) => asToolContent(await callLocalTool("object_update", input))
   );
 
   server.registerTool(
-    "local_tombstone_object",
+    "object_delete",
     {
       title: "Tombstone synthetic local graph object",
-      description: "Tombstone one authenticated synthetic in-memory graph object envelope without hard-deleting it. This is not durable persistence.",
-      inputSchema: LocalMcpToolInputSchemas.local_tombstone_object,
+      description: toolMetadata("object_delete").description,
+      inputSchema: LocalMcpToolInputSchemas.object_delete,
       annotations: {
         readOnlyHint: false,
         destructiveHint: true,
@@ -185,8 +509,186 @@ export function createLivingAtlasLocalMcpServer(
         openWorldHint: false
       }
     },
-    async (input: unknown) => asToolContent(await localTombstoneObject(context, withTombstoneAuthorization(input, options)))
+    async (input: unknown) => asToolContent(await callLocalTool("object_delete", input))
   );
+
+  server.registerTool(
+    "object_batch",
+    {
+      title: "Batch object mutations",
+      description: toolMetadata("object_batch").description,
+      inputSchema: LocalMcpToolInputSchemas.object_batch,
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: false,
+        openWorldHint: false
+      }
+    },
+    async (input: unknown) => asToolContent(await callLocalTool("object_batch", input))
+  );
+
+  server.registerTool(
+    "search",
+    {
+      title: "Search graph",
+      description: toolMetadata("search").description,
+      inputSchema: LocalMcpToolInputSchemas.search,
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false
+      }
+    },
+    async (input: unknown) => asToolContent(await callLocalTool("search", input))
+  );
+
+  server.registerTool(
+    "traverse",
+    {
+      title: "Traverse graph",
+      description: toolMetadata("traverse").description,
+      inputSchema: LocalMcpToolInputSchemas.traverse,
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false
+      }
+    },
+    async (input: unknown) => asToolContent(await callLocalTool("traverse", input))
+  );
+
+  server.registerTool(
+    "timeline",
+    {
+      title: "Query timeline",
+      description: toolMetadata("timeline").description,
+      inputSchema: LocalMcpToolInputSchemas.timeline,
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false
+      }
+    },
+    async (input: unknown) => asToolContent(await callLocalTool("timeline", input))
+  );
+
+  server.registerTool(
+    "edge_create",
+    {
+      title: "Create edge",
+      description: toolMetadata("edge_create").description,
+      inputSchema: LocalMcpToolInputSchemas.edge_create,
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: false
+      }
+    },
+    async (input: unknown) => asToolContent(await callLocalTool("edge_create", input))
+  );
+
+  server.registerTool(
+    "edge_read",
+    {
+      title: "Read edge",
+      description: toolMetadata("edge_read").description,
+      inputSchema: LocalMcpToolInputSchemas.edge_read,
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false
+      }
+    },
+    async (input: unknown) => asToolContent(await callLocalTool("edge_read", input))
+  );
+
+  server.registerTool(
+    "edge_update",
+    {
+      title: "Update edge",
+      description: toolMetadata("edge_update").description,
+      inputSchema: LocalMcpToolInputSchemas.edge_update,
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: false
+      }
+    },
+    async (input: unknown) => asToolContent(await callLocalTool("edge_update", input))
+  );
+
+  server.registerTool(
+    "edge_delete",
+    {
+      title: "Delete edge",
+      description: toolMetadata("edge_delete").description,
+      inputSchema: LocalMcpToolInputSchemas.edge_delete,
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: false,
+        openWorldHint: false
+      }
+    },
+    async (input: unknown) => asToolContent(await callLocalTool("edge_delete", input))
+  );
+
+  server.registerTool(
+    "edge_batch",
+    {
+      title: "Batch edge mutations",
+      description: toolMetadata("edge_batch").description,
+      inputSchema: LocalMcpToolInputSchemas.edge_batch,
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: false,
+        openWorldHint: false
+      }
+    },
+    async (input: unknown) => asToolContent(await callLocalTool("edge_batch", input))
+  );
+
+  server.registerTool(
+    "sync_status",
+    {
+      title: "Sync status",
+      description: toolMetadata("sync_status").description,
+      inputSchema: LocalMcpToolInputSchemas.sync_status,
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false
+      }
+    },
+    async (input: unknown) => asToolContent(await callLocalTool("sync_status", input))
+  );
+
+  for (const name of ["sync_pull", "sync_envelopes", "usage_gate", "usage_reconcile"] as const) {
+    server.registerTool(
+      name,
+      {
+        title: name.replaceAll("_", " "),
+        description: toolMetadata(name).description,
+        inputSchema: LocalMcpToolInputSchemas[name],
+        annotations: {
+          readOnlyHint: true,
+          destructiveHint: false,
+          idempotentHint: true,
+          openWorldHint: false
+        }
+      },
+      async (input: unknown) => asToolContent(await callLocalTool(name, input))
+    );
+  }
 
   return server;
 }

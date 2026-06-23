@@ -98,7 +98,7 @@ describe("atlas client", () => {
         result: {
           tools: [
             {
-              name: "remote_sync_status",
+              name: "sync_status",
               description: "Read status",
               inputSchema: { type: "object" }
             }
@@ -112,7 +112,7 @@ describe("atlas client", () => {
       syncToken: token,
       fetchImpl: fake.fetchImpl
     })).resolves.toEqual([
-      expect.objectContaining({ name: "remote_sync_status" })
+      expect.objectContaining({ name: "sync_status" })
     ]);
   });
 
@@ -128,7 +128,7 @@ describe("atlas client", () => {
         id: 42,
         method: "tools/call",
         params: {
-          name: "remote_usage_gate",
+          name: "usage_gate",
           arguments: {
             window_hours: 6
           }
@@ -155,7 +155,7 @@ describe("atlas client", () => {
       syncToken,
       healthToken,
       fetchImpl: fake.fetchImpl,
-      name: "remote_usage_gate",
+      name: "usage_gate",
       args: {
         window_hours: 6
       },
@@ -273,7 +273,7 @@ describe("atlas client", () => {
       endpoint: "https://living-atlas.example",
       syncToken,
       fetchImpl: fakeRpc.fetchImpl,
-      name: "remote_sync_status",
+      name: "sync_status",
       args: {}
     })).rejects.toMatchObject({
       code: "json-rpc-error",

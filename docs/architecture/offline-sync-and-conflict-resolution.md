@@ -18,11 +18,34 @@ Every write goes through an append-only change log. Sync exchanges changes,
 not assumptions.
 
 ```text
-remote CRUD -> remote change log -> sync -> local replica
-local CRUD  -> local change log  -> sync -> Cloudflare custody
+remote CRUD -> remote change log -> push sync intent -> local replica
+local CRUD  -> local change log  -> push sync intent -> Cloudflare custody
 ```
 
 If either side is offline, changes queue locally until sync resumes.
+
+## Latency Rule
+
+When both sides are online, synchronization is mutation-triggered. It is not a
+five-minute background job, cron sweep, or slow polling loop.
+
+Target behavior:
+
+- A successful local MCP mutation durably commits locally, appends the local
+  change/outbox record, and immediately wakes the local sync agent.
+- A successful remote MCP mutation commits in Cloudflare, appends the remote
+  change record, and immediately makes the changed generation available to
+  linked local replicas.
+- The side that mutated initiates the next sync exchange. That exchange is
+  bidirectional: it pushes local intent and receives remote cursor/conflict
+  state in the same handshake where possible.
+- Polling exists only as a watchdog/recovery path for missed wakeups, network
+  reconnect, process restart, and long-offline catch-up.
+
+The product goal is "online convergence begins immediately after commit." It is
+acceptable for Cloudflare write latency, network latency, local disk I/O, and
+conflict checks to take real time. It is not acceptable to intentionally wait a
+fixed multi-minute interval before attempting sync.
 
 ## Normal Online Flow
 
@@ -33,12 +56,45 @@ flowchart LR
   classDef sync fill:#fef3c7,stroke:#d97706,color:#111827
 
   Remote["Remote MCP CRUD"]:::cloud --> RLog["Remote change log"]:::cloud
-  Local["Local MCP CRUD"]:::local --> LLog["Local change log"]:::local
-  RLog <--> Sync["Bidirectional sync\ncursor + generation exchange"]:::sync
-  LLog <--> Sync
+  RLog --> RPush["Remote push intent\nannounce generation to linked replicas"]:::cloud
+  Local["Local MCP CRUD"]:::local --> LLog["Local change log + outbox"]:::local
+  LLog --> LPush["Local push intent\nwake sync agent immediately"]:::local
+  RPush <--> Sync["Bidirectional push handshake\nchanges + cursors + conflicts"]:::sync
+  LPush <--> Sync
   Sync --> CF["Cloudflare materialization"]:::cloud
   Sync --> Replica["Local materialization"]:::local
 ```
+
+## Online Push Handshake
+
+Each linked local replica runs a sync agent with three triggers:
+
+1. **Local push intent:** local MCP durable CRUD writes an outbox file/record
+   and wakes the agent immediately to push toward Cloudflare.
+2. **Remote push intent:** remote MCP advances a generation and announces that
+   generation to linked local replicas through an online notification channel or
+   an immediate post-operation status exchange.
+3. **Watchdog wakeup:** a short, low-cost recovery check runs only to catch
+   missed events, process restarts, and network transitions.
+
+The agent executes the same ordered handshake on every push intent:
+
+1. Read local cursor and remote `sync_status`.
+2. If local has pending outbox records and the remote base cursor matches, push
+   the next bounded batch immediately.
+3. If remote reports generations that local has not applied, fetch/apply those
+   envelopes as part of the same convergence cycle.
+4. If both sides changed from the same base, create conflict records instead of
+   choosing a winner.
+5. Confirm accepted generations and update local/remote cursors.
+6. Write a local sync report and emit activity events.
+7. Repeat while either side has pending work; otherwise return to idle.
+
+This keeps local and Cloudflare continuously converging without burning
+Cloudflare cycles on high-frequency empty work.
+
+Push does not mean "one-way." Push means "the side with new work initiates."
+Every exchange is allowed to carry information in both directions.
 
 ## Offline Laptop Flow
 
@@ -80,10 +136,39 @@ sequenceDiagram
   Note over LLog: Local generation advances offline
   Note over LM,CF: Network returns
   LM->>CF: Compare cursors/generations
-  LM->>CF: Push local change segments
-  CF-->>LM: Return any remote changes
+  LM->>CF: Push local change segments from local outbox
+  CF-->>LM: Return remote cursor, accepted generation, conflicts, and missing remote generations
   LM->>Local: Reconcile and index
 ```
+
+## Simultaneous CRUD
+
+Simultaneous local and remote CRUD is normal.
+
+The sync protocol must assume:
+
+- local can mutate while Cloudflare is accepting remote MCP writes
+- remote can mutate while the laptop is online but between local sync handshakes
+- both sides can advance from the same base version before seeing the other's
+  change
+- same-object concurrent edits produce conflicts
+- independent-object concurrent edits should converge without operator review
+
+The push handshake therefore carries:
+
+- `base_generation`
+- `target_generation`
+- local cursor
+- remote cursor
+- object ids and base/new versions
+- accepted/rejected change ids
+- conflict records when versions diverge
+
+If a local push discovers the remote cursor advanced first, the local agent does
+not discard local changes. It records the remote advance, fetches the needed
+remote generation metadata/envelopes, detects whether the pending local changes
+are independent or conflicting, then retries the push with the correct base or
+opens conflict records.
 
 ## Sync State
 
@@ -215,10 +300,14 @@ overwrites. Resolution chooses or creates a new canonical version from the set.
 
 When online:
 
-- remote changes should be visible locally quickly
-- local changes should be pushed to Cloudflare quickly
+- remote changes should start syncing to local immediately after commit
+- local changes should start pushing to Cloudflare immediately after local
+  durable commit
 - indexes update incrementally
-- activity stream shows sync pushes/pulls
+- activity stream shows sync pushes, accepted generations, remote generation
+  announcements, applied envelopes, and conflicts
+- `synced` means no known pending local outbox, no known missing remote
+  generation, and no open conflict blocking the cursor
 
 When offline:
 

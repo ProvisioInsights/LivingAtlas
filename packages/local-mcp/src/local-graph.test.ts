@@ -20,10 +20,17 @@ import {
   createFixtureLocalMcpContext,
   createLocalMcpContextFromControlState,
   localCreateObject,
+  localCreateEdgeObject,
+  localDeleteEdgeObject,
   localGraphStatus,
   localListObjects,
   localReadObject,
+  localReadEdgeObject,
+  localSearchObjects,
   localTombstoneObject,
+  localTimelineQuery,
+  localTraverseGraph,
+  localUpdateEdgeObject,
   localUpdateObject,
   type LocalGraphSyntheticStoreLimits
 } from "./local-graph";
@@ -346,7 +353,7 @@ describe("local fixture graph tools", () => {
     expect(auditSink.events).toContainEqual(expect.objectContaining({
       event_type: "tool.allowed",
       operation: "create",
-      tool_name: "local_create_object",
+      tool_name: "object_create",
       object_id: "la_object_created0001",
       redaction: "local-redacted"
     }));
@@ -367,6 +374,162 @@ describe("local fixture graph tools", () => {
       expect(serializedAudit).not.toContain(bait.value);
       expect(serializedActivity).not.toContain(bait.value);
     }
+  });
+
+  it("supports local edge CRUD, search, traversal, and timeline through the same graph contract", async () => {
+    const token = "local-token-graph-edge-parity-0001";
+    const { context, auditSink } = await createContextForToken(token);
+    const edge = {
+      edge_id: "la_edge_localparity0001",
+      source_object_id: "la_object_remotesafe0001",
+      source_type: "person",
+      target_object_id: "la_object_shareable0001",
+      target_type: "project",
+      predicate: "advises",
+      valid_from: "2026-06",
+      status: "active",
+      confidence: "high",
+      source: "synthetic local MCP parity test",
+      attrs: {
+        scope: "local parity traversal"
+      }
+    };
+
+    await expect(localCreateEdgeObject(context, {
+      authorization: `Bearer ${token}`,
+      authority_id: fixtureAuthorityId,
+      edge
+    })).resolves.toEqual({
+      ok: true,
+      result: expect.objectContaining({
+        mutation: "created",
+        object: expect.objectContaining({
+          object_type: "edge",
+          version: 1
+        })
+      })
+    });
+
+    await expect(localSearchObjects(context, {
+      authorization: `Bearer ${token}`,
+      authority_id: fixtureAuthorityId,
+      query: "parity traversal"
+    })).resolves.toEqual({
+      ok: true,
+      result: expect.objectContaining({
+        search_mode: "deterministic-text-v1",
+        results: expect.arrayContaining([
+          expect.objectContaining({
+            object: expect.objectContaining({ object_type: "edge" })
+          })
+        ])
+      })
+    });
+
+    await expect(localTraverseGraph(context, {
+      authorization: `Bearer ${token}`,
+      authority_id: fixtureAuthorityId,
+      start_object_id: "la_object_remotesafe0001",
+      direction: "outbound",
+      predicates: ["advisor-to"]
+    })).resolves.toEqual({
+      ok: true,
+      result: expect.objectContaining({
+        visited_object_ids: expect.arrayContaining(["la_object_remotesafe0001", "la_object_shareable0001"]),
+        edges: expect.arrayContaining([
+          expect.objectContaining({ object_type: "edge" })
+        ])
+      })
+    });
+
+    await expect(localTimelineQuery(context, {
+      authorization: `Bearer ${token}`,
+      authority_id: fixtureAuthorityId,
+      from: "2026-06",
+      to: "2026-06-30",
+      predicate: "advises"
+    })).resolves.toEqual({
+      ok: true,
+      result: expect.objectContaining({
+        results: expect.arrayContaining([
+          expect.objectContaining({
+            field: "edge.valid_from",
+            timeline_at: "2026-06"
+          })
+        ])
+      })
+    });
+
+    await expect(localUpdateEdgeObject(context, {
+      authorization: `Bearer ${token}`,
+      authority_id: fixtureAuthorityId,
+      edge_id: "la_edge_localparity0001",
+      expected_version: 1,
+      patch: {
+        status: "ended",
+        valid_to: "2026-06-22"
+      }
+    })).resolves.toEqual({
+      ok: true,
+      result: expect.objectContaining({
+        mutation: "updated",
+        new_version: 2
+      })
+    });
+
+    await expect(localReadEdgeObject(context, {
+      authorization: `Bearer ${token}`,
+      authority_id: fixtureAuthorityId,
+      edge_id: "la_edge_localparity0001"
+    })).resolves.toEqual({
+      ok: true,
+      result: expect.objectContaining({
+        object: expect.objectContaining({
+          version: 2,
+          payload: expect.objectContaining({
+            data: expect.objectContaining({ status: "ended" })
+          })
+        })
+      })
+    });
+
+    await expect(localDeleteEdgeObject(context, {
+      authorization: `Bearer ${token}`,
+      authority_id: fixtureAuthorityId,
+      edge_id: "la_edge_localparity0001",
+      expected_version: 2
+    })).resolves.toEqual({
+      ok: true,
+      result: expect.objectContaining({
+        mutation: "tombstoned",
+        new_version: 3
+      })
+    });
+
+    await expect(localReadEdgeObject(context, {
+      authorization: `Bearer ${token}`,
+      authority_id: fixtureAuthorityId,
+      edge_id: "la_edge_localparity0001"
+    })).resolves.toEqual({
+      ok: false,
+      reason: "edge-not-found"
+    });
+
+    expect(auditSink.events).toContainEqual(expect.objectContaining({
+      event_type: "tool.allowed",
+      operation: "create",
+      tool_name: "edge_create"
+    }));
+    expect(auditSink.events).toContainEqual(expect.objectContaining({
+      event_type: "tool.allowed",
+      operation: "update",
+      tool_name: "edge_update"
+    }));
+    expect(auditSink.events).toContainEqual(expect.objectContaining({
+      event_type: "tool.allowed",
+      operation: "delete",
+      tool_name: "edge_delete"
+    }));
   });
 
   it("updates a synthetic in-memory graph object with an optimistic version guard", async () => {
@@ -426,7 +589,7 @@ describe("local fixture graph tools", () => {
     expect(auditSink.events).toContainEqual(expect.objectContaining({
       event_type: "tool.allowed",
       operation: "update",
-      tool_name: "local_update_object",
+      tool_name: "object_update",
       object_id: "la_object_remotesafe0001"
     }));
     expect(activitySink.events).toContainEqual(expect.objectContaining({
@@ -492,7 +655,7 @@ describe("local fixture graph tools", () => {
     expect(auditSink.events).toContainEqual(expect.objectContaining({
       event_type: "tool.denied",
       operation: "update",
-      tool_name: "local_update_object",
+      tool_name: "object_update",
       object_id: "la_object_privatepage0001",
       access_class: "local-private",
       reason_code: "capability-access-class-denied"
@@ -536,7 +699,7 @@ describe("local fixture graph tools", () => {
     expect(auditSink.events).toContainEqual(expect.objectContaining({
       event_type: "tool.allowed",
       operation: "delete",
-      tool_name: "local_tombstone_object",
+      tool_name: "object_delete",
       object_id: "la_object_privatepage0001",
       redaction: "local-redacted"
     }));
@@ -593,19 +756,19 @@ describe("local fixture graph tools", () => {
     expect(auditSink.events).toContainEqual(expect.objectContaining({
       event_type: "tool.denied",
       operation: "create",
-      tool_name: "local_create_object",
+      tool_name: "object_create",
       reason_code: "capability-operation-denied"
     }));
     expect(auditSink.events).toContainEqual(expect.objectContaining({
       event_type: "tool.denied",
       operation: "update",
-      tool_name: "local_update_object",
+      tool_name: "object_update",
       reason_code: "capability-operation-denied"
     }));
     expect(auditSink.events).toContainEqual(expect.objectContaining({
       event_type: "tool.denied",
       operation: "delete",
-      tool_name: "local_tombstone_object",
+      tool_name: "object_delete",
       reason_code: "capability-operation-denied"
     }));
   });
@@ -630,7 +793,7 @@ describe("local fixture graph tools", () => {
     expect(auditSink.events).toContainEqual(expect.objectContaining({
       event_type: "tool.denied",
       operation: "create",
-      tool_name: "local_create_object",
+      tool_name: "object_create",
       reason_code: "synthetic-store-full"
     }));
   });
@@ -668,7 +831,7 @@ describe("local fixture graph tools", () => {
       expect(auditSink.events).toContainEqual(expect.objectContaining({
         event_type: "tool.denied",
         operation: "create",
-        tool_name: "local_create_object",
+        tool_name: "object_create",
         object_id: "la_object_rejectedpersist0001",
         access_class: "local-private",
         reason_code: "invalid-object"

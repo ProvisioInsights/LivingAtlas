@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { LivingAtlasMcpToolNames } from "@living-atlas/mcp-contract";
 import { fixtureLocalClientId } from "@living-atlas/fixtures";
 import { InMemoryLocalMcpAuditSink } from "./audit";
 import { hashLocalMcpToken, InMemoryLocalMcpCredentialStore } from "./auth";
@@ -26,12 +27,13 @@ describe("local MCP server wrapper", () => {
       authorizationHeader: `Bearer ${token}`
     });
     expect(server.isConnected()).toBe(false);
-    expect(LocalMcpToolInputSchemas.local_graph_status).not.toHaveProperty("authorization");
-    expect(LocalMcpToolInputSchemas.local_list_objects).not.toHaveProperty("authorization");
-    expect(LocalMcpToolInputSchemas.local_read_object).not.toHaveProperty("authorization");
-    expect(LocalMcpToolInputSchemas.local_create_object).not.toHaveProperty("authorization");
-    expect(LocalMcpToolInputSchemas.local_update_object).not.toHaveProperty("authorization");
-    expect(LocalMcpToolInputSchemas.local_tombstone_object).not.toHaveProperty("authorization");
+    expect(LocalMcpToolInputSchemas.status).not.toHaveProperty("authorization");
+    expect(LocalMcpToolInputSchemas.object_list).not.toHaveProperty("authorization");
+    expect(LocalMcpToolInputSchemas.object_read).not.toHaveProperty("authorization");
+    expect(LocalMcpToolInputSchemas.object_create).not.toHaveProperty("authorization");
+    expect(LocalMcpToolInputSchemas.object_update).not.toHaveProperty("authorization");
+    expect(LocalMcpToolInputSchemas.object_delete).not.toHaveProperty("authorization");
+    expect(Object.keys(LocalMcpToolInputSchemas).sort()).toEqual([...LivingAtlasMcpToolNames].sort());
 
     await expect(localReadObject(context, {
       authorization: `Bearer ${token}`,

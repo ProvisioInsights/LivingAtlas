@@ -1,7 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { mkdtemp, rm } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import {
+  GraphObjectEnvelopeSchema,
+  type GraphObjectEnvelope,
+  type SyncBatch
+} from "@living-atlas/contracts";
 import { sensitiveBaitRegistry } from "@living-atlas/fixtures";
 import { createFixtureLocalControlState } from "@living-atlas/local-control-store";
 import { FileLocalGraphStore } from "@living-atlas/local-graph-store";
@@ -14,11 +20,146 @@ import {
   InMemorySyncOutbox,
   nextSyncGenerationFromStatus,
   planSyncFromStatus,
+  runFileOutboxPushHandshake,
   submitSyncBatch,
   SyntheticLocalSyncDaemon
 } from "./sync-agent";
 
 const now = "2026-06-21T12:00:00.000Z";
+
+function sha256(value: string): `sha256:${string}` {
+  return `sha256:${createHash("sha256").update(value).digest("hex")}`;
+}
+
+function ciphertextObject(input: {
+  authorityId: string;
+  objectId: string;
+  version?: number;
+  seed: string;
+  updatedAt?: string;
+}): GraphObjectEnvelope {
+  const ciphertext = Buffer.from(`sync-agent-test:${input.seed}`).toString("base64");
+  const nonce = Buffer.from(`nonce:${input.seed}`).toString("base64").slice(0, 16);
+  return GraphObjectEnvelopeSchema.parse({
+    schema_version: 1,
+    authority_id: input.authorityId,
+    object_id: input.objectId,
+    object_type: "page",
+    version: input.version ?? 1,
+    access_class: "local-private",
+    encryption_class: "client-encrypted",
+    created_at: now,
+    updated_at: input.updatedAt ?? now,
+    content_hash: sha256(`${nonce}:${ciphertext}`),
+    key_ref: `la_key_synctest${createHash("sha256").update(input.seed).digest("hex").slice(0, 12)}`,
+    visible_metadata: {
+      schema_namespace: "synthetic/sync-agent-test",
+      tombstone: false,
+      remote_indexable: false
+    },
+    payload: {
+      kind: "ciphertext-inline",
+      ciphertext,
+      nonce,
+      algorithm: "aes-256-gcm"
+    }
+  });
+}
+
+function fakeRemote(input: {
+  authorityId: string;
+  initial: Array<{ generation: number; batch_id: string; submitted_at: string; object: GraphObjectEnvelope }>;
+}) {
+  const remoteObjects = [...input.initial];
+  const acceptedBatches: SyncBatch[] = [];
+  const fetchImpl: typeof fetch = async (requestInput, init) => {
+    const request = new Request(requestInput, init);
+    const url = new URL(request.url);
+    const latestGeneration = Math.max(0, ...remoteObjects.map((object) => object.generation));
+
+    if (url.pathname === "/api/sync/status") {
+      return new Response(JSON.stringify({
+        ok: true,
+        authority_id: input.authorityId,
+        latest_generation: latestGeneration,
+        latest_batch_id: remoteObjects.at(-1)?.batch_id,
+        latest_submitted_at: remoteObjects.at(-1)?.submitted_at,
+        object_count: remoteObjects.length,
+        change_count: remoteObjects.length,
+        latest_withheld_plaintext_count: 0
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      });
+    }
+
+    if (url.pathname === "/api/sync/envelopes") {
+      const afterGeneration = Number(url.searchParams.get("after_generation") ?? "0");
+      const objects = remoteObjects.filter((object) => object.generation > afterGeneration);
+      const nextGeneration = Math.max(afterGeneration, ...objects.map((object) => object.generation));
+      return new Response(JSON.stringify({
+        ok: true,
+        authority_id: input.authorityId,
+        from_generation: afterGeneration,
+        latest_generation: latestGeneration,
+        objects,
+        next_cursor: {
+          authority_id: input.authorityId,
+          generation: nextGeneration,
+          batch_id: objects.at(-1)?.batch_id
+        },
+        has_more: false
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      });
+    }
+
+    if (url.pathname === "/api/sync/batch" && request.method === "POST") {
+      const batch = await request.json() as SyncBatch;
+      if (batch.base_generation !== latestGeneration) {
+        return new Response(JSON.stringify({
+          ok: false,
+          error: "generation-conflict",
+          latest_generation: latestGeneration
+        }), {
+          status: 409,
+          headers: { "content-type": "application/json" }
+        });
+      }
+
+      acceptedBatches.push(batch);
+      for (const object of batch.objects) {
+        remoteObjects.push({
+          batch_id: batch.batch_id,
+          generation: batch.target_generation,
+          submitted_at: batch.submitted_at,
+          object
+        });
+      }
+
+      return new Response(JSON.stringify({
+        ok: true,
+        batch_id: batch.batch_id,
+        accepted_objects: batch.objects.length,
+        accepted_changes: batch.changes.length,
+        target_generation: batch.target_generation,
+        withheld_plaintext_count: batch.withheld_plaintext_count
+      }), {
+        status: 202,
+        headers: { "content-type": "application/json" }
+      });
+    }
+
+    return new Response(JSON.stringify({ ok: false, error: "not-found" }), { status: 404 });
+  };
+
+  return {
+    fetchImpl,
+    remoteObjects,
+    acceptedBatches
+  };
+}
 
 describe("ciphertext sync agent", () => {
 	  it("builds a ciphertext-only batch from the fixture graph", async () => {
@@ -281,6 +422,187 @@ describe("ciphertext sync agent", () => {
           }
         ]
       });
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("pushes local outbox after applying independent remote generations in the same handshake", async () => {
+    const controlState = await createFixtureLocalControlState("sync-agent-push-handshake-token-0001");
+    const authorityId = controlState.authority_id;
+    const directory = await mkdtemp(join(tmpdir(), "living-atlas-push-handshake-"));
+    const outboxDir = join(directory, "outbox");
+    const localObject = ciphertextObject({
+      authorityId,
+      objectId: "la_object_pushlocal0001",
+      seed: "local-independent"
+    });
+    const remoteObject = ciphertextObject({
+      authorityId,
+      objectId: "la_object_pushremote0001",
+      seed: "remote-independent"
+    });
+    try {
+      await mkdir(outboxDir, { recursive: true });
+      const store = await FileLocalGraphStore.open({
+        directory: join(directory, "graph"),
+        authorityId,
+        plaintextPersistence: "redact"
+      });
+      const created = await store.createObject({
+        object: localObject,
+        expected_generation: 0,
+        actor_id: "la_client_sync0001",
+        recorded_at: now
+      });
+      expect(created.ok).toBe(true);
+      await writeFile(join(outboxDir, "queued-local.json"), `${JSON.stringify({
+        record_schema: "living-atlas-local-mcp-outbox:v1",
+        objects: [localObject]
+      })}\n`);
+
+      const remote = fakeRemote({
+        authorityId,
+        initial: [{
+          batch_id: "la_sync_batch_remote0001",
+          generation: 1,
+          submitted_at: now,
+          object: remoteObject
+        }]
+      });
+
+      const result = await runFileOutboxPushHandshake({
+        outboxDir,
+        store,
+        controlState,
+        cursor: {
+          authority_id: authorityId,
+          generation: 0
+        },
+        endpoint: "https://living-atlas.example",
+        syncToken: "fixture-sync-token-0001",
+        tokenId: "la_sync_token_push0001",
+        fetchImpl: remote.fetchImpl,
+        now
+      });
+
+      expect(result).toMatchObject({
+        ok: true,
+        cursor: {
+          authority_id: authorityId,
+          generation: 2
+        },
+        pushed_batches: 1,
+        pushed_objects: 1,
+        applied: 1,
+        conflicts: 0,
+        outbox_pending: 0
+      });
+      expect(store.readObject(localObject.object_id)).toEqual(expect.objectContaining({
+        object_id: localObject.object_id
+      }));
+      expect(store.readObject(remoteObject.object_id)).toEqual(expect.objectContaining({
+        object_id: remoteObject.object_id
+      }));
+      expect(remote.acceptedBatches).toHaveLength(1);
+      expect(remote.acceptedBatches[0]).toMatchObject({
+        base_generation: 1,
+        target_generation: 2
+      });
+      expect(remote.remoteObjects.map((object) => object.object.object_id)).toEqual([
+        remoteObject.object_id,
+        localObject.object_id
+      ]);
+      expect(await readdir(outboxDir)).toEqual(["queued-local.json.accepted.g2"]);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("creates a conflict instead of pushing over same-object simultaneous edits", async () => {
+    const controlState = await createFixtureLocalControlState("sync-agent-push-conflict-token-0001");
+    const authorityId = controlState.authority_id;
+    const directory = await mkdtemp(join(tmpdir(), "living-atlas-push-conflict-"));
+    const outboxDir = join(directory, "outbox");
+    const localObject = ciphertextObject({
+      authorityId,
+      objectId: "la_object_pushconflict0001",
+      version: 2,
+      seed: "local-same-object"
+    });
+    const remoteObject = ciphertextObject({
+      authorityId,
+      objectId: "la_object_pushconflict0001",
+      version: 2,
+      seed: "remote-same-object"
+    });
+    try {
+      await mkdir(outboxDir, { recursive: true });
+      const store = await FileLocalGraphStore.open({
+        directory: join(directory, "graph"),
+        authorityId,
+        plaintextPersistence: "redact"
+      });
+      const created = await store.createObject({
+        object: localObject,
+        expected_generation: 0,
+        actor_id: "la_client_sync0001",
+        recorded_at: now
+      });
+      expect(created.ok).toBe(true);
+      await writeFile(join(outboxDir, "queued-conflict.json"), `${JSON.stringify({
+        record_schema: "living-atlas-local-mcp-outbox:v1",
+        objects: [localObject]
+      })}\n`);
+
+      const remote = fakeRemote({
+        authorityId,
+        initial: [{
+          batch_id: "la_sync_batch_remoteconflict0001",
+          generation: 1,
+          submitted_at: now,
+          object: remoteObject
+        }]
+      });
+
+      const result = await runFileOutboxPushHandshake({
+        outboxDir,
+        store,
+        controlState,
+        cursor: {
+          authority_id: authorityId,
+          generation: 0
+        },
+        endpoint: "https://living-atlas.example",
+        syncToken: "fixture-sync-token-0001",
+        tokenId: "la_sync_token_pushconflict0001",
+        fetchImpl: remote.fetchImpl,
+        now
+      });
+
+      expect(result).toMatchObject({
+        ok: false,
+        reason: "remote-apply-conflict",
+        pushed_batches: 0,
+        pushed_objects: 0,
+        applied: 0,
+        conflicts: 1,
+        outbox_pending: 1,
+        conflict_samples: [
+          {
+            object_id: localObject.object_id,
+            remote_generation: 1,
+            remote_version: 2,
+            local_version: 2,
+            reason: "version-conflict"
+          }
+        ]
+      });
+      expect(remote.acceptedBatches).toHaveLength(0);
+      expect(await readdir(outboxDir)).toEqual(["queued-conflict.json"]);
+      expect(store.readObject(localObject.object_id)).toEqual(expect.objectContaining({
+        content_hash: localObject.content_hash
+      }));
     } finally {
       await rm(directory, { recursive: true, force: true });
     }

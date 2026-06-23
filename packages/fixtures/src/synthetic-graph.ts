@@ -259,7 +259,7 @@ export const temporalEdges: TemporalEdge[] = [
     source: "synthetic-fixture",
     attrs: {
       amount: "synthetic",
-      status: "pending"
+      investment_status: "pending"
     }
   }
 ];

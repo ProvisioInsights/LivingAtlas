@@ -15,6 +15,8 @@
   },
   "dependencies": {
     "@living-atlas/contracts": "workspace:*",
+    "@living-atlas/graph-service": "workspace:*",
+    "@living-atlas/mcp-contract": "workspace:*",
     "zod": "4.4.3"
   }
 }

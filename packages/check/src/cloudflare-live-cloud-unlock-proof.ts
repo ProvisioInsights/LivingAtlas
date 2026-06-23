@@ -336,7 +336,7 @@ export async function main(): Promise<void> {
     capabilityId: syncCapabilityId,
     tokenId,
     id: 20,
-    name: "remote_graph_create",
+    name: "object_create",
     args: { object: encryptedObject }
   });
   if (!JSON.stringify(graphCreate).includes("remote graph objects must be remote-readable plaintext")) {
@@ -351,7 +351,7 @@ export async function main(): Promise<void> {
     tokenId,
     cloudUnlockKey: unlockKey,
     id: 30,
-    name: "remote_sensitive_decrypt",
+    name: "sensitive_decrypt",
     args: { authority_id: authorityId, object_id: objectId }
   }));
   if (normalDecrypt.ok !== false || normalDecrypt.reason !== "cloud-unlock-capability-required") {
@@ -367,7 +367,7 @@ export async function main(): Promise<void> {
     tokenId,
     cloudUnlockKey: wrongUnlockKey,
     id: 40,
-    name: "remote_sensitive_decrypt",
+    name: "sensitive_decrypt",
     args: { authority_id: authorityId, object_id: objectId }
   }));
   if (wrongDecrypt.ok !== false || wrongDecrypt.reason !== "decrypt-failed") {
@@ -383,7 +383,7 @@ export async function main(): Promise<void> {
     tokenId,
     cloudUnlockKey: unlockKey,
     id: 50,
-    name: "remote_sensitive_decrypt",
+    name: "sensitive_decrypt",
     args: { authority_id: authorityId, object_id: objectId }
   }));
   if (correctDecrypt.ok !== true || correctDecrypt.current_mode !== "cloud-unlock-session") {
@@ -402,7 +402,7 @@ export async function main(): Promise<void> {
     capabilityId: syncCapabilityId,
     tokenId
   });
-  const audit = await client.callRemoteMcpTool("remote_activity_audit", {
+  const audit = await client.callRemoteMcpTool("activity_read", {
     authority_id: authorityId,
     event_type: "object.decrypt",
     limit: 10

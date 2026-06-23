@@ -21,8 +21,10 @@ const ciphertextBatch = {
   authority_id: "la_authority_worker0001",
   device_id: "la_device_worker0001",
   client_id: "la_client_worker0001",
+  capability_id: "la_cap_worker0001",
   operation_id: "la_operation_worker0001",
   trace_id: "la_trace_worker0001",
+  idempotency_key: "la_idem_worker0001",
   submitted_at: timestamp,
   base_generation: 0,
   target_generation: 1,
@@ -205,8 +207,10 @@ async function cloudUnlockBatch(rawKey: Uint8Array): Promise<SyncBatch> {
     authority_id: "la_authority_worker0001",
     device_id: "la_device_worker0001",
     client_id: "la_client_worker0001",
+    capability_id: cloudUnlockCapabilityId,
     operation_id: "la_operation_cloudunlock0001",
     trace_id: "la_trace_cloudunlock0001",
+    idempotency_key: "la_idem_cloudunlock0001",
     submitted_at: timestamp,
     base_generation: 0,
     target_generation: 1,
@@ -234,12 +238,14 @@ async function cloudUnlockBatch(rawKey: Uint8Array): Promise<SyncBatch> {
 
 const staleCiphertextBatch = {
   ...ciphertextBatch,
-  batch_id: "la_sync_batch_worker0002"
+  batch_id: "la_sync_batch_worker0002",
+  idempotency_key: "la_idem_worker0002"
 } as const;
 
 const gapCiphertextBatch = {
   ...ciphertextBatch,
   batch_id: "la_sync_batch_worker0003",
+  idempotency_key: "la_idem_worker0003",
   base_generation: 3,
   target_generation: 4,
   changes: [
@@ -1200,6 +1206,7 @@ describe("Worker sync batch acceptance", () => {
     const secondBatch = SyncBatchSchema.parse({
       ...ciphertextBatch,
       batch_id: "la_sync_batch_worker0004",
+      idempotency_key: "la_idem_worker0004",
       operation_id: "la_operation_worker0004",
       trace_id: "la_trace_worker0004",
       submitted_at: "2026-06-21T12:00:01.000Z",
@@ -1371,6 +1378,7 @@ describe("Worker sync batch acceptance", () => {
     const secondBatch = {
       ...ciphertextBatch,
       batch_id: "la_sync_batch_worker0002",
+      idempotency_key: "la_idem_worker0002",
       operation_id: "la_operation_worker0002",
       trace_id: "la_trace_worker0002",
       base_generation: 1,
@@ -1530,17 +1538,74 @@ describe("Worker sync batch acceptance", () => {
     }), env);
 
     expect(toolsResponse.status).toBe(200);
-    await expect(toolsResponse.json()).resolves.toMatchObject({
+    const toolsBody = await toolsResponse.json();
+    expect(toolsBody).toMatchObject({
       jsonrpc: "2.0",
       id: 1,
       result: {
         tools: expect.arrayContaining([
-          expect.objectContaining({ name: "remote_sync_envelopes" }),
-          expect.objectContaining({ name: "remote_access_modes" }),
-          expect.objectContaining({ name: "remote_sensitive_decrypt" }),
-          expect.objectContaining({ name: "remote_usage_gate" }),
-          expect.objectContaining({ name: "remote_usage_reconcile" })
+          expect.objectContaining({ name: "sync_envelopes" }),
+          expect.objectContaining({ name: "access_modes" }),
+          expect.objectContaining({ name: "sensitive_decrypt" }),
+          expect.objectContaining({ name: "usage_gate" }),
+          expect.objectContaining({ name: "usage_reconcile" })
         ])
+      }
+    });
+    const tools = (toolsBody as { result?: { tools?: Array<{ name?: string; inputSchema?: Record<string, unknown> }> } }).result?.tools ?? [];
+    const edgeCreateSchema = tools.find((tool) => tool.name === "edge_create")?.inputSchema;
+    expect(edgeCreateSchema).toMatchObject({
+      properties: {
+        edge: {
+          properties: {
+            source_type: { enum: expect.arrayContaining(["person", "organization", "project", "location", "occurrence", "topic"]) },
+            predicate: { enum: expect.arrayContaining(["invests-in", "participant-in", "about"]) },
+            attrs: {
+              properties: {
+                investment_status: expect.objectContaining({ description: expect.stringContaining("Capital-specific") }),
+                schedule: expect.objectContaining({
+                  properties: expect.objectContaining({
+                    recurrence_set: expect.objectContaining({ description: expect.stringContaining("RFC 5545") })
+                  })
+                })
+              }
+            }
+          }
+        }
+      }
+    });
+    expect(JSON.stringify(edgeCreateSchema)).not.toContain("RecurrenceRuleSchema");
+    expect(edgeCreateSchema).toMatchObject({
+      properties: {
+        edge: {
+          properties: {
+            attrs: expect.objectContaining({
+              not: expect.objectContaining({
+                anyOf: expect.arrayContaining([
+                  expect.objectContaining({ required: ["rrule"] }),
+                  expect.objectContaining({ required: ["recurrence"] })
+                ])
+              })
+            })
+          }
+        }
+      }
+    });
+    const edgeUpdateSchema = tools.find((tool) => tool.name === "edge_update")?.inputSchema;
+    expect(edgeUpdateSchema).toMatchObject({
+      properties: {
+        patch: {
+          properties: {
+            attrs: expect.objectContaining({
+              not: expect.objectContaining({
+                anyOf: expect.arrayContaining([
+                  expect.objectContaining({ required: ["status"] }),
+                  expect.objectContaining({ required: ["recurrence"] })
+                ])
+              })
+            })
+          }
+        }
       }
     });
 
@@ -1555,7 +1620,7 @@ describe("Worker sync batch acceptance", () => {
         id: 2,
         method: "tools/call",
         params: {
-          name: "remote_sync_envelopes",
+          name: "sync_envelopes",
           arguments: {
             authority_id: "la_authority_worker0001",
             after_generation: 0
@@ -1595,7 +1660,7 @@ describe("Worker sync batch acceptance", () => {
         id: 5,
         method: "tools/call",
         params: {
-          name: "remote_access_modes",
+          name: "access_modes",
           arguments: {}
         }
       })
@@ -1638,7 +1703,7 @@ describe("Worker sync batch acceptance", () => {
         id: 6,
         method: "tools/call",
         params: {
-          name: "remote_sensitive_decrypt",
+          name: "sensitive_decrypt",
           arguments: {
             object_id: "la_object_worker0001"
           }
@@ -1672,7 +1737,7 @@ describe("Worker sync batch acceptance", () => {
         id: 7,
         method: "tools/call",
         params: {
-          name: "remote_sensitive_decrypt",
+          name: "sensitive_decrypt",
           arguments: {
             authority_id: "la_authority_worker0001",
             object_id: "la_object_worker0001"
@@ -1711,7 +1776,7 @@ describe("Worker sync batch acceptance", () => {
         id: 3,
         method: "tools/call",
         params: {
-          name: "remote_usage_gate",
+          name: "usage_gate",
           arguments: {
             window_hours: 6,
             max_budget_ratio: 0.8,
@@ -1748,7 +1813,7 @@ describe("Worker sync batch acceptance", () => {
         id: 4,
         method: "tools/call",
         params: {
-          name: "remote_usage_reconcile",
+          name: "usage_reconcile",
           arguments: {
             window_hours: 6,
             max_r2_objects: 10
@@ -1819,7 +1884,7 @@ describe("Worker sync batch acceptance", () => {
       }>;
     };
 
-    await expect(mcpCall(300, "remote_sensitive_decrypt", {
+    await expect(mcpCall(300, "sensitive_decrypt", {
       authority_id: otherAuthorityId,
       object_id: "la_object_other0001"
     })).resolves.toMatchObject({
@@ -1832,7 +1897,7 @@ describe("Worker sync batch acceptance", () => {
     });
     expect(controlDb.records.some((record) => record.query.includes("INSERT INTO audit_events"))).toBe(false);
 
-    await expect(mcpCall(301, "remote_sensitive_decrypt", {
+    await expect(mcpCall(301, "sensitive_decrypt", {
       authority_id: otherAuthorityId,
       object_id: "la_object_other0001"
     }, {
@@ -1843,23 +1908,23 @@ describe("Worker sync batch acceptance", () => {
     });
 
     const mismatchCases: Array<[string, Record<string, unknown>, string]> = [
-      ["remote_activity_audit", { authority_id: otherAuthorityId, limit: 5 }, "activity-authority-mismatch"],
-      ["remote_graph_status", { authority_id: otherAuthorityId }, "graph-authority-mismatch"],
-      ["remote_graph_reconcile", { authority_id: otherAuthorityId }, "graph-authority-mismatch"],
-      ["remote_graph_list", { authority_id: otherAuthorityId }, "graph-authority-mismatch"],
-      ["remote_graph_read", { authority_id: otherAuthorityId, object_id: "la_object_other0001" }, "graph-authority-mismatch"],
-      ["remote_graph_create", { object: otherPage }, "graph-authority-mismatch"],
-      ["remote_graph_update", { authority_id: otherAuthorityId, object_id: "la_object_other0001", patch: { visible_metadata: { tombstone: false } } }, "graph-authority-mismatch"],
-      ["remote_graph_delete", { authority_id: otherAuthorityId, object_id: "la_object_other0001" }, "graph-authority-mismatch"],
-      ["remote_semantic_search", { authority_id: otherAuthorityId, query: "wrong" }, "graph-authority-mismatch"],
-      ["remote_graph_traverse", { authority_id: otherAuthorityId, start_object_id: "la_object_other0001" }, "graph-authority-mismatch"],
-      ["remote_timeline_query", { authority_id: otherAuthorityId }, "graph-authority-mismatch"],
-      ["remote_edge_create", { authority_id: otherAuthorityId, edge: { edge_id: "la_edge_other0001" } }, "graph-authority-mismatch"],
-      ["remote_edge_read", { authority_id: otherAuthorityId, edge_id: "la_edge_other0001" }, "graph-authority-mismatch"],
-      ["remote_edge_update", { authority_id: otherAuthorityId, edge_id: "la_edge_other0001", patch: { status: "ended" } }, "graph-authority-mismatch"],
-      ["remote_edge_delete", { authority_id: otherAuthorityId, edge_id: "la_edge_other0001" }, "graph-authority-mismatch"],
-      ["remote_sync_pull", { authority_id: otherAuthorityId, after_generation: 0 }, "sync-authority-mismatch"],
-      ["remote_sync_envelopes", { authority_id: otherAuthorityId, after_generation: 0 }, "sync-authority-mismatch"]
+      ["activity_read", { authority_id: otherAuthorityId, limit: 5 }, "activity-authority-mismatch"],
+      ["status", { authority_id: otherAuthorityId }, "graph-authority-mismatch"],
+      ["reconcile", { authority_id: otherAuthorityId }, "graph-authority-mismatch"],
+      ["object_list", { authority_id: otherAuthorityId }, "graph-authority-mismatch"],
+      ["object_read", { authority_id: otherAuthorityId, object_id: "la_object_other0001" }, "graph-authority-mismatch"],
+      ["object_create", { object: otherPage }, "graph-authority-mismatch"],
+      ["object_update", { authority_id: otherAuthorityId, object_id: "la_object_other0001", patch: { visible_metadata: { tombstone: false } } }, "graph-authority-mismatch"],
+      ["object_delete", { authority_id: otherAuthorityId, object_id: "la_object_other0001" }, "graph-authority-mismatch"],
+      ["search", { authority_id: otherAuthorityId, query: "wrong" }, "graph-authority-mismatch"],
+      ["traverse", { authority_id: otherAuthorityId, start_object_id: "la_object_other0001" }, "graph-authority-mismatch"],
+      ["timeline", { authority_id: otherAuthorityId }, "graph-authority-mismatch"],
+      ["edge_create", { authority_id: otherAuthorityId, edge: { edge_id: "la_edge_other0001" } }, "graph-authority-mismatch"],
+      ["edge_read", { authority_id: otherAuthorityId, edge_id: "la_edge_other0001" }, "graph-authority-mismatch"],
+      ["edge_update", { authority_id: otherAuthorityId, edge_id: "la_edge_other0001", patch: { status: "ended" } }, "graph-authority-mismatch"],
+      ["edge_delete", { authority_id: otherAuthorityId, edge_id: "la_edge_other0001" }, "graph-authority-mismatch"],
+      ["sync_pull", { authority_id: otherAuthorityId, after_generation: 0 }, "sync-authority-mismatch"],
+      ["sync_envelopes", { authority_id: otherAuthorityId, after_generation: 0 }, "sync-authority-mismatch"]
     ];
 
     for (const [name, args, message] of mismatchCases) {
@@ -1868,10 +1933,10 @@ describe("Worker sync batch acceptance", () => {
       });
     }
 
-    await expect(mcpCall(500, "remote_usage_gate", { window_hours: 6 })).resolves.toMatchObject({
+    await expect(mcpCall(500, "usage_gate", { window_hours: 6 })).resolves.toMatchObject({
       error: { message: "missing-or-invalid-usage-token" }
     });
-    await expect(mcpCall(501, "remote_usage_reconcile", { window_hours: 6 })).resolves.toMatchObject({
+    await expect(mcpCall(501, "usage_reconcile", { window_hours: 6 })).resolves.toMatchObject({
       error: { message: "missing-or-invalid-usage-token" }
     });
     expect(graphBucket.puts).toHaveLength(0);
@@ -1910,7 +1975,7 @@ describe("Worker sync batch acceptance", () => {
         id: 8,
         method: "tools/call",
         params: {
-          name: "remote_sensitive_decrypt",
+          name: "sensitive_decrypt",
           arguments: {
             authority_id: "la_authority_worker0001",
             object_id: "la_object_cloudunlock0001"
@@ -1947,7 +2012,7 @@ describe("Worker sync batch acceptance", () => {
         id: 88,
         method: "tools/call",
         params: {
-          name: "remote_sensitive_decrypt",
+          name: "sensitive_decrypt",
           arguments: {
             authority_id: "la_authority_worker0001",
             object_id: "la_object_cloudunlock0001"
@@ -1984,7 +2049,7 @@ describe("Worker sync batch acceptance", () => {
         id: 9,
         method: "tools/call",
         params: {
-          name: "remote_sensitive_decrypt",
+          name: "sensitive_decrypt",
           arguments: {
             authority_id: "la_authority_worker0001",
             object_id: "la_object_cloudunlock0001"
@@ -2036,7 +2101,7 @@ describe("Worker sync batch acceptance", () => {
         id: 10,
         method: "tools/call",
         params: {
-          name: "remote_activity_audit",
+          name: "activity_read",
           arguments: {
             authority_id: "la_authority_worker0001",
             limit: 20
@@ -2107,7 +2172,7 @@ describe("Worker sync batch acceptance", () => {
         id: 91,
         method: "tools/call",
         params: {
-          name: "remote_sensitive_decrypt",
+          name: "sensitive_decrypt",
           arguments: {
             authority_id: "la_authority_worker0001",
             object_id: "la_object_cloudunlock0001"
@@ -2197,7 +2262,7 @@ describe("Worker sync batch acceptance", () => {
       }
     };
 
-    await expect(mcpCall(10, "remote_graph_create", { object: page })).resolves.toMatchObject({
+    await expect(mcpCall(10, "object_create", { object: page })).resolves.toMatchObject({
       result: {
         structuredContent: {
           ok: true,
@@ -2208,7 +2273,7 @@ describe("Worker sync batch acceptance", () => {
         }
       }
     });
-    await expect(mcpCall(101, "remote_graph_create", { object: page })).resolves.toMatchObject({
+    await expect(mcpCall(101, "object_create", { object: page })).resolves.toMatchObject({
       result: {
         structuredContent: {
           ok: true,
@@ -2219,7 +2284,7 @@ describe("Worker sync batch acceptance", () => {
         }
       }
     });
-    await expect(mcpCall(11, "remote_graph_create", { object: target })).resolves.toMatchObject({
+    await expect(mcpCall(11, "object_create", { object: target })).resolves.toMatchObject({
       result: {
         structuredContent: {
           ok: true,
@@ -2228,7 +2293,7 @@ describe("Worker sync batch acceptance", () => {
       }
     });
 
-    await expect(mcpCall(110, "remote_sync_envelopes", { authority_id: authorityId, after_generation: 0 })).resolves.toMatchObject({
+    await expect(mcpCall(110, "sync_envelopes", { authority_id: authorityId, after_generation: 0 })).resolves.toMatchObject({
       result: {
         structuredContent: {
           ok: true,
@@ -2250,7 +2315,7 @@ describe("Worker sync batch acceptance", () => {
       }
     });
 
-    await expect(mcpCall(12, "remote_graph_read", { authority_id: authorityId, object_id: sourceId })).resolves.toMatchObject({
+    await expect(mcpCall(12, "object_read", { authority_id: authorityId, object_id: sourceId })).resolves.toMatchObject({
       result: {
         structuredContent: {
           ok: true,
@@ -2264,7 +2329,7 @@ describe("Worker sync batch acceptance", () => {
       }
     });
 
-    await expect(mcpCall(13, "remote_semantic_search", { authority_id: authorityId, query: "Mercury Atlas", limit: 5 })).resolves.toMatchObject({
+    await expect(mcpCall(13, "search", { authority_id: authorityId, query: "Mercury Atlas", limit: 5 })).resolves.toMatchObject({
       result: {
         structuredContent: {
           ok: true,
@@ -2298,7 +2363,7 @@ describe("Worker sync batch acceptance", () => {
       }
     };
 
-    await expect(mcpCall(130, "remote_graph_create", { object: expiredRelease })).resolves.toMatchObject({
+    await expect(mcpCall(130, "object_create", { object: expiredRelease })).resolves.toMatchObject({
       result: {
         structuredContent: {
           ok: true,
@@ -2306,7 +2371,7 @@ describe("Worker sync batch acceptance", () => {
         }
       }
     });
-    await expect(mcpCall(131, "remote_graph_read", { authority_id: authorityId, object_id: expiredReleaseId })).resolves.toMatchObject({
+    await expect(mcpCall(131, "object_read", { authority_id: authorityId, object_id: expiredReleaseId })).resolves.toMatchObject({
       result: {
         structuredContent: {
           ok: false,
@@ -2314,7 +2379,7 @@ describe("Worker sync batch acceptance", () => {
         }
       }
     });
-    await expect(mcpCall(132, "remote_graph_list", { authority_id: authorityId, limit: 20 })).resolves.not.toMatchObject({
+    await expect(mcpCall(132, "object_list", { authority_id: authorityId, limit: 20 })).resolves.not.toMatchObject({
       result: {
         structuredContent: {
           objects: expect.arrayContaining([
@@ -2323,7 +2388,7 @@ describe("Worker sync batch acceptance", () => {
         }
       }
     });
-    await expect(mcpCall(133, "remote_semantic_search", { authority_id: authorityId, query: "Expired Release", limit: 5 })).resolves.toMatchObject({
+    await expect(mcpCall(133, "search", { authority_id: authorityId, query: "Expired Release", limit: 5 })).resolves.toMatchObject({
       result: {
         structuredContent: {
           ok: true,
@@ -2332,7 +2397,7 @@ describe("Worker sync batch acceptance", () => {
       }
     });
 
-    await expect(mcpCall(14, "remote_graph_update", {
+    await expect(mcpCall(14, "object_update", {
       authority_id: authorityId,
       object_id: sourceId,
       expected_version: 1,
@@ -2356,7 +2421,7 @@ describe("Worker sync batch acceptance", () => {
         }
       }
     });
-    await expect(mcpCall(114, "remote_graph_update", {
+    await expect(mcpCall(114, "object_update", {
       authority_id: authorityId,
       object_id: sourceId,
       expected_version: 1,
@@ -2397,7 +2462,7 @@ describe("Worker sync batch acceptance", () => {
         scope: "remote graph traversal"
       }
     };
-    await expect(mcpCall(15, "remote_edge_create", { authority_id: authorityId, edge })).resolves.toMatchObject({
+    await expect(mcpCall(15, "edge_create", { authority_id: authorityId, edge })).resolves.toMatchObject({
       result: {
         structuredContent: {
           ok: true,
@@ -2408,7 +2473,7 @@ describe("Worker sync batch acceptance", () => {
       }
     });
 
-    await expect(mcpCall(16, "remote_graph_traverse", {
+    await expect(mcpCall(16, "traverse", {
       authority_id: authorityId,
       start_object_id: sourceId,
       direction: "outbound",
@@ -2424,7 +2489,7 @@ describe("Worker sync batch acceptance", () => {
       }
     });
 
-    await expect(mcpCall(17, "remote_timeline_query", { authority_id: authorityId, from: "2026-06", to: "2026-06-30", predicate: "advises" })).resolves.toMatchObject({
+    await expect(mcpCall(17, "timeline", { authority_id: authorityId, from: "2026-06", to: "2026-06-30", predicate: "advises" })).resolves.toMatchObject({
       result: {
         structuredContent: {
           ok: true,
@@ -2438,7 +2503,7 @@ describe("Worker sync batch acceptance", () => {
       }
     });
 
-    await expect(mcpCall(18, "remote_edge_update", {
+    await expect(mcpCall(18, "edge_update", {
       authority_id: authorityId,
       edge_id: "la_edge_remotecrud0001",
       expected_version: 1,
@@ -2457,7 +2522,7 @@ describe("Worker sync batch acceptance", () => {
       }
     });
 
-    await expect(mcpCall(19, "remote_edge_read", { authority_id: authorityId, edge_id: "la_edge_remotecrud0001" })).resolves.toMatchObject({
+    await expect(mcpCall(19, "edge_read", { authority_id: authorityId, edge_id: "la_edge_remotecrud0001" })).resolves.toMatchObject({
       result: {
         structuredContent: {
           ok: true,
@@ -2470,7 +2535,7 @@ describe("Worker sync batch acceptance", () => {
       }
     });
 
-    await expect(mcpCall(20, "remote_graph_delete", { authority_id: authorityId, object_id: sourceId, expected_version: 2 })).resolves.toMatchObject({
+    await expect(mcpCall(20, "object_delete", { authority_id: authorityId, object_id: sourceId, expected_version: 2 })).resolves.toMatchObject({
       result: {
         structuredContent: {
           ok: true,
@@ -2484,7 +2549,7 @@ describe("Worker sync batch acceptance", () => {
       }
     });
 
-    await expect(mcpCall(200, "remote_graph_read", { authority_id: authorityId, object_id: sourceId })).resolves.toMatchObject({
+    await expect(mcpCall(200, "object_read", { authority_id: authorityId, object_id: sourceId })).resolves.toMatchObject({
       result: {
         structuredContent: {
           ok: false,
@@ -2492,7 +2557,7 @@ describe("Worker sync batch acceptance", () => {
         }
       }
     });
-    await expect(mcpCall(201, "remote_timeline_query", { authority_id: authorityId, object_id: sourceId, from: "2026-06", to: "2026-06-30" })).resolves.toMatchObject({
+    await expect(mcpCall(201, "timeline", { authority_id: authorityId, object_id: sourceId, from: "2026-06", to: "2026-06-30" })).resolves.toMatchObject({
       result: {
         structuredContent: {
           ok: true,
@@ -2501,7 +2566,7 @@ describe("Worker sync batch acceptance", () => {
       }
     });
 
-    await expect(mcpCall(210, "remote_graph_reconcile", { authority_id: authorityId })).resolves.toMatchObject({
+    await expect(mcpCall(210, "reconcile", { authority_id: authorityId })).resolves.toMatchObject({
       result: {
         structuredContent: {
           ok: true,
@@ -2525,7 +2590,7 @@ describe("Worker sync batch acceptance", () => {
       }
     });
 
-    await expect(mcpCall(21, "remote_graph_create", {
+    await expect(mcpCall(21, "object_create", {
       object: ciphertextBatch.objects[0]
     })).resolves.toMatchObject({
       error: {
@@ -2533,7 +2598,7 @@ describe("Worker sync batch acceptance", () => {
       }
     });
 
-    await expect(mcpCall(22, "remote_activity_audit", { authority_id: authorityId, limit: 50 })).resolves.toMatchObject({
+    await expect(mcpCall(22, "activity_read", { authority_id: authorityId, limit: 50 })).resolves.toMatchObject({
       result: {
         structuredContent: {
           ok: true,
@@ -2566,10 +2631,200 @@ describe("Worker sync batch acceptance", () => {
       }
     });
 
-    const auditResponse = await mcpCall(23, "remote_activity_audit", { authority_id: authorityId, limit: 50 });
+    const auditResponse = await mcpCall(23, "activity_read", { authority_id: authorityId, limit: 50 });
     expect(JSON.stringify(auditResponse)).not.toContain("Remote Atlas Knowledge Seed");
     expect(JSON.stringify(auditResponse)).not.toContain("Mercury Atlas");
     expect(JSON.stringify(auditResponse)).not.toContain(syncToken);
+  });
+
+  it("supports bounded object and edge batches through the remote MCP graph service", async () => {
+    const { env } = await createEnv();
+    const mcpCall = async (id: number, name: string, args: Record<string, unknown>) => {
+      const response = await handleBootstrapRequest(new Request("https://living-atlas.example/mcp", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-living-atlas-sync-token": syncToken
+        },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id,
+          method: "tools/call",
+          params: { name, arguments: args }
+        })
+      }), env);
+      expect(response.status).toBe(200);
+      return response.json() as Promise<{
+        result?: {
+          structuredContent?: Record<string, unknown>;
+        };
+        error?: unknown;
+      }>;
+    };
+    const authorityId = "la_authority_worker0001";
+    const objectA = {
+      schema_version: 1,
+      authority_id: authorityId,
+      object_id: "la_object_batchremote0001",
+      object_type: "page",
+      version: 1,
+      access_class: "remote-safe",
+      encryption_class: "plaintext",
+      created_at: timestamp,
+      updated_at: timestamp,
+      content_hash: "sha256:abababababababababababababababababababababababababababababababab",
+      visible_metadata: {
+        schema_namespace: "synthetic/remote-batch",
+        tombstone: false,
+        size_class: "tiny",
+        remote_indexable: true
+      },
+      payload: {
+        kind: "plaintext-json",
+        data: {
+          title: "Batch Remote Source",
+          body: "Remote batch source fixture."
+        }
+      }
+    };
+    const objectB = {
+      ...objectA,
+      object_id: "la_object_batchremote0002",
+      content_hash: "sha256:bcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbc",
+      payload: {
+        kind: "plaintext-json",
+        data: {
+          title: "Batch Remote Target",
+          body: "Remote batch target fixture."
+        }
+      }
+    };
+
+    await expect(mcpCall(300, "object_batch", {
+      authority_id: authorityId,
+      idempotency_key: "la_idem_remote_object_batch_0001",
+      items: [
+        { op: "create", object: objectA },
+        { op: "create", object: objectB }
+      ]
+    })).resolves.toMatchObject({
+      result: {
+        structuredContent: {
+          ok: true,
+          batch_kind: "object",
+          requested_items: 2,
+          accepted_items: 2,
+          failed_items: 0,
+          usage_estimate: {
+            worker_requests_used: 1,
+            worker_requests_saved_vs_single_item: 1,
+            d1_rows_written_are_per_item: true,
+            r2_operations_are_per_item: true
+          },
+          results: [
+            expect.objectContaining({
+              ok: true,
+              tool: "object_create",
+              idempotency_key: "la_idem_remote_object_batch_0001_0",
+              result: expect.objectContaining({ sync_generation: 1 })
+            }),
+            expect.objectContaining({
+              ok: true,
+              tool: "object_create",
+              idempotency_key: "la_idem_remote_object_batch_0001_1",
+              result: expect.objectContaining({ sync_generation: 2 })
+            })
+          ]
+        }
+      }
+    });
+
+    await expect(mcpCall(301, "edge_batch", {
+      authority_id: authorityId,
+      idempotency_key: "la_idem_remote_edge_batch_0001",
+      items: [
+        {
+          op: "create",
+          edge: {
+            edge_id: "la_edge_batchremote0001",
+            source_object_id: objectA.object_id,
+            source_type: "person",
+            target_object_id: objectB.object_id,
+            target_type: "project",
+            predicate: "advises",
+            valid_from: "2026-06",
+            status: "active",
+            confidence: "high",
+            source: "synthetic remote batch MCP test",
+            attrs: {
+              scope: "remote batch traversal"
+            }
+          }
+        },
+        {
+          op: "update",
+          edge_id: "la_edge_batchremote0001",
+          expected_version: 1,
+          patch: {
+            status: "ended",
+            valid_to: "2026-06-23"
+          }
+        }
+      ]
+    })).resolves.toMatchObject({
+      result: {
+        structuredContent: {
+          ok: true,
+          batch_kind: "edge",
+          requested_items: 2,
+          accepted_items: 2,
+          failed_items: 0,
+          results: [
+            expect.objectContaining({
+              ok: true,
+              tool: "edge_create",
+              idempotency_key: "la_idem_remote_edge_batch_0001_0",
+              result: expect.objectContaining({ sync_generation: 3 })
+            }),
+            expect.objectContaining({
+              ok: true,
+              tool: "edge_update",
+              idempotency_key: "la_idem_remote_edge_batch_0001_1",
+              result: expect.objectContaining({ sync_generation: 4 })
+            })
+          ]
+        }
+      }
+    });
+
+    await expect(mcpCall(302, "edge_read", { authority_id: authorityId, edge_id: "la_edge_batchremote0001" })).resolves.toMatchObject({
+      result: {
+        structuredContent: {
+          ok: true,
+          object: expect.objectContaining({
+            version: 2,
+            payload: expect.objectContaining({
+              data: expect.objectContaining({
+                status: "ended",
+                valid_to: "2026-06-23"
+              })
+            })
+          })
+        }
+      }
+    });
+
+    await expect(mcpCall(303, "object_batch", {
+      authority_id: authorityId,
+      items: Array.from({ length: 11 }, (_, index) => ({
+        op: "delete",
+        object_id: `la_object_batchlimit${String(index).padStart(4, "0")}`
+      }))
+    })).resolves.toMatchObject({
+      error: {
+        message: "batch-too-large:max-items:10"
+      }
+    });
   });
 
   it("rejects sync tokens in query strings", async () => {

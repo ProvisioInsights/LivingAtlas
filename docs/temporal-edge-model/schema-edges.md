@@ -9,11 +9,14 @@ created:: 2026-06-17
 	- One bullet in a reserved, machine-managed `## Edges` section on the source page. Bullet text = human-readable fact incl. the in-content `[[wikilink]]` (the `dst`). `key:: value` lines = spine + open attrs.
 	- Spine (required unless noted): `predicate::` (registry) · object (the wikilink) · `valid-from::` (date or `unknown`) · `valid-to::` (absent = ongoing) · `status::` (DERIVED, machine-written) · `source::` (required).
 	- **System time (`recorded-at`/`superseded-at`) is LAZY and lives in the event log, NOT on the page** — written only when a correction occurs.
-	- Open attrs: any other `key:: value` (amount, role, condition, scope, relationship [prose], note...). Nuance never becomes a predicate.
+	- Open attrs: any other non-reserved `key:: value` (amount, investment-status, role, condition, scope, relationship [prose], note...). Nuance never becomes a predicate.
 - ## Endpoint types (valid `src`/`dst`)
-	- `person`, `organization`, `project`, `location`, `cluster`. (`event` endpoints = open decision, default deferred to v1.1.)
+	- Implemented endpoints: `person`, `organization`, `project`, `location`, `occurrence`, `topic`.
+	- Use `occurrence` for knowledge happenings. Prefer `occurrence` over `event` to avoid confusing graph happenings with runtime audit/sync/change events.
+	- Use `topic` for controlled subjects/themes. Broad `concept` remains non-endpoint metadata until explicitly promoted to a controlled topic.
+	- Not endpoints: `artifact`, broad `concept`, `source`, `cluster`. Artifacts and sources are provenance/storage concepts, concepts are tags/indexes unless promoted, and clusters are derived views from edges.
 - ## Value enums (closed)
-	- `status::` = active | pending | ended | dormant (two-tier derivation, see `implementation-guide.md` §5.8) · `confidence::` = high | medium | low · `category` = employment | governance | advisory | capital | structural | customer | network | affiliation | geography | personal.
+	- `status::` = active | pending | ended | dormant (two-tier derivation, see `implementation-guide.md` §5.8) · `confidence::` = high | medium | low · `category` = employment | governance | advisory | capital | structural | customer | network | affiliation | geography | occurrence | taxonomy | personal.
 - ## Predicate registry v4-draft (empirically grounded — evidence column)
 
 	| predicate | category | direction | domain -> range | required | evidence |
@@ -23,7 +26,7 @@ created:: 2026-06-17
 	| founder-of | employment | dir (inv: founded-by) | person -> organization, project | valid-from | renamed off `founded::` (which is a YEAR -> `founded-year::`) |
 	| board-member-of | governance | dir (inv: board-includes) | person -> organization | valid-from | chair:: |
 	| advises | advisory | dir (inv: advised-by) | person -> organization, project | valid-from | -advisory-past (use `scope::` attr, not `advises-on`) |
-	| invests-in | capital | dir (inv: funded-by) | person, organization -> organization, project | amount, status | -fundraise-channel, -portfolio |
+	| invests-in | capital | dir (inv: funded-by) | person, organization -> organization, project | amount, investment-status | -fundraise-channel, -portfolio |
 	| customer-of | customer | dir (inv: vendor-to) | organization -> organization | — | -revenue, -vendor, customer-of:: |
 	| engaged | customer | dir | person -> organization | valid-from | customer roster (era engagements) |
 	| acquired-by | structural | dir (inv: acquired) | organization -> organization | valid-from | acquired-by |
@@ -31,7 +34,7 @@ created:: 2026-06-17
 	| introduced-by | network | dir (inv: introduced) | person -> person | — | -warm-intro-* |
 	| intro-path-to | network | dir | person -> organization, person | via | -fundraise-channel |
 	| connects | network | sym | person -> person | note | -adjacent, -orbit — LAST-RESORT, requires `note::` |
-	| member-of | affiliation | dir | person -> organization, cluster | — | cohort and cluster memberships |
+	| member-of | affiliation | dir | person -> organization | — | cohort memberships |
 	| alumnus-of | affiliation | dir | person -> organization | — | -education |
 	| based-in | geography | dir | person, organization -> location | — | plain-text location/headquarters values |
 	| spouse-of | personal | sym | person -> person | — | family fixture |
@@ -42,7 +45,24 @@ created:: 2026-06-17
 	| estranged-from | personal | sym | person -> person | — | family fixture |
 	| mentor-of | personal | dir (inv: mentored-by) | person -> person | — | concept |
 
-	- Attributes, NOT predicates: `role`, `founded-year`, `relationship` (prose), `relationship-origin`, `scope`, `comparable-to`. Symmetric predicates store once on normalized endpoints (sort by stable `id::`, NOT mutable slug).
+	- Attributes, NOT predicates: `amount`, `investment-status`, `role`, `founded-year`, `relationship` (prose), `relationship-origin`, `scope`, `comparable-to`. Symmetric predicates store once on normalized endpoints (sort by stable `id::`, NOT mutable slug).
+	- Reserved spine fields must not appear as attrs: `predicate`, `valid-from`, `valid-to`, `status`, `confidence`, `source`, endpoint ids, and endpoint types. Edge lifecycle `status` is distinct from capital-specific `investment-status`.
+	- Schedule/recurrence fields are attributes on a temporal edge or occurrence series, not predicates: `timezone`, `recurrence_set`, `duration`, `exceptions`. `recurrence_set` is the single RFC 5545 recurrence block for `DTSTART`, `RRULE`, `RDATE`, and `EXDATE`; `RRULE` requires `DTSTART`, and `TZID` must match `timezone`.
+- ## Occurrence predicates
+
+	| predicate | direction | domain -> range | meaning |
+	|---|---|---|---|
+	| participant-in | dir | person, organization -> occurrence | endpoint participated in the happening |
+	| occurred-at | dir | occurrence -> location | happening took place at a location |
+	| hosted | dir | person, organization -> occurrence | endpoint hosted the happening |
+	| discussed-at | dir | organization, project, topic -> occurrence | entity/topic was discussed during the happening |
+	| about | dir | person, organization, project, occurrence -> topic | entity/happening is about a controlled topic |
+	| related-topic | sym | topic -> topic | controlled topic association |
+	| part-of-topic | dir | topic -> topic | controlled topic hierarchy |
+
+	These rows are active in the updated schema contract. Writers must still
+	enforce the same access, policy, and leakage checks used by every other
+	temporal edge.
 - ## Alias map (canonicalize; NEVER silently reverse direction)
 	- `works-at`/`works-for`/`employee-of` -> employed-by · `advisor-to`/`advisor` -> advises · `investor-in`/`backs` -> invests-in · `client-of` -> customer-of · `co-founded` -> founder-of · `married-to` -> spouse-of · `sits-on-board-of` -> board-member-of · `knows`/`connected-to` -> connects.
 	- `portfolio-company-of` is direction-sensitive; reject it or echo the stored `invests-in` edge with swapped endpoints. `funded-by` is an inverse label for `invests-in`, not a forward predicate.
@@ -50,5 +70,8 @@ created:: 2026-06-17
 - ## Enforcement
 	- Hard reject at `write_edge`; edge-scoped audit gate in `graph_audit_v2.py` (separate from the global `hard_violations` sum) with `LOGSEQ_EDGE_AUDIT=warn` escape; quarantine on batch.
 - ## Changelog
-	- 2026-06-17 v4: grounded registry to synthetic fixtures and private-corpus audit lessons; +location/cluster endpoints; +family/based-in/member-of/alumnus-of/merged-with; founded -> founder-of (+ founded-year attr); lazy system-time; tiered/edge-scoped enforcement; alias direction-safety.
+	- 2026-06-23: added controlled `topic` endpoint and taxonomy predicates (`about`, `related-topic`, `part-of-topic`); expanded `discussed-at` to topic -> occurrence.
+	- 2026-06-23: documented the endpoint/fact split, the `occurrence` endpoint target, recurrence attributes, and artifact/source/concept deferral.
+	- 2026-06-23: removed `cluster` as a first-class node type, updated `member-of` range to `organization` only, and made clusters derived query/view output instead of persisted endpoints.
+	- 2026-06-17 v4: grounded registry to synthetic fixtures and private-corpus audit lessons; +location/cluster endpoints (`cluster` superseded 2026-06-23); +family/based-in/member-of/alumnus-of/merged-with; founded -> founder-of (+ founded-year attr); lazy system-time; tiered/edge-scoped enforcement; alias direction-safety.
 	- 2026-06-17 v1: initial closed ontology (superseded).

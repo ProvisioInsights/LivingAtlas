@@ -158,11 +158,23 @@ Deliverables:
 - Generation manifests and cursors.
 - Durable local and remote pending queues.
 - Bidirectional sync between Cloudflare custody and local replica.
+- Mutation-triggered bidirectional push handshakes for both local and remote
+  writes.
+- Watchdog polling only as recovery for missed wakeups, process restart, and
+  reconnect handling.
 - Conflict records for divergent edits.
 - Sensitive conflict fail-closed behavior.
 
 Exit gate:
 
+- Local MCP durable CRUD wakes the sync agent immediately after the local commit
+  and starts a push handshake with no multi-minute sync delay.
+- Remote MCP CRUD makes the new generation available immediately after the
+  Cloudflare commit and announces push intent to linked replicas.
+- Simultaneous local and remote CRUD on independent objects converges without
+  operator review.
+- Simultaneous local and remote CRUD on the same object creates conflict records
+  rather than overwriting either side.
 - Laptop-offline and Cloudflare-offline scenarios both converge after reconnect.
 - Update/update, update/delete, rights/content, encrypted/plaintext, and
   release/source conflicts are detected.

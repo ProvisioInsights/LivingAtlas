@@ -262,4 +262,113 @@ describe("markdown importer planning", () => {
     expect(JSON.stringify(encrypted.objects)).not.toContain("Avery North");
     expect(JSON.stringify(encrypted.objects)).not.toContain("Project Glass Lantern");
   });
+
+  it("quarantines cluster endpoints instead of promoting temporal edge objects", async () => {
+    const file = {
+      source_path: "/tmp/living-atlas-fixtures/Cluster Endpoint.md",
+      markdown: "## Edges\n\n- [[Avery North]] (person) member-of [[Inner Circle]] (cluster) from 2026\n",
+      source_kind: "logseq" as const
+    };
+
+    const encrypted = await createLogseqSemanticGraphObjects([file], {
+      authority_id: fixtureAuthorityId,
+      created_at: "2026-06-22T12:00:00.000Z",
+      path_redaction_secret: "fixture-path-redaction-secret-0001",
+      encrypt: async ({ plaintext, aad }) => ({
+        ciphertext: Buffer.from(`sealed:${aad}:${plaintext.length}`).toString("base64"),
+        nonce: "fixture-semantic-nonce",
+        hash: sha256(`sealed:${aad}:${plaintext.length}`),
+        algorithm: "fixture-aes-gcm"
+      })
+    });
+
+    expect(encrypted.ledger.totals.edge_candidates).toBe(1);
+    expect(encrypted.ledger.totals.valid_edge_candidates).toBe(0);
+    expect(encrypted.ledger.totals.quarantined_edge_candidates).toBe(1);
+    expect(encrypted.ledger.totals.quarantine_objects).toBe(1);
+    expect(encrypted.ledger.decisions["typed-edge-promoted"]).toBeUndefined();
+    expect(encrypted.ledger.decisions["invalid-endpoint-type"]).toBe(1);
+    expect(encrypted.ledger.files[0]!.objects).toContainEqual(expect.objectContaining({
+      semantic_kind: "edge-candidate",
+      access_class: "quarantine",
+      decision: "quarantined",
+      reason_code: "invalid-endpoint-type"
+    }));
+    expect(encrypted.ledger.files[0]!.objects).not.toContainEqual(expect.objectContaining({
+      semantic_kind: "typed-edge"
+    }));
+    expect(encrypted.objects).not.toContainEqual(expect.objectContaining({
+      visible_metadata: expect.objectContaining({
+        schema_namespace: "import/logseq-semantic/typed-edge"
+      })
+    }));
+    expect(JSON.stringify(encrypted.ledger)).not.toContain("Avery North");
+    expect(JSON.stringify(encrypted.ledger)).not.toContain("Inner Circle");
+    expect(JSON.stringify(encrypted.objects)).not.toContain("Avery North");
+    expect(JSON.stringify(encrypted.objects)).not.toContain("Inner Circle");
+  });
+
+  it("promotes explicit occurrence typed edge lines into encrypted temporal edge objects", async () => {
+    const file = {
+      source_path: "/tmp/living-atlas-fixtures/Occurrence Edge.md",
+      markdown: "## Edges\n\n- [[Person A]] (person) participant-in [[Synthetic Planning Meeting]] (occurrence) from 2026-06-21\n",
+      source_kind: "logseq" as const
+    };
+
+    const encrypted = await createLogseqSemanticGraphObjects([file], {
+      authority_id: fixtureAuthorityId,
+      created_at: "2026-06-22T12:00:00.000Z",
+      path_redaction_secret: "fixture-path-redaction-secret-0001",
+      encrypt: async ({ plaintext, aad }) => ({
+        ciphertext: Buffer.from(`sealed:${aad}:${plaintext.length}`).toString("base64"),
+        nonce: "fixture-semantic-nonce",
+        hash: sha256(`sealed:${aad}:${plaintext.length}`),
+        algorithm: "fixture-aes-gcm"
+      })
+    });
+
+    expect(encrypted.ledger.totals.edge_candidates).toBe(1);
+    expect(encrypted.ledger.totals.valid_edge_candidates).toBe(1);
+    expect(encrypted.ledger.totals.quarantine_objects).toBe(0);
+    expect(encrypted.ledger.decisions["typed-edge-promoted"]).toBe(1);
+    expect(encrypted.ledger.files[0]!.objects).toContainEqual(expect.objectContaining({
+      semantic_kind: "typed-edge",
+      object_type: "edge",
+      decision: "captured-encrypted",
+      plaintext_in_plan: false
+    }));
+    expect(JSON.stringify(encrypted.ledger)).not.toContain("Person A");
+    expect(JSON.stringify(encrypted.ledger)).not.toContain("Synthetic Planning Meeting");
+    expect(JSON.stringify(encrypted.objects)).not.toContain("Person A");
+    expect(JSON.stringify(encrypted.objects)).not.toContain("Synthetic Planning Meeting");
+  });
+
+  it("promotes explicit topic typed edge lines into encrypted temporal edge objects", async () => {
+    const file = {
+      source_path: "/tmp/living-atlas-fixtures/Topic Edge.md",
+      markdown: "## Edges\n\n- [[Synthetic Market Theme]] (topic) discussed-at [[Synthetic Planning Meeting]] (occurrence) from 2026-06-21\n",
+      source_kind: "logseq" as const
+    };
+
+    const encrypted = await createLogseqSemanticGraphObjects([file], {
+      authority_id: fixtureAuthorityId,
+      created_at: "2026-06-22T12:00:00.000Z",
+      path_redaction_secret: "fixture-path-redaction-secret-0001",
+      encrypt: async ({ plaintext, aad }) => ({
+        ciphertext: Buffer.from(`sealed:${aad}:${plaintext.length}`).toString("base64"),
+        nonce: "fixture-semantic-nonce",
+        hash: sha256(`sealed:${aad}:${plaintext.length}`),
+        algorithm: "fixture-aes-gcm"
+      })
+    });
+
+    expect(encrypted.ledger.totals.edge_candidates).toBe(1);
+    expect(encrypted.ledger.totals.valid_edge_candidates).toBe(1);
+    expect(encrypted.ledger.totals.quarantine_objects).toBe(0);
+    expect(encrypted.ledger.decisions["typed-edge-promoted"]).toBe(1);
+    expect(JSON.stringify(encrypted.ledger)).not.toContain("Synthetic Market Theme");
+    expect(JSON.stringify(encrypted.ledger)).not.toContain("Synthetic Planning Meeting");
+    expect(JSON.stringify(encrypted.objects)).not.toContain("Synthetic Market Theme");
+    expect(JSON.stringify(encrypted.objects)).not.toContain("Synthetic Planning Meeting");
+  });
 	});

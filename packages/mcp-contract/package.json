@@ -1,12 +1,9 @@
 {
-  "name": "@living-atlas/contracts",
+  "name": "@living-atlas/mcp-contract",
   "version": "0.1.0",
   "private": true,
   "type": "module",
   "exports": {
     ".": "./src/index.ts"
-  },
-  "dependencies": {
-    "rrule": "^2.8.1"
   }
 }

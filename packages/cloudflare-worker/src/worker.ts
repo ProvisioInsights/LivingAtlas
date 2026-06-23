@@ -2,6 +2,8 @@ import { AuthorityIdSchema, PraxisActivityAuditStreamRequestSchema } from "@livi
 import { SyncBatchSchema } from "@living-atlas/contracts";
 import type { AccessMode, GraphObjectEnvelope, SyncBatch, SyncEnvelopePullResponse } from "@living-atlas/contracts";
 import type { DurableAuditEvent, Operation } from "@living-atlas/contracts";
+import { createLivingAtlasGraphService } from "@living-atlas/graph-service";
+import { LivingAtlasMcpToolDefinitions } from "@living-atlas/mcp-contract";
 import { appendAuditEvent, createAuditId, readPraxisActivityAuditStream } from "./audit-ledger";
 import { BootstrapClaimBodySchema, verifyClaimToken, type BootstrapRuntimeConfig } from "./bootstrap";
 import type { BootstrapClaimLockCore } from "./bootstrap-lock";
@@ -107,7 +109,6 @@ const cloudUnlockKeyHeader = "x-living-atlas-cloud-unlock-key";
 const remoteWriteIdempotencyHeader = "x-living-atlas-idempotency-key";
 const forbiddenQueryTokenParams = ["token", "claim_token", "bootstrap_claim_token", "sync_token", "cloud_unlock_key", "decrypt_key", "encryption_key"];
 const forbiddenQueryTokenPattern = /(^|[_-])(authorization|bearer|token|secret|password|api[_-]?key|access[_-]?key|cloud[_-]?unlock[_-]?key|decrypt[_-]?key|encryption[_-]?key|key)($|[_-])/i;
-
 function json(data: unknown, init?: ResponseInit): Response {
   return new Response(JSON.stringify(data), {
     ...init,
@@ -1147,8 +1148,8 @@ function latestEnvelopeForObject(response: SyncEnvelopePullResponse, objectId: s
     .at(0)?.object;
 }
 
-async function callRemoteMcpTool(name: string, args: unknown, request: Request, env: BootstrapWorkerEnv): Promise<unknown> {
-  if (name === "remote_access_modes") {
+async function executeRemoteMcpTool(name: string, args: unknown, request: Request, env: BootstrapWorkerEnv): Promise<unknown> {
+  if (name === "access_modes") {
     const currentMode = remoteRequestAccessMode(request);
     const cloudUnlockConfigured = !!env.LA_CLOUD_UNLOCK_CAPABILITY_ID;
     return {
@@ -1186,7 +1187,7 @@ async function callRemoteMcpTool(name: string, args: unknown, request: Request, 
     };
   }
 
-  if (name === "remote_activity_audit") {
+  if (name === "activity_read") {
     await requireRemoteMcpSyncToken(request, env);
     const authorityId = requireAuthorityArg(env, args, "activity-authority-mismatch");
     return readPraxisActivityAuditStream(env.LA_CONTROL_DB, {
@@ -1195,7 +1196,7 @@ async function callRemoteMcpTool(name: string, args: unknown, request: Request, 
     });
   }
 
-  if (name === "remote_sensitive_decrypt") {
+  if (name === "sensitive_decrypt") {
     if (!(await hasValidCloudUnlockCapability(request, env))) {
       return {
         ok: false,
@@ -1352,7 +1353,7 @@ async function callRemoteMcpTool(name: string, args: unknown, request: Request, 
     };
   }
 
-  if (name === "remote_graph_status") {
+  if (name === "status") {
     await requireRemoteMcpSyncToken(request, env);
     const authorityId = requireAuthorityArg(env, args, "graph-authority-mismatch");
     const objects = await listRemoteGraphObjects(remoteGraphStorage(env), authorityId, {
@@ -1380,7 +1381,7 @@ async function callRemoteMcpTool(name: string, args: unknown, request: Request, 
     };
   }
 
-  if (name === "remote_graph_reconcile") {
+  if (name === "reconcile") {
     await requireRemoteMcpSyncToken(request, env);
     const authorityId = requireAuthorityArg(env, args, "graph-authority-mismatch");
     const reconciliation = await reconcileRemoteGraph(remoteGraphStorage(env), authorityId, {
@@ -1397,7 +1398,7 @@ async function callRemoteMcpTool(name: string, args: unknown, request: Request, 
     return reconciliation;
   }
 
-  if (name === "remote_graph_list") {
+  if (name === "object_list") {
     await requireRemoteMcpSyncToken(request, env);
     const authorityId = requireAuthorityArg(env, args, "graph-authority-mismatch");
     const objects = await listRemoteGraphObjects(remoteGraphStorage(env), authorityId, {
@@ -1420,7 +1421,7 @@ async function callRemoteMcpTool(name: string, args: unknown, request: Request, 
     };
   }
 
-  if (name === "remote_graph_read") {
+  if (name === "object_read") {
     await requireRemoteMcpSyncToken(request, env);
     const authorityId = requireAuthorityArg(env, args, "graph-authority-mismatch");
     const objectId = stringParam(args, "object_id");
@@ -1446,7 +1447,7 @@ async function callRemoteMcpTool(name: string, args: unknown, request: Request, 
       : { ok: false, reason: object && isExpiredReleaseObject(object) ? "release-expired" : "object-not-found", authority_id: authorityId, object_id: objectId };
   }
 
-  if (name === "remote_graph_create") {
+  if (name === "object_create") {
     await requireRemoteMcpSyncToken(request, env);
     const object = recordParam(args, "object");
     const authorityId = stringParam(object, "authority_id");
@@ -1477,7 +1478,7 @@ async function callRemoteMcpTool(name: string, args: unknown, request: Request, 
     return response;
   }
 
-  if (name === "remote_graph_update") {
+  if (name === "object_update") {
     await requireRemoteMcpSyncToken(request, env);
     const authorityId = requireAuthorityArg(env, args, "graph-authority-mismatch");
     const objectId = stringParam(args, "object_id");
@@ -1507,7 +1508,7 @@ async function callRemoteMcpTool(name: string, args: unknown, request: Request, 
     return response;
   }
 
-  if (name === "remote_graph_delete") {
+  if (name === "object_delete") {
     await requireRemoteMcpSyncToken(request, env);
     const authorityId = requireAuthorityArg(env, args, "graph-authority-mismatch");
     const objectId = stringParam(args, "object_id");
@@ -1536,7 +1537,7 @@ async function callRemoteMcpTool(name: string, args: unknown, request: Request, 
     return response;
   }
 
-  if (name === "remote_semantic_search") {
+  if (name === "search") {
     await requireRemoteMcpSyncToken(request, env);
     const authorityId = requireAuthorityArg(env, args, "graph-authority-mismatch");
     const query = stringParam(args, "query");
@@ -1564,7 +1565,7 @@ async function callRemoteMcpTool(name: string, args: unknown, request: Request, 
     };
   }
 
-  if (name === "remote_graph_traverse") {
+  if (name === "traverse") {
     await requireRemoteMcpSyncToken(request, env);
     const authorityId = requireAuthorityArg(env, args, "graph-authority-mismatch");
     const startObjectId = stringParam(args, "start_object_id");
@@ -1596,7 +1597,7 @@ async function callRemoteMcpTool(name: string, args: unknown, request: Request, 
     };
   }
 
-  if (name === "remote_timeline_query") {
+  if (name === "timeline") {
     await requireRemoteMcpSyncToken(request, env);
     const authorityId = requireAuthorityArg(env, args, "graph-authority-mismatch");
     const results = (await queryRemoteTimeline(remoteGraphStorage(env), authorityId, {
@@ -1622,7 +1623,7 @@ async function callRemoteMcpTool(name: string, args: unknown, request: Request, 
     };
   }
 
-  if (name === "remote_edge_create") {
+  if (name === "edge_create") {
     await requireRemoteMcpSyncToken(request, env);
     const authorityId = requireAuthorityArg(env, args, "graph-authority-mismatch");
     const edge = recordParam(args, "edge");
@@ -1652,7 +1653,7 @@ async function callRemoteMcpTool(name: string, args: unknown, request: Request, 
     return response;
   }
 
-  if (name === "remote_edge_read") {
+  if (name === "edge_read") {
     await requireRemoteMcpSyncToken(request, env);
     const authorityId = requireAuthorityArg(env, args, "graph-authority-mismatch");
     const edgeId = stringParam(args, "edge_id");
@@ -1677,7 +1678,7 @@ async function callRemoteMcpTool(name: string, args: unknown, request: Request, 
       : { ok: false, reason: "edge-not-found", authority_id: authorityId, edge_id: edgeId };
   }
 
-  if (name === "remote_edge_update") {
+  if (name === "edge_update") {
     await requireRemoteMcpSyncToken(request, env);
     const authorityId = requireAuthorityArg(env, args, "graph-authority-mismatch");
     const edgeId = stringParam(args, "edge_id");
@@ -1707,7 +1708,7 @@ async function callRemoteMcpTool(name: string, args: unknown, request: Request, 
     return response;
   }
 
-  if (name === "remote_edge_delete") {
+  if (name === "edge_delete") {
     await requireRemoteMcpSyncToken(request, env);
     const authorityId = requireAuthorityArg(env, args, "graph-authority-mismatch");
     const edgeId = stringParam(args, "edge_id");
@@ -1736,7 +1737,7 @@ async function callRemoteMcpTool(name: string, args: unknown, request: Request, 
     return response;
   }
 
-  if (name === "remote_sync_status") {
+  if (name === "sync_status") {
     const authorityId = requireConfiguredAuthority(env);
     const result = await getSyncStatus(
       request.headers.get(syncTokenHeader) ?? undefined,
@@ -1758,7 +1759,7 @@ async function callRemoteMcpTool(name: string, args: unknown, request: Request, 
     return result.status;
   }
 
-  if (name === "remote_sync_pull") {
+  if (name === "sync_pull") {
     const authorityId = requireAuthorityArg(env, args, "sync-authority-mismatch");
     const result = await getSyncPull(
       request.headers.get(syncTokenHeader) ?? undefined,
@@ -1783,7 +1784,7 @@ async function callRemoteMcpTool(name: string, args: unknown, request: Request, 
     return result.response;
   }
 
-  if (name === "remote_sync_envelopes") {
+  if (name === "sync_envelopes") {
     const authorityId = requireAuthorityArg(env, args, "sync-authority-mismatch");
     const result = await getSyncEnvelopePull(
       request.headers.get(syncTokenHeader) ?? undefined,
@@ -1811,7 +1812,7 @@ async function callRemoteMcpTool(name: string, args: unknown, request: Request, 
     return result.response;
   }
 
-  if (name === "remote_usage_gate") {
+  if (name === "usage_gate") {
     if (!(await hasValidUsageToken(request, env))) {
       throw new Error("missing-or-invalid-usage-token");
     }
@@ -1823,7 +1824,7 @@ async function callRemoteMcpTool(name: string, args: unknown, request: Request, 
     );
   }
 
-  if (name === "remote_usage_reconcile") {
+  if (name === "usage_reconcile") {
     if (!(await hasValidUsageToken(request, env))) {
       throw new Error("missing-or-invalid-usage-token");
     }
@@ -1837,6 +1838,20 @@ async function callRemoteMcpTool(name: string, args: unknown, request: Request, 
   }
 
   throw new Error("unknown-tool");
+}
+
+async function callRemoteMcpTool(name: string, args: unknown, request: Request, env: BootstrapWorkerEnv): Promise<unknown> {
+  const graphService = createLivingAtlasGraphService({
+    execute: (toolName, toolArgs) => executeRemoteMcpTool(toolName, toolArgs, request, env)
+  });
+  return graphService.callTool(name, args, {
+    ingress: "remote-http",
+    access_mode: remoteRequestAccessMode(request),
+    authority_id: env.LA_AUTHORITY_ID,
+    client_id: request.headers.get(syncClientHeader) ?? undefined,
+    capability_id: request.headers.get(syncCapabilityHeader) ?? undefined,
+    cloud_unlock_key_present: !!cloudUnlockKey(request)
+  });
 }
 
 async function routeRemoteMcpRequest(request: Request, env: BootstrapWorkerEnv): Promise<Response> {
@@ -1872,308 +1887,7 @@ async function routeRemoteMcpRequest(request: Request, env: BootstrapWorkerEnv):
       return jsonRpcError(body.id, -32001, "missing-or-invalid-mcp-token", 401);
     }
     return jsonRpcResult(body.id, {
-      tools: [
-        {
-          name: "remote_access_modes",
-          description: "Describe Living Atlas remote-safe, cloud-unlock, and local-keyholding access modes for this request.",
-          inputSchema: { type: "object", additionalProperties: false, properties: {} }
-        },
-        {
-          name: "remote_activity_audit",
-          description: "Read recent remote-safe activity and audit events for Praxis. Events expose stable cursors and hashed refs only.",
-          inputSchema: {
-            type: "object",
-            additionalProperties: false,
-            properties: {
-              authority_id: { type: "string" },
-              operation_id: { type: "string" },
-              trace_id: { type: "string" },
-              event_type: { type: "string" },
-              cursor: { type: "string" },
-              limit: { type: "integer", minimum: 1, maximum: 100 }
-            }
-          }
-        },
-        {
-          name: "remote_sensitive_decrypt",
-          description: "Decrypt a synced cloud-unlock ciphertext object with a transient request key. The key must be supplied in the x-living-atlas-cloud-unlock-key header and is not persisted.",
-          inputSchema: {
-            type: "object",
-            additionalProperties: false,
-            required: ["authority_id", "object_id"],
-            properties: {
-              authority_id: { type: "string" },
-              object_id: { type: "string" }
-            }
-          }
-        },
-        {
-          name: "remote_graph_status",
-          description: "Read remote-readable graph object counts and sync-envelope reconciliation for an authority.",
-          inputSchema: {
-            type: "object",
-            additionalProperties: false,
-            required: ["authority_id"],
-            properties: {
-              authority_id: { type: "string" },
-              include_tombstones: { type: "boolean" },
-              limit: { type: "integer", minimum: 1, maximum: 1000 }
-            }
-          }
-        },
-        {
-          name: "remote_graph_reconcile",
-          description: "Compare the remote-readable graph index with committed sync envelope state for an authority.",
-          inputSchema: {
-            type: "object",
-            additionalProperties: false,
-            required: ["authority_id"],
-            properties: {
-              authority_id: { type: "string" },
-              limit: { type: "integer", minimum: 1, maximum: 1000 }
-            }
-          }
-        },
-        {
-          name: "remote_graph_list",
-          description: "List remote-readable graph objects for an authority.",
-          inputSchema: {
-            type: "object",
-            additionalProperties: false,
-            required: ["authority_id"],
-            properties: {
-              authority_id: { type: "string" },
-              object_type: { type: "string" },
-              include_tombstones: { type: "boolean" },
-              limit: { type: "integer", minimum: 1, maximum: 1000 }
-            }
-          }
-        },
-        {
-          name: "remote_graph_read",
-          description: "Read one remote-readable graph object by id.",
-          inputSchema: {
-            type: "object",
-            additionalProperties: false,
-            required: ["authority_id", "object_id"],
-            properties: {
-              authority_id: { type: "string" },
-              object_id: { type: "string" }
-            }
-          }
-        },
-        {
-          name: "remote_graph_create",
-          description: "Create one remote-readable plaintext graph object idempotently. Local-private and quarantine objects are rejected.",
-          inputSchema: {
-            type: "object",
-            additionalProperties: false,
-            required: ["object"],
-            properties: {
-              object: { type: "object" },
-              idempotency_key: { type: "string" }
-            }
-          }
-        },
-        {
-          name: "remote_graph_update",
-          description: "Update one remote-readable graph object idempotently with optimistic version support.",
-          inputSchema: {
-            type: "object",
-            additionalProperties: false,
-            required: ["authority_id", "object_id", "patch"],
-            properties: {
-              authority_id: { type: "string" },
-              object_id: { type: "string" },
-              expected_version: { type: "integer", minimum: 0 },
-              idempotency_key: { type: "string" },
-              patch: { type: "object" }
-            }
-          }
-        },
-        {
-          name: "remote_graph_delete",
-          description: "Tombstone one remote-readable graph object idempotently with optimistic version support.",
-          inputSchema: {
-            type: "object",
-            additionalProperties: false,
-            required: ["authority_id", "object_id"],
-            properties: {
-              authority_id: { type: "string" },
-              object_id: { type: "string" },
-              idempotency_key: { type: "string" },
-              expected_version: { type: "integer", minimum: 0 }
-            }
-          }
-        },
-        {
-          name: "remote_semantic_search",
-          description: "Search remote-readable graph object text and metadata. Current mode is deterministic text scoring; embedding/vector search can replace the scorer later.",
-          inputSchema: {
-            type: "object",
-            additionalProperties: false,
-            required: ["authority_id", "query"],
-            properties: {
-              authority_id: { type: "string" },
-              query: { type: "string" },
-              object_type: { type: "string" },
-              limit: { type: "integer", minimum: 1, maximum: 1000 }
-            }
-          }
-        },
-        {
-          name: "remote_graph_traverse",
-          description: "Traverse remote-readable edge objects from a start object.",
-          inputSchema: {
-            type: "object",
-            additionalProperties: false,
-            required: ["authority_id", "start_object_id"],
-            properties: {
-              authority_id: { type: "string" },
-              start_object_id: { type: "string" },
-              direction: { type: "string", enum: ["outbound", "inbound", "both"] },
-              max_depth: { type: "integer", minimum: 1, maximum: 5 },
-              predicates: { type: "array", items: { type: "string" } },
-              limit: { type: "integer", minimum: 1, maximum: 1000 }
-            }
-          }
-        },
-        {
-          name: "remote_timeline_query",
-          description: "Query remote-readable graph objects by created/updated, edge valid dates, or event dates.",
-          inputSchema: {
-            type: "object",
-            additionalProperties: false,
-            required: ["authority_id"],
-            properties: {
-              authority_id: { type: "string" },
-              from: { type: "string" },
-              to: { type: "string" },
-              object_id: { type: "string" },
-              predicate: { type: "string" },
-              limit: { type: "integer", minimum: 1, maximum: 1000 }
-            }
-          }
-        },
-        {
-          name: "remote_edge_create",
-          description: "Create a typed temporal edge idempotently as a remote-readable graph object.",
-          inputSchema: {
-            type: "object",
-            additionalProperties: false,
-            required: ["authority_id", "edge"],
-            properties: {
-              authority_id: { type: "string" },
-              edge: { type: "object" },
-              idempotency_key: { type: "string" }
-            }
-          }
-        },
-        {
-          name: "remote_edge_read",
-          description: "Read a remote-readable typed edge by edge_id.",
-          inputSchema: {
-            type: "object",
-            additionalProperties: false,
-            required: ["authority_id", "edge_id"],
-            properties: {
-              authority_id: { type: "string" },
-              edge_id: { type: "string" }
-            }
-          }
-        },
-        {
-          name: "remote_edge_update",
-          description: "Update a typed temporal edge idempotently by edge_id.",
-          inputSchema: {
-            type: "object",
-            additionalProperties: false,
-            required: ["authority_id", "edge_id", "patch"],
-            properties: {
-              authority_id: { type: "string" },
-              edge_id: { type: "string" },
-              expected_version: { type: "integer", minimum: 0 },
-              idempotency_key: { type: "string" },
-              patch: { type: "object" }
-            }
-          }
-        },
-        {
-          name: "remote_edge_delete",
-          description: "Tombstone a typed temporal edge idempotently by edge_id.",
-          inputSchema: {
-            type: "object",
-            additionalProperties: false,
-            required: ["authority_id", "edge_id"],
-            properties: {
-              authority_id: { type: "string" },
-              edge_id: { type: "string" },
-              idempotency_key: { type: "string" },
-              expected_version: { type: "integer", minimum: 0 }
-            }
-          }
-        },
-        {
-          name: "remote_sync_status",
-          description: "Read remote sync cursor and counts for the authenticated authority.",
-          inputSchema: { type: "object", additionalProperties: false, properties: {} }
-        },
-        {
-          name: "remote_sync_pull",
-          description: "Read committed sync batch summaries after a generation.",
-          inputSchema: {
-            type: "object",
-            additionalProperties: false,
-            required: ["authority_id", "after_generation"],
-            properties: {
-              authority_id: { type: "string" },
-              after_generation: { type: "integer", minimum: 0 },
-              limit: { type: "integer", minimum: 1, maximum: 50 }
-            }
-          }
-        },
-        {
-          name: "remote_sync_envelopes",
-          description: "Read committed sync envelopes after a generation. Sensitive objects remain ciphertext; remote-readable objects may be plaintext.",
-          inputSchema: {
-            type: "object",
-            additionalProperties: false,
-            required: ["authority_id", "after_generation"],
-            properties: {
-              authority_id: { type: "string" },
-              after_generation: { type: "integer", minimum: 0 },
-              limit: { type: "integer", minimum: 1, maximum: 50 }
-            }
-          }
-        },
-        {
-          name: "remote_usage_gate",
-          description: "Read observed usage and return a safe-to-test or stop-testing decision before live validation.",
-          inputSchema: {
-            type: "object",
-            additionalProperties: false,
-            properties: {
-              window_hours: { type: "integer", minimum: 1, maximum: 720 },
-              max_budget_ratio: { type: "number", minimum: 0.01, maximum: 1 },
-              min_worker_requests_remaining: { type: "integer", minimum: 0 },
-              require_zero_5xx: { type: "boolean" }
-            }
-          }
-        },
-        {
-          name: "remote_usage_reconcile",
-          description: "Compare app-observed usage with provider-native inventory exposed through bound Cloudflare services.",
-          inputSchema: {
-            type: "object",
-            additionalProperties: false,
-            properties: {
-              window_hours: { type: "integer", minimum: 1, maximum: 720 },
-              max_r2_objects: { type: "integer", minimum: 1, maximum: 100000 },
-              inventory_mode: { type: "string", enum: ["full", "metadata"] }
-            }
-          }
-        },
-      ]
+      tools: LivingAtlasMcpToolDefinitions
     });
   }
 

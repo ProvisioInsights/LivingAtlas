@@ -470,7 +470,7 @@ WHERE (
         id: 1,
         method: "tools/call",
         params: {
-          name: "remote_activity_audit",
+          name: "activity_read",
           arguments: {
             authority_id: "la_authority_audit0001",
             limit: 1

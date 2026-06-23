@@ -5,7 +5,12 @@ import {
   ClientRecordSchema,
   ControlPlaneSnapshotSchema,
   DurableAuditEventSchema,
+  EndpointTypeSchema,
+  EndpointRecordSchema,
   GraphObjectEnvelopeSchema,
+  IcalendarRecurrenceSchema,
+  IcalendarRecurrenceSetTextSchema,
+  IcalendarRRuleTextSchema,
   LiveActivityEventSchema,
   LocalControlStateSchema,
   OperationalEventSchema,
@@ -339,8 +344,10 @@ describe("local control and sync contracts", () => {
       authority_id: "la_authority_contract0001",
       device_id: "la_device_contract0001",
       client_id: "la_client_contract0001",
+      capability_id: "la_cap_contract0004",
       operation_id: "la_operation_contract0001",
       trace_id: "la_trace_contract0001",
+      idempotency_key: "la_idem_contract0001",
       submitted_at: timestamp,
       base_generation: 0,
       target_generation: 1,
@@ -379,8 +386,10 @@ describe("local control and sync contracts", () => {
       authority_id: "la_authority_contract0001",
       device_id: "la_device_contract0001",
       client_id: "la_client_contract0001",
+      capability_id: "la_cap_contract0004",
       operation_id: "la_operation_contract0001",
       trace_id: "la_trace_contract0001",
+      idempotency_key: "la_idem_contract0005",
       submitted_at: timestamp,
       base_generation: 0,
       target_generation: 1,
@@ -432,7 +441,7 @@ describe("local control and sync contracts", () => {
     expect(parsed.success).toBe(false);
   });
 
-  it("accepts deploy-ready sync batch metadata and derives it for legacy-compatible inputs", () => {
+  it("accepts deploy-ready sync batch metadata and derives deterministic payload metadata", () => {
     const parsed = SyncBatchSchema.parse(syncBatchInput());
     expect(parsed.capability_id).toBe("la_cap_contract0004");
     expect(parsed.idempotency_key).toBe("la_idem_contract0001");
@@ -448,8 +457,10 @@ describe("local control and sync contracts", () => {
       authority_id: "la_authority_contract0001",
       device_id: "la_device_contract0001",
       client_id: "la_client_contract0001",
+      capability_id: "la_cap_contract0004",
       operation_id: "la_operation_contract0001",
       trace_id: "la_trace_contract0001",
+      idempotency_key: "la_idem_contract0004",
       submitted_at: timestamp,
       base_generation: 0,
       target_generation: 1,
@@ -458,8 +469,8 @@ describe("local control and sync contracts", () => {
       withheld_plaintext_count: 0
     });
 
-    expect(derived.capability_id).toMatch(/^la_cap_[A-Za-z0-9_-]{8,}$/);
-    expect(derived.idempotency_key).toMatch(/^la_idem_[A-Za-z0-9_-]{8,}$/);
+    expect(derived.capability_id).toBe("la_cap_contract0004");
+    expect(derived.idempotency_key).toBe("la_idem_contract0004");
     expect(derived.batch_hash).toMatch(/^sha256:[a-f0-9]{64}$/);
     expect(derived.object_payloads).toHaveLength(1);
     expect(derived.estimated_batch_bytes).toBeGreaterThan(0);
@@ -468,6 +479,25 @@ describe("local control and sync contracts", () => {
     expect(derived.batch_hash).toBe(`sha256:${createHash("sha256").update(
       canonicalSyncBatchHashPayload(derivedWithoutHash)
     ).digest("hex")}`);
+  });
+
+  it("requires sync callers to provide capability and idempotency identity", () => {
+    const parsed = SyncBatchSchema.safeParse({
+      batch_id: "la_sync_batch_contract0005",
+      authority_id: "la_authority_contract0001",
+      device_id: "la_device_contract0001",
+      client_id: "la_client_contract0001",
+      operation_id: "la_operation_contract0001",
+      trace_id: "la_trace_contract0001",
+      submitted_at: timestamp,
+      base_generation: 0,
+      target_generation: 1,
+      objects: [ciphertextSyncObject("la_object_contract0010")],
+      changes: [],
+      withheld_plaintext_count: 0
+    });
+
+    expect(parsed.success).toBe(false);
   });
 
   it("rejects mismatched object payload hashes and batches over configured limits", () => {
@@ -534,7 +564,7 @@ describe("live activity contract", () => {
         contains_sensitive: true,
         redacted: true
       },
-      summary: "local_read_object read allowed",
+      summary: "object_read read allowed",
       visual: {
         motion: "pulse",
         intensity: 0.7,
@@ -734,6 +764,401 @@ describe("temporal contracts", () => {
     expect(parsed.success).toBe(false);
   });
 
+  it("rejects cluster as a persisted endpoint type", () => {
+    expect(EndpointTypeSchema.safeParse("cluster").success).toBe(false);
+    expect(EndpointTypeSchema.safeParse("concept").success).toBe(false);
+    expect(EndpointTypeSchema.safeParse("occurrence").success).toBe(true);
+    expect(EndpointTypeSchema.safeParse("topic").success).toBe(true);
+
+    const parsed = TemporalEdgeSchema.safeParse({
+      edge_id: "la_edge_contract0001",
+      source_object_id: "la_object_contract0001",
+      source_type: "person",
+      target_object_id: "la_object_contract0002",
+      target_type: "cluster",
+      predicate: "member-of",
+      valid_from: "2026",
+      source: "test"
+    });
+
+    expect(parsed.success).toBe(false);
+  });
+
+  it("rejects cluster as a temporal event subject type", () => {
+    const parsed = TemporalEventSchema.safeParse({
+      event_id: "la_event_contract0001",
+      subject_object_id: "la_object_contract0001",
+      subject_type: "cluster",
+      kind: "observation",
+      occurred_on: "2026",
+      recorded_at: timestamp,
+      source: "test"
+    });
+
+    expect(parsed.success).toBe(false);
+  });
+
+  it("accepts occurrence endpoint records with required time context", () => {
+    const parsed = EndpointRecordSchema.safeParse({
+      object_id: "la_object_contract0001",
+      type: "occurrence",
+      subtype: "meeting",
+      name: "Synthetic Planning Meeting",
+      occurred_on: "2026-06-21T12:00:00.000Z",
+      timezone: "America/Chicago",
+      location_ref: "la_object_contract0002",
+      participant_refs: ["la_object_contract0003"],
+      access_class: "local-private",
+      created_at: timestamp,
+      updated_at: timestamp
+    });
+
+    expect(parsed.success).toBe(true);
+  });
+
+  it("accepts controlled topic endpoint records", () => {
+    const parsed = EndpointRecordSchema.safeParse({
+      object_id: "la_object_contract0001",
+      type: "topic",
+      subtype: "theme",
+      name: "Synthetic Market Theme",
+      aliases: ["Synthetic Theme"],
+      parent_topic_ref: "la_object_contract0002",
+      controlled: true,
+      tags: ["synthetic"],
+      access_class: "local-private",
+      created_at: timestamp,
+      updated_at: timestamp
+    });
+
+    expect(parsed.success).toBe(true);
+
+    expect(EndpointRecordSchema.safeParse({
+      object_id: "la_object_contract0003",
+      type: "topic",
+      subtype: "theme",
+      name: "Synthetic Uncontrolled Topic",
+      controlled: false,
+      access_class: "local-private",
+      created_at: timestamp,
+      updated_at: timestamp
+    }).success).toBe(false);
+  });
+
+  it("accepts recurring occurrence endpoint records with recurrence timezone", () => {
+    const parsed = EndpointRecordSchema.safeParse({
+      object_id: "la_object_contract0001",
+      type: "occurrence",
+      subtype: "social",
+      name: "Synthetic Recurring Gathering",
+      scheduled_start: "2026-06-21T12:00:00.000Z",
+      recurrence: {
+        timezone: "America/Chicago",
+        recurrence_set: [
+          "DTSTART;TZID=America/Chicago:20260621T120000",
+          "RRULE:FREQ=MONTHLY;BYDAY=TU;BYSETPOS=1"
+        ].join("\n"),
+        duration: "PT2H"
+      },
+      access_class: "local-private",
+      created_at: timestamp,
+      updated_at: timestamp
+    });
+
+    expect(parsed.success).toBe(true);
+  });
+
+  it("rejects scheduled occurrence endpoint records without timezone", () => {
+    const parsed = EndpointRecordSchema.safeParse({
+      object_id: "la_object_contract0001",
+      type: "occurrence",
+      subtype: "social",
+      name: "Synthetic Scheduled Gathering",
+      scheduled_start: "2026-06-21T12:00:00.000Z",
+      access_class: "local-private",
+      created_at: timestamp,
+      updated_at: timestamp
+    });
+
+    expect(parsed.success).toBe(false);
+  });
+
+  it("rejects scheduled-only occurrences marked as already occurred", () => {
+    const parsed = EndpointRecordSchema.safeParse({
+      object_id: "la_object_contract0001",
+      type: "occurrence",
+      subtype: "social",
+      name: "Synthetic Scheduled Gathering",
+      scheduled_start: "2026-06-21T12:00:00.000Z",
+      timezone: "America/Chicago",
+      status: "occurred",
+      access_class: "local-private",
+      created_at: timestamp,
+      updated_at: timestamp
+    });
+
+    expect(parsed.success).toBe(false);
+  });
+
+  it("rejects occurrence end times before start times", () => {
+    expect(EndpointRecordSchema.safeParse({
+      object_id: "la_object_contract0001",
+      type: "occurrence",
+      subtype: "meeting",
+      name: "Synthetic Meeting",
+      occurred_on: "2026-06-21T12:00:00.000Z",
+      occurred_until: "2026-06-21T11:59:00.000Z",
+      access_class: "local-private",
+      created_at: timestamp,
+      updated_at: timestamp
+    }).success).toBe(false);
+
+    expect(EndpointRecordSchema.safeParse({
+      object_id: "la_object_contract0002",
+      type: "occurrence",
+      subtype: "meeting",
+      name: "Synthetic Scheduled Meeting",
+      scheduled_start: "2026-06-21T12:00:00.000Z",
+      scheduled_end: "2026-06-21T11:59:00.000Z",
+      timezone: "America/Chicago",
+      access_class: "local-private",
+      created_at: timestamp,
+      updated_at: timestamp
+    }).success).toBe(false);
+  });
+
+  it("accepts RFC 5545 iCalendar recurrence sets", () => {
+    const parsed = IcalendarRecurrenceSchema.safeParse({
+      timezone: "America/Chicago",
+      recurrence_set: [
+        "DTSTART;TZID=America/Chicago:20260621T080000",
+        "RRULE:FREQ=WEEKLY;BYDAY=MO,WE,FR",
+        "RDATE;TZID=America/Chicago:20260627T080000",
+        "EXDATE;TZID=America/Chicago:20260703T080000"
+      ].join("\n"),
+      duration: "PT7H",
+      exceptions: [
+        {
+          date: "2026-07-03T12:00:00.000Z",
+          status: "canceled",
+          note: "synthetic exception"
+        }
+      ]
+    });
+
+    expect(parsed.success).toBe(true);
+  });
+
+  it("rejects recurrence text that leaves recurrence semantics ambiguous", () => {
+    expect(IcalendarRRuleTextSchema.safeParse("BYDAY=MO,WE,FR").success).toBe(false);
+    expect(IcalendarRRuleTextSchema.safeParse("FREQ=WEEKLY;BYDAY=MO,WE,FR").success).toBe(true);
+    expect(IcalendarRRuleTextSchema.safeParse("RRULE:FREQ=WEEKLY;BYDAY=MO,WE,FR").success).toBe(true);
+    expect(IcalendarRecurrenceSetTextSchema.safeParse("EXDATE;TZID=America/Chicago:20260703T080000").success).toBe(false);
+    expect(IcalendarRecurrenceSetTextSchema.safeParse("RRULE:FREQ=WEEKLY;BYDAY=MO,WE,FR").success).toBe(false);
+    expect(IcalendarRecurrenceSetTextSchema.safeParse([
+      "DTSTART;TZID=America/Chicago:20260621T080000",
+      "RRULE:FREQ=WEEKLY;BYDAY=MO,WE,FR"
+    ].join("\n")).success).toBe(true);
+    expect(IcalendarRecurrenceSchema.safeParse({
+      timezone: "America/Chicago",
+      recurrence_set: [
+        "DTSTART;TZID=Europe/Berlin:20260621T080000",
+        "RRULE:FREQ=WEEKLY;BYDAY=MO,WE,FR"
+      ].join("\n")
+    }).success).toBe(false);
+  });
+
+  it("accepts occurrence predicates and rejects wrong occurrence endpoint direction", () => {
+    expect(TemporalEdgeSchema.safeParse({
+      edge_id: "la_edge_contract0001",
+      source_object_id: "la_object_contract0001",
+      source_type: "person",
+      target_object_id: "la_object_contract0002",
+      target_type: "occurrence",
+      predicate: "participant-in",
+      valid_from: "2026-06-21",
+      source: "test"
+    }).success).toBe(true);
+
+    expect(TemporalEdgeSchema.safeParse({
+      edge_id: "la_edge_contract0002",
+      source_object_id: "la_object_contract0001",
+      source_type: "location",
+      target_object_id: "la_object_contract0002",
+      target_type: "occurrence",
+      predicate: "occurred-at",
+      valid_from: "2026-06-21",
+      source: "test"
+    }).success).toBe(false);
+  });
+
+  it("accepts topic predicates and rejects concept endpoints", () => {
+    expect(TemporalEdgeSchema.safeParse({
+      edge_id: "la_edge_contract0001",
+      source_object_id: "la_object_contract0001",
+      source_type: "topic",
+      target_object_id: "la_object_contract0002",
+      target_type: "occurrence",
+      predicate: "discussed-at",
+      valid_from: "2026-06-21",
+      source: "test"
+    }).success).toBe(true);
+
+    expect(TemporalEdgeSchema.safeParse({
+      edge_id: "la_edge_contract0002",
+      source_object_id: "la_object_contract0001",
+      source_type: "occurrence",
+      target_object_id: "la_object_contract0002",
+      target_type: "topic",
+      predicate: "about",
+      valid_from: "2026-06-21",
+      source: "test"
+    }).success).toBe(true);
+
+    expect(TemporalEdgeSchema.safeParse({
+      edge_id: "la_edge_contract0004",
+      source_object_id: "la_object_contract0001",
+      source_type: "person",
+      target_object_id: "la_object_contract0002",
+      target_type: "topic",
+      predicate: "about",
+      valid_from: "2026-06-21",
+      source: "test"
+    }).success).toBe(true);
+
+    expect(TemporalEdgeSchema.safeParse({
+      edge_id: "la_edge_contract0003",
+      source_object_id: "la_object_contract0001",
+      source_type: "concept",
+      target_object_id: "la_object_contract0002",
+      target_type: "occurrence",
+      predicate: "discussed-at",
+      valid_from: "2026-06-21",
+      source: "test"
+    }).success).toBe(false);
+  });
+
+  it("validates recurrence schedules on temporal edge attributes", () => {
+    expect(TemporalEdgeSchema.safeParse({
+      edge_id: "la_edge_contract0001",
+      source_object_id: "la_object_contract0001",
+      source_type: "person",
+      target_object_id: "la_object_contract0002",
+      target_type: "organization",
+      predicate: "employed-by",
+      valid_from: "2026-06-21",
+      source: "test",
+      attrs: {
+        schedule: {
+          timezone: "America/Chicago",
+          recurrence_set: [
+            "DTSTART;TZID=America/Chicago:20260621T080000",
+            "RRULE:FREQ=WEEKLY;BYDAY=MO,WE,FR"
+          ].join("\n"),
+          duration: "PT7H"
+        }
+      }
+    }).success).toBe(true);
+
+    expect(TemporalEdgeSchema.safeParse({
+      edge_id: "la_edge_contract0002",
+      source_object_id: "la_object_contract0001",
+      source_type: "person",
+      target_object_id: "la_object_contract0002",
+      target_type: "organization",
+      predicate: "employed-by",
+      valid_from: "2026-06-21",
+      source: "test",
+      attrs: {
+        schedule: {
+          timezone: "America/Chicago",
+          recurrence_set: "RRULE:BYDAY=MO,WE,FR"
+        }
+      }
+    }).success).toBe(false);
+
+    expect(TemporalEdgeSchema.safeParse({
+      edge_id: "la_edge_contract0003",
+      source_object_id: "la_object_contract0001",
+      source_type: "person",
+      target_object_id: "la_object_contract0002",
+      target_type: "organization",
+      predicate: "employed-by",
+      valid_from: "2026-06-21",
+      source: "test",
+      attrs: {
+        recurrence: {
+          timezone: "America/Chicago",
+          recurrence_set: [
+            "DTSTART;TZID=America/Chicago:20260621T080000",
+            "RRULE:FREQ=WEEKLY;BYDAY=MO,WE,FR"
+          ].join("\n")
+        }
+      }
+    }).success).toBe(false);
+  });
+
+  it("validates structured temporal edge attrs and rejects reserved shadow attrs", () => {
+    expect(TemporalEdgeSchema.safeParse({
+      edge_id: "la_edge_contract0001",
+      source_object_id: "la_object_contract0001",
+      source_type: "person",
+      target_object_id: "la_object_contract0002",
+      target_type: "project",
+      predicate: "invests-in",
+      valid_from: "2026-06-21",
+      source: "test",
+      attrs: {
+        amount: "synthetic",
+        investment_status: "pending",
+        role: "lead"
+      }
+    }).success).toBe(true);
+
+    expect(TemporalEdgeSchema.safeParse({
+      edge_id: "la_edge_contract0002",
+      source_object_id: "la_object_contract0001",
+      source_type: "person",
+      target_object_id: "la_object_contract0002",
+      target_type: "project",
+      predicate: "invests-in",
+      valid_from: "2026-06-21",
+      source: "test",
+      attrs: {
+        amount: "synthetic",
+        status: "pending"
+      }
+    }).success).toBe(false);
+
+    expect(TemporalEdgeSchema.safeParse({
+      edge_id: "la_edge_contract0003",
+      source_object_id: "la_object_contract0001",
+      source_type: "person",
+      target_object_id: "la_object_contract0002",
+      target_type: "organization",
+      predicate: "employed-by",
+      valid_from: "2026-06-21",
+      source: "test",
+      attrs: {
+        valid_from: "2025-01-01"
+      }
+    }).success).toBe(false);
+
+    expect(TemporalEdgeSchema.safeParse({
+      edge_id: "la_edge_contract0004",
+      source_object_id: "la_object_contract0001",
+      source_type: "person",
+      target_object_id: "la_object_contract0002",
+      target_type: "person",
+      predicate: "intro-path-to",
+      valid_from: "2026-06-21",
+      source: "test",
+      attrs: {
+        via: []
+      }
+    }).success).toBe(false);
+  });
+
   it("rejects direction-flipping aliases instead of silently reversing them", () => {
     expect(canonicalizePredicate("manages")).toEqual({
       ok: false,
@@ -762,6 +1187,32 @@ describe("temporal contracts", () => {
     });
 
     expect(parsed.success).toBe(false);
+  });
+
+  it("accepts timestamp precision on temporal event records", () => {
+    const parsed = TemporalEventSchema.safeParse({
+      event_id: "la_event_contract0001",
+      subject_object_id: "la_object_contract0001",
+      subject_type: "occurrence",
+      kind: "observation",
+      occurred_on: "2026-06-21T12:00:00.000Z",
+      occurred_until: "2026-06-21T13:00:00.000Z",
+      recorded_at: timestamp,
+      source: "test"
+    });
+
+    expect(parsed.success).toBe(true);
+
+    expect(TemporalEventSchema.safeParse({
+      event_id: "la_event_contract0002",
+      subject_object_id: "la_object_contract0001",
+      subject_type: "occurrence",
+      kind: "observation",
+      occurred_on: "2026-06-21T12:00:00.000Z",
+      occurred_until: "2026-06-21T11:59:00.000Z",
+      recorded_at: timestamp,
+      source: "test"
+    }).success).toBe(false);
   });
 
   it("rejects impossible calendar dates", () => {

@@ -137,12 +137,12 @@ async function exerciseLocalMcp(input: {
     const tools = await client.listTools();
     const toolNames = tools.tools.map((tool) => tool.name).sort();
     for (const required of [
-      "local_graph_status",
-      "local_list_objects",
-      "local_read_object",
-      "local_create_object",
-      "local_update_object",
-      "local_tombstone_object"
+      "status",
+      "object_list",
+      "object_read",
+      "object_create",
+      "object_update",
+      "object_delete"
     ]) {
       assert(toolNames.includes(required), `local MCP missing tool ${required}`);
     }
@@ -151,16 +151,16 @@ async function exerciseLocalMcp(input: {
     const initialStatus = parseToolJson<{
       ok: boolean;
       result?: { object_count?: number; profile?: string };
-    }>("local_graph_status", await client.callTool({ name: "local_graph_status", arguments: {} }), input.outputs);
-    assert(initialStatus.ok === true, "local_graph_status failed");
+    }>("status", await client.callTool({ name: "status", arguments: {} }), input.outputs);
+    assert(initialStatus.ok === true, "status failed");
     assert(initialStatus.result?.object_count === 6, "local graph did not start with six fixture objects");
     assert(initialStatus.result.profile === "local-full", "local MCP did not authenticate as local-full");
 
     const privateRead = parseToolJson<{
       ok: boolean;
       result?: { object?: { access_class?: string; payload?: { kind?: string } } };
-    }>("local_read_object", await client.callTool({
-      name: "local_read_object",
+    }>("object_read", await client.callTool({
+      name: "object_read",
       arguments: { object_id: "la_object_privatepage0001" }
     }), input.outputs);
     assert(privateRead.ok === true, "local private read failed");
@@ -170,8 +170,8 @@ async function exerciseLocalMcp(input: {
     const created = parseToolJson<{
       ok: boolean;
       result?: { mutation?: string; object_count?: number; new_version?: number };
-    }>("local_create_object", await client.callTool({
-      name: "local_create_object",
+    }>("object_create", await client.callTool({
+      name: "object_create",
       arguments: {
         object: syntheticObject("la_object_localdeploy0001", "Synthetic local deploy object")
       }
@@ -183,8 +183,8 @@ async function exerciseLocalMcp(input: {
     const updated = parseToolJson<{
       ok: boolean;
       result?: { mutation?: string; previous_version?: number; new_version?: number };
-    }>("local_update_object", await client.callTool({
-      name: "local_update_object",
+    }>("object_update", await client.callTool({
+      name: "object_update",
       arguments: {
         object_id: "la_object_localdeploy0001",
         expected_version: 1,
@@ -205,9 +205,9 @@ async function exerciseLocalMcp(input: {
     assert(updated.result?.previous_version === 1 && updated.result.new_version === 2, "local update did not advance version");
 
     const versionConflict = parseToolJson<{ ok: boolean; reason?: string }>(
-      "local_update_object_conflict",
+      "object_update_conflict",
       await client.callTool({
-        name: "local_update_object",
+        name: "object_update",
         arguments: {
           object_id: "la_object_localdeploy0001",
           expected_version: 1,
@@ -223,8 +223,8 @@ async function exerciseLocalMcp(input: {
     const tombstoned = parseToolJson<{
       ok: boolean;
       result?: { mutation?: string; previous_version?: number; new_version?: number };
-    }>("local_tombstone_object", await client.callTool({
-      name: "local_tombstone_object",
+    }>("object_delete", await client.callTool({
+      name: "object_delete",
       arguments: {
         object_id: "la_object_localdeploy0001",
         expected_version: 2
@@ -237,8 +237,8 @@ async function exerciseLocalMcp(input: {
       const bulkCreate = parseToolJson<{
         ok: boolean;
         result?: { mutation?: string; new_version?: number };
-      }>(`local_create_object_bulk_${index}`, await client.callTool({
-        name: "local_create_object",
+      }>(`object_create_bulk_${index}`, await client.callTool({
+        name: "object_create",
         arguments: {
           object: syntheticObject(`la_object_localdeploy000${index}`, `Synthetic local deploy object ${index}`)
         }
@@ -250,7 +250,7 @@ async function exerciseLocalMcp(input: {
     const finalStatus = parseToolJson<{
       ok: boolean;
       result?: { object_count?: number };
-    }>("local_graph_status_final", await client.callTool({ name: "local_graph_status", arguments: {} }), input.outputs);
+    }>("status_final", await client.callTool({ name: "status", arguments: {} }), input.outputs);
     assert(finalStatus.ok === true && finalStatus.result?.object_count === 11, "local graph final object count should include bulk objects and tombstone");
     console.log("ok local MCP deploy lifecycle");
   } finally {
@@ -430,7 +430,7 @@ async function main(): Promise<void> {
 
     assert(existsSync(profile.paths.activity_log_path), "local MCP activity log was not created");
     const activity = await readFile(profile.paths.activity_log_path, "utf8");
-    for (const expected of ["local_read_object", "local_create_object", "local_update_object", "local_tombstone_object"]) {
+    for (const expected of ["object_read", "object_create", "object_update", "object_delete"]) {
       assert(activity.includes(expected), `activity log missing ${expected}`);
     }
     assertNoLeak("local MCP activity log", activity);

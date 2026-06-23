@@ -85,4 +85,27 @@ describe("repo safety scanner", () => {
       rmSync(root, { force: true, recursive: true });
     }
   });
+
+  it("flags ambiguous schema names outside contract guard files", () => {
+    const root = join(tmpdir(), `living-atlas-schema-guard-${process.pid}`);
+    rmSync(root, { force: true, recursive: true });
+    mkdirSync(join(root, "docs"), { recursive: true });
+    writeFileSync(join(root, "docs", "bad.md"), [
+      "Use RecurrenceRuleSchema here.",
+      "required: amount, status",
+      "attrs.recurrence is accepted"
+    ].join("\n"));
+
+    try {
+      const result = scanRepoSafety(root);
+      expect(result.ok).toBe(false);
+      expect(result.findings.map((finding) => finding.rule)).toEqual(expect.arrayContaining([
+        "old-recurrence-schema-name",
+        "ambiguous-capital-status-attr",
+        "ambiguous-edge-recurrence-attr"
+      ]));
+    } finally {
+      rmSync(root, { force: true, recursive: true });
+    }
+  });
 });

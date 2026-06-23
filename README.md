@@ -45,6 +45,7 @@ docs control what graph facts mean.
 - [Access Modes](docs/architecture/access-modes.md) - remote-safe, cloud-unlock session, and local-keyholding security modes.
 - [Identity, Configuration, And Key Control Plane](docs/architecture/identity-configuration-control-plane.md) - user/device/client setup, capability grants, key config, recovery, and admin surfaces.
 - [Event Subsystems](docs/architecture/event-subsystems.md) - sync change log, durable audit ledger, and live activity stream.
+- [MCP Tools](docs/mcp-tools.md) - canonical local/remote MCP tool catalog, access modes, batching, and Praxis integration notes.
 - [Metadata Leakage Budget](docs/architecture/metadata-leakage-budget.md) - Cloudflare-visible metadata and path/index constraints.
 - [Compaction And Retention](docs/architecture/compaction-and-retention.md) - tombstones, snapshots, long-offline clients, and erasure.
 - [Local MCP Authentication](docs/architecture/local-mcp-authentication.md) - local auth, capabilities, admin mode, and localhost threat model.
@@ -251,11 +252,11 @@ Workspace packages:
   status/list/read plus synthetic CRUD tools backed by in-memory fixtures or the
   durable local graph store, redacted audit events, and optional durable
   mutation outbox files for bidirectional sync daemon pickup.
-- `@living-atlas/sync-agent`: local sync-agent skeleton that builds
-  ciphertext batches for sensitive local graph changes, tracks an in-memory synthetic
-  outbox/daemon plan, submits to the Worker sync route, fetches remote
-  summaries/envelopes, and applies pulled envelopes into the local graph store
-  with version-conflict reporting and bounded conflict samples.
+- `@living-atlas/sync-agent`: local sync-agent that builds ciphertext batches,
+  drains durable local MCP outbox files through a bidirectional push handshake,
+  submits to the Worker sync route, fetches remote summaries/envelopes, and
+  applies pulled envelopes into the local graph store with version-conflict
+  reporting and bounded conflict samples.
 - `@living-atlas/atlas-client`: dependency-light TypeScript client helpers for
   Praxis and other consumers calling remote MCP, activity, and usage surfaces
   with token headers and redacted error details.
@@ -271,6 +272,9 @@ Workspace packages:
 - `cloudflare:live-ops-report` adds a compact operator report over the gate and
   provider-side inventory available through bound Cloudflare services, including
   R2 object count/byte reconciliation.
+- `cloudflare:live-local-outbox-drain` runs one live local replica outbox drain
+  through the bidirectional push handshake after the deployed usage gate passes
+  and the explicit mutation acknowledgement is set.
 
 Semantic Logseq migration uses bounded, plaintext-free planning and ledger
 commands:
