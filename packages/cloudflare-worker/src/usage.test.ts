@@ -59,7 +59,7 @@ class FakeUsageStatement {
     }
 
     if (this.query.includes("FROM sync_objects")) {
-      return { count: 42 } as T;
+      return { count: 40 } as T;
     }
 
     if (this.query.includes("FROM sync_changes")) {
@@ -240,7 +240,7 @@ describe("Worker usage status endpoint", () => {
       sync: {
         latest_generation: 4,
         latest_batch_id: "la_sync_batch_usage0001",
-        object_count: 42,
+        object_count: 40,
         change_count: 43
       }
     });
@@ -312,7 +312,7 @@ describe("Worker usage status endpoint", () => {
       },
       app_observed: {
         sync_generation: 4,
-        sync_object_count: 42,
+        sync_object_count: 40,
         r2_estimated_objects: 42,
         r2_estimated_stored_bytes: 16384
       }

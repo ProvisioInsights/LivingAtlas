@@ -479,6 +479,7 @@ FROM sync_batches
 WHERE status = 'committed'`).first<UsageScalarRow>();
 
   const syncStatus = await readSyncStatus(store);
+  const committedObjectCount = numberFromRow(syncTotalRow, "committed_objects");
   const workersObserved = {
     requests: numberFromRow(requestRow, "total_requests"),
     http_2xx: numberFromRow(requestRow, "http_2xx"),
@@ -490,7 +491,7 @@ WHERE status = 'committed'`).first<UsageScalarRow>();
   const d1Observed = {
     retained_metric_rows: numberFromRow(retainedRow, "retained_metric_rows"),
     committed_batches: numberFromRow(syncTotalRow, "committed_batches"),
-    committed_objects: numberFromRow(syncTotalRow, "committed_objects"),
+    committed_objects: committedObjectCount,
     committed_changes: numberFromRow(syncTotalRow, "committed_changes"),
     window_estimated_rows_written:
       numberFromRow(syncWindowRow, "committed_batches")
@@ -499,7 +500,7 @@ WHERE status = 'committed'`).first<UsageScalarRow>();
       + numberFromRow(requestRow, "total_requests")
   };
   const r2Observed = {
-    objects: syncStatus.object_count,
+    objects: committedObjectCount,
     estimated_stored_bytes: numberFromRow(syncTotalRow, "estimated_batch_bytes"),
     window_estimated_write_bytes: numberFromRow(syncWindowRow, "estimated_batch_bytes"),
     window_class_a_operations_estimate: numberFromRow(syncWindowRow, "committed_objects")

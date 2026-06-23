@@ -10,6 +10,7 @@ import {
 
 const defaultMaxObjects = 240;
 const hardMaxObjects = 250;
+const defaultMaxFilesPerBatch = 10;
 const defaultLookaheadFiles = 25;
 const maxLookaheadFiles = 200;
 const maxFileOffset = 1_000_000;
@@ -104,6 +105,48 @@ async function readMarkdownInput(root: string, path: string): Promise<MarkdownFi
   };
 }
 
+export type PlanEntry = {
+  offset: number;
+  planned_objects: number;
+  bytes: number;
+  pages: number;
+  blocks: number;
+  reference_index_objects: number;
+  edge_objects: number;
+  quarantine_objects: number;
+  oversized: boolean;
+};
+
+export function recommendNextSemanticBatch(entries: PlanEntry[], maxObjects: number, maxFilesPerBatch: number): {
+  file_count: number;
+  planned_objects: number;
+} {
+  let recommendedCount = 0;
+  let recommendedObjects = 0;
+  for (const entry of entries) {
+    if (recommendedCount >= maxFilesPerBatch) {
+      break;
+    }
+    if (entry.oversized && recommendedCount === 0) {
+      recommendedCount = 1;
+      recommendedObjects = entry.planned_objects;
+      break;
+    }
+    if (entry.oversized) {
+      break;
+    }
+    if (recommendedObjects + entry.planned_objects > maxObjects) {
+      break;
+    }
+    recommendedCount += 1;
+    recommendedObjects += entry.planned_objects;
+  }
+  return {
+    file_count: recommendedCount,
+    planned_objects: recommendedObjects
+  };
+}
+
 async function main(): Promise<void> {
   const root = envValue("LIVING_ATLAS_REAL_MARKDOWN_ROOT") ?? "./private-markdown-root";
   const ledgerPath = envValue("LIVING_ATLAS_LOGSEQ_SEMANTIC_LEDGER_PATH");
@@ -111,6 +154,12 @@ async function main(): Promise<void> {
   const offset = parseInteger(envValue("LIVING_ATLAS_LOGSEQ_SEMANTIC_FILE_OFFSET"), inferredOffset ?? 0, 0, maxFileOffset);
   const lookaheadFiles = parseInteger(envValue("LIVING_ATLAS_LOGSEQ_SEMANTIC_PLAN_LOOKAHEAD_FILES"), defaultLookaheadFiles, 1, maxLookaheadFiles);
   const maxObjects = parseInteger(envValue("LIVING_ATLAS_LOGSEQ_SEMANTIC_PLAN_MAX_OBJECTS"), defaultMaxObjects, 1, hardMaxObjects);
+  const maxFilesPerBatch = parseInteger(
+    envValue("LIVING_ATLAS_LOGSEQ_SEMANTIC_PLAN_MAX_FILE_COUNT"),
+    defaultMaxFilesPerBatch,
+    1,
+    defaultMaxFilesPerBatch
+  );
   const authorityId = envValue("LIVING_ATLAS_LIVE_AUTHORITY_ID") ?? "la_authority_logseqsemantic0001";
   const pathRedactionSecret = envValue("LIVING_ATLAS_REAL_DATA_PATH_REDACTION_SECRET") ?? `planner:${digest(`${authorityId}:${root}`, 32)}`;
   const paths = await walkMarkdown(root, lookaheadFiles, offset);
@@ -118,17 +167,7 @@ async function main(): Promise<void> {
     throw new Error(`no markdown files found under configured root at offset ${offset}`);
   }
 
-  const entries: Array<{
-    offset: number;
-    planned_objects: number;
-    bytes: number;
-    pages: number;
-    blocks: number;
-    reference_index_objects: number;
-    edge_objects: number;
-    quarantine_objects: number;
-    oversized: boolean;
-  }> = [];
+  const entries: PlanEntry[] = [];
 
   for (const [index, path] of paths.entries()) {
     const input = await readMarkdownInput(root, path);
@@ -150,23 +189,7 @@ async function main(): Promise<void> {
     });
   }
 
-  let recommendedCount = 0;
-  let recommendedObjects = 0;
-  for (const entry of entries) {
-    if (entry.oversized && recommendedCount === 0) {
-      recommendedCount = 1;
-      recommendedObjects = entry.planned_objects;
-      break;
-    }
-    if (entry.oversized) {
-      break;
-    }
-    if (recommendedObjects + entry.planned_objects > maxObjects) {
-      break;
-    }
-    recommendedCount += 1;
-    recommendedObjects += entry.planned_objects;
-  }
+  const recommended = recommendNextSemanticBatch(entries, maxObjects, maxFilesPerBatch);
 
   const summary = {
     report_schema: "living-atlas-logseq-semantic-batch-plan:v1",
@@ -174,18 +197,19 @@ async function main(): Promise<void> {
     authority_id: authorityId,
     start_offset: offset,
     max_objects: maxObjects,
+    max_files_per_batch: maxFilesPerBatch,
     lookahead_files: paths.length,
-    recommended_next_batch: recommendedCount > 0
+    recommended_next_batch: recommended.file_count > 0
       ? {
           file_offset: offset,
-          file_count: recommendedCount,
-          planned_objects: recommendedObjects,
-          requires_chunked_sync: recommendedObjects > maxObjects
+          file_count: recommended.file_count,
+          planned_objects: recommended.planned_objects,
+          requires_chunked_sync: recommended.planned_objects > maxObjects
         }
       : null,
-    first_blocker: recommendedCount === 0
+    first_blocker: recommended.file_count === 0
       ? entries[0]
-      : entries.find((entry, index) => index >= recommendedCount),
+      : entries.find((entry, index) => index >= recommended.file_count),
     entries
   };
 
