@@ -350,6 +350,12 @@ type RemoteGraphWriteRow = {
   created_at: string;
 };
 
+type RemoteGraphCommittedWriteRow = {
+  response_json?: string | null;
+  sync_generation?: number | null;
+  committed_at?: string | null;
+};
+
 async function readRemoteGraphWrite(
   controlDb: RemoteGraphMetadataStore,
   authorityId: string,
@@ -911,7 +917,7 @@ export async function reconcileRemoteGraph(
 SELECT object_ref, version, envelope_r2_key
 FROM remote_graph_objects
 WHERE authority_ref = ?
-ORDER BY object_ref ASC, version DESC
+ORDER BY recorded_at DESC
 LIMIT ?`).bind(authorityRef, limit).all?.<RemoteGraphObjectRow>())?.results ?? [];
   const indexedVersions = new Set(indexRows.map((row) => `${row.object_ref}:${row.version}`));
   const latestRows = new Map<string, RemoteGraphObjectRow>();
@@ -926,18 +932,29 @@ LIMIT ?`).bind(authorityRef, limit).all?.<RemoteGraphObjectRow>())?.results ?? [
     latestObjects.push(await loadObject(storage, row.envelope_r2_key));
   }
 
-  const syncStatus = await readSyncStatus(storage.controlDb, authorityId);
-  const syncPull = await readSyncEnvelopePull(storage, authorityId, 0, Math.min(sampleLimit, 50));
-  const syncRemoteReadableEntries = syncPull.objects.filter((entry) => objectAllowedForRemoteGraph(entry.object));
-  const syncRemoteReadableVersionRefs = new Set<string>();
-  for (const entry of syncRemoteReadableEntries) {
-    syncRemoteReadableVersionRefs.add(`${await opaqueRef(entry.object.object_id)}:${entry.object.version}`);
+  const committedRows = (await storage.controlDb.prepare(`
+SELECT response_json, sync_generation, committed_at
+FROM remote_graph_writes
+WHERE authority_ref = ? AND status = 'committed'
+ORDER BY sync_generation DESC, committed_at DESC
+LIMIT ?`).bind(authorityRef, sampleLimit).all?.<RemoteGraphCommittedWriteRow>())?.results ?? [];
+  const committedObjects: GraphObjectEnvelope[] = [];
+  for (const row of committedRows) {
+    const response = parseStoredResponse(row.response_json);
+    const object = GraphObjectEnvelopeSchema.safeParse(response.object);
+    if (object.success && objectAllowedForRemoteGraph(object.data)) {
+      committedObjects.push(object.data);
+    }
+  }
+  const committedVersionRefs = new Set<string>();
+  for (const object of committedObjects) {
+    committedVersionRefs.add(`${await opaqueRef(object.object_id)}:${object.version}`);
   }
 
   const samples: RemoteGraphReconciliation["drift"]["samples"] = [];
   let missingSyncCount = 0;
   for (const row of indexRows) {
-    if (syncRemoteReadableVersionRefs.has(`${row.object_ref}:${row.version}`)) {
+    if (committedVersionRefs.has(`${row.object_ref}:${row.version}`)) {
       continue;
     }
     missingSyncCount += 1;
@@ -954,8 +971,8 @@ LIMIT ?`).bind(authorityRef, limit).all?.<RemoteGraphObjectRow>())?.results ?? [
   }
 
   let missingRemoteCount = 0;
-  for (const entry of syncRemoteReadableEntries) {
-    const ref = `${await opaqueRef(entry.object.object_id)}:${entry.object.version}`;
+  for (const object of committedObjects) {
+    const ref = `${await opaqueRef(object.object_id)}:${object.version}`;
     if (indexedVersions.has(ref)) {
       continue;
     }
@@ -963,14 +980,15 @@ LIMIT ?`).bind(authorityRef, limit).all?.<RemoteGraphObjectRow>())?.results ?? [
     if (samples.length < 10) {
       samples.push({
         kind: "sync-envelope-missing-remote-graph",
-        object_id: entry.object.object_id,
-        version: entry.object.version,
-        object_type: entry.object.object_type,
-        access_class: entry.object.access_class
+        object_id: object.object_id,
+        version: object.version,
+        object_type: object.object_type,
+        access_class: object.access_class
       });
     }
   }
 
+  const syncStatus = await readSyncStatus(storage.controlDb, authorityId);
   const activeObjectCount = latestObjects.filter((object) => !object.visible_metadata.tombstone && !isExpiredReleaseObject(object)).length;
   const tombstoneCount = latestObjects.filter((object) => object.visible_metadata.tombstone).length;
   const decision = missingSyncCount === 0 && missingRemoteCount === 0 ? "reconciled" : "drift-detected";
@@ -992,8 +1010,8 @@ LIMIT ?`).bind(authorityRef, limit).all?.<RemoteGraphObjectRow>())?.results ?? [
       object_count: syncStatus.object_count,
       change_count: syncStatus.change_count,
       latest_withheld_plaintext_count: syncStatus.latest_withheld_plaintext_count,
-      remote_readable_object_versions: syncRemoteReadableEntries.length,
-      truncated: syncPull.has_more
+      remote_readable_object_versions: committedObjects.length,
+      truncated: committedRows.length >= sampleLimit
     },
     drift: {
       remote_graph_versions_missing_sync_envelope: missingSyncCount,

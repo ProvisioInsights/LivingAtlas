@@ -338,7 +338,8 @@ class FakePreparedStatement {
         edge_ref: record.bindings[10] === null ? undefined : String(record.bindings[10]),
         source_ref: record.bindings[11] === null ? undefined : String(record.bindings[11]),
         target_ref: record.bindings[12] === null ? undefined : String(record.bindings[12]),
-        predicate: record.bindings[13] === null ? undefined : String(record.bindings[13])
+        predicate: record.bindings[13] === null ? undefined : String(record.bindings[13]),
+        recorded_at: String(record.bindings[19])
       }))
       .filter((row) => !authorityRef || row.authority_ref === authorityRef);
   }
@@ -377,9 +378,12 @@ class FakePreparedStatement {
     const rows = new Map<string, {
       idempotency_key: string;
       request_hash: string;
+      authority_ref: string;
       status: "staged" | "committed" | "failed";
       response_json: string | null;
       failure_reason: string | null;
+      sync_generation: number | null;
+      committed_at: string | null;
       created_at: string;
     }>();
 
@@ -388,9 +392,12 @@ class FakePreparedStatement {
         rows.set(String(record.bindings[0]), {
           idempotency_key: String(record.bindings[0]),
           request_hash: String(record.bindings[1]),
+          authority_ref: String(record.bindings[2]),
           status: "staged",
           response_json: null,
           failure_reason: null,
+          sync_generation: null,
+          committed_at: null,
           created_at: String(record.bindings[10])
         });
       }
@@ -402,7 +409,9 @@ class FakePreparedStatement {
             ...row,
             status: "committed",
             response_json: String(record.bindings[2]),
-            failure_reason: null
+            failure_reason: null,
+            sync_generation: Number(record.bindings[1]),
+            committed_at: String(record.bindings[3])
           });
         }
       }
@@ -558,12 +567,31 @@ class FakePreparedStatement {
       );
     }
 
+    if (this.query.includes("FROM remote_graph_writes")) {
+      const authorityRef = String(this.bindings[0]);
+      const limit = Number(this.bindings[1] ?? 100);
+      return fakeD1Result<T>(
+        this.remoteGraphWriteRows()
+          .filter((row) => row.authority_ref === authorityRef && row.status === "committed")
+          .sort((left, right) => (
+            (right.sync_generation ?? 0) - (left.sync_generation ?? 0)
+            || (right.committed_at ?? "").localeCompare(left.committed_at ?? "")
+          ))
+          .slice(0, limit)
+          .map((row) => ({
+            response_json: row.response_json,
+            sync_generation: row.sync_generation,
+            committed_at: row.committed_at
+          })) as T[]
+      );
+    }
+
     if (this.query.includes("FROM remote_graph_objects")) {
       const authorityRef = String(this.bindings[0]);
       const limit = Number(this.bindings[1] ?? 1000);
       return fakeD1Result<T>(
         this.remoteGraphRows(authorityRef)
-          .sort((left, right) => left.object_ref.localeCompare(right.object_ref) || right.version - left.version)
+          .sort((left, right) => right.recorded_at.localeCompare(left.recorded_at))
           .slice(0, limit) as T[]
       );
     }
