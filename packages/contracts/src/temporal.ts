@@ -1,5 +1,5 @@
 import { z } from "zod";
-import rrule from "rrule";
+import * as rrule from "rrule";
 import { AccessClassSchema } from "./classification";
 import { EventIdSchema, IsoTimestampSchema, ObjectIdSchema } from "./ids";
 
