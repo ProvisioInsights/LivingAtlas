@@ -1,5 +1,5 @@
 CREATE TABLE IF NOT EXISTS remote_graph_writes (
-  idempotency_key TEXT PRIMARY KEY,
+  idempotency_key TEXT NOT NULL,
   request_hash TEXT NOT NULL,
   authority_ref TEXT NOT NULL,
   object_ref TEXT,
@@ -13,6 +13,9 @@ CREATE TABLE IF NOT EXISTS remote_graph_writes (
   committed_at TEXT,
   last_seen_at TEXT NOT NULL
 );
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_remote_graph_writes_authority_idempotency
+  ON remote_graph_writes (authority_ref, idempotency_key);
 
 CREATE INDEX IF NOT EXISTS idx_remote_graph_writes_authority_status
   ON remote_graph_writes (authority_ref, status, created_at);

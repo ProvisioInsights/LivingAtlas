@@ -41,6 +41,7 @@ async function createEnv(): Promise<BootstrapWorkerEnv> {
     },
     LA_GRAPH_BUCKET: {} as R2Bucket,
     LA_CONTROL_DB: {} as D1Database,
+    LA_AUTHORITY_ID: claimPayload.authority_id,
     BOOTSTRAP_CLAIM_TOKEN_HASH: tokenHash,
     BOOTSTRAP_TOKEN_EXPIRES_AT: fixtureFutureExpiry
   };
@@ -109,7 +110,14 @@ describe("Worker bootstrap routes", () => {
     const health = await handleBootstrapRequest(new Request("https://living-atlas.example/healthz"), env);
     await expect(health.json()).resolves.toEqual({ ok: true });
 
-    const status = await handleBootstrapRequest(new Request("https://living-atlas.example/api/bootstrap/status"), env);
+    const unauthenticatedStatus = await handleBootstrapRequest(new Request("https://living-atlas.example/api/bootstrap/status"), env);
+    expect(unauthenticatedStatus.status).toBe(401);
+    await expect(unauthenticatedStatus.json()).resolves.toMatchObject({ ok: false, error: "missing-or-invalid-bootstrap-token" });
+
+    const status = await handleBootstrapRequest(new Request("https://living-atlas.example/api/bootstrap/status", {
+      headers: { "x-living-atlas-bootstrap-token": validToken }
+    }), env);
+    expect(status.status).toBe(200);
     await expect(status.json()).resolves.toMatchObject({ bootstrap_state: "unclaimed" });
   });
 

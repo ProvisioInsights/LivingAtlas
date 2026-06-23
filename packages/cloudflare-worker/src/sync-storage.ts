@@ -9,6 +9,7 @@ import {
   type SyncPullResponse,
   type SyncStatus
 } from "@living-atlas/contracts";
+import { opaquePersistenceHash, opaquePersistenceRef, sha256Hex } from "./opaque-ref";
 import { summarizeSyncBatch, type SyncBatchSequenceSummary } from "./sync-sequencer";
 
 export type SyncObjectStore = {
@@ -80,7 +81,7 @@ type CountRow = {
 const SyncBatchTableSql = `
 CREATE TABLE IF NOT EXISTS sync_batches (
   batch_id TEXT PRIMARY KEY,
-  idempotency_key TEXT NOT NULL UNIQUE,
+  idempotency_key TEXT NOT NULL,
   batch_hash TEXT NOT NULL,
   authority_ref TEXT NOT NULL,
   device_ref TEXT NOT NULL,
@@ -135,7 +136,7 @@ CREATE TABLE IF NOT EXISTS sync_changes (
 )`;
 
 const SyncIndexSql = [
-  "CREATE UNIQUE INDEX IF NOT EXISTS idx_sync_batches_idempotency_key ON sync_batches (idempotency_key)",
+  "CREATE UNIQUE INDEX IF NOT EXISTS idx_sync_batches_authority_idempotency_key ON sync_batches (authority_ref, idempotency_key)",
   "CREATE INDEX IF NOT EXISTS idx_sync_batches_committed_generation ON sync_batches (status, target_generation)",
   "CREATE INDEX IF NOT EXISTS idx_sync_batches_authority_status_generation ON sync_batches (authority_ref, status, target_generation)",
   "CREATE INDEX IF NOT EXISTS idx_sync_objects_batch_id ON sync_objects (batch_id)",
@@ -175,24 +176,19 @@ async function mapWithConcurrency<T, R>(
   return results;
 }
 
-function toHex(bytes: Uint8Array): string {
-  return [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
-}
-
-async function sha256Hex(value: string): Promise<string> {
-  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
-  return toHex(new Uint8Array(digest));
+async function sha256Hash(value: string): Promise<`sha256:${string}`> {
+  return `sha256:${await sha256Hex(value)}`;
 }
 
 async function envelopeR2Key(batch: SyncBatch, object: GraphObjectEnvelope): Promise<string> {
-  const authority = (await sha256Hex(batch.authority_id)).slice(0, 16);
-  const segment = (await sha256Hex([
+  const authority = (await opaquePersistenceRef("sync:authority-r2-prefix", batch.authority_id)).slice(7, 23);
+  const segment = (await opaquePersistenceHash("sync:envelope-r2-key", [
     "sync-envelope:v1",
     batch.batch_id,
     object.object_id,
     String(object.version),
     object.content_hash
-  ].join(":"))).slice(0, 40);
+  ].join(":"))).slice(7, 47);
   return `objects/a=${authority}/p=${segment.slice(0, 2)}/s=${segment}.bin`;
 }
 
@@ -206,8 +202,8 @@ function countFromRow(row: CountRow | null): number {
   return typeof row?.count === "number" ? row.count : 0;
 }
 
-async function opaqueRef(value: string): Promise<string> {
-  return `sha256:${await sha256Hex(value)}`;
+async function scopedOpaqueRef(scope: string, value: string): Promise<string> {
+  return opaquePersistenceRef(`sync:${scope}`, value);
 }
 
 function objectPayloadRef(batch: SyncBatch, object: GraphObjectEnvelope) {
@@ -218,16 +214,58 @@ function objectPayloadRef(batch: SyncBatch, object: GraphObjectEnvelope) {
 
 type ObjectPayloadRef = NonNullable<ReturnType<typeof objectPayloadRef>>;
 
+async function deriveObjectPayloadRef(object: GraphObjectEnvelope): Promise<ObjectPayloadRef> {
+  const payload = object.payload;
+  const ciphertextHash = payload.kind === "ciphertext-ref" ? payload.ciphertext_hash : undefined;
+  const r2Path = payload.kind === "ciphertext-ref" && payload.storage === "r2" ? payload.path : undefined;
+  const payloadBytes = payload.kind === "ciphertext-ref"
+    ? payload.byte_size
+    : Math.max(new TextEncoder().encode(JSON.stringify(payload)).byteLength, 1);
+
+  return {
+    object_id: object.object_id,
+    version: object.version,
+    envelope_hash: await sha256Hash(JSON.stringify(object)),
+    payload_hash: ciphertextHash ?? await sha256Hash(JSON.stringify(payload)),
+    byte_size: payloadBytes,
+    ...(r2Path ? { r2_path_hash: await sha256Hash(r2Path) } : {})
+  };
+}
+
+function assertPayloadRefMatches(submitted: ObjectPayloadRef, expected: ObjectPayloadRef): void {
+  const mismatched = ([
+    "object_id",
+    "version",
+    "envelope_hash",
+    "payload_hash",
+    "byte_size",
+    "r2_path_hash"
+  ] as const).some((field) => submitted[field] !== expected[field]);
+  if (mismatched) {
+    throw new Error(`Sync object payload ref mismatch for ${expected.object_id}:${expected.version}`);
+  }
+}
+
+export async function validateSyncBatchStorageRefs(batch: SyncBatch): Promise<void> {
+  await Promise.all(batch.objects.map(async (object) => {
+    const submitted = objectPayloadRef(batch, object);
+    if (!submitted) {
+      throw new Error(`Missing payload ref for ${object.object_id}:${object.version}`);
+    }
+    assertPayloadRefMatches(submitted, await deriveObjectPayloadRef(object));
+  }));
+}
+
 function metadataByteLength(metadata: Record<string, string>): number {
   return new TextEncoder().encode(JSON.stringify(metadata)).byteLength;
 }
 
-function r2CustomMetadata(authorityRef: string, payloadRef: { envelope_hash: string; payload_hash: string }): Record<string, string> {
+async function r2CustomMetadata(authorityRef: string, payloadRef: { envelope_hash: string; payload_hash: string }): Promise<Record<string, string>> {
   const metadata = {
     schema: "la-sync-envelope-v1",
     authority_ref: authorityRef.slice(7, 23),
-    envelope_hash: payloadRef.envelope_hash,
-    payload_hash: payloadRef.payload_hash
+    envelope_ref: await scopedOpaqueRef("envelope-hash", payloadRef.envelope_hash),
+    payload_ref: await scopedOpaqueRef("payload-hash", payloadRef.payload_hash)
   };
 
   if (metadataByteLength(metadata) > 512) {
@@ -239,9 +277,11 @@ function r2CustomMetadata(authorityRef: string, payloadRef: { envelope_hash: str
 
 export async function readCommittedBatchByIdempotency(
   controlDb: SyncMetadataStore,
-  idempotencyKey: string
+  idempotencyKey: string,
+  authorityId: string
 ): Promise<CommittedSyncBatch | undefined> {
   await ensureSyncTables(controlDb);
+  const authorityRef = await scopedOpaqueRef("authority", authorityId);
 
   const row = await controlDb.prepare(`
 SELECT
@@ -253,8 +293,8 @@ SELECT
   change_count,
   withheld_plaintext_count
 FROM sync_batches
-WHERE idempotency_key = ? AND status = 'committed'
-LIMIT 1`).bind(idempotencyKey).first<CommittedSyncBatch>();
+WHERE authority_ref = ? AND idempotency_key = ? AND status = 'committed'
+LIMIT 1`).bind(authorityRef, idempotencyKey).first<CommittedSyncBatch>();
 
   return row ?? undefined;
 }
@@ -265,8 +305,9 @@ export async function persistSyncBatch(
   options: PersistSyncBatchOptions = {}
 ): Promise<StoredSyncBatch> {
   await ensureSyncTables(storage.controlDb);
+  await validateSyncBatchStorageRefs(batch);
 
-  const authorityRef = await opaqueRef(batch.authority_id);
+  const authorityRef = await scopedOpaqueRef("authority", batch.authority_id);
   const summary = options.summary ?? await summarizeSyncBatch(batch);
   const stagedAt = options.staged_at ?? new Date().toISOString();
   const committedAt = options.committed_at ?? new Date().toISOString();
@@ -300,9 +341,9 @@ INSERT OR IGNORE INTO sync_batches (
     batch.idempotency_key,
     summary.batch_hash,
     authorityRef,
-    await opaqueRef(batch.device_id),
-    await opaqueRef(batch.client_id),
-    await opaqueRef(batch.capability_id),
+    await scopedOpaqueRef("device", batch.device_id),
+    await scopedOpaqueRef("client", batch.client_id),
+    await scopedOpaqueRef("capability", batch.capability_id),
     batch.token_id ?? null,
     batch.operation_id,
     batch.trace_id,
@@ -332,7 +373,7 @@ INSERT OR IGNORE INTO sync_batches (
         contentType: "application/json; charset=utf-8"
       },
       customMetadata: {
-        ...r2CustomMetadata(authorityRef, payloadRef)
+        ...await r2CustomMetadata(authorityRef, payloadRef)
       }
     });
 
@@ -356,14 +397,14 @@ INSERT OR REPLACE INTO sync_objects (
   ciphertext_r2_path_hash,
   recorded_at
 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(
-      await opaqueRef(object.object_id),
+      await scopedOpaqueRef("object", object.object_id),
       batch.batch_id,
       authorityRef,
       object.version,
-      payloadRef.envelope_hash,
-      payloadRef.payload_hash,
+      await scopedOpaqueRef("envelope-hash", payloadRef.envelope_hash),
+      await scopedOpaqueRef("payload-hash", payloadRef.payload_hash),
       key,
-      payloadRef.r2_path_hash ?? null,
+      payloadRef.r2_path_hash ? await scopedOpaqueRef("ciphertext-r2-path-hash", payloadRef.r2_path_hash) : null,
       batch.submitted_at
     ).run();
   }
@@ -385,19 +426,19 @@ INSERT OR REPLACE INTO sync_changes (
   generation,
   actor_ref
 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(
-      await opaqueRef(change.change_id),
+      await scopedOpaqueRef("change", change.change_id),
       batch.batch_id,
       authorityRef,
       change.operation_id,
       change.trace_id,
       change.recorded_at,
-      await opaqueRef(change.object_id),
+      await scopedOpaqueRef("object", change.object_id),
       change.operation,
       change.base_version ?? null,
       change.new_version,
       change.content_hash,
       change.generation,
-      await opaqueRef(change.actor_id)
+      await scopedOpaqueRef("actor", change.actor_id)
     ).run();
   }
 
@@ -417,7 +458,7 @@ WHERE batch_id = ? AND status = 'staged'`).bind(
 
 export async function readSyncStatus(controlDb: SyncMetadataStore, authorityId?: string): Promise<SyncStatus> {
   await ensureSyncTables(controlDb);
-  const authorityRef = authorityId ? await opaqueRef(authorityId) : undefined;
+  const authorityRef = authorityId ? await scopedOpaqueRef("authority", authorityId) : undefined;
 
   const latestQuery = `
 SELECT
@@ -487,7 +528,7 @@ export async function readSyncPull(
 ): Promise<SyncPullResponse> {
   await ensureSyncTables(controlDb);
 
-  const authorityRef = await opaqueRef(authorityId);
+  const authorityRef = await scopedOpaqueRef("authority", authorityId);
   const latest = await readSyncStatus(controlDb, authorityId);
   const boundedLimit = Math.min(Math.max(limit, 1), 250);
   const statement = controlDb.prepare(`
@@ -535,7 +576,7 @@ export async function readSyncEnvelopePull(
 ): Promise<SyncEnvelopePullResponse> {
   await ensureSyncTables(storage.controlDb);
 
-  const authorityRef = await opaqueRef(authorityId);
+  const authorityRef = await scopedOpaqueRef("authority", authorityId);
   const latest = await readSyncStatus(storage.controlDb, authorityId);
   const boundedBatchLimit = Math.min(Math.max(limit, 1), 50);
   const batchStatement = storage.controlDb.prepare(`

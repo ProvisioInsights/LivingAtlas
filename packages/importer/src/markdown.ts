@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { extname } from "node:path";
 import {
   AccessClassSchema,
@@ -134,6 +134,11 @@ export type CreateMarkdownImportPlanOptions = {
   created_at?: string;
   default_access_class?: AccessClass;
   default_encryption_class?: EncryptionClass;
+  path_redaction_secret?: string;
+};
+
+export type MarkdownPathRedactionOptions = {
+  path_redaction_secret?: string;
 };
 
 const KnownFrontmatterFields = new Set(["aliases", "tags", "title", "created", "updated"]);
@@ -146,16 +151,28 @@ function shortHash(value: string, length = 24): string {
   return createHash("sha256").update(value).digest("hex").slice(0, length);
 }
 
+function ephemeralPathRedactionSecret(): string {
+  return randomBytes(16).toString("hex");
+}
+
+function pathHashInput(sourcePath: string, pathRedactionSecret: string | undefined): string {
+  return `${pathRedactionSecret ?? ephemeralPathRedactionSecret()}:${normalizeMarkdownSourcePath(sourcePath)}`;
+}
+
 export function normalizeMarkdownSourcePath(sourcePath: string): string {
   return sourcePath.replaceAll("\\", "/").replace(/\/+/g, "/");
 }
 
-export function createMarkdownSourceRef(sourcePath: string): string {
-  return `la_source_${shortHash(normalizeMarkdownSourcePath(sourcePath), 24)}`;
+export function createMarkdownSourceRef(sourcePath: string, options: MarkdownPathRedactionOptions = {}): string {
+  return `la_source_${shortHash(pathHashInput(sourcePath, options.path_redaction_secret), 24)}`;
 }
 
-export function createMarkdownObjectId(authorityId: string, sourcePath: string): string {
-  return ObjectIdSchema.parse(`la_object_${shortHash(`${authorityId}:${normalizeMarkdownSourcePath(sourcePath)}`, 24)}`);
+export function createMarkdownObjectId(
+  authorityId: string,
+  sourcePath: string,
+  options: MarkdownPathRedactionOptions = {}
+): string {
+  return ObjectIdSchema.parse(`la_object_${shortHash(`${authorityId}:${pathHashInput(sourcePath, options.path_redaction_secret)}`, 24)}`);
 }
 
 function sourceExtension(sourcePath: string): string {
@@ -201,14 +218,15 @@ function countMatches(markdown: string, pattern: RegExp): number {
 function addReference(
   references: Map<string, { kind: MarkdownReferenceKind; ref_hash: `sha256:${string}`; occurrences: number }>,
   kind: MarkdownReferenceKind,
-  value: string
+  value: string,
+  pathRedactionSecret: string
 ): void {
   const normalized = value.trim().toLowerCase();
   if (!normalized) {
     return;
   }
 
-  const refHash = sha256(`${kind}:${normalized}`);
+  const refHash = sha256(`markdown-reference:v2:${pathRedactionSecret}:${kind}:${normalized}`);
   const key = `${kind}:${refHash}`;
   const existing = references.get(key);
   if (existing) {
@@ -219,24 +237,25 @@ function addReference(
   references.set(key, { kind, ref_hash: refHash, occurrences: 1 });
 }
 
-function extractReferenceDigests(markdown: string): MarkdownReferenceDigest[] {
+function extractReferenceDigests(markdown: string, options: MarkdownPathRedactionOptions = {}): MarkdownReferenceDigest[] {
   const references = new Map<string, { kind: MarkdownReferenceKind; ref_hash: `sha256:${string}`; occurrences: number }>();
+  const pathRedactionSecret = options.path_redaction_secret ?? ephemeralPathRedactionSecret();
 
   for (const match of markdown.matchAll(/\[\[([^\]\n]{1,256})\]\]/g)) {
     const target = match[1]?.split("|", 1)[0];
-    if (target) addReference(references, "wikilink", target);
+    if (target) addReference(references, "wikilink", target, pathRedactionSecret);
   }
 
   for (const match of markdown.matchAll(/\[[^\]\n]{1,256}\]\(([^)\s]{1,512})(?:\s+"[^"]*")?\)/g)) {
-    if (match[1]) addReference(references, "markdown-link", match[1]);
+    if (match[1]) addReference(references, "markdown-link", match[1], pathRedactionSecret);
   }
 
   for (const match of markdown.matchAll(/(^|[\s([{])#([A-Za-z0-9_/-]{1,80})/gm)) {
-    if (match[2]) addReference(references, "hash-tag", match[2]);
+    if (match[2]) addReference(references, "hash-tag", match[2], pathRedactionSecret);
   }
 
   for (const match of markdown.matchAll(/\(\(([A-Za-z0-9_-]{3,128})\)\)/g)) {
-    if (match[1]) addReference(references, "logseq-block-ref", match[1]);
+    if (match[1]) addReference(references, "logseq-block-ref", match[1], pathRedactionSecret);
   }
 
   return [...references.values()]
@@ -257,7 +276,10 @@ function detectedFeatures(summary: Omit<MarkdownImportSummary, "detected_feature
   return features;
 }
 
-export function summarizeMarkdownFile(input: MarkdownFileInput): MarkdownImportSummary {
+export function summarizeMarkdownFile(
+  input: MarkdownFileInput,
+  options: MarkdownPathRedactionOptions = {}
+): MarkdownImportSummary {
   const parsed = MarkdownFileInputSchema.parse(input);
   const { keys, body } = extractFrontmatter(parsed.markdown);
   const byteSize = Buffer.byteLength(parsed.markdown, "utf8");
@@ -270,7 +292,7 @@ export function summarizeMarkdownFile(input: MarkdownFileInput): MarkdownImportS
   const hasEdgesSection = /^#{2,6}\s+Edges\s*$/im.test(body);
   const baseSummary = {
     source_kind: parsed.source_kind,
-    source_path_ref: createMarkdownSourceRef(parsed.source_path),
+    source_path_ref: createMarkdownSourceRef(parsed.source_path, options),
     source_extension: sourceExtension(parsed.source_path),
     byte_size: byteSize,
     line_count: parsed.markdown.length === 0 ? 0 : parsed.markdown.split(/\r?\n/).length,
@@ -285,7 +307,7 @@ export function summarizeMarkdownFile(input: MarkdownFileInput): MarkdownImportS
     logseq_property_count: logseqPropertyCount,
     logseq_block_ref_count: logseqBlockRefCount,
     has_edges_section: hasEdgesSection,
-    reference_digests: extractReferenceDigests(body),
+    reference_digests: extractReferenceDigests(body, options),
     plaintext_policy: "hash-only-plan" as const
   };
 
@@ -317,7 +339,11 @@ export function createMarkdownImportPlan(
   assertSafeImportEncryption(defaultAccessClass, defaultEncryptionClass);
   const createdAt = options.created_at ?? new Date().toISOString();
   const parsedFiles = files.map((file) => MarkdownFileInputSchema.parse(file));
-  const planId = `la_import_plan_${shortHash(`${authorityId}:${createdAt}:${parsedFiles.map((file) => normalizeMarkdownSourcePath(file.source_path)).join("|")}`)}`;
+  const pathRedactionSecret = options.path_redaction_secret ?? ephemeralPathRedactionSecret();
+  const redactedPathRefs = parsedFiles.map((file) => createMarkdownSourceRef(file.source_path, {
+    path_redaction_secret: pathRedactionSecret
+  }));
+  const planId = `la_import_plan_${shortHash(`${authorityId}:${createdAt}:${redactedPathRefs.join("|")}`)}`;
 
   return MarkdownImportPlanSchema.parse({
     plan_schema: "living-atlas-markdown-import-plan:v1",
@@ -328,8 +354,8 @@ export function createMarkdownImportPlan(
     default_access_class: defaultAccessClass,
     default_encryption_class: defaultEncryptionClass,
     files: parsedFiles.map((file) => {
-      const summary = summarizeMarkdownFile(file);
-      const objectId = createMarkdownObjectId(authorityId, file.source_path);
+      const summary = summarizeMarkdownFile(file, { path_redaction_secret: pathRedactionSecret });
+      const objectId = createMarkdownObjectId(authorityId, file.source_path, { path_redaction_secret: pathRedactionSecret });
       return {
         summary,
         planned_object: {

@@ -15,6 +15,7 @@ import {
   readSyncEnvelopePull,
   readSyncPull,
   readSyncStatus,
+  validateSyncBatchStorageRefs,
   type CommittedSyncBatch,
   type SyncMetadataStore,
   type SyncStorageBindings
@@ -26,6 +27,7 @@ export type SyncRuntimeConfig = {
   sync_client_id?: string;
   sync_capability_id?: string;
   sync_token_id?: string;
+  authority_id?: string;
 };
 
 export type SyncTokenBinding = {
@@ -98,7 +100,8 @@ type SyncTokenFailure = {
 async function verifySyncToken(
   token: string | undefined,
   config: SyncRuntimeConfig,
-  binding?: SyncTokenBinding
+  binding?: SyncTokenBinding,
+  authorityId?: string
 ): Promise<SyncTokenFailure | undefined> {
   if (!config.sync_token_hash) {
     return { ok: false, reason: "sync-disabled" };
@@ -121,6 +124,10 @@ async function verifySyncToken(
   }
 
   if (config.sync_token_id && binding?.token_id !== config.sync_token_id) {
+    return { ok: false, reason: "invalid-token-binding" };
+  }
+
+  if (config.authority_id && authorityId !== config.authority_id) {
     return { ok: false, reason: "invalid-token-binding" };
   }
 
@@ -199,7 +206,7 @@ export async function acceptSyncBatch(
     client_id: parsed.data.client_id,
     capability_id: parsed.data.capability_id,
     token_id: parsed.data.token_id ?? binding?.token_id
-  });
+  }, parsed.data.authority_id);
   if (tokenFailure) {
     return tokenFailure;
   }
@@ -208,8 +215,10 @@ export async function acceptSyncBatch(
     return { ok: false, reason: "batch-hash-mismatch" };
   }
 
+  await validateSyncBatchStorageRefs(parsed.data);
+
   if (storage) {
-    const committed = await readCommittedBatchByIdempotency(storage.controlDb, parsed.data.idempotency_key);
+    const committed = await readCommittedBatchByIdempotency(storage.controlDb, parsed.data.idempotency_key, parsed.data.authority_id);
     if (committed) {
       if (committed.batch_hash !== parsed.data.batch_hash) {
         return { ok: false, reason: "idempotency-conflict", status: await readSyncStatus(storage.controlDb, parsed.data.authority_id) };
@@ -236,11 +245,13 @@ export async function acceptSyncBatch(
         };
       }
 
-      await persistSyncBatch(parsed.data, storage, { summary, staged_at: stagedAt });
-      const commit = await storage.sequencer.commitBatch(summary, new Date().toISOString());
+      const committedAt = new Date().toISOString();
+      const commit = await storage.sequencer.commitBatch(summary, committedAt);
       if (!commit.ok) {
         return { ok: false, reason: sequencerReason(commit.reason), status: await readSyncStatus(storage.controlDb, parsed.data.authority_id) };
       }
+
+      await persistSyncBatch(parsed.data, storage, { summary, staged_at: stagedAt, committed_at: committedAt });
 
       return {
         ok: true,
@@ -272,14 +283,14 @@ export async function getSyncStatus(
   controlDb: SyncMetadataStore,
   binding?: SyncTokenBinding
 ): Promise<SyncStatusReadResult> {
-  const tokenFailure = await verifySyncToken(token, config, binding);
+  const tokenFailure = await verifySyncToken(token, config, binding, config.authority_id);
   if (tokenFailure) {
     return tokenFailure;
   }
 
   return {
     ok: true,
-    status: await readSyncStatus(controlDb)
+    status: await readSyncStatus(controlDb, config.authority_id)
   };
 }
 
@@ -291,7 +302,7 @@ export async function getSyncPull(
   afterGeneration: number | undefined,
   binding?: SyncTokenBinding
 ): Promise<SyncPullReadResult> {
-  const tokenFailure = await verifySyncToken(token, config, binding);
+  const tokenFailure = await verifySyncToken(token, config, binding, authorityId);
   if (tokenFailure) {
     return tokenFailure;
   }
@@ -314,7 +325,7 @@ export async function getSyncEnvelopePull(
   afterGeneration: number | undefined,
   binding?: SyncTokenBinding
 ): Promise<SyncEnvelopePullReadResult> {
-  const tokenFailure = await verifySyncToken(token, config, binding);
+  const tokenFailure = await verifySyncToken(token, config, binding, authorityId);
   if (tokenFailure) {
     return tokenFailure;
   }

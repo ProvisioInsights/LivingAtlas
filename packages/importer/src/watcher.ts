@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { extname } from "node:path";
 import { AuthorityIdSchema, ObjectIdSchema } from "@living-atlas/contracts";
 import { z } from "zod";
@@ -6,6 +6,7 @@ import {
   MarkdownImportSourceKindSchema,
   createMarkdownObjectId,
   createMarkdownSourceRef,
+  type MarkdownPathRedactionOptions,
   normalizeMarkdownSourcePath
 } from "./markdown";
 
@@ -72,13 +73,13 @@ export const WatcherImportActionPlanSchema = z
   .strict();
 export type WatcherImportActionPlan = z.infer<typeof WatcherImportActionPlanSchema>;
 
-export type CreateMarkdownWatcherPlanOptions = {
+export type CreateMarkdownWatcherPlanOptions = MarkdownPathRedactionOptions & {
   created_at?: string;
   debounce_ms?: number;
   max_file_bytes?: number;
 };
 
-export type PlanWatcherFileEventOptions = {
+export type PlanWatcherFileEventOptions = MarkdownPathRedactionOptions & {
   authority_id: string;
 };
 
@@ -101,8 +102,8 @@ function shortHash(value: string, length = 24): string {
   return createHash("sha256").update(value).digest("hex").slice(0, length);
 }
 
-function createWatcherRootRef(rootPath: string): string {
-  return `la_watch_root_${shortHash(normalizeMarkdownSourcePath(rootPath), 24)}`;
+function createWatcherRootRef(rootPath: string, pathRedactionSecret: string | undefined): string {
+  return `la_watch_root_${shortHash(`${pathRedactionSecret ?? randomBytes(16).toString("hex")}:${normalizeMarkdownSourcePath(rootPath)}`, 24)}`;
 }
 
 function isMarkdownPath(sourcePath: string): boolean {
@@ -132,7 +133,9 @@ export function createMarkdownWatcherPlan(
 ): MarkdownWatcherPlan {
   const parsedRoots = roots.map((root) => MarkdownWatcherRootInputSchema.parse(root));
   const createdAt = options.created_at ?? new Date().toISOString();
-  const planId = `la_watch_plan_${shortHash(`${createdAt}:${parsedRoots.map((root) => normalizeMarkdownSourcePath(root.root_path)).join("|")}`)}`;
+  const pathRedactionSecret = options.path_redaction_secret ?? randomBytes(16).toString("hex");
+  const rootRefs = parsedRoots.map((root) => createWatcherRootRef(root.root_path, pathRedactionSecret));
+  const planId = `la_watch_plan_${shortHash(`${createdAt}:${rootRefs.join("|")}`)}`;
 
   return MarkdownWatcherPlanSchema.parse({
     plan_schema: "living-atlas-markdown-watcher-plan:v1",
@@ -142,8 +145,8 @@ export function createMarkdownWatcherPlan(
     path_policy: "redacted",
     debounce_ms: options.debounce_ms ?? 300,
     max_file_bytes: options.max_file_bytes ?? 2_000_000,
-    roots: parsedRoots.map((root) => ({
-      root_ref: createWatcherRootRef(root.root_path),
+    roots: parsedRoots.map((root, index) => ({
+      root_ref: rootRefs[index]!,
       source_kind: root.source_kind,
       recursive: root.recursive,
       include_globs: IncludeGlobsByKind[root.source_kind],
@@ -164,8 +167,8 @@ export function planWatcherFileEvent(
 ): WatcherImportActionPlan {
   const parsed = WatcherFileEventSchema.parse(event);
   const authorityId = AuthorityIdSchema.parse(options.authority_id);
-  const sourcePathRef = createMarkdownSourceRef(parsed.source_path);
-  const previousSourcePathRef = parsed.previous_source_path ? createMarkdownSourceRef(parsed.previous_source_path) : undefined;
+  const sourcePathRef = createMarkdownSourceRef(parsed.source_path, options);
+  const previousSourcePathRef = parsed.previous_source_path ? createMarkdownSourceRef(parsed.previous_source_path, options) : undefined;
 
   if (isIgnoredPath(parsed.source_path)) {
     return WatcherImportActionPlanSchema.parse({
@@ -193,7 +196,7 @@ export function planWatcherFileEvent(
     });
   }
 
-  const objectId = createMarkdownObjectId(authorityId, parsed.source_path);
+  const objectId = createMarkdownObjectId(authorityId, parsed.source_path, options);
   if (parsed.event_type === "deleted") {
     return WatcherImportActionPlanSchema.parse({
       action_schema: "living-atlas-markdown-watcher-action:v1",

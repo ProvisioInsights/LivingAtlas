@@ -38,6 +38,9 @@ END;
 CREATE INDEX IF NOT EXISTS idx_audit_events_authority_recorded
   ON audit_events (authority_ref, recorded_at);
 
+CREATE UNIQUE INDEX IF NOT EXISTS idx_audit_events_authority_previous_hash
+  ON audit_events (authority_ref, previous_event_hash);
+
 CREATE INDEX IF NOT EXISTS idx_audit_events_operation
   ON audit_events (operation_id);
 

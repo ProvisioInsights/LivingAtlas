@@ -118,6 +118,35 @@ function readonlyControlPlane(): ControlPlaneSnapshot {
   };
 }
 
+function remoteSafeCrudControlPlane(): ControlPlaneSnapshot {
+  const localClient = controlPlaneFixture.clients.find((client) => client.client_id === fixtureLocalClientId)!;
+  const localFullCapability = controlPlaneFixture.capabilities.find(
+    (capability) => capability.capability_id === "la_cap_localfull0001"
+  )!;
+  const crudCapability: ControlPlaneSnapshot["capabilities"][number] = {
+    ...localFullCapability,
+    capability_id: "la_cap_localcrud0001",
+    profile: "local-crud",
+    operations: ["read", "update", "audit-read"],
+    access_classes: ["remote-safe"]
+  };
+
+  return {
+	    ...controlPlaneFixture,
+	    clients: [
+	      ...controlPlaneFixture.clients.filter((client) => client.client_id !== fixtureLocalClientId),
+	      {
+	        ...localClient,
+	        allowed_profile: "local-crud"
+	      }
+	    ],
+	    capabilities: [
+	      ...controlPlaneFixture.capabilities.filter((capability) => capability.capability_id !== "la_cap_localfull0001"),
+	      crudCapability
+	    ]
+	  };
+	}
+
 async function createContextForToken(token: string, options?: {
   remoteSafe?: boolean;
   readonly?: boolean;
@@ -172,6 +201,27 @@ describe("local fixture graph tools", () => {
         object_count: 6,
         profile: "local-full"
       })
+    });
+  });
+
+  it("rejects local graph status for revoked capabilities", async () => {
+    const token = "local-token-graph-status-revoked-0001";
+    const { context } = await createContextForToken(token);
+    context.controlPlane = {
+      ...context.controlPlane,
+      capabilities: context.controlPlane.capabilities.map((capability) =>
+        capability.capability_id === "la_cap_localfull0001"
+          ? {
+              ...capability,
+              revoked_at: "2026-06-21T11:59:00.000Z"
+            }
+          : capability
+      )
+    };
+
+    await expect(localGraphStatus(context, { authorization: `Bearer ${token}` })).resolves.toEqual({
+      ok: false,
+      reason: "capability-revoked"
     });
   });
 
@@ -381,6 +431,67 @@ describe("local fixture graph tools", () => {
       graph_touch: expect.objectContaining({
         objects: ["la_object_remotesafe0001"]
       })
+    }));
+  });
+
+  it("denies updates that try to launder a pre-patch local-private object into an allowed access class", async () => {
+    const token = "local-token-graph-update-launder-0001";
+    const auditSink = new InMemoryLocalMcpAuditSink();
+    const activitySink = new InMemoryLocalMcpActivitySink();
+    const credentialStore = new InMemoryLocalMcpCredentialStore([
+      {
+        credential_id: "la_local_credential_crud0001",
+        client_id: fixtureLocalClientId,
+        capability_id: "la_cap_localcrud0001",
+        token_hash: await hashLocalMcpToken(token),
+        created_at: now
+      }
+    ]);
+    const context = createFixtureLocalMcpContext({
+      credentialStore,
+      auditSink,
+      activitySink,
+      now
+    });
+    context.controlPlane = remoteSafeCrudControlPlane();
+
+    await expect(localUpdateObject(context, {
+      authorization: `Bearer ${token}`,
+      object_id: "la_object_privatepage0001",
+      expected_version: 1,
+      patch: {
+        access_class: "remote-safe",
+        encryption_class: "plaintext",
+        content_hash: fixedHash("c"),
+        payload: {
+          kind: "plaintext-json",
+          data: {
+            title: "Attempted access-class laundering",
+            body: "This should not be accepted."
+          }
+        },
+        visible_metadata: {
+          remote_indexable: true
+        }
+      }
+    })).resolves.toEqual({
+      ok: false,
+      reason: "capability-access-class-denied"
+    });
+
+    expect(context.graphObjects.find((object) => object.object_id === "la_object_privatepage0001")).toEqual(
+      expect.objectContaining({
+        access_class: "local-private",
+        version: 1
+      })
+    );
+    expect(auditSink.events).toContainEqual(expect.objectContaining({
+      event_type: "tool.denied",
+      operation: "update",
+      tool_name: "local_update_object",
+      object_id: "la_object_privatepage0001",
+      access_class: "local-private",
+      reason_code: "capability-access-class-denied"
     }));
   });
 

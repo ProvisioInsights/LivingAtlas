@@ -569,7 +569,15 @@ async function requestJson(
 }
 
 function buildUrl(endpoint: string | URL, path: string, query: Record<string, unknown> = {}): URL {
-  const url = new URL(path, endpoint);
+  const base = new URL(endpoint);
+  const url = new URL(path, base);
+  if (url.origin !== base.origin) {
+    throw new AtlasClientError({
+      code: "invalid-response",
+      message: "Refusing to send Living Atlas credentials to a different origin",
+      path: url.pathname
+    });
+  }
   rejectSensitiveSearchParams(url);
   for (const [key, value] of Object.entries(query)) {
     if (value === undefined || value === null) {

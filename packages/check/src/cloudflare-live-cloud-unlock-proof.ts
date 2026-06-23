@@ -261,7 +261,7 @@ export async function main(): Promise<void> {
   const cloudUnlockCapabilityId = requireEnv("LIVING_ATLAS_LIVE_CLOUD_UNLOCK_CAPABILITY_ID");
   const tokenId = envValue("LIVING_ATLAS_LIVE_SYNC_TOKEN_ID");
   const id = runId();
-  const authorityId = `la_authority_liveunlock${digest(id, 18)}`;
+  const authorityId = envValue("LIVING_ATLAS_LIVE_AUTHORITY_ID") ?? `la_authority_liveunlock${digest(id, 18)}`;
   const objectId = `la_object_liveunlock${digest(`${id}:object`, 18)}`;
   const deviceId = envValue("LIVING_ATLAS_LIVE_SYNC_DEVICE_ID") ?? `la_device_liveunlock${digest(clientId, 18)}`;
   const rawKey = randomBytes(32);

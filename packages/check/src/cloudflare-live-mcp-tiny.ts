@@ -219,7 +219,7 @@ export async function main(): Promise<void> {
   const tokenId = envValue("LIVING_ATLAS_LIVE_SYNC_TOKEN_ID");
   const healthToken = envValue("LIVING_ATLAS_LIVE_HEALTH_TOKEN");
   const id = runId();
-  const authorityId = `la_authority_livemcp${digest(id, 18)}`;
+  const authorityId = envValue("LIVING_ATLAS_LIVE_AUTHORITY_ID") ?? `la_authority_livemcp${digest(id, 18)}`;
   const objectA = `la_object_livemcp${digest(`${id}:a`, 18)}`;
   const objectB = `la_object_livemcp${digest(`${id}:b`, 18)}`;
   const edgeId = `la_edge_livemcp${digest(`${id}:edge`, 18)}`;

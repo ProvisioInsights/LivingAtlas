@@ -3,7 +3,7 @@ import { sha256TokenHash } from "./bootstrap";
 import { handleBootstrapRequest, type BootstrapWorkerEnv } from "./worker";
 import type { UsageMetadataStore } from "./usage";
 
-const healthToken = "fixture-health-token-usage-0001";
+const usageToken = "fixture-usage-token-usage-0001";
 
 type D1RunRecord = {
   query: string;
@@ -166,7 +166,7 @@ async function createEnv(): Promise<BootstrapWorkerEnv> {
     },
     LA_GRAPH_BUCKET: new FakeUsageR2Bucket() as unknown as R2Bucket,
     LA_CONTROL_DB: new FakeUsageD1() as unknown as D1Database & UsageMetadataStore,
-    LA_HEALTH_TOKEN_HASH: await sha256TokenHash(healthToken),
+    LA_USAGE_TOKEN_HASH: await sha256TokenHash(usageToken),
     LA_USAGE_PROVIDER: "cloudflare",
     LA_USAGE_PLAN: "free",
     LA_USAGE_WINDOW_HOURS: "24",
@@ -188,7 +188,7 @@ describe("Worker usage status endpoint", () => {
   it("returns token-gated provider-neutral usage and budget status", async () => {
     const response = await handleBootstrapRequest(new Request("https://living-atlas.example/api/usage/status?window_hours=6", {
       headers: {
-        "x-living-atlas-health-token": healthToken
+        "x-living-atlas-usage-token": usageToken
       }
     }), await createEnv());
 
@@ -244,14 +244,14 @@ describe("Worker usage status endpoint", () => {
         change_count: 43
       }
     });
-    expect(JSON.stringify(body)).not.toContain(healthToken);
+    expect(JSON.stringify(body)).not.toContain(usageToken);
     expect(JSON.stringify(body)).not.toContain("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
   });
 
   it("returns a tunable safe-to-test or stop-testing usage gate", async () => {
     const safeResponse = await handleBootstrapRequest(new Request("https://living-atlas.example/api/usage/gate?window_hours=6&max_budget_ratio=0.85&min_worker_requests_remaining=2", {
       headers: {
-        "x-living-atlas-health-token": healthToken
+        "x-living-atlas-usage-token": usageToken
       }
     }), await createEnv());
 
@@ -269,7 +269,7 @@ describe("Worker usage status endpoint", () => {
 
     const stopResponse = await handleBootstrapRequest(new Request("https://living-atlas.example/api/usage/gate?window_hours=6&max_budget_ratio=0.5&min_worker_requests_remaining=5", {
       headers: {
-        "x-living-atlas-health-token": healthToken
+        "x-living-atlas-usage-token": usageToken
       }
     }), await createEnv());
 
@@ -284,13 +284,13 @@ describe("Worker usage status endpoint", () => {
         "worker-request-headroom-too-low"
       ])
     });
-    expect(JSON.stringify(stopBody)).not.toContain(healthToken);
+    expect(JSON.stringify(stopBody)).not.toContain(usageToken);
   });
 
   it("reconciles app-observed usage against provider inventory available to the Worker", async () => {
     const response = await handleBootstrapRequest(new Request("https://living-atlas.example/api/usage/reconcile?window_hours=6&max_r2_objects=50", {
       headers: {
-        "x-living-atlas-health-token": healthToken
+        "x-living-atlas-usage-token": usageToken
       }
     }), await createEnv());
 
@@ -317,7 +317,7 @@ describe("Worker usage status endpoint", () => {
         r2_estimated_stored_bytes: 16384
       }
     });
-    expect(JSON.stringify(body)).not.toContain(healthToken);
+    expect(JSON.stringify(body)).not.toContain(usageToken);
   });
 
   it("rejects missing auth and token query strings", async () => {
@@ -325,7 +325,7 @@ describe("Worker usage status endpoint", () => {
     expect(missingAuth.status).toBe(401);
     await expect(missingAuth.json()).resolves.toEqual({
       ok: false,
-      error: "missing-or-invalid-health-token"
+      error: "missing-or-invalid-usage-token"
     });
 
     const queryToken = await handleBootstrapRequest(new Request("https://living-atlas.example/api/usage/status?sync_token=secret"), await createEnv());

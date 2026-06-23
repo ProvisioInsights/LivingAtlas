@@ -192,9 +192,15 @@ cloudflare_api_token:
 bootstrap_claim_token_hash:
   store: cloudflare-worker-secret
   name: BOOTSTRAP_CLAIM_TOKEN_HASH
-sync_token_signing_key:
+sync_token_hash:
   store: cloudflare-worker-secret
-  name: SYNC_TOKEN_SIGNING_KEY
+  name: LA_SYNC_TOKEN_HASH
+usage_token_hash:
+  store: cloudflare-worker-secret
+  name: LA_USAGE_TOKEN_HASH
+authority_id:
+  store: private-overlay-var
+  name: LA_AUTHORITY_ID
 ```
 
 These are references, not secret values. Raw tokens, signing keys, bootstrap
@@ -220,6 +226,10 @@ secrets into git:
 10. Run deployment smoke checks.
 11. Record the public LivingAtlas ref, plan/apply summary, Worker version, and
     smoke result in the private repo's deployment log.
+
+If the public repo includes a new D1 migration, run the migration preflight from
+`docs/deployment/security-remediation-deploy-runbook.md` before deploying the
+new Worker code.
 
 The runbook should also define rollback, secret rotation, bootstrap token burn,
 state recovery, and emergency route-disable procedures.

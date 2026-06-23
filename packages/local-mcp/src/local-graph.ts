@@ -733,6 +733,28 @@ export async function localUpdateObject(
   }
 
   const patch = parsedPatch.data;
+  const existingDecision = evaluatePolicy({
+    profile: auth.authenticated.capability.profile,
+    operation: "update",
+    actor_id: auth.authenticated.client.client_id,
+    capability: auth.authenticated.capability,
+    now: context.now
+  }, existingObject);
+
+  if (!existingDecision.allowed) {
+    recordToolDecision({
+      context,
+      authenticated: auth.authenticated,
+      toolName: "local_update_object",
+      operation: "update",
+      object: existingObject,
+      decision: existingDecision,
+      allowed: false,
+      reason: existingDecision.reason_code
+    });
+    return { ok: false, reason: existingDecision.reason_code };
+  }
+
   const candidateInput = {
     ...existingObject,
     ...patch,

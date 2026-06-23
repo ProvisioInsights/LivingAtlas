@@ -58,6 +58,8 @@ export type LocalMcpAuthenticationResult =
         | "client-revoked"
         | "capability-missing"
         | "capability-client-mismatch"
+        | "capability-expired"
+        | "capability-revoked"
         | "non-local-profile";
     };
 
@@ -182,6 +184,16 @@ export async function authenticateLocalMcp(
   if (capability.client_id !== client.client_id) {
     recordAuthFailure(input.auditSink, "capability-client-mismatch");
     return { ok: false, reason: "capability-client-mismatch" };
+  }
+
+  if (capability.revoked_at) {
+    recordAuthFailure(input.auditSink, "capability-revoked");
+    return { ok: false, reason: "capability-revoked" };
+  }
+
+  if (isExpired(capability.expires_at, now)) {
+    recordAuthFailure(input.auditSink, "capability-expired");
+    return { ok: false, reason: "capability-expired" };
   }
 
   if (!LocalMcpAllowedProfiles.has(capability.profile)) {

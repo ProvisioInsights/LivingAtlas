@@ -7,7 +7,7 @@ import {
 
 const baseEnv = {
   [liveUsageGateEnv.endpoint]: "https://living-atlas-live.example",
-  [liveUsageGateEnv.healthToken]: "fixture-health-token-value"
+  [liveUsageGateEnv.usageToken]: "fixture-usage-token-value"
 };
 
 function json(status: number, body: unknown): Response {
@@ -23,7 +23,7 @@ describe("Cloudflare live usage gate config", () => {
   it("fails closed without an endpoint and token", () => {
     const parsed = readCloudflareLiveUsageGateConfig({});
     expect("errors" in parsed && parsed.errors.join("\n")).toContain(liveUsageGateEnv.endpoint);
-    expect("errors" in parsed && parsed.errors.join("\n")).toContain(liveUsageGateEnv.healthToken);
+    expect("errors" in parsed && parsed.errors.join("\n")).toContain(liveUsageGateEnv.usageToken);
   });
 
   it("parses gate tuning without deriving values from token material", () => {
@@ -35,9 +35,9 @@ describe("Cloudflare live usage gate config", () => {
       [liveUsageGateEnv.requireZero5xx]: "false"
     });
 
-    expect("healthToken" in parsed && parsed.healthToken).toBe("fixture-health-token-value");
-    if ("healthToken" in parsed) {
-      expect(parsed.endpoint).not.toContain("fixture-health-token-value");
+    expect("usageToken" in parsed && parsed.usageToken).toBe("fixture-usage-token-value");
+    if ("usageToken" in parsed) {
+      expect(parsed.endpoint).not.toContain("fixture-usage-token-value");
       expect(parsed.windowHours).toBe(6);
       expect(parsed.maxBudgetRatio).toBe(0.75);
       expect(parsed.minWorkerRequestsRemaining).toBe(2_500);
@@ -54,7 +54,7 @@ describe("Cloudflare live usage gate runner", () => {
       fetchImpl: async (input, init) => {
         const url = input instanceof URL ? input : new URL(String(input));
         seenRequests.push(url);
-        expect(new Headers(init?.headers).get("x-living-atlas-health-token")).toBe("fixture-health-token-value");
+        expect(new Headers(init?.headers).get("x-living-atlas-usage-token")).toBe("fixture-usage-token-value");
         return json(200, {
           ok: true,
           decision: "safe-to-test",
@@ -85,7 +85,7 @@ describe("Cloudflare live usage gate runner", () => {
       }
     });
     expect(seenRequests[0]?.pathname).toBe("/api/usage/gate");
-    expect(seenRequests[0]?.toString()).not.toContain("fixture-health-token-value");
+    expect(seenRequests[0]?.toString()).not.toContain("fixture-usage-token-value");
   });
 
   it("stops when the deployed gate says stop-testing", async () => {

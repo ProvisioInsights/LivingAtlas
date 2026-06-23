@@ -21,14 +21,14 @@ import {
 const now = "2026-06-21T12:00:00.000Z";
 
 describe("ciphertext sync agent", () => {
-  it("builds a ciphertext-only batch from the fixture graph", async () => {
-    const controlState = await createFixtureLocalControlState("sync-agent-local-mcp-token-0001");
-    const result = buildCiphertextSyncBatch({
-      controlState,
-      baseGeneration: 0,
-      targetGeneration: 1,
-      now
-    });
+	  it("builds a ciphertext-only batch from the fixture graph", async () => {
+	    const controlState = await createFixtureLocalControlState("sync-agent-local-mcp-token-0001");
+	    const result = buildCiphertextSyncBatch({
+	      controlState,
+	      baseGeneration: 0,
+	      targetGeneration: 1,
+	      now
+	    });
 
     expect(result.included_object_count).toBe(3);
     expect(result.withheld_plaintext_count).toBe(3);
@@ -46,11 +46,53 @@ describe("ciphertext sync agent", () => {
       authority_id: "la_authority_fixture0001",
       generation: 0
     });
-    expect(result.batch.pull_recovery).toEqual({
-      mode: "none",
-      reason: "current"
-    });
+	    expect(result.batch.pull_recovery).toEqual({
+	      mode: "none",
+	      reason: "current"
+	    });
   });
+
+  it("rejects expired sync-device clients and capabilities before building batches", async () => {
+    const expiredClientState = await createFixtureLocalControlState("sync-agent-expired-client-token-0001");
+    expiredClientState.control_plane = {
+	      ...expiredClientState.control_plane,
+	      clients: expiredClientState.control_plane.clients.map((client) =>
+	        client.client_id === "la_client_sync0001"
+	          ? {
+	              ...client,
+	              expires_at: "2026-06-21T11:59:59.000Z"
+	            }
+	          : client
+	      )
+    };
+
+    expect(() => buildCiphertextSyncBatch({
+	      controlState: expiredClientState,
+	      baseGeneration: 0,
+	      targetGeneration: 1,
+	      now
+    })).toThrow("Sync-device client is expired");
+
+    const expiredCapabilityState = await createFixtureLocalControlState("sync-agent-expired-cap-token-0001");
+	    expiredCapabilityState.control_plane = {
+	      ...expiredCapabilityState.control_plane,
+	      capabilities: expiredCapabilityState.control_plane.capabilities.map((capability) =>
+	        capability.capability_id === "la_cap_sync0001"
+	          ? {
+	              ...capability,
+	              expires_at: "2026-06-21T11:59:59.000Z"
+	            }
+	          : capability
+	      )
+    };
+
+    expect(() => buildCiphertextSyncBatch({
+	      controlState: expiredCapabilityState,
+	      baseGeneration: 0,
+	      targetGeneration: 1,
+	      now
+	    })).toThrow("Sync-device capability is expired");
+	  });
 
   it("fetches sync envelopes and applies them to a durable local graph store", async () => {
     const controlState = await createFixtureLocalControlState("sync-agent-envelope-token-0001");
@@ -549,9 +591,9 @@ describe("ciphertext sync agent", () => {
     expect(result.batch.objects.every((object) => object.payload.kind !== "plaintext-json")).toBe(true);
   });
 
-  it("submits the next daemon outbox batch with injected fetch and marks it accepted", async () => {
-    const controlState = await createFixtureLocalControlState("sync-agent-daemon-submit-token-0001");
-    const calls: Request[] = [];
+	  it("submits the next daemon outbox batch with injected fetch and marks it accepted", async () => {
+	    const controlState = await createFixtureLocalControlState("sync-agent-daemon-submit-token-0001");
+	    const calls: Request[] = [];
     const daemon = new SyntheticLocalSyncDaemon({
       controlState,
       endpoint: "https://living-atlas.example",
@@ -574,12 +616,12 @@ describe("ciphertext sync agent", () => {
           accepted_changes: body.changes.length,
           target_generation: body.target_generation,
           withheld_plaintext_count: body.withheld_plaintext_count
-        }), {
-          status: 202,
-          headers: { "content-type": "application/json" }
-        });
-      }
-    });
+	        }), {
+	          status: 202,
+	          headers: { "content-type": "application/json" }
+	        });
+	      }
+	    });
 
     const queued = daemon.queueCiphertextBatch({
       baseGeneration: 0,
@@ -611,6 +653,43 @@ describe("ciphertext sync agent", () => {
     expect(calls[0]!.headers.get("x-living-atlas-sync-capability-id")).toBe("la_cap_sync0001");
     expect(calls[0]!.headers.get("x-living-atlas-sync-token-id")).toBe("la_sync_token_daemon0001");
   });
+
+  it("does not submit daemon outbox batches after the sync-device client expires", async () => {
+    const controlState = await createFixtureLocalControlState("sync-agent-daemon-expire-token-0001");
+    let networkCalls = 0;
+	    const daemon = new SyntheticLocalSyncDaemon({
+	      controlState,
+	      endpoint: "https://living-atlas.example",
+	      syncToken: "fixture-sync-token-0001",
+	      fetchImpl: async () => {
+	        networkCalls += 1;
+	        return new Response("{}", { status: 202 });
+	      },
+	      now
+    });
+
+    daemon.queueCiphertextBatch({
+	      baseGeneration: 0,
+	      targetGeneration: 1,
+	      now
+	    });
+	    controlState.control_plane = {
+	      ...controlState.control_plane,
+	      clients: controlState.control_plane.clients.map((client) =>
+	        client.client_id === "la_client_sync0001"
+	          ? {
+	              ...client,
+	              expires_at: "2026-06-21T12:00:00.500Z"
+	            }
+	          : client
+	      )
+    };
+
+    await expect(daemon.submitNextPending({
+	      now: "2026-06-21T12:00:01.000Z"
+	    })).rejects.toThrow("Sync-device client is expired");
+	    expect(networkCalls).toBe(0);
+	  });
 
   it("plans remote pull status and fetches the planned pull with injected fetch", async () => {
     const controlState = await createFixtureLocalControlState("sync-agent-daemon-pull-token-0001");

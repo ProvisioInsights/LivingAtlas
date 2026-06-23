@@ -76,6 +76,7 @@
     "LA_USAGE_PLAN": "free",
     "LA_USAGE_WINDOW_HOURS": "24",
     "LA_USAGE_BUDGETS_JSON": "{\"services\":{\"workers\":{\"requests\":100000},\"d1\":{\"window_estimated_rows_written\":100000},\"r2\":{\"estimated_stored_bytes\":10737418240,\"window_class_a_operations_estimate\":1000000},\"kv\":{\"reads\":100000,\"writes\":1000,\"deletes\":1000,\"lists\":1000},\"durable_objects\":{\"window_estimated_rows_written\":100000}}}",
+    "LA_AUTHORITY_ID": "la_authority_synthetic0001",
     "LA_SYNC_CLIENT_ID": "la_client_sync0001",
     "LA_SYNC_CAPABILITY_ID": "la_cap_sync0001",
     "LA_SYNC_TOKEN_ID": "synthetic-sync-token-1",

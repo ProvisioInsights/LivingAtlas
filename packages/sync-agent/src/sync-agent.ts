@@ -206,18 +206,20 @@ export type QueueCiphertextBatchResult = BuildSyncBatchResult & {
 };
 
 export type SyntheticLocalSyncDaemonOptions = {
-  controlState: LocalControlState;
-  endpoint?: string;
-  syncToken?: string;
-  syncClientId?: string;
-  tokenId?: string;
-  fetchImpl?: typeof fetch;
-  outbox?: InMemorySyncOutbox;
-};
+	  controlState: LocalControlState;
+	  endpoint?: string;
+	  syncToken?: string;
+	  syncClientId?: string;
+	  tokenId?: string;
+	  fetchImpl?: typeof fetch;
+	  outbox?: InMemorySyncOutbox;
+	  now?: string;
+	};
 
 export type SubmitNextPendingOptions = {
-  acceptedAt?: string;
-};
+	  acceptedAt?: string;
+	  now?: string;
+	};
 
 export type SubmitNextPendingResult =
   | {
@@ -312,7 +314,11 @@ function requireInjectedFetch(fetchImpl: typeof fetch | undefined): typeof fetch
   return fetchImpl;
 }
 
-function findSyncClient(controlState: LocalControlState, syncClientId: string | undefined): SyncClientRecord {
+function isExpired(timestamp: string | undefined, now: string): boolean {
+  return timestamp !== undefined && Date.parse(timestamp) <= Date.parse(now);
+}
+
+function findSyncClient(controlState: LocalControlState, syncClientId: string | undefined, now: string): SyncClientRecord {
   const client = controlState.control_plane.clients.find((candidate) => (
     syncClientId ? candidate.client_id === syncClientId : candidate.allowed_profile === "sync-device"
   ));
@@ -325,6 +331,10 @@ function findSyncClient(controlState: LocalControlState, syncClientId: string | 
     throw new Error("Sync-device client is revoked");
   }
 
+  if (isExpired(client.expires_at, now)) {
+    throw new Error("Sync-device client is expired");
+  }
+
   if (!client.device_id) {
     throw new Error("Sync-device client must be bound to a local device");
   }
@@ -335,7 +345,7 @@ function findSyncClient(controlState: LocalControlState, syncClientId: string | 
   };
 }
 
-function findSyncCapability(controlState: LocalControlState, syncClient: SyncClientRecord): SyncCapabilityRecord {
+function findSyncCapability(controlState: LocalControlState, syncClient: SyncClientRecord, now: string): SyncCapabilityRecord {
   const capability = controlState.control_plane.capabilities.find((candidate) => (
     candidate.client_id === syncClient.client_id && candidate.profile === "sync-device"
   ));
@@ -346,6 +356,10 @@ function findSyncCapability(controlState: LocalControlState, syncClient: SyncCli
 
   if (capability.revoked_at) {
     throw new Error("Sync-device capability is revoked");
+  }
+
+  if (isExpired(capability.expires_at, now)) {
+    throw new Error("Sync-device capability is expired");
   }
 
   return capability;
@@ -396,8 +410,8 @@ function makeChange(input: {
 }
 
 export function buildCiphertextSyncBatch(options: BuildSyncBatchOptions): BuildSyncBatchResult {
-  const syncClient = findSyncClient(options.controlState, options.syncClientId);
-  const capability = findSyncCapability(options.controlState, syncClient);
+	  const syncClient = findSyncClient(options.controlState, options.syncClientId, options.now);
+	  const capability = findSyncCapability(options.controlState, syncClient, options.now);
 
   const objects: GraphObjectEnvelope[] = [];
   let withheldPlaintextCount = 0;
@@ -866,11 +880,18 @@ export class SyntheticLocalSyncDaemon {
     this.tokenId = options.tokenId;
     this.fetchImpl = options.fetchImpl;
     this.outbox = options.outbox ?? new InMemorySyncOutbox();
-    this.syncClient = findSyncClient(options.controlState, options.syncClientId);
-    this.syncCapability = findSyncCapability(options.controlState, this.syncClient);
+    const now = options.now ?? new Date().toISOString();
+    this.syncClient = findSyncClient(options.controlState, options.syncClientId, now);
+    this.syncCapability = findSyncCapability(options.controlState, this.syncClient, now);
+  }
+
+  private assertSyncIdentityCurrent(now: string = new Date().toISOString()): void {
+    findSyncClient(this.controlState, this.syncClient.client_id, now);
+    findSyncCapability(this.controlState, this.syncClient, now);
   }
 
   queueCiphertextBatch(options: QueueCiphertextBatchOptions): QueueCiphertextBatchResult {
+    this.assertSyncIdentityCurrent(options.now);
     const generations = this.resolveBatchGenerations(options);
     const result = buildCiphertextSyncBatch({
       controlState: this.controlState,
@@ -890,6 +911,7 @@ export class SyntheticLocalSyncDaemon {
   }
 
   async submitNextPending(options: SubmitNextPendingOptions = {}): Promise<SubmitNextPendingResult> {
+    this.assertSyncIdentityCurrent(options.now ?? options.acceptedAt);
     const record = this.outbox.pending()[0];
     if (!record) {
       return {
@@ -926,8 +948,9 @@ export class SyntheticLocalSyncDaemon {
     };
   }
 
-  async fetchRemoteStatus(): Promise<FetchSyncStatusResult> {
-    return fetchSyncStatus({
+	  async fetchRemoteStatus(): Promise<FetchSyncStatusResult> {
+	    this.assertSyncIdentityCurrent();
+	    return fetchSyncStatus({
       endpoint: requireDaemonEndpoint(this.endpoint),
       syncToken: this.syncToken,
       clientId: this.syncClient.client_id,
@@ -958,8 +981,9 @@ export class SyntheticLocalSyncDaemon {
     };
   }
 
-  async fetchPlannedPull(planResult: Extract<SyncDaemonPlanResult, { ok: true }>): Promise<FetchPlannedPullResult> {
-    if (planResult.plan.action !== "pull") {
+	  async fetchPlannedPull(planResult: Extract<SyncDaemonPlanResult, { ok: true }>): Promise<FetchPlannedPullResult> {
+	    this.assertSyncIdentityCurrent();
+	    if (planResult.plan.action !== "pull") {
       return {
         ok: true,
         skipped: true,

@@ -53,7 +53,7 @@ type UsageGateBody = {
 
 export type CloudflareLiveUsageGateConfig = {
   endpoint: string;
-  healthToken: string;
+  usageToken: string;
   windowHours: number;
   maxBudgetRatio: number;
   minWorkerRequestsRemaining: number;
@@ -84,8 +84,7 @@ export type CloudflareLiveUsageGateResult = {
 
 export const liveUsageGateEnv = {
   endpoint: "LIVING_ATLAS_LIVE_SYNC_ENDPOINT",
-  healthToken: "LIVING_ATLAS_LIVE_HEALTH_TOKEN",
-  syncToken: "LIVING_ATLAS_LIVE_SYNC_TOKEN",
+  usageToken: "LIVING_ATLAS_LIVE_USAGE_TOKEN",
   windowHours: "LIVING_ATLAS_LIVE_USAGE_WINDOW_HOURS",
   maxBudgetRatio: "LIVING_ATLAS_LIVE_USAGE_MAX_BUDGET_RATIO",
   minWorkerRequestsRemaining: "LIVING_ATLAS_LIVE_USAGE_MIN_WORKER_REQUESTS_REMAINING",
@@ -157,13 +156,13 @@ function validateEndpoint(input: string, allowInsecureEndpoint: boolean): string
 export function readCloudflareLiveUsageGateConfig(env: NodeJS.ProcessEnv = process.env): CloudflareLiveUsageGateConfig | CloudflareLiveUsageGateResult {
   const errors: string[] = [];
   const endpoint = envValue(env, liveUsageGateEnv.endpoint);
-  const healthToken = envValue(env, liveUsageGateEnv.healthToken) ?? envValue(env, liveUsageGateEnv.syncToken);
+  const usageToken = envValue(env, liveUsageGateEnv.usageToken);
 
   if (!endpoint) {
     errors.push(`missing ${liveUsageGateEnv.endpoint}`);
   }
-  if (!healthToken) {
-    errors.push(`missing ${liveUsageGateEnv.healthToken} or ${liveUsageGateEnv.syncToken}`);
+  if (!usageToken) {
+    errors.push(`missing ${liveUsageGateEnv.usageToken}`);
   }
   if (errors.length > 0) {
     return { ok: false, reason_codes: [], errors };
@@ -172,7 +171,7 @@ export function readCloudflareLiveUsageGateConfig(env: NodeJS.ProcessEnv = proce
   try {
     return {
       endpoint: validateEndpoint(endpoint!, envValue(env, liveUsageGateEnv.allowInsecureEndpoint) === "1"),
-      healthToken: healthToken!,
+      usageToken: usageToken!,
       windowHours: parseInteger(envValue(env, liveUsageGateEnv.windowHours), 24, 1, 720),
       maxBudgetRatio: parseNumber(envValue(env, liveUsageGateEnv.maxBudgetRatio), 0.8, 0.01, 1),
       minWorkerRequestsRemaining: parseInteger(envValue(env, liveUsageGateEnv.minWorkerRequestsRemaining), 1_000, 0, 100_000_000),
@@ -189,7 +188,7 @@ export function readCloudflareLiveUsageGateConfig(env: NodeJS.ProcessEnv = proce
 }
 
 function isConfig(value: CloudflareLiveUsageGateConfig | CloudflareLiveUsageGateResult): value is CloudflareLiveUsageGateConfig {
-  return "healthToken" in value;
+  return "usageToken" in value;
 }
 
 function gateUrl(config: CloudflareLiveUsageGateConfig): URL {
@@ -232,7 +231,7 @@ export async function runCloudflareLiveUsageGate(options: {
   try {
     const response = await (options.fetchImpl ?? fetch)(gateUrl(config), {
       headers: {
-        "x-living-atlas-health-token": config.healthToken
+        "x-living-atlas-usage-token": config.usageToken
       },
       signal: controller.signal
     });

@@ -12,13 +12,14 @@ import { handleBootstrapRequest, type BootstrapWorkerEnv } from "./worker";
 
 const timestamp = "2026-06-22T12:00:00.000Z";
 const syncToken = "fixture-sync-token-0001";
+const genesisAuditHash = "sha256:0000000000000000000000000000000000000000000000000000000000000000";
 
 type D1RunRecord = {
   query: string;
   bindings: unknown[];
 };
 
-function fakeD1Result<T>(results: T[] = []): D1Result<T> {
+function fakeD1Result<T>(results: T[] = [], changes = 0): D1Result<T> {
   return {
     success: true,
     meta: {
@@ -28,7 +29,7 @@ function fakeD1Result<T>(results: T[] = []): D1Result<T> {
       rows_written: 0,
       last_row_id: 0,
       changed_db: false,
-      changes: 0
+      changes
     },
     results
   };
@@ -88,6 +89,26 @@ class FakePreparedStatement {
   }
 
   async run<T = Record<string, unknown>>(): Promise<D1Result<T>> {
+    if (this.query.includes("INSERT INTO audit_events")) {
+      const conditionOffset = this.bindings.length - 9;
+      const previousEventHash = this.bindings[conditionOffset] === null ? null : String(this.bindings[conditionOffset]);
+      const genesisHash = String(this.bindings[conditionOffset + 2]);
+      const authorityRef = String(this.bindings[conditionOffset + 3]);
+      const currentLatest = this.auditRows()
+        .filter((row) => row.authority_ref === authorityRef)
+        .sort((left, right) => right.recorded_at.localeCompare(left.recorded_at) || right.audit_id.localeCompare(left.audit_id))[0]?.event_hash ?? null;
+
+      const canAppend = currentLatest === null
+        ? previousEventHash === null || previousEventHash === genesisHash
+        : previousEventHash === currentLatest;
+      if (!canAppend) {
+        return fakeD1Result<T>([], 0);
+      }
+
+      this.records.push({ query: this.query, bindings: this.bindings });
+      return fakeD1Result<T>([], 1);
+    }
+
     this.records.push({ query: this.query, bindings: this.bindings });
     return fakeD1Result<T>();
   }
@@ -142,6 +163,7 @@ async function createEnv(controlDb = new FakeD1Database()): Promise<BootstrapWor
     },
     LA_GRAPH_BUCKET: {} as R2Bucket,
     LA_CONTROL_DB: controlDb as unknown as D1Database,
+    LA_AUTHORITY_ID: "la_authority_audit0001",
     LA_SYNC_TOKEN_HASH: await sha256TokenHash(syncToken)
   };
 }
@@ -164,6 +186,11 @@ function auditEvent(overrides: Partial<DurableAuditEvent> = {}): DurableAuditEve
     summary: "Remote object read allowed",
     ...overrides
   };
+}
+
+async function testSha256Hash(value: string): Promise<`sha256:${string}`> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+  return `sha256:${[...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("")}`;
 }
 
 describe("Cloudflare audit ledger", () => {
@@ -229,7 +256,107 @@ describe("Cloudflare audit ledger", () => {
     expect(rows).toHaveLength(4);
     expect(rows[0]!.key_ref).toMatch(/^sha256:[a-f0-9]{64}$/);
     expect(rows[1]!.release_ref).toMatch(/^sha256:[a-f0-9]{64}$/);
+    expect(rows[3]!.authority_ref).not.toBe(await testSha256Hash("la_authority_audit0001"));
+    expect(rows[3]!.actor_ref).not.toBe(await testSha256Hash("fixture-actor-secret-token-0001"));
     expect(rows.every((row) => row.redaction !== "none")).toBe(true);
+  });
+
+  it("rejects stale concurrent appends instead of forking one authority hash chain", async () => {
+    const controlDb = new FakeD1Database();
+    const first = await appendAuditEvent(controlDb, auditEvent());
+    const stalePreviousHash = first.event_hash;
+    const staleInsert = controlDb.prepare(`
+INSERT INTO audit_events (
+  audit_id,
+  authority_ref,
+  operation_id,
+  trace_id,
+  recorded_at,
+  actor_ref,
+  mcp_profile,
+  operation,
+  event_type,
+  outcome,
+  reason_code,
+  object_ref,
+  release_ref,
+  key_ref,
+  capability_ref,
+  sync_batch_ref,
+  access_class,
+  redaction,
+  summary,
+  checkpoint_bucket,
+  previous_event_hash,
+  event_hash
+)
+SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+WHERE (
+  (? IS NULL OR ? = ?)
+  AND NOT EXISTS (
+    SELECT 1 FROM audit_events WHERE authority_ref = ?
+  )
+) OR (
+  ? IS NOT NULL
+  AND ? <> ?
+  AND ? = (
+    SELECT event_hash
+    FROM audit_events
+    WHERE authority_ref = ?
+    ORDER BY recorded_at DESC, audit_id DESC
+    LIMIT 1
+  )
+)`).bind(
+      "la_audit_workerstale1",
+      first.authority_ref,
+      "la_operation_auditstale1",
+      "la_trace_auditstale1",
+      "2026-06-22T12:00:30.000Z",
+      "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "remote-safe",
+      "read",
+      "object.read",
+      "allowed",
+      null,
+      "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      null,
+      null,
+      null,
+      null,
+      "remote-safe",
+      "remote-redacted",
+      "Remote object read allowed",
+      "2026-06-22",
+      stalePreviousHash,
+      "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      stalePreviousHash,
+      stalePreviousHash,
+      genesisAuditHash,
+      first.authority_ref,
+      stalePreviousHash,
+      stalePreviousHash,
+      genesisAuditHash,
+      stalePreviousHash,
+      first.authority_ref
+    );
+
+    await appendAuditEvent(controlDb, auditEvent({
+      audit_id: "la_audit_worker0002",
+      operation_id: "la_operation_audit0002",
+      trace_id: "la_trace_audit0002",
+      recorded_at: "2026-06-22T12:01:00.000Z",
+      summary: "Remote object read allowed"
+    }));
+
+    await expect(staleInsert.run()).resolves.toMatchObject({
+      meta: {
+        changes: 0
+      }
+    });
+
+    const rows = await readAuditLedgerEvents(controlDb, { limit: 10 });
+    expect(rows).toHaveLength(2);
+    expect(rows.some((row) => row.audit_id === "la_audit_workerstale1")).toBe(false);
   });
 
   it("rejects unredacted remote ledger records and leak-bearing summaries", async () => {
@@ -345,6 +472,7 @@ describe("Cloudflare audit ledger", () => {
         params: {
           name: "remote_activity_audit",
           arguments: {
+            authority_id: "la_authority_audit0001",
             limit: 1
           }
         }

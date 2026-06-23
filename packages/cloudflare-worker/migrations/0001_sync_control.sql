@@ -1,6 +1,6 @@
 CREATE TABLE IF NOT EXISTS sync_batches (
   batch_id TEXT PRIMARY KEY,
-  idempotency_key TEXT NOT NULL UNIQUE,
+  idempotency_key TEXT NOT NULL,
   batch_hash TEXT NOT NULL,
   authority_ref TEXT NOT NULL,
   device_ref TEXT NOT NULL,
@@ -23,8 +23,8 @@ CREATE TABLE IF NOT EXISTS sync_batches (
   last_seen_at TEXT NOT NULL
 );
 
-CREATE UNIQUE INDEX IF NOT EXISTS idx_sync_batches_idempotency_key
-  ON sync_batches (idempotency_key);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_sync_batches_authority_idempotency_key
+  ON sync_batches (authority_ref, idempotency_key);
 
 CREATE INDEX IF NOT EXISTS idx_sync_batches_committed_generation
   ON sync_batches (status, target_generation);

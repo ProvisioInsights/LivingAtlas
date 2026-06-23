@@ -285,9 +285,9 @@ describe("atlas client", () => {
     });
   });
 
-  it("refuses token-bearing query parameters even on custom activity paths", async () => {
-    const client = createAtlasClient({
-      endpoint: "https://living-atlas.example",
+	  it("refuses token-bearing query parameters even on custom activity paths", async () => {
+	    const client = createAtlasClient({
+	      endpoint: "https://living-atlas.example",
       syncToken: "fixture-sync-token-client-0004",
       fetchImpl: async () => {
         throw new Error("fetch should not be called");
@@ -299,8 +299,24 @@ describe("atlas client", () => {
     })).rejects.toBeInstanceOf(AtlasClientError);
     await expect(client.fetchActivityEvents({
       path: "/api/activity/audit?sync_token=secret"
-    })).rejects.toMatchObject({
-      code: "invalid-response"
+	    })).rejects.toMatchObject({
+	      code: "invalid-response"
+	    });
     });
-  });
-});
+
+    it("refuses cross-origin activity path overrides before attaching sync token headers", async () => {
+      const client = createAtlasClient({
+        endpoint: "https://living-atlas.example",
+        syncToken: "fixture-sync-token-client-0005",
+        fetchImpl: async () => {
+          throw new Error("fetch should not be called");
+        }
+      });
+
+      await expect(client.fetchActivityEvents({
+        path: "https://attacker.example/api/activity/audit"
+      })).rejects.toMatchObject({
+        code: "invalid-response"
+      });
+    });
+	});

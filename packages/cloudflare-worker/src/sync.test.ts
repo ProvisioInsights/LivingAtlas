@@ -7,11 +7,12 @@ import {
 import { sha256TokenHash } from "./bootstrap";
 import { CloudUnlockObjectAlgorithm } from "./cloud-unlock";
 import { acceptSyncBatch, getSyncStatus } from "./sync";
-import { authoritySequencerName } from "./sync-sequencer";
+import { authoritySequencerName, type SyncAuthoritySequencerRpc } from "./sync-sequencer";
 import { handleBootstrapRequest, type BootstrapWorkerEnv } from "./worker";
 import { readSyncEnvelopePull, type SyncMetadataStore, type SyncObjectStore } from "./sync-storage";
 
 const syncToken = "fixture-sync-token-0001";
+const usageToken = "fixture-usage-token-0001";
 const timestamp = "2026-06-21T12:00:00.000Z";
 const cloudUnlockCapabilityId = "la_cap_cloudunlock0001";
 
@@ -395,8 +396,8 @@ class FakePreparedStatement {
       }
 
       if (record.query.includes("UPDATE remote_graph_writes") && record.query.includes("SET status = 'committed'")) {
-        const row = rows.get(String(record.bindings[5]));
-        if (row && row.request_hash === String(record.bindings[6])) {
+        const row = rows.get(String(record.bindings[6]));
+        if (row && row.request_hash === String(record.bindings[7])) {
           rows.set(row.idempotency_key, {
             ...row,
             status: "committed",
@@ -407,8 +408,8 @@ class FakePreparedStatement {
       }
 
       if (record.query.includes("UPDATE remote_graph_writes") && record.query.includes("SET status = 'failed'")) {
-        const row = rows.get(String(record.bindings[2]));
-        if (row && row.request_hash === String(record.bindings[3])) {
+        const row = rows.get(String(record.bindings[3]));
+        if (row && row.request_hash === String(record.bindings[4])) {
           rows.set(row.idempotency_key, {
             ...row,
             status: "failed",
@@ -423,13 +424,15 @@ class FakePreparedStatement {
 
   async first<T = unknown>(_colName?: string): Promise<T | null> {
     if (this.query.includes("FROM remote_graph_writes")) {
-      const idempotencyKey = String(this.bindings[0]);
+      const idempotencyKey = String(this.bindings.at(-1));
       return (this.remoteGraphWriteRows().find((row) => row.idempotency_key === idempotencyKey) ?? null) as T | null;
     }
 
-    if (this.query.includes("WHERE idempotency_key = ?")) {
-      const idempotencyKey = String(this.bindings[0]);
-      return (this.committedBatches().find((batch) => batch.idempotency_key === idempotencyKey) ?? null) as T | null;
+    if (this.query.includes("idempotency_key = ?")) {
+      const authorityScoped = this.query.includes("authority_ref = ?");
+      const authorityRef = authorityScoped ? String(this.bindings[0]) : undefined;
+      const idempotencyKey = String(this.bindings[authorityScoped ? 1 : 0]);
+      return (this.committedBatches(authorityRef).find((batch) => batch.idempotency_key === idempotencyKey) ?? null) as T | null;
     }
 
     if (this.query.includes("COUNT(*) AS count") && this.query.includes("FROM sync_objects")) {
@@ -492,7 +495,12 @@ class FakePreparedStatement {
 
   async run<T = Record<string, unknown>>(): Promise<D1Result<T>> {
     this.records.push({ query: this.query, bindings: this.bindings });
-    return fakeD1Result<T>();
+    const result = fakeD1Result<T>();
+    if (this.query.includes("INSERT INTO audit_events")) {
+      result.meta.changes = 1;
+      result.meta.changed_db = true;
+    }
+    return result;
   }
 
   async all<T = Record<string, unknown>>(): Promise<D1Result<T>> {
@@ -755,8 +763,10 @@ async function createEnv(): Promise<{
       },
       LA_GRAPH_BUCKET: graphBucket as R2Bucket,
       LA_CONTROL_DB: controlDb as D1Database,
+      LA_AUTHORITY_ID: "la_authority_worker0001",
       LA_SYNC_TOKEN_HASH: await sha256TokenHash(syncToken),
       LA_CLOUD_UNLOCK_CAPABILITY_ID: cloudUnlockCapabilityId,
+      LA_USAGE_TOKEN_HASH: await sha256TokenHash(usageToken),
       LA_USAGE_PROVIDER: "cloudflare",
       LA_USAGE_PLAN: "free",
       LA_USAGE_BUDGETS_JSON: JSON.stringify({
@@ -803,12 +813,92 @@ describe("Worker sync batch acceptance", () => {
     expect(graphBucket.puts[0]!.key).toMatch(/^objects\/a=[a-f0-9]{16}\/p=[a-f0-9]{2}\/s=[a-f0-9]{40}\.bin$/);
     expect(graphBucket.puts[0]!.value).toContain("\"kind\":\"ciphertext-ref\"");
     expect(graphBucket.puts[0]!.value).not.toContain("not allowed");
+    expect(JSON.stringify(graphBucket.puts[0]!.options)).not.toContain(ciphertextBatch.authority_id);
+    expect(JSON.stringify(graphBucket.puts[0]!.options)).not.toContain(ciphertextBatch.objects[0].payload.path);
 
     expect(controlDb.records.some((record) => record.query.includes("CREATE TABLE IF NOT EXISTS sync_batches"))).toBe(true);
     expect(controlDb.records.some((record) => record.query.includes("INSERT OR IGNORE INTO sync_batches"))).toBe(true);
     expect(controlDb.records.some((record) => record.query.includes("UPDATE sync_batches"))).toBe(true);
     expect(controlDb.records.some((record) => record.query.includes("INSERT OR REPLACE INTO sync_objects"))).toBe(true);
     expect(controlDb.records.some((record) => record.query.includes("INSERT OR REPLACE INTO sync_changes"))).toBe(true);
+    const serializedWrites = JSON.stringify(controlDb.records);
+    expect(serializedWrites).not.toContain(ciphertextBatch.authority_id);
+    expect(serializedWrites).not.toContain(ciphertextBatch.objects[0].object_id);
+    expect(serializedWrites).not.toContain(ciphertextBatch.changes[0].actor_id);
+    expect(serializedWrites).not.toContain(ciphertextBatch.objects[0].payload.path);
+    expect(serializedWrites).not.toContain(await testSha256Hash(ciphertextBatch.authority_id));
+    expect(serializedWrites).not.toContain(await testSha256Hash(ciphertextBatch.objects[0].object_id));
+  });
+
+  it("rejects forged object payload refs before sync storage writes metadata", async () => {
+    const graphBucket = new FakeR2Bucket();
+    const controlDb = new FakeD1Database();
+    const forgedInput = {
+      ...ciphertextBatch,
+      batch_id: "la_sync_batch_workerforged1",
+      idempotency_key: "la_idem_workerforged1",
+      object_payloads: [
+        {
+          ...SyncBatchSchema.parse(ciphertextBatch).object_payloads[0]!,
+          payload_hash: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        }
+      ],
+      batch_hash: undefined
+    };
+    const forgedBatch = SyncBatchSchema.parse(forgedInput);
+
+    await expect(acceptSyncBatch(forgedBatch, syncToken, {
+      sync_token_hash: await sha256TokenHash(syncToken)
+    }, {
+      graphBucket,
+      controlDb
+    })).rejects.toThrow(/payload ref mismatch/);
+
+    expect(graphBucket.puts).toHaveLength(0);
+    expect(controlDb.records.some((record) => record.query.includes("INSERT OR IGNORE INTO sync_batches"))).toBe(false);
+    expect(controlDb.records.some((record) => record.query.includes("INSERT OR REPLACE INTO sync_objects"))).toBe(false);
+  });
+
+  it("does not commit graph storage when the sequencer commit rejects the staged batch", async () => {
+    const graphBucket = new FakeR2Bucket();
+    const controlDb = new FakeD1Database();
+    const sequencer: SyncAuthoritySequencerRpc = {
+      stageBatch: async (summary) => ({
+        ok: true,
+        state: "staged",
+        should_persist: true,
+        duplicate: false,
+        accepted: {
+          ok: true,
+          batch_id: summary.batch_id,
+          accepted_objects: summary.object_count,
+          accepted_changes: summary.change_count,
+          target_generation: summary.target_generation,
+          withheld_plaintext_count: summary.withheld_plaintext_count,
+          idempotent_replay: false
+        }
+      }),
+      commitBatch: async () => ({
+        ok: false,
+        reason: "batch-conflict"
+      })
+    };
+
+    await expect(acceptSyncBatch(ciphertextBatch, syncToken, {
+      sync_token_hash: await sha256TokenHash(syncToken)
+    }, {
+      graphBucket,
+      controlDb,
+      sequencer
+    })).resolves.toMatchObject({
+      ok: false,
+      reason: "batch-conflict"
+    });
+
+    expect(graphBucket.puts).toHaveLength(0);
+    expect(controlDb.records.some((record) => record.query.includes("INSERT OR IGNORE INTO sync_batches"))).toBe(false);
+    expect(controlDb.records.some((record) => record.query.includes("INSERT OR REPLACE INTO sync_objects"))).toBe(false);
+    expect(controlDb.records.some((record) => record.query.includes("INSERT OR REPLACE INTO sync_changes"))).toBe(false);
   });
 
   it("persists batch object envelopes to R2 with bounded parallelism", async () => {
@@ -1023,7 +1113,7 @@ describe("Worker sync batch acceptance", () => {
       headers: {
         "content-type": "application/json",
         "x-living-atlas-sync-token": syncToken,
-        "x-living-atlas-health-token": syncToken
+        "x-living-atlas-usage-token": usageToken
       },
       body: JSON.stringify(ciphertextBatch)
     }), env);
@@ -1056,7 +1146,7 @@ describe("Worker sync batch acceptance", () => {
       headers: {
         "content-type": "application/json",
         "x-living-atlas-sync-token": syncToken,
-        "x-living-atlas-health-token": syncToken
+        "x-living-atlas-usage-token": usageToken
       },
       body: JSON.stringify(ciphertextBatch)
     }), env);
@@ -1216,6 +1306,49 @@ describe("Worker sync batch acceptance", () => {
       has_more: false
     });
     expect(JSON.stringify(body)).not.toContain(syncToken);
+  });
+
+  it("rejects caller-selected authorities on sync and usage worker routes", async () => {
+    const { env, graphBucket, controlDb } = await createEnv();
+    const otherAuthorityBatch = {
+      ...ciphertextBatch,
+      authority_id: "la_authority_other0001"
+    };
+
+    const batchResponse = await handleBootstrapRequest(new Request("https://living-atlas.example/api/sync/batch", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-living-atlas-sync-token": syncToken
+      },
+      body: JSON.stringify(otherAuthorityBatch)
+    }), env);
+
+    expect(batchResponse.status).toBe(403);
+    await expect(batchResponse.json()).resolves.toMatchObject({
+      ok: false,
+      error: "sync-authority-mismatch"
+    });
+    expect(graphBucket.puts).toHaveLength(0);
+    expect(controlDb.records.some((record) => record.query.includes("INSERT OR IGNORE INTO sync_batches"))).toBe(false);
+
+    const pullResponse = await handleBootstrapRequest(new Request("https://living-atlas.example/api/sync/pull?authority_id=la_authority_other0001&after_generation=0", {
+      headers: { "x-living-atlas-sync-token": syncToken }
+    }), env);
+    expect(pullResponse.status).toBe(403);
+    await expect(pullResponse.json()).resolves.toMatchObject({ ok: false, error: "sync-authority-mismatch" });
+
+    const envelopeResponse = await handleBootstrapRequest(new Request("https://living-atlas.example/api/sync/envelopes?authority_id=la_authority_other0001&after_generation=0", {
+      headers: { "x-living-atlas-sync-token": syncToken }
+    }), env);
+    expect(envelopeResponse.status).toBe(403);
+    await expect(envelopeResponse.json()).resolves.toMatchObject({ ok: false, error: "sync-authority-mismatch" });
+
+    const usageWithSyncToken = await handleBootstrapRequest(new Request("https://living-atlas.example/api/usage/status", {
+      headers: { "x-living-atlas-sync-token": syncToken }
+    }), env);
+    expect(usageWithSyncToken.status).toBe(401);
+    await expect(usageWithSyncToken.json()).resolves.toMatchObject({ ok: false, error: "missing-or-invalid-usage-token" });
   });
 
   it("exposes token-gated remote MCP sync tools", async () => {
@@ -1438,7 +1571,7 @@ describe("Worker sync batch acceptance", () => {
       headers: {
         "content-type": "application/json",
         "x-living-atlas-sync-token": syncToken,
-        "x-living-atlas-health-token": syncToken
+        "x-living-atlas-usage-token": usageToken
       },
       body: JSON.stringify({
         jsonrpc: "2.0",
@@ -1475,7 +1608,7 @@ describe("Worker sync batch acceptance", () => {
       headers: {
         "content-type": "application/json",
         "x-living-atlas-sync-token": syncToken,
-        "x-living-atlas-health-token": syncToken
+        "x-living-atlas-usage-token": usageToken
       },
       body: JSON.stringify({
         jsonrpc: "2.0",
@@ -1503,6 +1636,115 @@ describe("Worker sync batch acceptance", () => {
       }
     });
     expect(JSON.stringify(usageReconcileBody)).not.toContain(syncToken);
+  });
+
+  it("rejects caller-selected authorities across remote MCP tools before storage, decrypt, or audit", async () => {
+    const { env, graphBucket, controlDb } = await createEnv();
+    const otherAuthorityId = "la_authority_other0001";
+    const unlockKey = testToBase64(new Uint8Array(Array.from({ length: 32 }, (_, index) => index + 99)));
+    const otherPage = {
+      ...ciphertextBatch.objects[0],
+      authority_id: otherAuthorityId,
+      access_class: "remote-safe",
+      encryption_class: "plaintext",
+      key_ref: undefined,
+      visible_metadata: {
+        ...ciphertextBatch.objects[0].visible_metadata,
+        remote_indexable: true
+      },
+      payload: {
+        kind: "plaintext-json",
+        data: {
+          title: "Wrong authority"
+        }
+      }
+    };
+
+    const mcpCall = async (id: number, name: string, args: Record<string, unknown>, headers: Record<string, string> = {}) => {
+      const response = await handleBootstrapRequest(new Request("https://living-atlas.example/mcp", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-living-atlas-sync-token": syncToken,
+          ...headers
+        },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id,
+          method: "tools/call",
+          params: { name, arguments: args }
+        })
+      }), env);
+      expect(response.status).toBe(200);
+      return response.json() as Promise<{
+        result?: {
+          structuredContent?: Record<string, unknown>;
+        };
+        error?: {
+          message?: string;
+        };
+      }>;
+    };
+
+    await expect(mcpCall(300, "remote_sensitive_decrypt", {
+      authority_id: otherAuthorityId,
+      object_id: "la_object_other0001"
+    })).resolves.toMatchObject({
+      result: {
+        structuredContent: {
+          ok: false,
+          reason: "cloud-unlock-capability-required"
+        }
+      }
+    });
+    expect(controlDb.records.some((record) => record.query.includes("INSERT INTO audit_events"))).toBe(false);
+
+    await expect(mcpCall(301, "remote_sensitive_decrypt", {
+      authority_id: otherAuthorityId,
+      object_id: "la_object_other0001"
+    }, {
+      "x-living-atlas-sync-capability-id": cloudUnlockCapabilityId,
+      "x-living-atlas-cloud-unlock-key": unlockKey
+    })).resolves.toMatchObject({
+      error: { message: "decrypt-authority-mismatch" }
+    });
+
+    const mismatchCases: Array<[string, Record<string, unknown>, string]> = [
+      ["remote_activity_audit", { authority_id: otherAuthorityId, limit: 5 }, "activity-authority-mismatch"],
+      ["remote_graph_status", { authority_id: otherAuthorityId }, "graph-authority-mismatch"],
+      ["remote_graph_reconcile", { authority_id: otherAuthorityId }, "graph-authority-mismatch"],
+      ["remote_graph_list", { authority_id: otherAuthorityId }, "graph-authority-mismatch"],
+      ["remote_graph_read", { authority_id: otherAuthorityId, object_id: "la_object_other0001" }, "graph-authority-mismatch"],
+      ["remote_graph_create", { object: otherPage }, "graph-authority-mismatch"],
+      ["remote_graph_update", { authority_id: otherAuthorityId, object_id: "la_object_other0001", patch: { visible_metadata: { tombstone: false } } }, "graph-authority-mismatch"],
+      ["remote_graph_delete", { authority_id: otherAuthorityId, object_id: "la_object_other0001" }, "graph-authority-mismatch"],
+      ["remote_semantic_search", { authority_id: otherAuthorityId, query: "wrong" }, "graph-authority-mismatch"],
+      ["remote_graph_traverse", { authority_id: otherAuthorityId, start_object_id: "la_object_other0001" }, "graph-authority-mismatch"],
+      ["remote_timeline_query", { authority_id: otherAuthorityId }, "graph-authority-mismatch"],
+      ["remote_edge_create", { authority_id: otherAuthorityId, edge: { edge_id: "la_edge_other0001" } }, "graph-authority-mismatch"],
+      ["remote_edge_read", { authority_id: otherAuthorityId, edge_id: "la_edge_other0001" }, "graph-authority-mismatch"],
+      ["remote_edge_update", { authority_id: otherAuthorityId, edge_id: "la_edge_other0001", patch: { status: "ended" } }, "graph-authority-mismatch"],
+      ["remote_edge_delete", { authority_id: otherAuthorityId, edge_id: "la_edge_other0001" }, "graph-authority-mismatch"],
+      ["remote_sync_pull", { authority_id: otherAuthorityId, after_generation: 0 }, "sync-authority-mismatch"],
+      ["remote_sync_envelopes", { authority_id: otherAuthorityId, after_generation: 0 }, "sync-authority-mismatch"]
+    ];
+
+    for (const [name, args, message] of mismatchCases) {
+      await expect(mcpCall(400 + mismatchCases.findIndex((entry) => entry[0] === name), name, args)).resolves.toMatchObject({
+        error: { message }
+      });
+    }
+
+    await expect(mcpCall(500, "remote_usage_gate", { window_hours: 6 })).resolves.toMatchObject({
+      error: { message: "missing-or-invalid-usage-token" }
+    });
+    await expect(mcpCall(501, "remote_usage_reconcile", { window_hours: 6 })).resolves.toMatchObject({
+      error: { message: "missing-or-invalid-usage-token" }
+    });
+    expect(graphBucket.puts).toHaveLength(0);
+    expect(controlDb.records.some((record) => record.query.includes("INSERT OR IGNORE INTO sync_batches"))).toBe(false);
+    expect(controlDb.records.some((record) => record.query.includes("INSERT INTO remote_graph_objects"))).toBe(false);
+    expect(controlDb.records.some((record) => record.query.includes("INSERT INTO audit_events"))).toBe(false);
   });
 
   it("decrypts a cloud-unlock inline ciphertext object with a transient request key", async () => {
@@ -2105,6 +2347,23 @@ describe("Worker sync batch acceptance", () => {
             version: 3,
             visible_metadata: expect.objectContaining({ tombstone: true })
           })
+        }
+      }
+    });
+
+    await expect(mcpCall(200, "remote_graph_read", { authority_id: authorityId, object_id: sourceId })).resolves.toMatchObject({
+      result: {
+        structuredContent: {
+          ok: false,
+          reason: "object-not-found"
+        }
+      }
+    });
+    await expect(mcpCall(201, "remote_timeline_query", { authority_id: authorityId, object_id: sourceId, from: "2026-06", to: "2026-06-30" })).resolves.toMatchObject({
+      result: {
+        structuredContent: {
+          ok: true,
+          results: []
         }
       }
     });

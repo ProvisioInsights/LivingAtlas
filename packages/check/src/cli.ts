@@ -344,6 +344,21 @@ export function runSyntheticCloudflareDeployReadinessCheck(repoRoot = process.cw
       if (typeof config.vars.LA_OBSERVABILITY_RETENTION_DAYS !== "string") {
         errors.push("wrangler.example.jsonc: vars must include LA_OBSERVABILITY_RETENTION_DAYS as a non-secret retention control");
       }
+      if (typeof config.vars.LA_AUTHORITY_ID !== "string") {
+        errors.push("wrangler.example.jsonc: vars must include LA_AUTHORITY_ID as the non-secret authority boundary");
+      }
+      if (typeof config.vars.LA_USAGE_PROVIDER !== "string") {
+        errors.push("wrangler.example.jsonc: vars must include LA_USAGE_PROVIDER as non-secret usage metadata");
+      }
+      if (typeof config.vars.LA_USAGE_PLAN !== "string") {
+        errors.push("wrangler.example.jsonc: vars must include LA_USAGE_PLAN as non-secret usage metadata");
+      }
+      if (typeof config.vars.LA_USAGE_WINDOW_HOURS !== "string") {
+        errors.push("wrangler.example.jsonc: vars must include LA_USAGE_WINDOW_HOURS as a non-secret usage window");
+      }
+      if (typeof config.vars.LA_USAGE_BUDGETS_JSON !== "string") {
+        errors.push("wrangler.example.jsonc: vars must include LA_USAGE_BUDGETS_JSON as non-secret budget metadata");
+      }
     }
   }
 
@@ -362,6 +377,12 @@ export function runSyntheticCloudflareDeployReadinessCheck(repoRoot = process.cw
         errors.push(`D1 migration must include ${requiredColumn}`);
       }
     }
+    if (migrationSql.includes("idempotency_key TEXT NOT NULL UNIQUE")) {
+      errors.push("D1 sync control migration must not make idempotency globally unique");
+    }
+    if (!migrationSql.includes("idx_sync_batches_authority_idempotency_key")) {
+      errors.push("D1 sync control migration must scope idempotency by authority");
+    }
   }
 
   const auditMigrationPath = join(repoRoot, "packages/cloudflare-worker/migrations/0002_audit_ledger.sql");
@@ -378,11 +399,43 @@ export function runSyntheticCloudflareDeployReadinessCheck(repoRoot = process.cw
       "audit_events_no_update",
       "audit_events_no_delete",
       "event_hash TEXT NOT NULL UNIQUE",
+      "idx_audit_events_authority_previous_hash",
       "expires_at TEXT NOT NULL",
       "sensitive INTEGER NOT NULL CHECK (sensitive = 0)"
     ]) {
       if (!migrationSql.includes(requiredClause)) {
         errors.push(`D1 audit ledger migration must include ${requiredClause}`);
+      }
+    }
+  }
+
+  const remoteGraphWriteMigrationPath = join(repoRoot, "packages/cloudflare-worker/migrations/0004_remote_graph_writes.sql");
+  if (!existsSync(remoteGraphWriteMigrationPath)) {
+    errors.push("missing D1 remote graph writes migration at packages/cloudflare-worker/migrations/0004_remote_graph_writes.sql");
+  } else {
+    const migrationSql = readFileSync(remoteGraphWriteMigrationPath, "utf8");
+    if (migrationSql.includes("idempotency_key TEXT PRIMARY KEY")) {
+      errors.push("D1 remote graph writes migration must not make idempotency globally unique");
+    }
+    if (!migrationSql.includes("idx_remote_graph_writes_authority_idempotency")) {
+      errors.push("D1 remote graph writes migration must scope idempotency by authority");
+    }
+  }
+
+  const securityMigrationPath = join(repoRoot, "packages/cloudflare-worker/migrations/0005_security_remediation.sql");
+  if (!existsSync(securityMigrationPath)) {
+    errors.push("missing D1 security remediation migration at packages/cloudflare-worker/migrations/0005_security_remediation.sql");
+  } else {
+    const migrationSql = readFileSync(securityMigrationPath, "utf8");
+    for (const requiredClause of [
+      "sync_batches_security_remediation",
+      "remote_graph_writes_security_remediation",
+      "idx_sync_batches_authority_idempotency_key",
+      "idx_remote_graph_writes_authority_idempotency",
+      "idx_audit_events_authority_previous_hash"
+    ]) {
+      if (!migrationSql.includes(requiredClause)) {
+        errors.push(`D1 security remediation migration must include ${requiredClause}`);
       }
     }
   }

@@ -13,6 +13,7 @@ import {
   type WorkerObservabilityContext
 } from "./observability";
 import { handleBootstrapRequest, type BootstrapWorkerEnv } from "./worker";
+import { sha256TokenHash } from "./bootstrap";
 
 type RetentionRecord = {
   query: string;
@@ -324,8 +325,14 @@ describe("Worker operational observability", () => {
 
   it("turns unexpected Worker failures into redacted 500 observability events", async () => {
     const events: OperationalEvent[] = [];
-    const response = await handleBootstrapRequest(new Request("https://living-atlas.example/api/bootstrap/status"), {
+    const bootstrapToken = "fixture-bootstrap-token-observe-0001";
+    const response = await handleBootstrapRequest(new Request("https://living-atlas.example/api/bootstrap/status", {
+      headers: {
+        "x-living-atlas-bootstrap-token": bootstrapToken
+      }
+    }), {
       ...createEnv(events),
+      BOOTSTRAP_CLAIM_TOKEN_HASH: await sha256TokenHash(bootstrapToken),
       BOOTSTRAP_CLAIM_LOCK: {
         getByName: () => {
           throw new Error("synthetic secret implementation detail");

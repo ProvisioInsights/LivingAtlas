@@ -80,6 +80,7 @@ export type BootstrapWorkerEnv = {
   BOOTSTRAP_CLAIM_TOKEN_HASH?: string;
   BOOTSTRAP_TOKEN_EXPIRES_AT?: string;
   BOOTSTRAP_LOCK_NAME?: string;
+  LA_AUTHORITY_ID?: string;
   LA_SYNC_TOKEN_HASH?: string;
   LA_SYNC_CLIENT_ID?: string;
   LA_SYNC_CAPABILITY_ID?: string;
@@ -91,6 +92,7 @@ export type BootstrapWorkerEnv = {
   LA_HEALTH_TOKEN_HASH?: string;
   LA_USAGE_PROVIDER?: string;
   LA_USAGE_PLAN?: string;
+  LA_USAGE_TOKEN_HASH?: string;
   LA_USAGE_WINDOW_HOURS?: string;
   LA_USAGE_BUDGETS_JSON?: string;
 } & WorkerObservabilityEnv;
@@ -142,7 +144,8 @@ function syncRuntimeConfig(env: BootstrapWorkerEnv): SyncRuntimeConfig {
     sync_token_hash: env.LA_SYNC_TOKEN_HASH,
     sync_client_id: env.LA_SYNC_CLIENT_ID,
     sync_capability_id: env.LA_SYNC_CAPABILITY_ID,
-    sync_token_id: env.LA_SYNC_TOKEN_ID
+    sync_token_id: env.LA_SYNC_TOKEN_ID,
+    authority_id: configuredAuthorityId(env)
   };
 }
 
@@ -151,7 +154,8 @@ function cloudUnlockRuntimeConfig(env: BootstrapWorkerEnv): SyncRuntimeConfig {
     sync_token_hash: env.LA_SYNC_TOKEN_HASH,
     sync_client_id: env.LA_CLOUD_UNLOCK_CLIENT_ID,
     sync_capability_id: env.LA_CLOUD_UNLOCK_CAPABILITY_ID,
-    sync_token_id: env.LA_CLOUD_UNLOCK_TOKEN_ID
+    sync_token_id: env.LA_CLOUD_UNLOCK_TOKEN_ID,
+    authority_id: configuredAuthorityId(env)
   };
 }
 
@@ -200,6 +204,11 @@ async function hasValidHealthToken(request: Request, env: BootstrapWorkerEnv): P
   );
 }
 
+async function hasValidUsageToken(request: Request, env: BootstrapWorkerEnv): Promise<boolean> {
+  const token = request.headers.get("x-living-atlas-usage-token") ?? undefined;
+  return await hasValidToken(token, env.LA_USAGE_TOKEN_HASH);
+}
+
 async function hasValidSyncToken(request: Request, env: BootstrapWorkerEnv): Promise<boolean> {
   const token = request.headers.get(syncTokenHeader) ?? undefined;
   if (!(await hasValidToken(token, env.LA_SYNC_TOKEN_HASH))) {
@@ -220,6 +229,37 @@ async function hasValidSyncToken(request: Request, env: BootstrapWorkerEnv): Pro
   }
 
   return true;
+}
+
+function configuredAuthorityId(env: BootstrapWorkerEnv): string | undefined {
+  if (!env.LA_AUTHORITY_ID) {
+    return undefined;
+  }
+  return AuthorityIdSchema.parse(env.LA_AUTHORITY_ID);
+}
+
+function requireConfiguredAuthority(env: BootstrapWorkerEnv): string {
+  const authorityId = configuredAuthorityId(env);
+  if (!authorityId) {
+    throw new Error("authority-not-configured");
+  }
+  return authorityId;
+}
+
+function requireBoundAuthority(env: BootstrapWorkerEnv, authorityId: string | undefined, reason: string): string {
+  const configured = requireConfiguredAuthority(env);
+  if (authorityId !== configured) {
+    throw new Error(reason);
+  }
+  return configured;
+}
+
+function jsonAuthorityNotConfigured(): Response {
+  return json({ ok: false, error: "authority-not-configured" }, { status: 423 });
+}
+
+function jsonAuthorityMismatch(error = "authority-mismatch"): Response {
+  return json({ ok: false, error }, { status: 403 });
 }
 
 async function hasValidCloudUnlockCapability(request: Request, env: BootstrapWorkerEnv): Promise<boolean> {
@@ -287,7 +327,7 @@ async function shouldStealthDrop(request: Request, env: BootstrapWorkerEnv): Pro
   }
 
   if (url.pathname.startsWith("/api/usage/")) {
-    return !(await hasValidHealthToken(request, env));
+    return !(await hasValidUsageToken(request, env));
   }
 
   if (url.pathname === "/mcp") {
@@ -465,6 +505,12 @@ async function routeBootstrapRequest(request: Request, env: BootstrapWorkerEnv):
   }
 
   if (request.method === "GET" && url.pathname === "/api/bootstrap/status") {
+    if (queryContainsToken(url)) {
+      return json({ ok: false, error: "bootstrap token must not be sent in the query string" }, { status: 400 });
+    }
+    if (!(await hasValidBootstrapToken(request, env))) {
+      return json({ ok: false, error: "missing-or-invalid-bootstrap-token" }, { status: 401 });
+    }
     const lock = getClaimLock(env);
     const config = runtimeConfig(env);
     return json(await lock.getStatus(config));
@@ -480,6 +526,16 @@ async function routeBootstrapRequest(request: Request, env: BootstrapWorkerEnv):
     const { token, payload, malformed } = await readClaimBody(request);
     if (malformed || !payload) {
       return json({ ok: false, error: "malformed bootstrap claim" }, { status: 400 });
+    }
+
+    if (isRecord(payload)) {
+      try {
+        requireBoundAuthority(env, stringParam(payload, "authority_id"), "bootstrap-authority-mismatch");
+      } catch (error) {
+        return error instanceof Error && error.message === "authority-not-configured"
+          ? jsonAuthorityNotConfigured()
+          : jsonAuthorityMismatch("bootstrap-authority-mismatch");
+      }
     }
 
     const result = await lock.claim(payload, token, config, new Date().toISOString());
@@ -511,7 +567,18 @@ async function routeBootstrapRequest(request: Request, env: BootstrapWorkerEnv):
       return json({ ok: false, error: "malformed-batch" }, { status: 400 });
     }
 
+    if (!(await hasValidSyncToken(request, env))) {
+      return json({ ok: false, error: "missing-or-invalid-sync-token" }, { status: 401 });
+    }
+
     const authorityId = authorityFromBatch(body);
+    try {
+      requireBoundAuthority(env, authorityId, "sync-authority-mismatch");
+    } catch (error) {
+      return error instanceof Error && error.message === "authority-not-configured"
+        ? jsonAuthorityNotConfigured()
+        : jsonAuthorityMismatch("sync-authority-mismatch");
+    }
     const sequencer = authorityId ? await getSyncSequencer(env, authorityId) : undefined;
     const result = sequencer
       ? await sequencer.acceptBatch(
@@ -557,6 +624,12 @@ async function routeBootstrapRequest(request: Request, env: BootstrapWorkerEnv):
       return json({ ok: false, error: "sync token must not be sent in the query string" }, { status: 400 });
     }
 
+    try {
+      requireConfiguredAuthority(env);
+    } catch {
+      return jsonAuthorityNotConfigured();
+    }
+
     const result = await getSyncStatus(
       request.headers.get(syncTokenHeader) ?? undefined,
       syncRuntimeConfig(env),
@@ -583,11 +656,22 @@ async function routeBootstrapRequest(request: Request, env: BootstrapWorkerEnv):
     }
 
     const afterGeneration = Number(url.searchParams.get("after_generation"));
+    const authorityId = url.searchParams.get("authority_id") ?? undefined;
+    if (!(await hasValidSyncToken(request, env))) {
+      return json({ ok: false, error: "missing-or-invalid-sync-token" }, { status: 401 });
+    }
+    try {
+      requireBoundAuthority(env, authorityId, "sync-authority-mismatch");
+    } catch (error) {
+      return error instanceof Error && error.message === "authority-not-configured"
+        ? jsonAuthorityNotConfigured()
+        : jsonAuthorityMismatch("sync-authority-mismatch");
+    }
     const result = await getSyncPull(
       request.headers.get(syncTokenHeader) ?? undefined,
       syncRuntimeConfig(env),
       env.LA_CONTROL_DB,
-      url.searchParams.get("authority_id") ?? undefined,
+      authorityId,
       Number.isFinite(afterGeneration) ? afterGeneration : undefined,
       syncTokenBinding(request)
     );
@@ -612,6 +696,17 @@ async function routeBootstrapRequest(request: Request, env: BootstrapWorkerEnv):
     }
 
     const afterGeneration = Number(url.searchParams.get("after_generation"));
+    const authorityId = url.searchParams.get("authority_id") ?? undefined;
+    if (!(await hasValidSyncToken(request, env))) {
+      return json({ ok: false, error: "missing-or-invalid-sync-token" }, { status: 401 });
+    }
+    try {
+      requireBoundAuthority(env, authorityId, "sync-authority-mismatch");
+    } catch (error) {
+      return error instanceof Error && error.message === "authority-not-configured"
+        ? jsonAuthorityNotConfigured()
+        : jsonAuthorityMismatch("sync-authority-mismatch");
+    }
     const result = await getSyncEnvelopePull(
       request.headers.get(syncTokenHeader) ?? undefined,
       syncRuntimeConfig(env),
@@ -619,7 +714,7 @@ async function routeBootstrapRequest(request: Request, env: BootstrapWorkerEnv):
         graphBucket: env.LA_GRAPH_BUCKET,
         controlDb: env.LA_CONTROL_DB
       },
-      url.searchParams.get("authority_id") ?? undefined,
+      authorityId,
       Number.isFinite(afterGeneration) ? afterGeneration : undefined,
       syncTokenBinding(request)
     );
@@ -649,7 +744,20 @@ async function routeBootstrapRequest(request: Request, env: BootstrapWorkerEnv):
     if (!options) {
       return json({ ok: false, error: "invalid-activity-audit-request" }, { status: 400 });
     }
-    return json(await readPraxisActivityAuditStream(env.LA_CONTROL_DB, options));
+    try {
+      const authorityId = requireConfiguredAuthority(env);
+      if (options.authority_id && options.authority_id !== authorityId) {
+        return jsonAuthorityMismatch("audit-authority-mismatch");
+      }
+      return json(await readPraxisActivityAuditStream(env.LA_CONTROL_DB, {
+        ...options,
+        authority_id: authorityId
+      }));
+    } catch (error) {
+      return error instanceof Error && error.message === "authority-not-configured"
+        ? jsonAuthorityNotConfigured()
+        : jsonAuthorityMismatch("audit-authority-mismatch");
+    }
   }
 
   if (request.method === "GET" && url.pathname === "/api/usage/status") {
@@ -657,8 +765,8 @@ async function routeBootstrapRequest(request: Request, env: BootstrapWorkerEnv):
       return json({ ok: false, error: "usage tokens must not be sent in the query string" }, { status: 400 });
     }
 
-    if (!(await hasValidHealthToken(request, env))) {
-      return json({ ok: false, error: "missing-or-invalid-health-token" }, { status: 401 });
+    if (!(await hasValidUsageToken(request, env))) {
+      return json({ ok: false, error: "missing-or-invalid-usage-token" }, { status: 401 });
     }
 
     const windowHours = Number(url.searchParams.get("window_hours"));
@@ -676,8 +784,8 @@ async function routeBootstrapRequest(request: Request, env: BootstrapWorkerEnv):
       return json({ ok: false, error: "usage tokens must not be sent in the query string" }, { status: 400 });
     }
 
-    if (!(await hasValidHealthToken(request, env))) {
-      return json({ ok: false, error: "missing-or-invalid-health-token" }, { status: 401 });
+    if (!(await hasValidUsageToken(request, env))) {
+      return json({ ok: false, error: "missing-or-invalid-usage-token" }, { status: 401 });
     }
 
     return json(await getUsageGate(
@@ -692,8 +800,8 @@ async function routeBootstrapRequest(request: Request, env: BootstrapWorkerEnv):
       return json({ ok: false, error: "usage tokens must not be sent in the query string" }, { status: 400 });
     }
 
-    if (!(await hasValidHealthToken(request, env))) {
-      return json({ ok: false, error: "missing-or-invalid-health-token" }, { status: 401 });
+    if (!(await hasValidUsageToken(request, env))) {
+      return json({ ok: false, error: "missing-or-invalid-usage-token" }, { status: 401 });
     }
 
     return json(await getUsageReconciliation(
@@ -825,6 +933,10 @@ function activityAuditStreamOptionsFromArgs(args: unknown) {
   });
 }
 
+function requireAuthorityArg(env: BootstrapWorkerEnv, args: unknown, error: string): string {
+  return requireBoundAuthority(env, stringParam(args, "authority_id"), error);
+}
+
 function remoteGraphStorage(env: BootstrapWorkerEnv) {
   return {
     graphBucket: env.LA_GRAPH_BUCKET,
@@ -936,6 +1048,7 @@ async function commitIdempotentRemoteGraphMutation(
       idempotent_replay: false
     };
     await commitRemoteGraphWrite(storage, {
+      authority_id: input.authority_id,
       idempotency_key: idempotencyKey,
       request_hash: requestHash,
       sync_batch_id: syncBatch.batch_id,
@@ -946,6 +1059,7 @@ async function commitIdempotentRemoteGraphMutation(
   } catch (error) {
     if (!syncAccepted) {
       await failRemoteGraphWrite(storage, {
+        authority_id: input.authority_id,
         idempotency_key: idempotencyKey,
         request_hash: requestHash,
         reason: error instanceof Error ? error.message : "remote-write-failed"
@@ -1050,24 +1164,15 @@ async function callRemoteMcpTool(name: string, args: unknown, request: Request, 
 
   if (name === "remote_activity_audit") {
     await requireRemoteMcpSyncToken(request, env);
-    return readPraxisActivityAuditStream(env.LA_CONTROL_DB, activityAuditStreamOptionsFromArgs(args));
+    const authorityId = requireAuthorityArg(env, args, "activity-authority-mismatch");
+    return readPraxisActivityAuditStream(env.LA_CONTROL_DB, {
+      ...activityAuditStreamOptionsFromArgs(args),
+      authority_id: authorityId
+    });
   }
 
   if (name === "remote_sensitive_decrypt") {
     if (!(await hasValidCloudUnlockCapability(request, env))) {
-      const authorityId = stringParam(args, "authority_id");
-      if (authorityId) {
-        await appendRemoteMcpAudit({
-          request,
-          env,
-          authority_id: authorityId,
-          operation: "decrypt",
-          event_type: "object.denied",
-          outcome: "denied",
-          reason_code: "cloud-unlock-capability-required",
-          summary: "Remote cloud unlock denied"
-        });
-      }
       return {
         ok: false,
         reason: "cloud-unlock-capability-required",
@@ -1078,20 +1183,18 @@ async function callRemoteMcpTool(name: string, args: unknown, request: Request, 
     }
 
     const unlockKey = cloudUnlockKey(request);
+    const authorityId = requireAuthorityArg(env, args, "decrypt-authority-mismatch");
     if (!unlockKey) {
-      const authorityId = stringParam(args, "authority_id");
-      if (authorityId) {
-        await appendRemoteMcpAudit({
-          request,
-          env,
-          authority_id: authorityId,
-          operation: "decrypt",
-          event_type: "object.denied",
-          outcome: "denied",
-          reason_code: "cloud-unlock-required",
-          summary: "Remote cloud unlock denied"
-        });
-      }
+      await appendRemoteMcpAudit({
+        request,
+        env,
+        authority_id: authorityId,
+        operation: "decrypt",
+        event_type: "object.denied",
+        outcome: "denied",
+        reason_code: "cloud-unlock-required",
+        summary: "Remote cloud unlock denied"
+      });
       return {
         ok: false,
         reason: "cloud-unlock-required",
@@ -1100,9 +1203,8 @@ async function callRemoteMcpTool(name: string, args: unknown, request: Request, 
       };
     }
 
-    const authorityId = stringParam(args, "authority_id");
     const objectId = stringParam(args, "object_id");
-    if (!authorityId || !objectId) {
+    if (!objectId) {
       return {
         ok: false,
         reason: "invalid-decrypt-request",
@@ -1227,10 +1329,7 @@ async function callRemoteMcpTool(name: string, args: unknown, request: Request, 
 
   if (name === "remote_graph_status") {
     await requireRemoteMcpSyncToken(request, env);
-    const authorityId = stringParam(args, "authority_id");
-    if (!authorityId) {
-      throw new Error("invalid-graph-status-request");
-    }
+    const authorityId = requireAuthorityArg(env, args, "graph-authority-mismatch");
     const objects = await listRemoteGraphObjects(remoteGraphStorage(env), authorityId, {
       include_tombstones: booleanParam(args, "include_tombstones"),
       limit: numberParam(args, "limit")
@@ -1258,10 +1357,7 @@ async function callRemoteMcpTool(name: string, args: unknown, request: Request, 
 
   if (name === "remote_graph_reconcile") {
     await requireRemoteMcpSyncToken(request, env);
-    const authorityId = stringParam(args, "authority_id");
-    if (!authorityId) {
-      throw new Error("invalid-graph-reconcile-request");
-    }
+    const authorityId = requireAuthorityArg(env, args, "graph-authority-mismatch");
     const reconciliation = await reconcileRemoteGraph(remoteGraphStorage(env), authorityId, {
       limit: numberParam(args, "limit")
     });
@@ -1278,10 +1374,7 @@ async function callRemoteMcpTool(name: string, args: unknown, request: Request, 
 
   if (name === "remote_graph_list") {
     await requireRemoteMcpSyncToken(request, env);
-    const authorityId = stringParam(args, "authority_id");
-    if (!authorityId) {
-      throw new Error("invalid-graph-list-request");
-    }
+    const authorityId = requireAuthorityArg(env, args, "graph-authority-mismatch");
     const objects = await listRemoteGraphObjects(remoteGraphStorage(env), authorityId, {
       include_tombstones: booleanParam(args, "include_tombstones"),
       object_type: stringParam(args, "object_type") as never,
@@ -1304,9 +1397,9 @@ async function callRemoteMcpTool(name: string, args: unknown, request: Request, 
 
   if (name === "remote_graph_read") {
     await requireRemoteMcpSyncToken(request, env);
-    const authorityId = stringParam(args, "authority_id");
+    const authorityId = requireAuthorityArg(env, args, "graph-authority-mismatch");
     const objectId = stringParam(args, "object_id");
-    if (!authorityId || !objectId) {
+    if (!objectId) {
       throw new Error("invalid-graph-read-request");
     }
     const object = await latestRemoteGraphObject(remoteGraphStorage(env), authorityId, objectId);
@@ -1336,6 +1429,7 @@ async function callRemoteMcpTool(name: string, args: unknown, request: Request, 
     if (!object || !authorityId || !objectId) {
       throw new Error("invalid-graph-create-request");
     }
+    requireBoundAuthority(env, authorityId, "graph-authority-mismatch");
     const response = await commitIdempotentRemoteGraphMutation(name, args, request, env, {
       authority_id: authorityId,
       object_id: objectId,
@@ -1360,10 +1454,10 @@ async function callRemoteMcpTool(name: string, args: unknown, request: Request, 
 
   if (name === "remote_graph_update") {
     await requireRemoteMcpSyncToken(request, env);
-    const authorityId = stringParam(args, "authority_id");
+    const authorityId = requireAuthorityArg(env, args, "graph-authority-mismatch");
     const objectId = stringParam(args, "object_id");
     const patch = recordParam(args, "patch");
-    if (!authorityId || !objectId || !patch) {
+    if (!objectId || !patch) {
       throw new Error("invalid-graph-update-request");
     }
     const response = await commitIdempotentRemoteGraphMutation(name, args, request, env, {
@@ -1390,9 +1484,9 @@ async function callRemoteMcpTool(name: string, args: unknown, request: Request, 
 
   if (name === "remote_graph_delete") {
     await requireRemoteMcpSyncToken(request, env);
-    const authorityId = stringParam(args, "authority_id");
+    const authorityId = requireAuthorityArg(env, args, "graph-authority-mismatch");
     const objectId = stringParam(args, "object_id");
-    if (!authorityId || !objectId) {
+    if (!objectId) {
       throw new Error("invalid-graph-delete-request");
     }
     const response = await commitIdempotentRemoteGraphMutation(name, args, request, env, {
@@ -1419,9 +1513,9 @@ async function callRemoteMcpTool(name: string, args: unknown, request: Request, 
 
   if (name === "remote_semantic_search") {
     await requireRemoteMcpSyncToken(request, env);
-    const authorityId = stringParam(args, "authority_id");
+    const authorityId = requireAuthorityArg(env, args, "graph-authority-mismatch");
     const query = stringParam(args, "query");
-    if (!authorityId || !query) {
+    if (!query) {
       throw new Error("invalid-semantic-search-request");
     }
     const results = await searchRemoteGraphObjects(remoteGraphStorage(env), authorityId, query, {
@@ -1447,9 +1541,9 @@ async function callRemoteMcpTool(name: string, args: unknown, request: Request, 
 
   if (name === "remote_graph_traverse") {
     await requireRemoteMcpSyncToken(request, env);
-    const authorityId = stringParam(args, "authority_id");
+    const authorityId = requireAuthorityArg(env, args, "graph-authority-mismatch");
     const startObjectId = stringParam(args, "start_object_id");
-    if (!authorityId || !startObjectId) {
+    if (!startObjectId) {
       throw new Error("invalid-graph-traverse-request");
     }
     const predicates = isRecord(args) && Array.isArray(args.predicates)
@@ -1479,17 +1573,14 @@ async function callRemoteMcpTool(name: string, args: unknown, request: Request, 
 
   if (name === "remote_timeline_query") {
     await requireRemoteMcpSyncToken(request, env);
-    const authorityId = stringParam(args, "authority_id");
-    if (!authorityId) {
-      throw new Error("invalid-timeline-query-request");
-    }
-    const results = await queryRemoteTimeline(remoteGraphStorage(env), authorityId, {
+    const authorityId = requireAuthorityArg(env, args, "graph-authority-mismatch");
+    const results = (await queryRemoteTimeline(remoteGraphStorage(env), authorityId, {
       from: stringParam(args, "from"),
       to: stringParam(args, "to"),
       object_id: stringParam(args, "object_id"),
       predicate: stringParam(args, "predicate"),
       limit: numberParam(args, "limit")
-    });
+    })).filter((entry) => !entry.object.visible_metadata.tombstone && !isExpiredReleaseObject(entry.object));
     await appendRemoteMcpAudit({
       request,
       env,
@@ -1508,10 +1599,10 @@ async function callRemoteMcpTool(name: string, args: unknown, request: Request, 
 
   if (name === "remote_edge_create") {
     await requireRemoteMcpSyncToken(request, env);
-    const authorityId = stringParam(args, "authority_id");
+    const authorityId = requireAuthorityArg(env, args, "graph-authority-mismatch");
     const edge = recordParam(args, "edge");
     const edgeId = stringParam(edge, "edge_id");
-    if (!authorityId || !edge || !edgeId) {
+    if (!edge || !edgeId) {
       throw new Error("invalid-edge-create-request");
     }
     const response = await commitIdempotentRemoteGraphMutation(name, args, request, env, {
@@ -1538,9 +1629,9 @@ async function callRemoteMcpTool(name: string, args: unknown, request: Request, 
 
   if (name === "remote_edge_read") {
     await requireRemoteMcpSyncToken(request, env);
-    const authorityId = stringParam(args, "authority_id");
+    const authorityId = requireAuthorityArg(env, args, "graph-authority-mismatch");
     const edgeId = stringParam(args, "edge_id");
-    if (!authorityId || !edgeId) {
+    if (!edgeId) {
       throw new Error("invalid-edge-read-request");
     }
     const object = await findRemoteEdgeObject(remoteGraphStorage(env), authorityId, edgeId);
@@ -1563,10 +1654,10 @@ async function callRemoteMcpTool(name: string, args: unknown, request: Request, 
 
   if (name === "remote_edge_update") {
     await requireRemoteMcpSyncToken(request, env);
-    const authorityId = stringParam(args, "authority_id");
+    const authorityId = requireAuthorityArg(env, args, "graph-authority-mismatch");
     const edgeId = stringParam(args, "edge_id");
     const patch = recordParam(args, "patch");
-    if (!authorityId || !edgeId || !patch) {
+    if (!edgeId || !patch) {
       throw new Error("invalid-edge-update-request");
     }
     const response = await commitIdempotentRemoteGraphMutation(name, args, request, env, {
@@ -1593,9 +1684,9 @@ async function callRemoteMcpTool(name: string, args: unknown, request: Request, 
 
   if (name === "remote_edge_delete") {
     await requireRemoteMcpSyncToken(request, env);
-    const authorityId = stringParam(args, "authority_id");
+    const authorityId = requireAuthorityArg(env, args, "graph-authority-mismatch");
     const edgeId = stringParam(args, "edge_id");
-    if (!authorityId || !edgeId) {
+    if (!edgeId) {
       throw new Error("invalid-edge-delete-request");
     }
     const response = await commitIdempotentRemoteGraphMutation(name, args, request, env, {
@@ -1621,6 +1712,7 @@ async function callRemoteMcpTool(name: string, args: unknown, request: Request, 
   }
 
   if (name === "remote_sync_status") {
+    const authorityId = requireConfiguredAuthority(env);
     const result = await getSyncStatus(
       request.headers.get(syncTokenHeader) ?? undefined,
       syncRuntimeConfig(env),
@@ -1630,21 +1722,19 @@ async function callRemoteMcpTool(name: string, args: unknown, request: Request, 
     if (!result.ok) {
       throw new Error(result.reason);
     }
-    if (result.status.authority_id) {
-      await appendRemoteMcpAudit({
-        request,
-        env,
-        authority_id: result.status.authority_id,
-        operation: "read",
-        event_type: "sync.read",
-        summary: "Remote sync status read allowed"
-      });
-    }
+    await appendRemoteMcpAudit({
+      request,
+      env,
+      authority_id: authorityId,
+      operation: "read",
+      event_type: "sync.read",
+      summary: "Remote sync status read allowed"
+    });
     return result.status;
   }
 
   if (name === "remote_sync_pull") {
-    const authorityId = stringParam(args, "authority_id");
+    const authorityId = requireAuthorityArg(env, args, "sync-authority-mismatch");
     const result = await getSyncPull(
       request.headers.get(syncTokenHeader) ?? undefined,
       syncRuntimeConfig(env),
@@ -1656,21 +1746,19 @@ async function callRemoteMcpTool(name: string, args: unknown, request: Request, 
     if (!result.ok) {
       throw new Error(result.reason);
     }
-    if (authorityId) {
-      await appendRemoteMcpAudit({
-        request,
-        env,
-        authority_id: authorityId,
-        operation: "read",
-        event_type: "sync.read",
-        summary: "Remote sync pull read allowed"
-      });
-    }
+    await appendRemoteMcpAudit({
+      request,
+      env,
+      authority_id: authorityId,
+      operation: "read",
+      event_type: "sync.read",
+      summary: "Remote sync pull read allowed"
+    });
     return result.response;
   }
 
   if (name === "remote_sync_envelopes") {
-    const authorityId = stringParam(args, "authority_id");
+    const authorityId = requireAuthorityArg(env, args, "sync-authority-mismatch");
     const result = await getSyncEnvelopePull(
       request.headers.get(syncTokenHeader) ?? undefined,
       syncRuntimeConfig(env),
@@ -1685,22 +1773,20 @@ async function callRemoteMcpTool(name: string, args: unknown, request: Request, 
     if (!result.ok) {
       throw new Error(result.reason);
     }
-    if (authorityId) {
-      await appendRemoteMcpAudit({
-        request,
-        env,
-        authority_id: authorityId,
-        operation: "read",
-        event_type: "sync.read",
-        summary: "Remote sync envelope read allowed"
-      });
-    }
+    await appendRemoteMcpAudit({
+      request,
+      env,
+      authority_id: authorityId,
+      operation: "read",
+      event_type: "sync.read",
+      summary: "Remote sync envelope read allowed"
+    });
     return result.response;
   }
 
   if (name === "remote_usage_gate") {
-    if (!(await hasValidHealthToken(request, env))) {
-      throw new Error("missing-or-invalid-health-token");
+    if (!(await hasValidUsageToken(request, env))) {
+      throw new Error("missing-or-invalid-usage-token");
     }
 
     return getUsageGate(
@@ -1711,8 +1797,8 @@ async function callRemoteMcpTool(name: string, args: unknown, request: Request, 
   }
 
   if (name === "remote_usage_reconcile") {
-    if (!(await hasValidHealthToken(request, env))) {
-      throw new Error("missing-or-invalid-health-token");
+    if (!(await hasValidUsageToken(request, env))) {
+      throw new Error("missing-or-invalid-usage-token");
     }
 
     return getUsageReconciliation(

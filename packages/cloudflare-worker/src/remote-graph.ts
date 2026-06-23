@@ -153,7 +153,7 @@ CREATE TABLE IF NOT EXISTS remote_graph_objects (
 
 const RemoteGraphWritesSql = `
 CREATE TABLE IF NOT EXISTS remote_graph_writes (
-  idempotency_key TEXT PRIMARY KEY,
+  idempotency_key TEXT NOT NULL,
   request_hash TEXT NOT NULL,
   authority_ref TEXT NOT NULL,
   object_ref TEXT,
@@ -176,6 +176,7 @@ const RemoteGraphIndexSql = [
   "CREATE INDEX IF NOT EXISTS idx_remote_graph_authority_source ON remote_graph_objects (authority_ref, source_ref, predicate)",
   "CREATE INDEX IF NOT EXISTS idx_remote_graph_authority_target ON remote_graph_objects (authority_ref, target_ref, predicate)",
   "CREATE INDEX IF NOT EXISTS idx_remote_graph_authority_timeline ON remote_graph_objects (authority_ref, timeline_start)",
+  "CREATE UNIQUE INDEX IF NOT EXISTS idx_remote_graph_writes_authority_idempotency ON remote_graph_writes (authority_ref, idempotency_key)",
   "CREATE INDEX IF NOT EXISTS idx_remote_graph_writes_authority_status ON remote_graph_writes (authority_ref, status, created_at)"
 ];
 
@@ -205,7 +206,7 @@ async function sha256Hash(value: string): Promise<`sha256:${string}`> {
 }
 
 async function opaqueRef(value: string): Promise<string> {
-  return `sha256:${await sha256Hex(value)}`;
+  return `sha256:${await sha256Hex(`living-atlas-remote-graph-ref:v2:${value}`)}`;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -329,7 +330,7 @@ export function isExpiredReleaseObject(object: GraphObjectEnvelope, now = Date.n
 }
 
 async function remoteGraphEnvelopeR2Key(object: GraphObjectEnvelope): Promise<string> {
-  const authority = (await sha256Hex(object.authority_id)).slice(0, 16);
+  const authority = (await sha256Hex(`living-atlas-remote-graph-r2-authority:v2:${object.authority_id}`)).slice(0, 16);
   const segment = (await sha256Hex([
     "remote-graph-envelope:v1",
     object.authority_id,
@@ -349,12 +350,17 @@ type RemoteGraphWriteRow = {
   created_at: string;
 };
 
-async function readRemoteGraphWrite(controlDb: RemoteGraphMetadataStore, idempotencyKey: string): Promise<RemoteGraphWriteRow | undefined> {
+async function readRemoteGraphWrite(
+  controlDb: RemoteGraphMetadataStore,
+  authorityId: string,
+  idempotencyKey: string
+): Promise<RemoteGraphWriteRow | undefined> {
+  const authorityRef = await opaqueRef(authorityId);
   const row = await controlDb.prepare(`
 SELECT idempotency_key, request_hash, status, response_json, failure_reason, created_at
 FROM remote_graph_writes
-WHERE idempotency_key = ?
-LIMIT 1`).bind(idempotencyKey).first<RemoteGraphWriteRow>();
+WHERE authority_ref = ? AND idempotency_key = ?
+LIMIT 1`).bind(authorityRef, idempotencyKey).first<RemoteGraphWriteRow>();
   return row ?? undefined;
 }
 
@@ -369,12 +375,13 @@ export async function stageRemoteGraphWrite(
   }
 ): Promise<RemoteGraphWriteStage> {
   await ensureRemoteGraphTables(storage.controlDb);
-  const existing = await readRemoteGraphWrite(storage.controlDb, input.idempotency_key);
+  const authorityRef = await opaqueRef(input.authority_id);
+  const existing = await readRemoteGraphWrite(storage.controlDb, input.authority_id, input.idempotency_key);
   if (existing) {
     await storage.controlDb.prepare(`
 UPDATE remote_graph_writes
 SET last_seen_at = ?
-WHERE idempotency_key = ?`).bind(new Date().toISOString(), input.idempotency_key).run();
+WHERE authority_ref = ? AND idempotency_key = ?`).bind(new Date().toISOString(), authorityRef, input.idempotency_key).run();
 
     if (existing.request_hash !== input.request_hash) {
       throw new Error("remote-write-idempotency-conflict");
@@ -415,7 +422,7 @@ INSERT OR IGNORE INTO remote_graph_writes (
 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(
     input.idempotency_key,
     input.request_hash,
-    await opaqueRef(input.authority_id),
+    authorityRef,
     input.object_id ? await opaqueRef(input.object_id) : null,
     input.operation,
     "staged",
@@ -428,7 +435,7 @@ INSERT OR IGNORE INTO remote_graph_writes (
     now
   ).run();
 
-  const staged = await readRemoteGraphWrite(storage.controlDb, input.idempotency_key);
+  const staged = await readRemoteGraphWrite(storage.controlDb, input.authority_id, input.idempotency_key);
   if (!staged || staged.request_hash !== input.request_hash) {
     throw new Error("remote-write-idempotency-conflict");
   }
@@ -446,6 +453,7 @@ INSERT OR IGNORE INTO remote_graph_writes (
 export async function commitRemoteGraphWrite(
   storage: RemoteGraphStorageBindings,
   input: {
+    authority_id: string;
     idempotency_key: string;
     request_hash: string;
     sync_batch_id: string;
@@ -454,6 +462,7 @@ export async function commitRemoteGraphWrite(
   }
 ): Promise<void> {
   const now = new Date().toISOString();
+  const authorityRef = await opaqueRef(input.authority_id);
   await storage.controlDb.prepare(`
 UPDATE remote_graph_writes
 SET status = 'committed',
@@ -463,12 +472,13 @@ SET status = 'committed',
     failure_reason = NULL,
     committed_at = ?,
     last_seen_at = ?
-WHERE idempotency_key = ? AND request_hash = ? AND status = 'staged'`).bind(
+WHERE authority_ref = ? AND idempotency_key = ? AND request_hash = ? AND status = 'staged'`).bind(
     input.sync_batch_id,
     input.sync_generation,
     JSON.stringify(input.response),
     now,
     now,
+    authorityRef,
     input.idempotency_key,
     input.request_hash
   ).run();
@@ -477,20 +487,23 @@ WHERE idempotency_key = ? AND request_hash = ? AND status = 'staged'`).bind(
 export async function failRemoteGraphWrite(
   storage: RemoteGraphStorageBindings,
   input: {
+    authority_id: string;
     idempotency_key: string;
     request_hash: string;
     reason: string;
   }
 ): Promise<void> {
   const now = new Date().toISOString();
+  const authorityRef = await opaqueRef(input.authority_id);
   await storage.controlDb.prepare(`
 UPDATE remote_graph_writes
 SET status = 'failed',
     failure_reason = ?,
     last_seen_at = ?
-WHERE idempotency_key = ? AND request_hash = ? AND status = 'staged'`).bind(
+WHERE authority_ref = ? AND idempotency_key = ? AND request_hash = ? AND status = 'staged'`).bind(
     input.reason,
     now,
+    authorityRef,
     input.idempotency_key,
     input.request_hash
   ).run();
@@ -580,7 +593,11 @@ async function loadObject(storage: RemoteGraphStorageBindings, key: string): Pro
   return GraphObjectEnvelopeSchema.parse(JSON.parse(await body.text()));
 }
 
-function ensureRemoteGraphObject(input: unknown): GraphObjectEnvelope {
+async function contentHashForRemoteObject(object: Pick<GraphObjectEnvelope, "payload">): Promise<`sha256:${string}`> {
+  return sha256Hash(JSON.stringify(object.payload));
+}
+
+async function ensureRemoteGraphObject(input: unknown): Promise<GraphObjectEnvelope> {
   const parsed = GraphObjectEnvelopeSchema.safeParse(input);
   if (!parsed.success) {
     throw new Error("invalid-graph-object-envelope");
@@ -589,7 +606,10 @@ function ensureRemoteGraphObject(input: unknown): GraphObjectEnvelope {
   if (!objectAllowedForRemoteGraph(object)) {
     throw new Error("remote graph objects must be remote-readable plaintext");
   }
-  return object;
+  return GraphObjectEnvelopeSchema.parse({
+    ...object,
+    content_hash: await contentHashForRemoteObject(object)
+  });
 }
 
 export async function latestRemoteGraphObject(
@@ -653,7 +673,7 @@ export async function prepareCreateRemoteGraphObject(
   input: unknown
 ): Promise<RemoteGraphMutationResult> {
   await ensureRemoteGraphTables(storage.controlDb);
-  const object = ensureRemoteGraphObject(input);
+  const object = await ensureRemoteGraphObject(input);
   const existing = await latestRemoteGraphObject(storage, object.authority_id, object.object_id);
   if (existing && !existing.visible_metadata.tombstone) {
     throw new Error("object-already-exists");
@@ -694,7 +714,7 @@ export async function prepareUpdateRemoteGraphObject(
     throw new Error("invalid-patch");
   }
   const visiblePatch = isRecord(patch.visible_metadata) ? patch.visible_metadata : {};
-  const merged = ensureRemoteGraphObject({
+  const merged = await ensureRemoteGraphObject({
     ...existing,
     ...patch,
     schema_version: 1,
@@ -708,7 +728,7 @@ export async function prepareUpdateRemoteGraphObject(
       ...visiblePatch
     },
     payload: patch.payload ?? existing.payload,
-    content_hash: typeof patch.content_hash === "string" ? patch.content_hash : await sha256Hash(JSON.stringify(patch.payload ?? existing.payload))
+    content_hash: existing.content_hash
   });
   return {
     mutation: merged.visible_metadata.tombstone ? "deleted" : "updated",

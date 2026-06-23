@@ -4,7 +4,7 @@ import { runCloudflareLiveOpsReport } from "./cloudflare-live-ops-report";
 
 const baseEnv = {
   [liveUsageGateEnv.endpoint]: "https://living-atlas-live.example",
-  [liveUsageGateEnv.healthToken]: "fixture-health-token-value"
+  [liveUsageGateEnv.usageToken]: "fixture-usage-token-value"
 };
 
 function json(status: number, body: unknown): Response {
@@ -24,7 +24,7 @@ describe("Cloudflare live ops report", () => {
       fetchImpl: async (input, init) => {
         const url = input instanceof URL ? input : new URL(String(input));
         urls.push(url.toString());
-        expect(new Headers(init?.headers).get("x-living-atlas-health-token")).toBe("fixture-health-token-value");
+        expect(new Headers(init?.headers).get("x-living-atlas-usage-token")).toBe("fixture-usage-token-value");
 
         if (url.pathname === "/api/usage/gate") {
           return json(200, {
@@ -81,7 +81,7 @@ describe("Cloudflare live ops report", () => {
     });
     expect(urls.some((url) => url.includes("/api/usage/gate"))).toBe(true);
     expect(urls.some((url) => url.includes("/api/usage/reconcile"))).toBe(true);
-    expect(urls.join("\n")).not.toContain("fixture-health-token-value");
+    expect(urls.join("\n")).not.toContain("fixture-usage-token-value");
   });
 
   it("needs review when reconciliation fails", async () => {

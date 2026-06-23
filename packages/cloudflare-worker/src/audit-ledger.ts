@@ -8,6 +8,7 @@ import {
   type PraxisActivityAuditStreamRequest,
   type PraxisActivityAuditStreamResponse
 } from "@living-atlas/contracts";
+import { opaquePersistenceHash, opaquePersistenceRef } from "./opaque-ref";
 
 type BindableStatement = {
   bind(...values: unknown[]): BindableStatement;
@@ -66,6 +67,12 @@ type LatestAuditHashRow = {
   event_hash: string;
 };
 
+type MutationResult = {
+  meta?: {
+    changes?: number;
+  };
+};
+
 const MaxAuditReadLimit = 250;
 const DefaultActivityAuditStreamLimit = 50;
 
@@ -111,6 +118,7 @@ END`;
 
 const AuditEventsIndexSql = [
   "CREATE INDEX IF NOT EXISTS idx_audit_events_authority_recorded ON audit_events (authority_ref, recorded_at)",
+  "CREATE UNIQUE INDEX IF NOT EXISTS idx_audit_events_authority_previous_hash ON audit_events (authority_ref, previous_event_hash)",
   "CREATE INDEX IF NOT EXISTS idx_audit_events_operation ON audit_events (operation_id)",
   "CREATE INDEX IF NOT EXISTS idx_audit_events_trace ON audit_events (trace_id)",
   "CREATE INDEX IF NOT EXISTS idx_audit_events_type_recorded ON audit_events (event_type, recorded_at)",
@@ -128,18 +136,10 @@ export const AuditLedgerD1SchemaStatements = [
 ];
 
 let auditIdCounter = 0;
+const GenesisAuditHash = "sha256:0000000000000000000000000000000000000000000000000000000000000000";
 
-function toHex(bytes: Uint8Array): string {
-  return [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
-}
-
-async function sha256Hex(value: string): Promise<string> {
-  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
-  return toHex(new Uint8Array(digest));
-}
-
-async function opaqueRef(value: string): Promise<string> {
-  return `sha256:${await sha256Hex(value)}`;
+async function scopedOpaqueRef(scope: string, value: string): Promise<string> {
+  return opaquePersistenceRef(`audit:${scope}`, value);
 }
 
 async function ensureAuditLedgerTables(controlDb: AuditLedgerMetadataStore): Promise<void> {
@@ -290,25 +290,25 @@ function toPraxisActivityAuditEvent(row: StoredAuditLedgerEvent): PraxisActivity
 
 async function toStoredAuditLedgerEvent(
   event: DurableAuditEvent,
-  previousEventHash: string | null
+  previousEventHash: string
 ): Promise<StoredAuditLedgerEvent> {
   const storedWithoutHash = {
     audit_id: event.audit_id,
-    authority_ref: await opaqueRef(event.authority_id),
+    authority_ref: await scopedOpaqueRef("authority", event.authority_id),
     operation_id: event.operation_id,
     trace_id: event.trace_id,
     recorded_at: event.recorded_at,
-    actor_ref: await opaqueRef(event.actor_id),
+    actor_ref: await scopedOpaqueRef("actor", event.actor_id),
     mcp_profile: event.mcp_profile,
     operation: event.operation,
     event_type: event.event_type,
     outcome: event.outcome ?? null,
     reason_code: event.reason_code ?? null,
-    object_ref: event.object_id ? await opaqueRef(event.object_id) : null,
-    release_ref: event.release_id ? await opaqueRef(event.release_id) : event.event_type.startsWith("release.") && event.object_id ? await opaqueRef(event.object_id) : null,
-    key_ref: event.key_id ? await opaqueRef(event.key_id) : null,
-    capability_ref: event.capability_id ? await opaqueRef(event.capability_id) : null,
-    sync_batch_ref: event.sync_batch_id ? await opaqueRef(event.sync_batch_id) : null,
+    object_ref: event.object_id ? await scopedOpaqueRef("object", event.object_id) : null,
+    release_ref: event.release_id ? await scopedOpaqueRef("release", event.release_id) : event.event_type.startsWith("release.") && event.object_id ? await scopedOpaqueRef("release", event.object_id) : null,
+    key_ref: event.key_id ? await scopedOpaqueRef("key", event.key_id) : null,
+    capability_ref: event.capability_id ? await scopedOpaqueRef("capability", event.capability_id) : null,
+    sync_batch_ref: event.sync_batch_id ? await scopedOpaqueRef("sync-batch", event.sync_batch_id) : null,
     access_class: event.access_class ?? null,
     redaction: event.redaction,
     summary: event.summary,
@@ -318,7 +318,7 @@ async function toStoredAuditLedgerEvent(
 
   return {
     ...storedWithoutHash,
-    event_hash: `sha256:${await sha256Hex(canonicalAuditHashPayload(storedWithoutHash))}`
+    event_hash: await opaquePersistenceHash("audit:event-chain", canonicalAuditHashPayload(storedWithoutHash))
   };
 }
 
@@ -338,6 +338,11 @@ export function createAuditId(now = Date.now()): string {
   return `la_audit_${now.toString(36)}${auditIdCounter.toString(36).padStart(4, "0")}`;
 }
 
+function changedRows(result: unknown): number | undefined {
+  const meta = (result as MutationResult | undefined)?.meta;
+  return typeof meta?.changes === "number" ? meta.changes : undefined;
+}
+
 export async function appendAuditEvent(
   controlDb: AuditLedgerMetadataStore,
   input: DurableAuditEvent
@@ -347,11 +352,11 @@ export async function appendAuditEvent(
 
   await ensureAuditLedgerTables(controlDb);
 
-  const authorityRef = await opaqueRef(event.authority_id);
-  const previousEventHash = await latestAuditHash(controlDb, authorityRef);
+  const authorityRef = await scopedOpaqueRef("authority", event.authority_id);
+  const previousEventHash = await latestAuditHash(controlDb, authorityRef) ?? GenesisAuditHash;
   const stored = await toStoredAuditLedgerEvent(event, previousEventHash);
 
-  await controlDb.prepare(`
+  const insertResult = await controlDb.prepare(`
 INSERT INTO audit_events (
   audit_id,
   authority_ref,
@@ -375,7 +380,24 @@ INSERT INTO audit_events (
   checkpoint_bucket,
   previous_event_hash,
   event_hash
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(
+)
+SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+WHERE (
+  (? IS NULL OR ? = ?)
+  AND NOT EXISTS (
+    SELECT 1 FROM audit_events WHERE authority_ref = ?
+  )
+) OR (
+  ? IS NOT NULL
+  AND ? <> ?
+  AND ? = (
+    SELECT event_hash
+    FROM audit_events
+    WHERE authority_ref = ?
+    ORDER BY recorded_at DESC, audit_id DESC
+    LIMIT 1
+  )
+)`).bind(
     stored.audit_id,
     stored.authority_ref,
     stored.operation_id,
@@ -397,8 +419,21 @@ INSERT INTO audit_events (
     stored.summary,
     stored.checkpoint_bucket,
     stored.previous_event_hash,
-    stored.event_hash
+    stored.event_hash,
+    stored.previous_event_hash,
+    stored.previous_event_hash,
+    GenesisAuditHash,
+    stored.authority_ref,
+    stored.previous_event_hash,
+    stored.previous_event_hash,
+    GenesisAuditHash,
+    stored.previous_event_hash,
+    stored.authority_ref
   ).run();
+
+  if (changedRows(insertResult) === 0) {
+    throw new Error("audit-ledger-chain-race");
+  }
 
   return {
     audit_id: stored.audit_id,
@@ -419,7 +454,7 @@ export async function readAuditLedgerEvents(
   const values: unknown[] = [];
   if (options.authority_id) {
     filters.push("authority_ref = ?");
-    values.push(await opaqueRef(options.authority_id));
+    values.push(await scopedOpaqueRef("authority", options.authority_id));
   }
 
   if (options.operation_id) {

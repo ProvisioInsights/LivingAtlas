@@ -139,7 +139,7 @@ export async function main(): Promise<void> {
   const syncDeviceId = envValue("LIVING_ATLAS_LIVE_SYNC_DEVICE_ID") ?? `la_device_livelocal${digest(syncClientId, 18)}`;
   const syncTokenId = envValue("LIVING_ATLAS_LIVE_SYNC_TOKEN_ID");
   const id = runId();
-  const authorityId = `la_authority_livelocal${digest(id, 18)}`;
+  const authorityId = envValue("LIVING_ATLAS_LIVE_AUTHORITY_ID") ?? `la_authority_livelocal${digest(id, 18)}`;
   const now = new Date().toISOString();
   const tempDir = await mkdtemp(join(tmpdir(), "living-atlas-live-local-sync-"));
   const controlStorePath = join(tempDir, "control-store.json");

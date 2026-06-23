@@ -1,11 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { fixtureAuthorityId, sensitiveBaitRegistry } from "@living-atlas/fixtures";
 import { scanForBaitStrings } from "@living-atlas/leakage";
-import {
-  createMarkdownImportPlan,
-  createMarkdownWatcherPlan,
-  planWatcherFileEvent,
-  summarizeMarkdownFile
+	import {
+	  createMarkdownImportPlan,
+	  createMarkdownObjectId,
+	  createMarkdownSourceRef,
+	  createMarkdownWatcherPlan,
+	  planWatcherFileEvent,
+	  summarizeMarkdownFile
 } from "./index";
 
 const syntheticSensitiveMarkdown = `---
@@ -63,7 +65,7 @@ describe("markdown importer planning", () => {
     expect(scanForBaitStrings([{ name: "import-plan", content: JSON.stringify(plan) }], sensitiveBaitRegistry)).toEqual([]);
   });
 
-  it("creates inert watcher plans and redacted per-event actions", () => {
+	  it("creates inert watcher plans and redacted per-event actions", () => {
     const watcher = createMarkdownWatcherPlan(
       [{ root_path: "/tmp/living-atlas-fixtures/Avery North vault", source_kind: "obsidian" }],
       { created_at: "2026-06-22T12:00:00.000Z", debounce_ms: 250 }
@@ -96,4 +98,48 @@ describe("markdown importer planning", () => {
     expect(deleted.action).toBe("plan-tombstone");
     expect(deleted.requires_content_read).toBe(false);
   });
-});
+
+  it("uses a caller secret to make markdown path refs stable without deterministic unsalted path hashes", () => {
+    const sourcePath = "/tmp/living-atlas-fixtures/Avery North vault/Project Glass Lantern.md";
+    const fixedSecret = "fixture-path-redaction-secret-0001";
+
+	    expect(createMarkdownSourceRef(sourcePath, { path_redaction_secret: fixedSecret })).toBe(
+	      createMarkdownSourceRef(sourcePath, { path_redaction_secret: fixedSecret })
+	    );
+	    expect(createMarkdownObjectId(fixtureAuthorityId, sourcePath, { path_redaction_secret: fixedSecret })).toBe(
+	      createMarkdownObjectId(fixtureAuthorityId, sourcePath, { path_redaction_secret: fixedSecret })
+	    );
+	    expect(createMarkdownSourceRef(sourcePath, { path_redaction_secret: fixedSecret })).not.toBe(
+	      createMarkdownSourceRef(sourcePath, { path_redaction_secret: "fixture-path-redaction-secret-0002" })
+	    );
+    expect(createMarkdownSourceRef(sourcePath)).not.toBe(createMarkdownSourceRef(sourcePath));
+
+    const firstPlan = createMarkdownImportPlan([
+	      {
+	        source_path: sourcePath,
+	        markdown: syntheticSensitiveMarkdown,
+	        source_kind: "obsidian"
+	      }
+	    ], {
+	      authority_id: fixtureAuthorityId,
+	      created_at: "2026-06-22T12:00:00.000Z",
+	      path_redaction_secret: fixedSecret
+    });
+    const secondPlan = createMarkdownImportPlan([
+	      {
+	        source_path: sourcePath,
+	        markdown: syntheticSensitiveMarkdown,
+	        source_kind: "obsidian"
+	      }
+	    ], {
+	      authority_id: fixtureAuthorityId,
+	      created_at: "2026-06-22T12:00:00.000Z",
+	      path_redaction_secret: fixedSecret
+    });
+
+    expect(firstPlan.plan_id).toBe(secondPlan.plan_id);
+	    expect(firstPlan.files[0]!.summary.source_path_ref).toBe(secondPlan.files[0]!.summary.source_path_ref);
+	    expect(firstPlan.files[0]!.planned_object.object_id).toBe(secondPlan.files[0]!.planned_object.object_id);
+	    expect(JSON.stringify(firstPlan)).not.toContain(sourcePath);
+	  });
+	});

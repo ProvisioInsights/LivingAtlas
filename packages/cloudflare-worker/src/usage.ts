@@ -105,7 +105,7 @@ const UsageD1SchemaStatements = [
   )`,
   `CREATE TABLE IF NOT EXISTS sync_batches (
     batch_id TEXT PRIMARY KEY,
-    idempotency_key TEXT NOT NULL UNIQUE,
+    idempotency_key TEXT NOT NULL,
     batch_hash TEXT NOT NULL,
     authority_ref TEXT NOT NULL,
     device_ref TEXT NOT NULL,

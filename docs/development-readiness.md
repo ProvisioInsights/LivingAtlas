@@ -383,10 +383,10 @@ GET /api/usage/gate?window_hours=24&max_budget_ratio=0.8&min_worker_requests_rem
 GET /api/usage/reconcile?window_hours=24&max_r2_objects=10000
 ```
 
-Use the health token header:
+Use the usage token header:
 
 ```text
-x-living-atlas-health-token: <health token>
+x-living-atlas-usage-token: <usage token>
 ```
 
 The response shape is provider-neutral (`living-atlas-usage-status:v1`) so
@@ -411,6 +411,7 @@ Tunable environment variables:
 ```text
 LA_USAGE_PROVIDER=cloudflare
 LA_USAGE_PLAN=free
+LA_USAGE_TOKEN_HASH=sha256:<hex digest of usage token>
 LA_USAGE_WINDOW_HOURS=24
 LA_USAGE_BUDGETS_JSON={"services":{"workers":{"requests":100000}}}
 ```
@@ -434,7 +435,9 @@ same safe-to-test question regardless of host.
   Worker entrypoint
 - the public template has the bootstrap Durable Object, R2, D1, and KV bindings
 - D1/KV ids are placeholders, not personal resource ids
+- non-secret authority and usage metadata are present
 - private deploy values and token hashes are absent from the public template
+- D1 migrations use authority-scoped idempotency and audit chain-head guards
 - the synthetic Cloudflare manifest covers the complete fixture graph
 - Cloudflare-visible paths remain opaque
 - sensitive/local-private fixtures are ciphertext-only and not remote-indexable
@@ -500,7 +503,9 @@ A real personal deployment must supply these outside the public repo:
 - Worker secret/protected config containing the hash or verification material
   for the one-time bootstrap claim token
 - bootstrap token expiry
+- authority id for the deployment boundary
 - sync token hash before the local sync endpoint is enabled
+- usage token hash before `/api/usage/*` is enabled
 - private Terraform/OpenTofu state and variable files
 - any authority-specific reset, recovery, or overlay material
 

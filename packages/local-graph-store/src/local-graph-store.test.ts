@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdtemp, readFile, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -20,6 +21,10 @@ const now = "2026-06-22T12:00:00.000Z";
 
 function fixedHash(seed: string): `sha256:${string}` {
   return `sha256:${seed.repeat(64).slice(0, 64)}`;
+}
+
+function sha256(value: string): `sha256:${string}` {
+  return `sha256:${createHash("sha256").update(value).digest("hex")}`;
 }
 
 async function tempStoreDir(): Promise<string> {
@@ -108,11 +113,16 @@ describe("file local graph store", () => {
       persistence: "snapshot+journal"
     });
 
-    const snapshotContent = await readFile(join(directory, "snapshot.json"), "utf8");
-    expect(snapshotContent).not.toContain("plaintext-json");
-    for (const bait of baitRegistry) {
-      expect(snapshotContent).not.toContain(bait.value);
-    }
+	    const snapshotContent = await readFile(join(directory, "snapshot.json"), "utf8");
+	    expect(snapshotContent).not.toContain("plaintext-json");
+	    const redactedFixture = syntheticGraphObjects.find((object) => object.payload.kind === "plaintext-json");
+	    if (!redactedFixture || redactedFixture.payload.kind !== "plaintext-json") {
+	      throw new Error("expected a plaintext fixture to prove redacted hash handling");
+	    }
+	    expect(snapshotContent).not.toContain(sha256(JSON.stringify(redactedFixture.payload.data)));
+	    for (const bait of baitRegistry) {
+	      expect(snapshotContent).not.toContain(bait.value);
+	    }
 
     const privateObject = store.readObject("la_object_privatepage0001");
     expect(privateObject).toMatchObject({

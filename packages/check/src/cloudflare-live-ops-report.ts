@@ -56,7 +56,7 @@ export type CloudflareLiveOpsReportResult = {
 };
 
 function isGateConfig(value: ReturnType<typeof readCloudflareLiveUsageGateConfig>): value is CloudflareLiveUsageGateConfig {
-  return "healthToken" in value;
+  return "usageToken" in value;
 }
 
 function reconciliationUrl(config: CloudflareLiveUsageGateConfig): URL {
@@ -72,7 +72,7 @@ async function fetchReconciliation(config: CloudflareLiveUsageGateConfig, fetchI
   try {
     const response = await fetchImpl(reconciliationUrl(config), {
       headers: {
-        "x-living-atlas-health-token": config.healthToken
+        "x-living-atlas-usage-token": config.usageToken
       },
       signal: controller.signal
     });

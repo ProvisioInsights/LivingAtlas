@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { chmod, mkdir, open, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { z } from "zod";
@@ -283,15 +283,15 @@ function redactedPlaintextPayload(object: GraphObjectEnvelope): GraphObjectEnvel
     return object;
   }
 
-  const plaintextDigest = sha256(JSON.stringify(object.payload.data));
-  const nonce = digest(`${object.authority_id}:${object.object_id}:${object.version}:local-redaction`, 32);
+  const nonce = randomBytes(16).toString("hex");
+  const redactionMarker = digest(`${object.authority_id}:${object.object_id}:${object.version}:${nonce}:local-redaction`, 32);
 
   return GraphObjectEnvelopeSchema.parse({
     ...object,
     encryption_class: "client-encrypted",
     payload: {
       kind: "ciphertext-inline",
-      ciphertext: `local-redacted:${plaintextDigest}`,
+      ciphertext: `local-redacted:${redactionMarker}`,
       nonce,
       algorithm: "local-graph-store-redacted-v1"
     }
