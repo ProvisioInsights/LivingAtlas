@@ -38,7 +38,12 @@ const liveAckEnv = "LIVING_ATLAS_LOGSEQ_SEMANTIC_SYNC_ACK";
 const liveAckValue = "sync-semantic-ciphertext-to-cloudflare";
 const backfillAckEnv = "LIVING_ATLAS_LOGSEQ_SEMANTIC_BACKFILL_ACK";
 const backfillAckValue = "record-known-synced-batch";
+const syncScopeEnv = "LIVING_ATLAS_LOGSEQ_SEMANTIC_SYNC_SCOPE";
+const allObjectsSyncScope = "all";
+const sourceCapsulesOnlySyncScope = "source-capsules-only";
 const textEncoder = new TextEncoder();
+
+type SemanticSyncScope = typeof allObjectsSyncScope | typeof sourceCapsulesOnlySyncScope;
 
 type CrudCase = {
   name: string;
@@ -119,6 +124,44 @@ function sha256(value: string | Uint8Array): `sha256:${string}` {
 
 function digest(value: string, length = 24): string {
   return createHash("sha256").update(value).digest("hex").slice(0, length);
+}
+
+function parseSemanticSyncScope(value: string | undefined): SemanticSyncScope {
+  if (!value || value === allObjectsSyncScope) {
+    return allObjectsSyncScope;
+  }
+  if (value === sourceCapsulesOnlySyncScope) {
+    return sourceCapsulesOnlySyncScope;
+  }
+  throw new Error(`${syncScopeEnv} must be ${allObjectsSyncScope} or ${sourceCapsulesOnlySyncScope}`);
+}
+
+function isSourceCapsuleObject(object: GraphObjectEnvelope): boolean {
+  return object.visible_metadata.schema_namespace === "import/logseq-semantic/source-capsule";
+}
+
+export function selectSemanticObjectsForSyncScope(
+  objects: GraphObjectEnvelope[],
+  scope: SemanticSyncScope
+): {
+  objectsToSync: GraphObjectEnvelope[];
+  knownPreviouslySyncedObjects: number;
+} {
+  if (scope === allObjectsSyncScope) {
+    return {
+      objectsToSync: objects,
+      knownPreviouslySyncedObjects: 0
+    };
+  }
+
+  const objectsToSync = objects.filter(isSourceCapsuleObject);
+  if (objectsToSync.length === 0) {
+    throw new Error(`${syncScopeEnv}=${sourceCapsulesOnlySyncScope} found no source capsule objects`);
+  }
+  return {
+    objectsToSync,
+    knownPreviouslySyncedObjects: objects.length - objectsToSync.length
+  };
 }
 
 function parseInteger(value: string | undefined, fallback: number, min: number, max: number): number {
@@ -736,11 +779,17 @@ async function main(): Promise<void> {
     return;
   }
 
+  const syncScope = parseSemanticSyncScope(envValue(syncScopeEnv));
+  const scoped = selectSemanticObjectsForSyncScope(result.objects, syncScope);
   const synced = await syncSemanticObjects({
-    objects: result.objects,
+    objects: scoped.objectsToSync,
     needles,
     authorityId
   });
+  const totalSyncedObjects = scoped.knownPreviouslySyncedObjects + synced.synced_objects;
+  if (totalSyncedObjects !== result.objects.length) {
+    throw new Error(`semantic sync scope accounted for ${totalSyncedObjects} objects, expected ${result.objects.length}`);
+  }
   await appendBatchLedgerRecord(batchLedgerPath, {
     record_schema: "living-atlas-logseq-semantic-batch:v1",
     recorded_at: new Date().toISOString(),
@@ -779,14 +828,14 @@ async function main(): Promise<void> {
         generation: synced.generation,
         generations: synced.generations,
         batch_count: synced.batch_count,
-        synced_objects: synced.synced_objects
+        synced_objects: totalSyncedObjects
       },
     files: semanticFileRefs(result.ledger, "synced"),
     decisions: result.ledger.decisions,
     plaintext_policy: "hash-counts-refs-only"
   }, needles);
   console.log("Living Atlas Logseq semantic Cloudflare ciphertext sync passed");
-  console.log(`authority=${authorityId}; generation=${synced.generation}; synced_objects=${synced.synced_objects}`);
+  console.log(`authority=${authorityId}; generation=${synced.generation}; synced_objects=${totalSyncedObjects}; sync_scope=${syncScope}; pushed_objects=${synced.synced_objects}; previously_synced_objects=${scoped.knownPreviouslySyncedObjects}`);
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

@@ -296,6 +296,13 @@ writes per-file parity refs into the durable ledger. `logseq:semantic-ledger-rep
 can run as a hard completion gate with
 `LIVING_ATLAS_LOGSEQ_SEMANTIC_REQUIRE_COMPLETE=1`.
 
+For legacy semantic imports that already synced the graph objects before
+source-capsule refs existed, set
+`LIVING_ATLAS_LOGSEQ_SEMANTIC_SYNC_SCOPE=source-capsules-only` with the live
+sync acknowledgement. That pushes only the encrypted source capsules and marks
+the batch complete only when the old synced object count plus the new capsules
+matches the recomputed plan.
+
 Launch the fixture local MCP server with generated synthetic control state:
 
 ```bash

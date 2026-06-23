@@ -292,7 +292,7 @@ Command map:
 | `npm run cloudflare:live-concurrency-smoke` | No real graph data | Yes | Optional live deployed-Worker sync race smoke; requires explicit mutation acknowledgement. |
 | `npm run logseq:semantic-manifest` | Yes, when pointed at a private local graph | No | Builds a plaintext-free corpus manifest with one terminal accounting entry per discovered source file. |
 | `npm run logseq:semantic-batch-plan` | Yes, when pointed at a private local graph | No | Plans the next plaintext-free semantic batch from ledger coverage and object counts, including chunked-sync flags for large single files. |
-| `npm run logseq:semantic-parity` | Yes, when pointed at a private local graph | Optional | Converts a bounded markdown window into encrypted semantic objects, runs local CRUD/leakage checks, and can either sync ciphertext in one or more sync batches or backfill a known synced ledger window with explicit acknowledgement. |
+| `npm run logseq:semantic-parity` | Yes, when pointed at a private local graph | Optional | Converts a bounded markdown window into encrypted semantic objects, runs local CRUD/leakage checks, and can either sync ciphertext in one or more sync batches, sync only encrypted source capsules for legacy-ledger reconciliation, or backfill a known synced ledger window with explicit acknowledgement. |
 | `npm run logseq:semantic-ledger-report` | Ledger only | No | Summarizes the plaintext-free semantic migration ledger: coverage, gaps, synced batches, totals, and decisions. |
 
 The deployed Cloudflare usage gate should run before any live mutating smoke or
@@ -302,6 +302,20 @@ stress:
 npm run cloudflare:live-usage-gate
 npm run cloudflare:live-ops-report
 ```
+
+For a legacy semantic import that already synced page, block, and reference
+objects before source-capsule file refs existed, reconcile only the missing
+encrypted source capsules:
+
+```bash
+LIVING_ATLAS_LOGSEQ_SEMANTIC_SYNC_ACK=sync-semantic-ciphertext-to-cloudflare \
+LIVING_ATLAS_LOGSEQ_SEMANTIC_SYNC_SCOPE=source-capsules-only \
+npm run logseq:semantic-parity
+```
+
+The parity command records the full recomputed object count in the ledger only
+when the previously synced object count plus the newly pushed source capsules
+accounts for the whole batch.
 
 It calls `/api/usage/gate`, fails closed without an endpoint/token, and returns
 `safe-to-test` only when configured budgets remain under the selected threshold,
