@@ -912,7 +912,7 @@ export async function reconcileRemoteGraph(
   await ensureRemoteGraphTables(storage.controlDb);
   const authorityRef = await opaqueRef(authorityId);
   const sampleLimit = boundedLimit(options.limit);
-  const limit = sampleLimit * 5;
+  const limit = sampleLimit;
   const indexRows = (await storage.controlDb.prepare(`
 SELECT object_ref, version, envelope_r2_key
 FROM remote_graph_objects
