@@ -288,6 +288,7 @@ npm run logseq:semantic-local
 npm run logseq:semantic-parity
 npm run logseq:semantic-ledger-report
 npm run logseq:semantic-review-report
+npm run logseq:semantic-review-packet
 npm run logseq:semantic-corpus-report
 ```
 
@@ -336,6 +337,11 @@ markdown entries.
 `logseq:semantic-review-report` reads a semantic ledger and emits a
 plaintext-free review queue summary: review reason counts, quarantine totals,
 batch windows, and opaque source refs for follow-up.
+`logseq:semantic-review-packet` is an opt-in local-private helper that
+reconstructs unresolved review targets from the source graph and writes
+actionable plaintext values to a caller-supplied path outside the repository.
+It requires an explicit acknowledgement and a stable path redaction secret; its
+stdout summary remains counts-only.
 `logseq:semantic-corpus-report` combines multiple manifest/ledger pairs, such
 as separate `markdown-only` and `logseq-extensionless-only` runs, into one
 plaintext-free local or synced completion gate. Configure it with comma-separated

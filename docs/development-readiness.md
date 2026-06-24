@@ -300,6 +300,7 @@ Command map:
 | `npm run logseq:semantic-parity` | Yes, when pointed at a private local graph | Optional | Converts a bounded markdown window into encrypted source/page/block/reference-index objects, promotes explicit typed pages into encrypted endpoint records, promotes high-confidence explicit wikilink property edges, exact non-wikilink targets that uniquely match typed endpoint titles or explicit aliases, and schema-safe exact suffix tags into encrypted temporal edge records, records ambiguous relationship suffixes and unresolved non-wikilink relationship targets as encrypted quarantine candidates, runs local CRUD/leakage checks, and can either sync ciphertext in one or more sync batches, sync only encrypted source capsules for legacy-ledger reconciliation, or backfill a known synced ledger window with explicit acknowledgement. |
 | `npm run logseq:semantic-ledger-report` | Ledger only | No | Summarizes the plaintext-free semantic migration ledger: coverage, gaps, synced batches, totals, and decisions. |
 | `npm run logseq:semantic-review-report` | Ledger only | No | Summarizes plaintext-free review work from quarantine decisions: reason counts, affected batch windows, and opaque source refs. |
+| `npm run logseq:semantic-review-packet` | Yes, when pointed at a private local graph | No | Requires explicit acknowledgement and writes a local-private plaintext review packet outside the repo. Stdout is counts-only; the packet groups unresolved values by reason, target hash, property keys, suffixes, and opaque source refs. |
 | `npm run logseq:semantic-corpus-report` | Ledger/manifest only | No | Combines multiple plaintext-free manifests and ledgers into one local or synced completion gate across source modes. |
 
 The deployed Cloudflare usage gate should run before any live mutating smoke or
@@ -346,6 +347,12 @@ cleanup can run locally without Cloudflare-sized write windows. Cloudflare sync 
 `LIVING_ATLAS_LOGSEQ_SEMANTIC_SYNC_ACK=sync-semantic-ciphertext-to-cloudflare`.
 Backfill requires `LIVING_ATLAS_LOGSEQ_SEMANTIC_SYNC_MODE=backfill` and
 `LIVING_ATLAS_LOGSEQ_SEMANTIC_BACKFILL_ACK=record-known-synced-batch`.
+
+Use `logseq:semantic-review-packet` only for private local review work. It
+requires `LIVING_ATLAS_LOGSEQ_SEMANTIC_REVIEW_PACKET_ACK` and
+`LIVING_ATLAS_LOGSEQ_SEMANTIC_REVIEW_PACKET_PATH`, refuses to write inside the
+repository checkout, and may include plaintext unresolved target values in the
+packet file. Do not commit, upload, or sync that packet to a public repo.
 
 `LIVING_ATLAS_LOGSEQ_SEMANTIC_SOURCE_MODE` controls discovery:
 
