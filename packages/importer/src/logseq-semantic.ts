@@ -267,6 +267,10 @@ function semanticEdgeId(authorityId: string, sourcePathRef: string, index: numbe
   return `la_edge_${shortHash(`${authorityId}:logseq-edge:v1:${sourcePathRef}:${index}:${sourceText}`, 24)}`;
 }
 
+function semanticPropertyEdgeId(authorityId: string, sourcePathRef: string, predicate: string, propertyKey: string, targetTitle: string): string {
+  return `la_edge_${shortHash(`${authorityId}:logseq-property-edge:v1:${sourcePathRef}:${predicate}:${propertyKey}:${targetTitle.trim().toLowerCase()}`, 24)}`;
+}
+
 function sourceBlockRef(sourcePathRef: string, index: number, text: string): string {
   return `la_block_${shortHash(`${sourcePathRef}:${index}:${text}`, 24)}`;
 }
@@ -729,6 +733,99 @@ function parseTypedPageEndpoint(parsed: ParsedLogseqFile, options: {
   return parseEndpointWithSubtypeFallback(endpoint, subtype, minimalEndpoint);
 }
 
+function propertyEdgeTargetTitle(properties: LogseqProperty[], keys: string[]): { key: string; title: string } | undefined {
+  for (const key of keys) {
+    const title = parseWikilinkTitle(propertyValue(properties, key));
+    if (title) {
+      return { key, title };
+    }
+  }
+  return undefined;
+}
+
+function typedPropertyEdge(input: {
+  authorityId: string;
+  pathRedactionSecret: string;
+  sourcePathRef: string;
+  sourceContentHash: `sha256:${string}`;
+  sourceEndpoint: EndpointRecord;
+  targetTitle: string;
+  targetType: TemporalEdge["target_type"];
+  predicate: TemporalEdge["predicate"];
+  propertyKey: string;
+}): TemporalEdge | undefined {
+  const parsed = TemporalEdgeSchema.safeParse({
+    edge_id: semanticPropertyEdgeId(input.authorityId, input.sourcePathRef, input.predicate, input.propertyKey, input.targetTitle),
+    source_object_id: input.sourceEndpoint.object_id,
+    source_type: input.sourceEndpoint.type,
+    target_object_id: semanticTitleObjectId(input.authorityId, input.pathRedactionSecret, input.targetTitle),
+    target_type: input.targetType,
+    predicate: input.predicate,
+    valid_from: "unknown",
+    status: "active",
+    confidence: "high",
+    source: "logseq-page-property",
+    attrs: {
+      source_path_ref: input.sourcePathRef,
+      source_capsule_object_id: semanticObjectId(input.authorityId, "source-capsule", input.sourcePathRef, "source-capsule"),
+      source_content_hash: input.sourceContentHash,
+      source_value_hash: sha256(`${input.propertyKey}:${input.targetTitle}`),
+      property_key: input.propertyKey
+    }
+  });
+  return parsed.success ? parsed.data : undefined;
+}
+
+function propertyEdgesForEndpoint(parsed: ParsedLogseqFile, options: {
+  authorityId: string;
+  pathRedactionSecret: string;
+  endpoint: EndpointRecord;
+}): TemporalEdge[] {
+  const edges: TemporalEdge[] = [];
+  const common = {
+    authorityId: options.authorityId,
+    pathRedactionSecret: options.pathRedactionSecret,
+    sourcePathRef: parsed.source_path_ref,
+    sourceContentHash: parsed.content_hash,
+    sourceEndpoint: options.endpoint
+  };
+
+  if (options.endpoint.type === "person") {
+    const target = propertyEdgeTargetTitle(parsed.page_properties, ["primary-location", "location", "based-in"]);
+    const edge = target ? typedPropertyEdge({ ...common, targetTitle: target.title, targetType: "location", predicate: "based-in", propertyKey: target.key }) : undefined;
+    if (edge) edges.push(edge);
+    const employer = propertyEdgeTargetTitle(parsed.page_properties, ["employer-current", "employer-historical"]);
+    const employmentEdge = employer ? typedPropertyEdge({ ...common, targetTitle: employer.title, targetType: "organization", predicate: "employed-by", propertyKey: employer.key }) : undefined;
+    if (employmentEdge) edges.push(employmentEdge);
+    const spouse = propertyEdgeTargetTitle(parsed.page_properties, ["spouse"]);
+    const spouseEdge = spouse ? typedPropertyEdge({ ...common, targetTitle: spouse.title, targetType: "person", predicate: "spouse-of", propertyKey: spouse.key }) : undefined;
+    if (spouseEdge) edges.push(spouseEdge);
+    const estranged = propertyEdgeTargetTitle(parsed.page_properties, ["estranged-from"]);
+    const estrangedEdge = estranged ? typedPropertyEdge({ ...common, targetTitle: estranged.title, targetType: "person", predicate: "estranged-from", propertyKey: estranged.key }) : undefined;
+    if (estrangedEdge) edges.push(estrangedEdge);
+  } else if (options.endpoint.type === "organization") {
+    const target = propertyEdgeTargetTitle(parsed.page_properties, ["primary-location", "headquarters", "location", "based-in"]);
+    const edge = target ? typedPropertyEdge({ ...common, targetTitle: target.title, targetType: "location", predicate: "based-in", propertyKey: target.key }) : undefined;
+    if (edge) edges.push(edge);
+    const acquirer = propertyEdgeTargetTitle(parsed.page_properties, ["acquired-by"]);
+    const acquisitionEdge = acquirer ? typedPropertyEdge({ ...common, targetTitle: acquirer.title, targetType: "organization", predicate: "acquired-by", propertyKey: acquirer.key }) : undefined;
+    if (acquisitionEdge) edges.push(acquisitionEdge);
+    const customerTarget = propertyEdgeTargetTitle(parsed.page_properties, ["customer-of"]);
+    const customerEdge = customerTarget ? typedPropertyEdge({ ...common, targetTitle: customerTarget.title, targetType: "organization", predicate: "customer-of", propertyKey: customerTarget.key }) : undefined;
+    if (customerEdge) edges.push(customerEdge);
+  } else if (options.endpoint.type === "occurrence") {
+    const target = propertyEdgeTargetTitle(parsed.page_properties, ["location"]);
+    const edge = target ? typedPropertyEdge({ ...common, targetTitle: target.title, targetType: "location", predicate: "occurred-at", propertyKey: target.key }) : undefined;
+    if (edge) edges.push(edge);
+  } else if (options.endpoint.type === "topic") {
+    const target = propertyEdgeTargetTitle(parsed.page_properties, ["parent-topic", "part-of-topic"]);
+    const edge = target ? typedPropertyEdge({ ...common, targetTitle: target.title, targetType: "topic", predicate: "part-of-topic", propertyKey: target.key }) : undefined;
+    if (edge) edges.push(edge);
+  }
+
+  return edges;
+}
+
 function parseLogseqFile(input: MarkdownFileInput, pathRedactionSecret: string): ParsedLogseqFile {
   const parsed = MarkdownFileInputSchema.parse(input);
   const lines = parsed.markdown.split(/\r?\n/);
@@ -869,6 +966,27 @@ function draftObjectsForFile(parsed: ParsedLogseqFile, options: {
         endpoint: typedEndpoint.endpoint
       }
     }));
+    for (const edge of propertyEdgesForEndpoint(parsed, {
+      authorityId: options.authorityId,
+      pathRedactionSecret: options.pathRedactionSecret,
+      endpoint: typedEndpoint.endpoint
+    })) {
+      drafts.push(plannedObject({
+        authorityId: options.authorityId,
+        sourcePathRef: parsed.source_path_ref,
+        semanticKind: "typed-edge",
+        objectType: "edge",
+        localRef: `property-edge:${edge.predicate}:${edge.target_object_id}`,
+        accessClass: options.defaultAccessClass,
+        decision: "captured-encrypted",
+        reasonCode: "property-edge-promoted",
+        plaintextPayload: {
+          kind: "logseq-temporal-edge",
+          source_path_ref: parsed.source_path_ref,
+          edge
+        }
+      }));
+    }
   }
 
   for (const block of parsed.blocks) {
@@ -1047,7 +1165,7 @@ function ledgerFromDrafts(input: {
       hash_tags: parsed.references.filter((reference) => reference.kind === "hash-tag").length,
       block_refs: parsed.references.filter((reference) => reference.kind === "block-ref").length,
       reference_index_objects: referenceIndexes,
-      edge_candidates: parsed.edge_candidates.length,
+      edge_candidates: edgeDrafts.length,
       valid_edge_candidates: validEdgeCandidates,
       quarantined_edge_candidates: quarantinedEdgeCandidates,
       terminal_migrated: quarantineObjects > 0 ? 0 : 1,

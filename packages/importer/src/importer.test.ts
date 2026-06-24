@@ -554,6 +554,71 @@ describe("markdown importer planning", () => {
     expect(JSON.stringify(encrypted.objects)).not.toContain("Synthetic Cluster");
   });
 
+  it("promotes high-confidence property-derived typed edges", async () => {
+    const files = [
+      {
+        source_path: "/tmp/living-atlas-fixtures/Synthetic Person.md",
+        markdown: "type:: person\nlocation:: [[Synthetic City]]\nemployer-current:: [[Synthetic Employer]]\nspouse:: [[Synthetic Spouse]]\nestranged-from:: [[Synthetic Estranged Person]]\n\n- body text\n",
+        source_kind: "logseq" as const
+      },
+      {
+        source_path: "/tmp/living-atlas-fixtures/Synthetic Org.md",
+        markdown: "type:: org\nheadquarters:: [[Synthetic City]]\nacquired-by:: [[Synthetic Acquirer]]\ncustomer-of:: [[Synthetic Vendor]]\n\n- body text\n",
+        source_kind: "logseq" as const
+      },
+      {
+        source_path: "/tmp/living-atlas-fixtures/Synthetic Meeting.md",
+        markdown: "type:: meeting\nlocation:: [[Synthetic Room]]\n\n- body text\n",
+        source_kind: "logseq" as const
+      },
+      {
+        source_path: "/tmp/living-atlas-fixtures/Synthetic Topic.md",
+        markdown: "type:: topic\nparent-topic:: [[Synthetic Parent Topic]]\n\n- body text\n",
+        source_kind: "logseq" as const
+      }
+    ];
+    const plaintextPayloads: string[] = [];
+
+    const encrypted = await createLogseqSemanticGraphObjects(files, {
+      authority_id: fixtureAuthorityId,
+      created_at: "2026-06-22T12:00:00.000Z",
+      path_redaction_secret: "fixture-path-redaction-secret-0001",
+      encrypt: async ({ plaintext, aad }) => {
+        plaintextPayloads.push(plaintext);
+        return {
+          ciphertext: Buffer.from(`sealed:${aad}:${plaintext.length}`).toString("base64"),
+          nonce: "fixture-semantic-nonce",
+          hash: sha256(`sealed:${aad}:${plaintext.length}`),
+          algorithm: "fixture-aes-gcm"
+        };
+      }
+    });
+    const edgePayloads = plaintextPayloads
+      .map((payload) => JSON.parse(payload) as { kind?: string; edge?: { predicate?: string; source_type?: string; target_type?: string; attrs?: Record<string, unknown> } })
+      .filter((payload) => payload.kind === "logseq-temporal-edge");
+
+    expect(encrypted.ledger.decisions["typed-endpoint-promoted"]).toBe(4);
+    expect(encrypted.ledger.decisions["property-edge-promoted"]).toBe(9);
+    expect(encrypted.ledger.totals.edge_candidates).toBe(9);
+    expect(encrypted.ledger.totals.valid_edge_candidates).toBe(9);
+    expect(encrypted.ledger.totals.quarantine_objects).toBe(0);
+    expect(edgePayloads.map((payload) => payload.edge)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ predicate: "based-in", source_type: "person", target_type: "location" }),
+      expect.objectContaining({ predicate: "based-in", source_type: "organization", target_type: "location" }),
+      expect.objectContaining({ predicate: "employed-by", source_type: "person", target_type: "organization" }),
+      expect.objectContaining({ predicate: "spouse-of", source_type: "person", target_type: "person" }),
+      expect.objectContaining({ predicate: "estranged-from", source_type: "person", target_type: "person" }),
+      expect.objectContaining({ predicate: "acquired-by", source_type: "organization", target_type: "organization" }),
+      expect.objectContaining({ predicate: "customer-of", source_type: "organization", target_type: "organization" }),
+      expect.objectContaining({ predicate: "occurred-at", source_type: "occurrence", target_type: "location" }),
+      expect.objectContaining({ predicate: "part-of-topic", source_type: "topic", target_type: "topic" })
+    ]));
+    expect(edgePayloads.every((payload) => typeof payload.edge?.attrs?.source_value_hash === "string")).toBe(true);
+    expect(JSON.stringify(encrypted.ledger)).not.toContain("Synthetic City");
+    expect(JSON.stringify(encrypted.ledger)).not.toContain("Synthetic Parent Topic");
+    expect(JSON.stringify(encrypted.objects)).not.toContain("Synthetic Room");
+  });
+
   it("quarantines cluster endpoints instead of promoting temporal edge objects", async () => {
     const file = {
       source_path: "/tmp/living-atlas-fixtures/Cluster Endpoint.md",

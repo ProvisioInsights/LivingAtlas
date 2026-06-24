@@ -294,10 +294,10 @@ Command map:
 | `npm run logseq:semantic-estimate` | Yes, when pointed at a private local graph | No | Emits counts-only object totals, extraction totals, object-size buckets, and estimated minimum sync batches for the selected source mode. |
 | `npm run logseq:semantic-inventory` | Yes, when pointed at a private local graph | No | Emits a plaintext-free inventory of schema-known property keys, hashed unknown keys, endpoint type counts, refs, tags, dates, and asset references. |
 | `npm run logseq:semantic-batch-plan` | Yes, when pointed at a private local graph | No | Plans the next plaintext-free semantic batch from ledger coverage and object counts, including chunked-sync flags for large single files. |
-| `npm run logseq:semantic-local` | Yes, when pointed at a private local graph | No | Converts a bounded source window, runs local CRUD/leakage proof, and records a local-only ledger entry with Cloudflare sync explicitly paused. |
+| `npm run logseq:semantic-local` | Yes, when pointed at a private local graph | No | Converts a bounded source window, promotes typed endpoints and high-confidence explicit wikilink property edges, runs local CRUD/leakage proof, and records a local-only ledger entry with Cloudflare sync explicitly paused. |
 | `npm run logseq:semantic-cloudflare` | Yes, when pointed at a private local graph | Yes | Converts the same bounded window and syncs encrypted objects only when the live mutation acknowledgement is also set. |
 | `npm run logseq:semantic-backfill` | Yes, when pointed at a private local graph | No | Recomputes a bounded source window and records a known synced ledger entry without submitting duplicate Cloudflare objects. |
-| `npm run logseq:semantic-parity` | Yes, when pointed at a private local graph | Optional | Converts a bounded markdown window into encrypted source/page/block/reference-index objects, promotes explicit typed pages into encrypted endpoint records with validating schema fields, runs local CRUD/leakage checks, and can either sync ciphertext in one or more sync batches, sync only encrypted source capsules for legacy-ledger reconciliation, or backfill a known synced ledger window with explicit acknowledgement. |
+| `npm run logseq:semantic-parity` | Yes, when pointed at a private local graph | Optional | Converts a bounded markdown window into encrypted source/page/block/reference-index objects, promotes explicit typed pages into encrypted endpoint records, promotes high-confidence explicit wikilink property edges into encrypted temporal edge records, runs local CRUD/leakage checks, and can either sync ciphertext in one or more sync batches, sync only encrypted source capsules for legacy-ledger reconciliation, or backfill a known synced ledger window with explicit acknowledgement. |
 | `npm run logseq:semantic-ledger-report` | Ledger only | No | Summarizes the plaintext-free semantic migration ledger: coverage, gaps, synced batches, totals, and decisions. |
 | `npm run logseq:semantic-corpus-report` | Ledger/manifest only | No | Combines multiple plaintext-free manifests and ledgers into one local or synced completion gate across source modes. |
 
@@ -331,8 +331,9 @@ count mismatches.
 
 `LIVING_ATLAS_LOGSEQ_SEMANTIC_SYNC_MODE` defaults to `local-only`. This is the
 heavy local processing mode: it reads the selected source window, creates
-encrypted semantic objects, runs local CRUD/leakage proof, and records a ledger
-entry with `sync.attempted=false`. Local-only mode fails fast if stale live sync
+encrypted semantic objects, promotes schema-valid typed endpoints and
+high-confidence explicit wikilink property edges, runs local CRUD/leakage proof,
+and records a ledger entry with `sync.attempted=false`. Local-only mode fails fast if stale live sync
 or backfill acknowledgement variables are present. Local-only mode permits
 larger bounded `LIVING_ATLAS_LOGSEQ_SEMANTIC_FILE_COUNT` values so real corpus
 cleanup can run locally without Cloudflare-sized write windows. Cloudflare sync requires
