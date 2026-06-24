@@ -505,6 +505,55 @@ describe("markdown importer planning", () => {
     expect(JSON.stringify(ledger)).not.toContain("not-a-date");
   });
 
+  it("promotes safe endpoint type aliases without accepting unrelated page categories", async () => {
+    const files = [
+      {
+        source_path: "/tmp/living-atlas-fixtures/Synthetic Org Alias.md",
+        markdown: "type:: org\n\n- body text\n",
+        source_kind: "logseq" as const
+      },
+      {
+        source_path: "/tmp/living-atlas-fixtures/Synthetic Meeting Alias.md",
+        markdown: "type:: meeting\n\n- body text\n",
+        source_kind: "logseq" as const
+      },
+      {
+        source_path: "/tmp/living-atlas-fixtures/Synthetic Cluster.md",
+        markdown: "type:: cluster\n\n- body text\n",
+        source_kind: "logseq" as const
+      }
+    ];
+    const plaintextPayloads: string[] = [];
+
+    const encrypted = await createLogseqSemanticGraphObjects(files, {
+      authority_id: fixtureAuthorityId,
+      created_at: "2026-06-22T12:00:00.000Z",
+      path_redaction_secret: "fixture-path-redaction-secret-0001",
+      encrypt: async ({ plaintext, aad }) => {
+        plaintextPayloads.push(plaintext);
+        return {
+          ciphertext: Buffer.from(`sealed:${aad}:${plaintext.length}`).toString("base64"),
+          nonce: "fixture-semantic-nonce",
+          hash: sha256(`sealed:${aad}:${plaintext.length}`),
+          algorithm: "fixture-aes-gcm"
+        };
+      }
+    });
+    const endpointPayloads = plaintextPayloads
+      .map((payload) => JSON.parse(payload) as { kind?: string; endpoint?: { type?: string; subtype?: string } })
+      .filter((payload) => payload.kind === "logseq-endpoint");
+
+    expect(encrypted.ledger.decisions["typed-endpoint-promoted"]).toBe(2);
+    expect(endpointPayloads.map((payload) => payload.endpoint)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: "organization" }),
+      expect.objectContaining({ type: "occurrence", subtype: "meeting", occurred_on: "unknown" })
+    ]));
+    expect(encrypted.ledger.totals.quarantine_objects).toBe(0);
+    expect(JSON.stringify(encrypted.ledger)).not.toContain("Synthetic Org Alias");
+    expect(JSON.stringify(encrypted.ledger)).not.toContain("Synthetic Meeting Alias");
+    expect(JSON.stringify(encrypted.objects)).not.toContain("Synthetic Cluster");
+  });
+
   it("quarantines cluster endpoints instead of promoting temporal edge objects", async () => {
     const file = {
       source_path: "/tmp/living-atlas-fixtures/Cluster Endpoint.md",

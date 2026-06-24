@@ -83,6 +83,8 @@ export type SemanticInventoryReport = {
     known_property_keys: number;
     unknown_property_keys: number;
     accepted_endpoint_type_pages: number;
+    canonical_endpoint_type_pages: number;
+    safe_alias_endpoint_type_pages: number;
     rejected_endpoint_type_pages: number;
     wikilinks: number;
     hash_tags: number;
@@ -94,6 +96,10 @@ export type SemanticInventoryReport = {
   unknown_property_key_hash_counts: Record<`sha256:${string}`, number>;
   endpoint_type_counts: Record<EndpointType, number>;
 };
+
+type EndpointTypeCanonicalization =
+  | { ok: true; type: EndpointType; source: "canonical" | "safe-alias" }
+  | { ok: false };
 
 function envValue(key: string): string | undefined {
   const value = process.env[key]?.trim();
@@ -153,6 +159,36 @@ function emptyEndpointTypeCounts(): Record<EndpointType, number> {
   };
 }
 
+function canonicalizeEndpointType(value: string): EndpointTypeCanonicalization {
+  const normalized = value.trim().toLowerCase();
+  const canonical = EndpointTypeSchema.safeParse(normalized);
+  if (canonical.success) {
+    return { ok: true, type: canonical.data, source: "canonical" };
+  }
+  switch (normalized) {
+    case "org":
+    case "orgs":
+    case "organisation":
+    case "company":
+      return { ok: true, type: "organization", source: "safe-alias" };
+    case "place":
+      return { ok: true, type: "location", source: "safe-alias" };
+    case "event":
+    case "meeting":
+    case "appointment":
+    case "social":
+    case "work-session":
+    case "travel":
+    case "milestone":
+    case "life-event":
+    case "observation":
+    case "transaction":
+      return { ok: true, type: "occurrence", source: "safe-alias" };
+    default:
+      return { ok: false };
+  }
+}
+
 export async function buildSemanticInventoryReport(input: {
   root: string;
   pathRedactionSecret: string;
@@ -179,6 +215,8 @@ export async function buildSemanticInventoryReport(input: {
     known_property_keys: 0,
     unknown_property_keys: 0,
     accepted_endpoint_type_pages: 0,
+    canonical_endpoint_type_pages: 0,
+    safe_alias_endpoint_type_pages: 0,
     rejected_endpoint_type_pages: 0,
     wikilinks: 0,
     hash_tags: 0,
@@ -216,10 +254,15 @@ export async function buildSemanticInventoryReport(input: {
         totals.date_like_properties += 1;
       }
       if (property.key === "type") {
-        const endpointType = EndpointTypeSchema.safeParse(property.value.toLowerCase());
-        if (endpointType.success) {
-          endpointTypeCounts[endpointType.data] += 1;
+        const endpointType = canonicalizeEndpointType(property.value);
+        if (endpointType.ok) {
+          endpointTypeCounts[endpointType.type] += 1;
           totals.accepted_endpoint_type_pages += 1;
+          if (endpointType.source === "canonical") {
+            totals.canonical_endpoint_type_pages += 1;
+          } else {
+            totals.safe_alias_endpoint_type_pages += 1;
+          }
         } else {
           totals.rejected_endpoint_type_pages += 1;
         }

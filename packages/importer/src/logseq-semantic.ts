@@ -11,6 +11,7 @@ import {
   TemporalEdgeSchema,
   type AccessClass,
   type EndpointRecord,
+  type EndpointType,
   type GraphObjectEnvelope,
   type ObjectType,
   type TemporalEdge
@@ -212,6 +213,10 @@ type TypedEdgeParseResult =
 type TypedEndpointParseResult =
   | { kind: "not-typed-endpoint" }
   | { kind: "promoted"; endpoint: EndpointRecord };
+
+type EndpointTypeCanonicalization =
+  | { ok: true; type: EndpointType; subtype?: string; source: "canonical" | "safe-alias" }
+  | { ok: false; reason: "unknown-endpoint-type" };
 
 type ParsedLogseqFile = {
   source_path_ref: string;
@@ -553,21 +558,60 @@ function parseEndpointWithSubtypeFallback(
   return { kind: "not-typed-endpoint" };
 }
 
+function canonicalizeEndpointType(value: string | undefined): EndpointTypeCanonicalization {
+  const normalized = value?.trim().toLowerCase();
+  const canonical = EndpointTypeSchema.safeParse(normalized);
+  if (canonical.success) {
+    return { ok: true, type: canonical.data, source: "canonical" };
+  }
+  switch (normalized) {
+    case "org":
+    case "orgs":
+    case "organisation":
+    case "company":
+      return { ok: true, type: "organization", source: "safe-alias" };
+    case "place":
+      return { ok: true, type: "location", source: "safe-alias" };
+    case "event":
+      return { ok: true, type: "occurrence", source: "safe-alias" };
+    case "meeting":
+      return { ok: true, type: "occurrence", subtype: "meeting", source: "safe-alias" };
+    case "appointment":
+      return { ok: true, type: "occurrence", subtype: "appointment", source: "safe-alias" };
+    case "social":
+      return { ok: true, type: "occurrence", subtype: "social", source: "safe-alias" };
+    case "work-session":
+      return { ok: true, type: "occurrence", subtype: "work-session", source: "safe-alias" };
+    case "travel":
+      return { ok: true, type: "occurrence", subtype: "travel", source: "safe-alias" };
+    case "milestone":
+      return { ok: true, type: "occurrence", subtype: "milestone", source: "safe-alias" };
+    case "life-event":
+      return { ok: true, type: "occurrence", subtype: "life-event", source: "safe-alias" };
+    case "observation":
+      return { ok: true, type: "occurrence", subtype: "observation", source: "safe-alias" };
+    case "transaction":
+      return { ok: true, type: "occurrence", subtype: "transaction", source: "safe-alias" };
+    default:
+      return { ok: false, reason: "unknown-endpoint-type" };
+  }
+}
+
 function parseTypedPageEndpoint(parsed: ParsedLogseqFile, options: {
   authorityId: string;
   pathRedactionSecret: string;
   createdAt: string;
   defaultAccessClass: AccessClass;
 }): TypedEndpointParseResult {
-  const type = EndpointTypeSchema.safeParse(propertyValue(parsed.page_properties, "type")?.toLowerCase());
-  if (!type.success) {
+  const type = canonicalizeEndpointType(propertyValue(parsed.page_properties, "type"));
+  if (!type.ok) {
     return { kind: "not-typed-endpoint" };
   }
 
   const aliases = propertyValues(parsed.page_properties, ["alias", "aliases"]).flatMap(parseAliasList);
   const base = {
     object_id: semanticTitleObjectId(options.authorityId, options.pathRedactionSecret, parsed.page_title),
-    type: type.data,
+    type: type.type,
     name: parsed.page_title,
     aliases,
     access_class: options.defaultAccessClass,
@@ -576,13 +620,13 @@ function parseTypedPageEndpoint(parsed: ParsedLogseqFile, options: {
     created_at: options.createdAt,
     updated_at: options.createdAt
   };
-  const subtype = propertyValue(parsed.page_properties, "subtype")?.toLowerCase();
+  const subtype = propertyValue(parsed.page_properties, "subtype")?.toLowerCase() ?? type.subtype;
   const objectIdOptions = {
     authorityId: options.authorityId,
     pathRedactionSecret: options.pathRedactionSecret
   };
   const endpoint = { ...base };
-  const minimalEndpoint = type.data === "occurrence"
+  const minimalEndpoint = type.type === "occurrence"
     ? {
         ...base,
         occurred_on: propertyValue(parsed.page_properties, "occurred-on")
@@ -592,7 +636,7 @@ function parseTypedPageEndpoint(parsed: ParsedLogseqFile, options: {
       }
     : { ...base };
 
-  if (type.data === "person") {
+  if (type.type === "person") {
     addDefinedFields(endpoint, {
       primary_location_ref: parseWikilinkObjectId(
         propertyValue(parsed.page_properties, "primary-location")
@@ -601,7 +645,7 @@ function parseTypedPageEndpoint(parsed: ParsedLogseqFile, options: {
         objectIdOptions
       )
     });
-  } else if (type.data === "organization") {
+  } else if (type.type === "organization") {
     addDefinedFields(endpoint, {
       founded_year: propertyValue(parsed.page_properties, "founded-year") ?? propertyValue(parsed.page_properties, "founded"),
       homepage_ref: propertyValue(parsed.page_properties, "homepage") ?? propertyValue(parsed.page_properties, "website"),
@@ -613,7 +657,7 @@ function parseTypedPageEndpoint(parsed: ParsedLogseqFile, options: {
         objectIdOptions
       )
     });
-  } else if (type.data === "project") {
+  } else if (type.type === "project") {
     addDefinedFields(endpoint, {
       status: propertyValue(parsed.page_properties, "status"),
       start_date: propertyValue(parsed.page_properties, "start-date") ?? propertyValue(parsed.page_properties, "start"),
@@ -623,7 +667,7 @@ function parseTypedPageEndpoint(parsed: ParsedLogseqFile, options: {
         objectIdOptions
       )
     });
-  } else if (type.data === "location") {
+  } else if (type.type === "location") {
     addDefinedFields(endpoint, {
       parent_location_ref: parseWikilinkObjectId(
         propertyValue(parsed.page_properties, "parent-location")
@@ -632,7 +676,7 @@ function parseTypedPageEndpoint(parsed: ParsedLogseqFile, options: {
       ),
       timezone: propertyValue(parsed.page_properties, "timezone")
     });
-  } else if (type.data === "occurrence") {
+  } else if (type.type === "occurrence") {
     const timezone = propertyValue(parsed.page_properties, "timezone");
     const recurrenceSet = unescapePropertyBlock(
       propertyValue(parsed.page_properties, "recurrence-set") ?? propertyValue(parsed.page_properties, "recurrence_set")
@@ -672,7 +716,7 @@ function parseTypedPageEndpoint(parsed: ParsedLogseqFile, options: {
       recurrence,
       status: propertyValue(parsed.page_properties, "status")
     });
-  } else if (type.data === "topic") {
+  } else if (type.type === "topic") {
     addDefinedFields(endpoint, {
       parent_topic_ref: parseWikilinkObjectId(
         propertyValue(parsed.page_properties, "parent-topic") ?? propertyValue(parsed.page_properties, "part-of-topic"),

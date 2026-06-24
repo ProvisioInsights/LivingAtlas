@@ -31,6 +31,8 @@ describe("Logseq semantic inventory report", () => {
       expect(report.file_count).toBe(1);
       expect(report.endpoint_type_counts.organization).toBe(1);
       expect(report.totals.accepted_endpoint_type_pages).toBe(1);
+      expect(report.totals.canonical_endpoint_type_pages).toBe(1);
+      expect(report.totals.safe_alias_endpoint_type_pages).toBe(0);
       expect(report.totals.rejected_endpoint_type_pages).toBe(0);
       expect(report.totals.page_properties).toBe(6);
       expect(report.known_property_key_counts).toMatchObject({
@@ -50,6 +52,34 @@ describe("Logseq semantic inventory report", () => {
       expect(JSON.stringify(report)).not.toContain("Synthetic Org");
       expect(JSON.stringify(report)).not.toContain("hidden-value");
       expect(JSON.stringify(report)).not.toContain("custom-secret-key");
+      expect(JSON.stringify(report)).not.toContain(root);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("counts safe endpoint type aliases without printing alias values", async () => {
+    const root = await mkdtemp(join(tmpdir(), "living-atlas-semantic-inventory-"));
+    try {
+      await mkdir(join(root, "pages"), { recursive: true });
+      await writeFile(join(root, "pages", "Synthetic Org.md"), "type:: org\n\n- body\n");
+      await writeFile(join(root, "pages", "Synthetic Meeting.md"), "type:: meeting\n\n- body\n");
+
+      const report = await buildSemanticInventoryReport({
+        root,
+        pathRedactionSecret: "fixture-path-redaction-secret-0001",
+        sourceKind: "logseq",
+        sourceMode: "markdown-only"
+      });
+
+      expect(report.totals.accepted_endpoint_type_pages).toBe(2);
+      expect(report.totals.canonical_endpoint_type_pages).toBe(0);
+      expect(report.totals.safe_alias_endpoint_type_pages).toBe(2);
+      expect(report.endpoint_type_counts.organization).toBe(1);
+      expect(report.endpoint_type_counts.occurrence).toBe(1);
+      expect(report.totals.rejected_endpoint_type_pages).toBe(0);
+      expect(JSON.stringify(report)).not.toContain("Synthetic Org");
+      expect(JSON.stringify(report)).not.toContain("meeting");
       expect(JSON.stringify(report)).not.toContain(root);
     } finally {
       await rm(root, { recursive: true, force: true });
