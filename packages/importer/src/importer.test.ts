@@ -599,9 +599,11 @@ describe("markdown importer planning", () => {
 
     expect(encrypted.ledger.decisions["typed-endpoint-promoted"]).toBe(4);
     expect(encrypted.ledger.decisions["property-edge-promoted"]).toBe(15);
-    expect(encrypted.ledger.totals.edge_candidates).toBe(15);
+    expect(encrypted.ledger.decisions["suffix-tag-weak-tie-needs-note"]).toBe(1);
+    expect(encrypted.ledger.totals.edge_candidates).toBe(16);
     expect(encrypted.ledger.totals.valid_edge_candidates).toBe(15);
-    expect(encrypted.ledger.totals.quarantine_objects).toBe(0);
+    expect(encrypted.ledger.totals.quarantined_edge_candidates).toBe(1);
+    expect(encrypted.ledger.totals.quarantine_objects).toBe(1);
     expect(edgePayloads.map((payload) => payload.edge)).toEqual(expect.arrayContaining([
       expect.objectContaining({ predicate: "based-in", source_type: "person", target_type: "location" }),
       expect.objectContaining({ predicate: "based-in", source_type: "organization", target_type: "location" }),
@@ -621,6 +623,7 @@ describe("markdown importer planning", () => {
     expect(JSON.stringify(encrypted.ledger)).not.toContain("Synthetic City");
     expect(JSON.stringify(encrypted.ledger)).not.toContain("Synthetic Primary Org");
     expect(JSON.stringify(encrypted.ledger)).not.toContain("Synthetic Former Employee");
+    expect(JSON.stringify(encrypted.ledger)).not.toContain("Synthetic Weak Tie");
     expect(JSON.stringify(encrypted.ledger)).not.toContain("Synthetic Parent Topic");
     expect(JSON.stringify(encrypted.objects)).not.toContain("Synthetic Room");
     expect(JSON.stringify(encrypted.objects)).not.toContain("Synthetic Weak Tie");

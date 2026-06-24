@@ -854,6 +854,35 @@ function taggedSuffixes(properties: LogseqProperty[]): Array<{ title: string; su
   return targets;
 }
 
+function suffixTagReviewReason(suffix: string): string | undefined {
+  if (suffix === "adjacent" || suffix === "orbit") {
+    return "suffix-tag-weak-tie-needs-note";
+  }
+  if (suffix === "comparable" || suffix === "fundraise-comparable") {
+    return "suffix-tag-comparable-attribute-review";
+  }
+  if (
+    suffix === "fundraise-channel"
+    || suffix === "vendor"
+    || suffix === "portfolio"
+    || suffix === "side-business-past"
+    || suffix === "former-employer-parent"
+    || suffix.startsWith("warm-intro-")
+  ) {
+    return "suffix-tag-direction-review";
+  }
+  return undefined;
+}
+
+function suffixTagReviewCandidates(parsed: ParsedLogseqFile, endpoint: EndpointRecord): Array<{ title: string; suffix: string; reason: string }> {
+  if (endpoint.type !== "organization") {
+    return [];
+  }
+  return taggedSuffixes(parsed.page_properties)
+    .map((tagged) => ({ ...tagged, reason: suffixTagReviewReason(tagged.suffix) }))
+    .filter((tagged): tagged is { title: string; suffix: string; reason: string } => tagged.reason !== undefined);
+}
+
 function propertyEdgesForEndpoint(parsed: ParsedLogseqFile, options: {
   authorityId: string;
   pathRedactionSecret: string;
@@ -1099,6 +1128,28 @@ function draftObjectsForFile(parsed: ParsedLogseqFile, options: {
           kind: "logseq-temporal-edge",
           source_path_ref: parsed.source_path_ref,
           edge
+        }
+      }));
+    }
+    for (const candidate of suffixTagReviewCandidates(parsed, typedEndpoint.endpoint)) {
+      drafts.push(plannedObject({
+        authorityId: options.authorityId,
+        sourcePathRef: parsed.source_path_ref,
+        semanticKind: "edge-candidate",
+        objectType: "edge",
+        localRef: `suffix-tag-review:${shortHash(`${candidate.title}:${candidate.suffix}`, 24)}`,
+        accessClass: "quarantine",
+        decision: "quarantined",
+        reasonCode: candidate.reason,
+        plaintextPayload: {
+          kind: "logseq-edge-candidate",
+          source_path_ref: parsed.source_path_ref,
+          source_text: `[[${candidate.title}]]-${candidate.suffix}`,
+          predicate_text: candidate.suffix,
+          canonical_predicate: undefined,
+          canonicalization: "suffix-tag-review",
+          source_value_hash: sha256(`tags:${candidate.title}:${candidate.suffix}`),
+          tag_suffix: candidate.suffix
         }
       }));
     }
