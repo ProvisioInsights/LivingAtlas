@@ -267,10 +267,6 @@ function semanticEdgeId(authorityId: string, sourcePathRef: string, index: numbe
   return `la_edge_${shortHash(`${authorityId}:logseq-edge:v1:${sourcePathRef}:${index}:${sourceText}`, 24)}`;
 }
 
-function semanticPropertyEdgeId(authorityId: string, sourcePathRef: string, predicate: string, propertyKey: string, targetTitle: string): string {
-  return `la_edge_${shortHash(`${authorityId}:logseq-property-edge:v1:${sourcePathRef}:${predicate}:${propertyKey}:${targetTitle.trim().toLowerCase()}`, 24)}`;
-}
-
 function sourceBlockRef(sourcePathRef: string, index: number, text: string): string {
   return `la_block_${shortHash(`${sourcePathRef}:${index}:${text}`, 24)}`;
 }
@@ -477,6 +473,13 @@ function propertyValues(properties: LogseqProperty[], keys: string[]): string[] 
     }
   }
   return values;
+}
+
+function allPropertyValues(properties: LogseqProperty[], key: string): string[] {
+  return properties
+    .filter((property) => property.key === key)
+    .map((property) => property.value.trim())
+    .filter((value) => value.length > 0);
 }
 
 function parseAliasList(value: string | undefined): string[] {
@@ -768,18 +771,21 @@ function typedPropertyEdge(input: {
   pathRedactionSecret: string;
   sourcePathRef: string;
   sourceContentHash: `sha256:${string}`;
-  sourceEndpoint: EndpointRecord;
-  targetTitle: string;
+  sourceObjectId: string;
+  sourceType: TemporalEdge["source_type"];
+  targetObjectId: string;
   targetType: TemporalEdge["target_type"];
   predicate: TemporalEdge["predicate"];
   propertyKey: string;
+  sourceValueHash: `sha256:${string}`;
   status?: TemporalEdge["status"];
+  attrs?: Record<string, unknown>;
 }): TemporalEdge | undefined {
   const parsed = TemporalEdgeSchema.safeParse({
-    edge_id: semanticPropertyEdgeId(input.authorityId, input.sourcePathRef, input.predicate, input.propertyKey, input.targetTitle),
-    source_object_id: input.sourceEndpoint.object_id,
-    source_type: input.sourceEndpoint.type,
-    target_object_id: semanticTitleObjectId(input.authorityId, input.pathRedactionSecret, input.targetTitle),
+    edge_id: `la_edge_${shortHash(`${input.authorityId}:logseq-property-edge:v2:${input.sourcePathRef}:${input.predicate}:${input.propertyKey}:${input.sourceObjectId}:${input.targetObjectId}`, 24)}`,
+    source_object_id: input.sourceObjectId,
+    source_type: input.sourceType,
+    target_object_id: input.targetObjectId,
     target_type: input.targetType,
     predicate: input.predicate,
     valid_from: "unknown",
@@ -790,11 +796,62 @@ function typedPropertyEdge(input: {
       source_path_ref: input.sourcePathRef,
       source_capsule_object_id: semanticObjectId(input.authorityId, "source-capsule", input.sourcePathRef, "source-capsule"),
       source_content_hash: input.sourceContentHash,
-      source_value_hash: sha256(`${input.propertyKey}:${input.targetTitle}`),
-      property_key: input.propertyKey
+      source_value_hash: input.sourceValueHash,
+      property_key: input.propertyKey,
+      ...input.attrs
     }
   });
   return parsed.success ? parsed.data : undefined;
+}
+
+function typedCurrentPagePropertyEdge(input: {
+  authorityId: string;
+  pathRedactionSecret: string;
+  sourcePathRef: string;
+  sourceContentHash: `sha256:${string}`;
+  sourceEndpoint: EndpointRecord;
+  targetTitle: string;
+  targetType: TemporalEdge["target_type"];
+  predicate: TemporalEdge["predicate"];
+  propertyKey: string;
+  status?: TemporalEdge["status"];
+}): TemporalEdge | undefined {
+  return typedPropertyEdge({
+    authorityId: input.authorityId,
+    pathRedactionSecret: input.pathRedactionSecret,
+    sourcePathRef: input.sourcePathRef,
+    sourceContentHash: input.sourceContentHash,
+    sourceObjectId: input.sourceEndpoint.object_id,
+    sourceType: input.sourceEndpoint.type,
+    targetObjectId: semanticTitleObjectId(input.authorityId, input.pathRedactionSecret, input.targetTitle),
+    targetType: input.targetType,
+    predicate: input.predicate,
+    propertyKey: input.propertyKey,
+    sourceValueHash: sha256(`${input.propertyKey}:${input.targetTitle}`),
+    status: input.status
+  });
+}
+
+function taggedSuffixes(properties: LogseqProperty[]): Array<{ title: string; suffix: string }> {
+  const tags = allPropertyValues(properties, "tags");
+  const targets: Array<{ title: string; suffix: string }> = [];
+  const seen = new Set<string>();
+  for (const tagValue of tags) {
+    for (const match of tagValue.matchAll(/\[\[([^\]\n]{1,256})\]\]-([A-Za-z0-9][A-Za-z0-9-]{0,80})/g)) {
+      const title = normalizeEndpointTitle(match[1]);
+      const suffix = match[2]?.toLowerCase();
+      if (!title || !suffix) {
+        continue;
+      }
+      const dedupeKey = `${title.toLowerCase()}:${suffix}`;
+      if (seen.has(dedupeKey)) {
+        continue;
+      }
+      seen.add(dedupeKey);
+      targets.push({ title, suffix });
+    }
+  }
+  return targets;
 }
 
 function propertyEdgesForEndpoint(parsed: ParsedLogseqFile, options: {
@@ -813,10 +870,10 @@ function propertyEdgesForEndpoint(parsed: ParsedLogseqFile, options: {
 
   if (options.endpoint.type === "person") {
     const target = propertyEdgeTargetTitle(parsed.page_properties, ["primary-location", "location", "based-in"]);
-    const edge = target ? typedPropertyEdge({ ...common, targetTitle: target.title, targetType: "location", predicate: "based-in", propertyKey: target.key }) : undefined;
+    const edge = target ? typedCurrentPagePropertyEdge({ ...common, targetTitle: target.title, targetType: "location", predicate: "based-in", propertyKey: target.key }) : undefined;
     if (edge) edges.push(edge);
     for (const employer of propertyEdgeTargetTitles(parsed.page_properties, ["org", "organization", "employer-current", "employer-historical"])) {
-      const employmentEdge = typedPropertyEdge({
+      const employmentEdge = typedCurrentPagePropertyEdge({
         ...common,
         targetTitle: employer.title,
         targetType: "organization",
@@ -827,28 +884,57 @@ function propertyEdgesForEndpoint(parsed: ParsedLogseqFile, options: {
       if (employmentEdge) edges.push(employmentEdge);
     }
     const spouse = propertyEdgeTargetTitle(parsed.page_properties, ["spouse"]);
-    const spouseEdge = spouse ? typedPropertyEdge({ ...common, targetTitle: spouse.title, targetType: "person", predicate: "spouse-of", propertyKey: spouse.key }) : undefined;
+    const spouseEdge = spouse ? typedCurrentPagePropertyEdge({ ...common, targetTitle: spouse.title, targetType: "person", predicate: "spouse-of", propertyKey: spouse.key }) : undefined;
     if (spouseEdge) edges.push(spouseEdge);
     const estranged = propertyEdgeTargetTitle(parsed.page_properties, ["estranged-from"]);
-    const estrangedEdge = estranged ? typedPropertyEdge({ ...common, targetTitle: estranged.title, targetType: "person", predicate: "estranged-from", propertyKey: estranged.key }) : undefined;
+    const estrangedEdge = estranged ? typedCurrentPagePropertyEdge({ ...common, targetTitle: estranged.title, targetType: "person", predicate: "estranged-from", propertyKey: estranged.key }) : undefined;
     if (estrangedEdge) edges.push(estrangedEdge);
   } else if (options.endpoint.type === "organization") {
     const target = propertyEdgeTargetTitle(parsed.page_properties, ["primary-location", "headquarters", "location", "based-in"]);
-    const edge = target ? typedPropertyEdge({ ...common, targetTitle: target.title, targetType: "location", predicate: "based-in", propertyKey: target.key }) : undefined;
+    const edge = target ? typedCurrentPagePropertyEdge({ ...common, targetTitle: target.title, targetType: "location", predicate: "based-in", propertyKey: target.key }) : undefined;
     if (edge) edges.push(edge);
     const acquirer = propertyEdgeTargetTitle(parsed.page_properties, ["acquired-by"]);
-    const acquisitionEdge = acquirer ? typedPropertyEdge({ ...common, targetTitle: acquirer.title, targetType: "organization", predicate: "acquired-by", propertyKey: acquirer.key }) : undefined;
+    const acquisitionEdge = acquirer ? typedCurrentPagePropertyEdge({ ...common, targetTitle: acquirer.title, targetType: "organization", predicate: "acquired-by", propertyKey: acquirer.key }) : undefined;
     if (acquisitionEdge) edges.push(acquisitionEdge);
     const customerTarget = propertyEdgeTargetTitle(parsed.page_properties, ["customer-of"]);
-    const customerEdge = customerTarget ? typedPropertyEdge({ ...common, targetTitle: customerTarget.title, targetType: "organization", predicate: "customer-of", propertyKey: customerTarget.key }) : undefined;
+    const customerEdge = customerTarget ? typedCurrentPagePropertyEdge({ ...common, targetTitle: customerTarget.title, targetType: "organization", predicate: "customer-of", propertyKey: customerTarget.key }) : undefined;
     if (customerEdge) edges.push(customerEdge);
+    for (const tagged of taggedSuffixes(parsed.page_properties)) {
+      const sourceObjectId = semanticTitleObjectId(options.authorityId, options.pathRedactionSecret, tagged.title);
+      const reverseCommon = {
+        authorityId: options.authorityId,
+        pathRedactionSecret: options.pathRedactionSecret,
+        sourcePathRef: parsed.source_path_ref,
+        sourceContentHash: parsed.content_hash,
+        targetObjectId: options.endpoint.object_id,
+        propertyKey: "tags",
+        sourceValueHash: sha256(`tags:${tagged.title}:${tagged.suffix}`),
+        attrs: { tag_suffix: tagged.suffix }
+      };
+      if (tagged.suffix === "employer-past") {
+        const edge = typedPropertyEdge({ ...reverseCommon, sourceObjectId, sourceType: "person", targetType: "organization", predicate: "employed-by", status: "ended" });
+        if (edge) edges.push(edge);
+      } else if (tagged.suffix === "education") {
+        const edge = typedPropertyEdge({ ...reverseCommon, sourceObjectId, sourceType: "person", targetType: "organization", predicate: "alumnus-of" });
+        if (edge) edges.push(edge);
+      } else if (tagged.suffix === "cohort") {
+        const edge = typedPropertyEdge({ ...reverseCommon, sourceObjectId, sourceType: "person", targetType: "organization", predicate: "member-of" });
+        if (edge) edges.push(edge);
+      } else if (tagged.suffix === "revenue") {
+        const edge = typedPropertyEdge({ ...reverseCommon, sourceObjectId, sourceType: "organization", targetType: "organization", predicate: "customer-of" });
+        if (edge) edges.push(edge);
+      } else if (tagged.suffix === "advisory-past") {
+        const edge = typedPropertyEdge({ ...reverseCommon, sourceObjectId, sourceType: "person", targetType: "organization", predicate: "advises", status: "ended" });
+        if (edge) edges.push(edge);
+      }
+    }
   } else if (options.endpoint.type === "occurrence") {
     const target = propertyEdgeTargetTitle(parsed.page_properties, ["location"]);
-    const edge = target ? typedPropertyEdge({ ...common, targetTitle: target.title, targetType: "location", predicate: "occurred-at", propertyKey: target.key }) : undefined;
+    const edge = target ? typedCurrentPagePropertyEdge({ ...common, targetTitle: target.title, targetType: "location", predicate: "occurred-at", propertyKey: target.key }) : undefined;
     if (edge) edges.push(edge);
   } else if (options.endpoint.type === "topic") {
     const target = propertyEdgeTargetTitle(parsed.page_properties, ["parent-topic", "part-of-topic"]);
-    const edge = target ? typedPropertyEdge({ ...common, targetTitle: target.title, targetType: "topic", predicate: "part-of-topic", propertyKey: target.key }) : undefined;
+    const edge = target ? typedCurrentPagePropertyEdge({ ...common, targetTitle: target.title, targetType: "topic", predicate: "part-of-topic", propertyKey: target.key }) : undefined;
     if (edge) edges.push(edge);
   }
 
@@ -1005,7 +1091,7 @@ function draftObjectsForFile(parsed: ParsedLogseqFile, options: {
         sourcePathRef: parsed.source_path_ref,
         semanticKind: "typed-edge",
         objectType: "edge",
-        localRef: `property-edge:${edge.predicate}:${edge.target_object_id}`,
+        localRef: `property-edge:${edge.edge_id}`,
         accessClass: options.defaultAccessClass,
         decision: "captured-encrypted",
         reasonCode: "property-edge-promoted",

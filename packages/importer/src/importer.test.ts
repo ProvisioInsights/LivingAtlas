@@ -563,7 +563,7 @@ describe("markdown importer planning", () => {
       },
       {
         source_path: "/tmp/living-atlas-fixtures/Synthetic Org.md",
-        markdown: "type:: org\nheadquarters:: [[Synthetic City]]\nacquired-by:: [[Synthetic Acquirer]]\ncustomer-of:: [[Synthetic Vendor]]\n\n- body text\n",
+        markdown: "type:: org\nheadquarters:: [[Synthetic City]]\nacquired-by:: [[Synthetic Acquirer]]\ncustomer-of:: [[Synthetic Vendor]]\ntags:: [[Synthetic Former Employee]]-employer-past, [[Synthetic Alum]]-education, [[Synthetic Customer]]-revenue, [[Synthetic Member]]-cohort, [[Synthetic Advisor]]-advisory-past, [[Synthetic Weak Tie]]-adjacent\n\n- body text\n",
         source_kind: "logseq" as const
       },
       {
@@ -598,9 +598,9 @@ describe("markdown importer planning", () => {
       .filter((payload) => payload.kind === "logseq-temporal-edge");
 
     expect(encrypted.ledger.decisions["typed-endpoint-promoted"]).toBe(4);
-    expect(encrypted.ledger.decisions["property-edge-promoted"]).toBe(10);
-    expect(encrypted.ledger.totals.edge_candidates).toBe(10);
-    expect(encrypted.ledger.totals.valid_edge_candidates).toBe(10);
+    expect(encrypted.ledger.decisions["property-edge-promoted"]).toBe(15);
+    expect(encrypted.ledger.totals.edge_candidates).toBe(15);
+    expect(encrypted.ledger.totals.valid_edge_candidates).toBe(15);
     expect(encrypted.ledger.totals.quarantine_objects).toBe(0);
     expect(edgePayloads.map((payload) => payload.edge)).toEqual(expect.arrayContaining([
       expect.objectContaining({ predicate: "based-in", source_type: "person", target_type: "location" }),
@@ -610,6 +610,9 @@ describe("markdown importer planning", () => {
       expect.objectContaining({ predicate: "estranged-from", source_type: "person", target_type: "person" }),
       expect.objectContaining({ predicate: "acquired-by", source_type: "organization", target_type: "organization" }),
       expect.objectContaining({ predicate: "customer-of", source_type: "organization", target_type: "organization" }),
+      expect.objectContaining({ predicate: "alumnus-of", source_type: "person", target_type: "organization" }),
+      expect.objectContaining({ predicate: "member-of", source_type: "person", target_type: "organization" }),
+      expect.objectContaining({ predicate: "advises", source_type: "person", target_type: "organization", status: "ended" }),
       expect.objectContaining({ predicate: "occurred-at", source_type: "occurrence", target_type: "location" }),
       expect.objectContaining({ predicate: "part-of-topic", source_type: "topic", target_type: "topic" })
     ]));
@@ -617,8 +620,10 @@ describe("markdown importer planning", () => {
     expect(edgePayloads.some((payload) => payload.edge?.predicate === "employed-by" && payload.edge.attrs?.property_key === "org")).toBe(true);
     expect(JSON.stringify(encrypted.ledger)).not.toContain("Synthetic City");
     expect(JSON.stringify(encrypted.ledger)).not.toContain("Synthetic Primary Org");
+    expect(JSON.stringify(encrypted.ledger)).not.toContain("Synthetic Former Employee");
     expect(JSON.stringify(encrypted.ledger)).not.toContain("Synthetic Parent Topic");
     expect(JSON.stringify(encrypted.objects)).not.toContain("Synthetic Room");
+    expect(JSON.stringify(encrypted.objects)).not.toContain("Synthetic Weak Tie");
   });
 
   it("quarantines cluster endpoints instead of promoting temporal edge objects", async () => {
