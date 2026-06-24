@@ -331,7 +331,9 @@ count mismatches.
 heavy local processing mode: it reads the selected source window, creates
 encrypted semantic objects, runs local CRUD/leakage proof, and records a ledger
 entry with `sync.attempted=false`. Local-only mode fails fast if stale live sync
-or backfill acknowledgement variables are present. Cloudflare sync requires
+or backfill acknowledgement variables are present. Local-only mode permits
+larger bounded `LIVING_ATLAS_LOGSEQ_SEMANTIC_FILE_COUNT` values so real corpus
+cleanup can run locally without Cloudflare-sized write windows. Cloudflare sync requires
 `LIVING_ATLAS_LOGSEQ_SEMANTIC_SYNC_MODE=cloudflare` and
 `LIVING_ATLAS_LOGSEQ_SEMANTIC_SYNC_ACK=sync-semantic-ciphertext-to-cloudflare`.
 Backfill requires `LIVING_ATLAS_LOGSEQ_SEMANTIC_SYNC_MODE=backfill` and

@@ -310,7 +310,9 @@ markdown entries.
 sync is paused unless `LIVING_ATLAS_LOGSEQ_SEMANTIC_SYNC_MODE=cloudflare` and
 `LIVING_ATLAS_LOGSEQ_SEMANTIC_SYNC_ACK=sync-semantic-ciphertext-to-cloudflare`
 are both set. Local-only mode rejects stale sync/backfill acknowledgements so a
-shell with old mutation env vars cannot accidentally push.
+shell with old mutation env vars cannot accidentally push. Local-only mode can
+use larger bounded windows via `LIVING_ATLAS_LOGSEQ_SEMANTIC_FILE_COUNT`; live
+Cloudflare and backfill modes stay capped to smaller mutation-safe windows.
 
 Set `LIVING_ATLAS_LOGSEQ_SEMANTIC_SOURCE_MODE` to choose the corpus slice:
 

@@ -37,6 +37,8 @@ import {
 
 const defaultFileCount = 5;
 const maxFileCount = 10;
+const defaultLocalOnlyMaxFileCount = 500;
+const hardLocalOnlyMaxFileCount = 5_000;
 const maxFileOffset = 1_000_000;
 const maxFileBytes = 256_000;
 const defaultMaxSyncObjectsPerBatch = 240;
@@ -645,18 +647,26 @@ async function syncSemanticObjects(input: {
 
 async function main(): Promise<void> {
   const root = envValue("LIVING_ATLAS_REAL_MARKDOWN_ROOT") ?? "./logseq";
-  const fileCount = parseInteger(envValue("LIVING_ATLAS_LOGSEQ_SEMANTIC_FILE_COUNT"), defaultFileCount, 1, maxFileCount);
+  const syncMode = resolveSemanticSyncMode({
+    syncMode: envValue(syncModeEnv),
+    liveAck: envValue(liveAckEnv),
+    backfillAck: envValue(backfillAckEnv)
+  });
+  const fileCountLimit = syncMode === localOnlySyncMode
+    ? parseInteger(
+        envValue("LIVING_ATLAS_LOGSEQ_SEMANTIC_LOCAL_MAX_FILE_COUNT"),
+        defaultLocalOnlyMaxFileCount,
+        1,
+        hardLocalOnlyMaxFileCount
+      )
+    : maxFileCount;
+  const fileCount = parseInteger(envValue("LIVING_ATLAS_LOGSEQ_SEMANTIC_FILE_COUNT"), defaultFileCount, 1, fileCountLimit);
   const fileOffset = parseInteger(envValue("LIVING_ATLAS_LOGSEQ_SEMANTIC_FILE_OFFSET"), 0, 0, maxFileOffset);
   const batchLedgerPath = envValue("LIVING_ATLAS_LOGSEQ_SEMANTIC_LEDGER_PATH");
   const authorityId = envValue("LIVING_ATLAS_LIVE_AUTHORITY_ID") ?? "la_authority_logseqsemantic0001";
   const configuredPathRedactionSecret = envValue("LIVING_ATLAS_REAL_DATA_PATH_REDACTION_SECRET");
   const sourceKind = MarkdownImportSourceKindSchema.parse(envValue("LIVING_ATLAS_REAL_MARKDOWN_SOURCE_KIND") ?? "logseq");
   const sourceMode = SemanticSourceModeSchema.parse(envValue("LIVING_ATLAS_LOGSEQ_SEMANTIC_SOURCE_MODE") ?? "logseq-notes");
-  const syncMode = resolveSemanticSyncMode({
-    syncMode: envValue(syncModeEnv),
-    liveAck: envValue(liveAckEnv),
-    backfillAck: envValue(backfillAckEnv)
-  });
   if (syncMode !== localOnlySyncMode && !configuredPathRedactionSecret) {
     throw new Error("LIVING_ATLAS_REAL_DATA_PATH_REDACTION_SECRET is required for live semantic sync or ledger backfill");
   }
