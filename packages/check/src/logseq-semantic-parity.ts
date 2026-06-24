@@ -715,7 +715,7 @@ async function main(): Promise<void> {
   console.log(`files=${result.ledger.file_count}; offset=${fileOffset}; source_mode=${sourceMode}; sync_mode=${syncMode}; objects=${result.objects.length}; local_generation=${crud.generation}`);
   console.log(`pages=${result.ledger.totals.pages}; blocks=${result.ledger.totals.blocks}; indexes=${result.ledger.totals.reference_index_objects_planned}; edges=${result.ledger.totals.edge_objects}; quarantine=${result.ledger.totals.quarantine_objects}`);
   console.log(`wikilinks=${result.ledger.totals.wikilinks}; tags=${result.ledger.totals.hash_tags}; block_refs=${result.ledger.totals.block_refs}; page_properties=${result.ledger.totals.page_properties}; block_properties=${result.ledger.totals.block_properties}`);
-  const rootRef = `sha256:${digest(`${pathRedactionSecret}:semantic-root:v1:${root}`, 64)}` as const;
+  const rootRef = `sha256:${digest(`semantic-root:v1:${pathRedactionSecret}:${root}`, 64)}` as const;
   console.log(`bytes=${result.ledger.totals.bytes}; root_ref=${rootRef}`);
 
   if (syncMode === backfillSyncMode) {

@@ -298,6 +298,7 @@ Command map:
 | `npm run logseq:semantic-backfill` | Yes, when pointed at a private local graph | No | Recomputes a bounded source window and records a known synced ledger entry without submitting duplicate Cloudflare objects. |
 | `npm run logseq:semantic-parity` | Yes, when pointed at a private local graph | Optional | Converts a bounded markdown window into encrypted semantic objects, runs local CRUD/leakage checks, and can either sync ciphertext in one or more sync batches, sync only encrypted source capsules for legacy-ledger reconciliation, or backfill a known synced ledger window with explicit acknowledgement. |
 | `npm run logseq:semantic-ledger-report` | Ledger only | No | Summarizes the plaintext-free semantic migration ledger: coverage, gaps, synced batches, totals, and decisions. |
+| `npm run logseq:semantic-corpus-report` | Ledger/manifest only | No | Combines multiple plaintext-free manifests and ledgers into one local or synced completion gate across source modes. |
 
 The deployed Cloudflare usage gate should run before any live mutating smoke or
 stress:

@@ -194,7 +194,7 @@ async function main(): Promise<void> {
 
   const summary = {
     report_schema: "living-atlas-logseq-semantic-batch-plan:v1",
-    root_ref: `sha256:${digest(`${pathRedactionSecret}:semantic-root:v1:${root}`)}`,
+    root_ref: `sha256:${digest(`semantic-root:v1:${pathRedactionSecret}:${root}`)}`,
     authority_id: authorityId,
     source_mode: sourceMode,
     start_offset: offset,

@@ -286,6 +286,7 @@ npm run logseq:semantic-batch-plan
 npm run logseq:semantic-local
 npm run logseq:semantic-parity
 npm run logseq:semantic-ledger-report
+npm run logseq:semantic-corpus-report
 ```
 
 `logseq:semantic-manifest` creates a plaintext-free corpus manifest with one
@@ -305,6 +306,19 @@ can run as a hard completion gate with
 terminal `skipped` or `quarantined` decision are reported as terminal accounting
 outcomes; they do not require ledger objects unless they were readable semantic
 markdown entries.
+`logseq:semantic-corpus-report` combines multiple manifest/ledger pairs, such
+as separate `markdown-only` and `logseq-extensionless-only` runs, into one
+plaintext-free local or synced completion gate. Configure it with comma-separated
+`LIVING_ATLAS_LOGSEQ_SEMANTIC_AGGREGATE_MANIFEST_PATHS` and
+`LIVING_ATLAS_LOGSEQ_SEMANTIC_AGGREGATE_LEDGER_PATHS`. The default completion
+mode is `local`, which accepts local-verified encrypted batches and still fails
+on uncovered pending manifest entries, duplicate source refs, CRUD failures,
+blocked files, source-mode mismatches, or coverage gaps. It reports legacy
+manifest/ledger root-ref mismatches as a count because older ledgers used a
+different opaque root-ref ordering while preserving the same per-file refs and
+hashes. Set
+`LIVING_ATLAS_LOGSEQ_SEMANTIC_COMPLETION_MODE=synced` when Cloudflare parity is
+the required proof.
 
 `LIVING_ATLAS_LOGSEQ_SEMANTIC_SYNC_MODE` defaults to `local-only`. Cloudflare
 sync is paused unless `LIVING_ATLAS_LOGSEQ_SEMANTIC_SYNC_MODE=cloudflare` and
