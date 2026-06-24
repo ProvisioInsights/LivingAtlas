@@ -329,6 +329,7 @@ Command map:
 | `npm run logseq:semantic-corpus-report` | Ledger/manifest only | No | Combines multiple plaintext-free manifests and ledgers into one local or synced completion gate across source modes. |
 | `npm run connector:enrichment-report` | Yes, when pointed at a private connector packet | No | Validates a local-private connector enrichment packet and emits only counts by connector, fact kind, decision, confidence, endpoint type, predicate, and evidence kind. Only high-confidence promote decisions are counted as promote-ready. |
 | `npm run connector:enrichment-local` | Yes, when pointed at a private connector packet | No | Requires an explicit local-write acknowledgement, unlocked local keyring, and local graph directory. Writes promote-ready candidates as encrypted local-private objects and held candidates as encrypted quarantine objects, then emits a plaintext-free local ledger. |
+| `npm run connector:enrichment-corpus-report` | Connector ledgers only | No | Combines plaintext-free connector import ledgers into one local completion gate, deduped by packet hash. |
 
 The deployed Cloudflare usage gate should run before any live mutating smoke or
 stress:
@@ -408,6 +409,13 @@ By default, existing connector object ids are left unchanged and reported as
 `LIVING_ATLAS_CONNECTOR_ENRICHMENT_UPDATE_EXISTING_ACK=update-existing-encrypted-connector-objects`
 only for an intentional local repair pass that rewrites already-imported
 connector objects with the current schema-valid encrypted payload.
+
+Use `connector:enrichment-corpus-report` after one or more local connector
+imports. Set `LIVING_ATLAS_CONNECTOR_ENRICHMENT_LEDGER_PATHS` to a
+comma-separated list of private connector import ledgers. Set
+`LIVING_ATLAS_CONNECTOR_ENRICHMENT_REQUIRE_COMPLETE=1` to fail on failed import
+objects, non-encrypted local persistence, or any connector import ledger that
+attempted sync.
 
 `LIVING_ATLAS_LOGSEQ_SEMANTIC_SOURCE_MODE` controls discovery:
 

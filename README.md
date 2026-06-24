@@ -302,6 +302,7 @@ npm run logseq:semantic-review-packet
 npm run logseq:semantic-corpus-report
 npm run connector:enrichment-report
 npm run connector:enrichment-local
+npm run connector:enrichment-corpus-report
 ```
 
 `logseq:semantic-manifest` creates a plaintext-free corpus manifest with one
@@ -388,6 +389,12 @@ writes held candidates as encrypted `quarantine` graph objects, and emits a
 plaintext-free ledger. It never attempts Cloudflare sync. Existing connector
 object ids are skipped by default for idempotency; an explicit update-existing
 acknowledgement is required for a local repair pass.
+`connector:enrichment-corpus-report` combines one or more plaintext-free
+connector import ledgers into a counts-only completion report. It dedupes by
+packet hash, uses the latest ledger for each packet, fails completion on failed
+imports, non-encrypted local persistence, or accidental sync attempts, and can
+run as a hard gate with
+`LIVING_ATLAS_CONNECTOR_ENRICHMENT_REQUIRE_COMPLETE=1`.
 
 `LIVING_ATLAS_LOGSEQ_SEMANTIC_SYNC_MODE` defaults to `local-only`. Cloudflare
 sync is paused unless `LIVING_ATLAS_LOGSEQ_SEMANTIC_SYNC_MODE=cloudflare` and
