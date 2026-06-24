@@ -213,6 +213,37 @@ npx tsx packages/check/src/cli.ts wrangler-local-runtime
 
 `npx pnpm@11.8.0 check` works too and uses the same underlying gate.
 
+Aggregate local-only Logseq migration proof can include supplemental semantic
+repair/enrichment ledgers without re-counting source coverage:
+
+```bash
+LIVING_ATLAS_LOGSEQ_SEMANTIC_AGGREGATE_MANIFEST_PATHS=/private/semantic-manifest.json,/private/extensionless-manifest.json \
+LIVING_ATLAS_LOGSEQ_SEMANTIC_AGGREGATE_LEDGER_PATHS=/private/semantic-ledger.jsonl,/private/extensionless-ledger.jsonl \
+LIVING_ATLAS_LOGSEQ_SEMANTIC_SUPPLEMENTAL_LEDGER_PATHS=/private/reviewed-edge-ledger.jsonl \
+LIVING_ATLAS_LOGSEQ_SEMANTIC_COMPLETION_MODE=local \
+npm run logseq:semantic-corpus-report
+```
+
+The report prints counts, hashes, status flags, and decision categories only.
+Supplemental ledgers are reported separately from source coverage so repeated
+local enhancement passes do not inflate migrated file counts.
+
+When a private review packet is regenerated with a new path-redaction secret,
+previous high-confidence review decisions can be re-keyed by matching normalized
+review target values inside private packets:
+
+```bash
+LIVING_ATLAS_LOGSEQ_SEMANTIC_REKEY_RESOLUTIONS_ACK=write-local-private-review-resolution-map \
+LIVING_ATLAS_LOGSEQ_SEMANTIC_OLD_REVIEW_PACKET_PATH=/private/old-review-packet.json \
+LIVING_ATLAS_LOGSEQ_SEMANTIC_OLD_REVIEW_RESOLUTION_PATH=/private/old-review-resolutions.json \
+LIVING_ATLAS_LOGSEQ_SEMANTIC_NEW_REVIEW_PACKET_PATH=/private/new-review-packet.json \
+LIVING_ATLAS_LOGSEQ_SEMANTIC_REKEYED_RESOLUTION_PATH=/private/new-review-resolutions.json \
+npm run logseq:semantic-review-rekey
+```
+
+The rekey command writes the new private resolution map outside the repository
+and prints count-only diagnostics.
+
 Validate the Cloudflare infrastructure skeleton:
 
 ```bash

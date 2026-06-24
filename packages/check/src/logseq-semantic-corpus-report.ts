@@ -91,6 +91,20 @@ type CorpusInput = {
 
 type Totals = BatchRecord["plan_totals"];
 
+type SupplementalReport = {
+  record_count: number;
+  deduped_batch_count: number;
+  local_only_batch_count: number;
+  synced_batch_count: number;
+  crud_failed_batch_count: number;
+  unsynced_batch_count: number;
+  blocked_file_count: number;
+  needs_review: number;
+  quarantine_objects: number;
+  totals: Totals;
+  decisions: Record<string, number>;
+};
+
 export type SemanticCorpusAggregateReport = {
   report_schema: "living-atlas-logseq-semantic-corpus-aggregate-report:v1";
   completion_mode: CompletionMode;
@@ -130,6 +144,7 @@ export type SemanticCorpusAggregateReport = {
     quarantine_objects: number;
   };
   totals: Totals;
+  supplemental: SupplementalReport;
   decisions: Record<string, number>;
   plaintext_policy: "hash-counts-refs-only";
 };
@@ -238,6 +253,35 @@ function gapCount(records: BatchRecord[]): number {
   return gaps;
 }
 
+function aggregateRecords(records: BatchRecord[]): SupplementalReport {
+  const latest = latestRecords(records);
+  const crudFailed = latest.filter((record) => !record.crud.ok);
+  const unsynced = latest.filter((record) => record.sync.attempted && record.sync.synced_objects !== record.plan_totals.planned_objects);
+  const localOnly = latest.filter((record) => !record.sync.attempted);
+  const fileStatuses = latest.flatMap((record) => record.files);
+  const totals = latest.reduce((sum, record) => addTotals(sum, record.plan_totals), emptyTotals());
+  const decisions: Record<string, number> = {};
+  for (const record of latest) {
+    for (const [key, value] of Object.entries(record.decisions)) {
+      decisions[key] = (decisions[key] ?? 0) + value;
+    }
+  }
+
+  return {
+    record_count: records.length,
+    deduped_batch_count: latest.length,
+    local_only_batch_count: localOnly.length,
+    synced_batch_count: latest.filter((record) => record.sync.attempted).length,
+    crud_failed_batch_count: crudFailed.length,
+    unsynced_batch_count: unsynced.length,
+    blocked_file_count: fileStatuses.filter((file) => file.parity_status === "blocked").length,
+    needs_review: fileStatuses.filter((file) => file.review_status === "needs-review").length,
+    quarantine_objects: totals.quarantine_objects,
+    totals,
+    decisions
+  };
+}
+
 async function readLedger(path: string): Promise<BatchRecord[]> {
   const content = await readFile(path, "utf8");
   return content
@@ -248,11 +292,15 @@ async function readLedger(path: string): Promise<BatchRecord[]> {
 
 export async function buildSemanticCorpusAggregateReport(input: {
   sources: CorpusInput[];
+  supplementalLedgerPaths?: string[];
   completionMode?: CompletionMode;
 }): Promise<SemanticCorpusAggregateReport> {
   const completionMode = input.completionMode ?? "local";
   const manifests: Manifest[] = [];
   const rawRecords: BatchRecord[] = [];
+  const rawSupplementalRecords = input.supplementalLedgerPaths
+    ? (await Promise.all(input.supplementalLedgerPaths.map(readLedger))).flat()
+    : [];
   const failures = new Set<string>();
   const sourceRefsByMode = new Map<string, Set<string>>();
   const sourceRefOccurrences = new Map<string, number>();
@@ -293,6 +341,9 @@ export async function buildSemanticCorpusAggregateReport(input: {
         manifestLedgerRootMismatches += 1;
       }
     }
+  }
+  if (manifestLedgerRootMismatches > 0) {
+    failures.add("manifest-ledger-root-mismatch");
   }
 
   const latest = latestRecords(rawRecords);
@@ -343,6 +394,20 @@ export async function buildSemanticCorpusAggregateReport(input: {
   }
 
   const totals = latest.reduce((sum, record) => addTotals(sum, record.plan_totals), emptyTotals());
+  const supplemental = aggregateRecords(rawSupplementalRecords);
+  if (supplemental.crud_failed_batch_count > 0) {
+    failures.add("supplemental-crud-failed-batches");
+  }
+  if (supplemental.unsynced_batch_count > 0) {
+    failures.add("supplemental-synced-object-count-mismatch");
+  }
+  if (supplemental.blocked_file_count > 0) {
+    failures.add("supplemental-blocked-files");
+  }
+  if (supplemental.needs_review > 0) {
+    failures.add("supplemental-needs-review");
+  }
+
   const decisions: Record<string, number> = {};
   for (const record of latest) {
     for (const [key, value] of Object.entries(record.decisions)) {
@@ -389,6 +454,7 @@ export async function buildSemanticCorpusAggregateReport(input: {
       quarantine_objects: totals.quarantine_objects
     },
     totals,
+    supplemental,
     decisions,
     plaintext_policy: "hash-counts-refs-only"
   };
@@ -397,6 +463,9 @@ export async function buildSemanticCorpusAggregateReport(input: {
 async function main(): Promise<void> {
   const manifestPaths = parsePathList("LIVING_ATLAS_LOGSEQ_SEMANTIC_AGGREGATE_MANIFEST_PATHS");
   const ledgerPaths = parsePathList("LIVING_ATLAS_LOGSEQ_SEMANTIC_AGGREGATE_LEDGER_PATHS");
+  const supplementalLedgerPaths = envValue("LIVING_ATLAS_LOGSEQ_SEMANTIC_SUPPLEMENTAL_LEDGER_PATHS")
+    ? parsePathList("LIVING_ATLAS_LOGSEQ_SEMANTIC_SUPPLEMENTAL_LEDGER_PATHS")
+    : [];
   if (manifestPaths.length !== ledgerPaths.length) {
     throw new Error("aggregate manifest and ledger path counts must match");
   }
@@ -406,6 +475,7 @@ async function main(): Promise<void> {
       manifest_path: manifestPath,
       ledger_path: ledgerPaths[index]!
     })),
+    supplementalLedgerPaths,
     completionMode
   });
   console.log(JSON.stringify(report, null, 2));

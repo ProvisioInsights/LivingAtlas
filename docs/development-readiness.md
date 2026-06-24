@@ -189,6 +189,52 @@ quarantined or fail the run before write.
 The review packet and resolution map may contain private plaintext context and
 must be written outside this repository with private filesystem permissions.
 
+## Local Semantic Corpus Proof With Supplemental Ledgers
+
+The aggregate corpus report accepts two required comma-separated lists:
+
+- `LIVING_ATLAS_LOGSEQ_SEMANTIC_AGGREGATE_MANIFEST_PATHS`
+- `LIVING_ATLAS_LOGSEQ_SEMANTIC_AGGREGATE_LEDGER_PATHS`
+
+Each manifest path pairs with the ledger path at the same list position. These
+paired ledgers prove source coverage: every source item is migrated, skipped
+with a terminal reason, or quarantined.
+
+Later local repair/enrichment passes, such as reviewed typed-edge promotion,
+can be supplied through:
+
+```bash
+LIVING_ATLAS_LOGSEQ_SEMANTIC_SUPPLEMENTAL_LEDGER_PATHS=/private/reviewed-edge-ledger.jsonl
+```
+
+Supplemental ledgers are counted in a separate `supplemental` section. They can
+make completion fail when CRUD, sync, blocked-file, or review gates fail, but
+they do not increase source coverage counts. This keeps parity proof and
+semantic enhancement proof linked without double-counting the same source
+files.
+
+Manifest and ledger root refs must match. A root mismatch means the ledger was
+created against a different source-root or path-redaction-secret view and cannot
+prove the current manifest.
+
+When the path-redaction secret changes, existing local-private review
+resolution maps no longer match newly generated review target hashes. To carry
+forward prior high-confidence decisions, regenerate a private review packet for
+the current ledger, then re-key the old private resolution map:
+
+```bash
+LIVING_ATLAS_LOGSEQ_SEMANTIC_REKEY_RESOLUTIONS_ACK=write-local-private-review-resolution-map \
+LIVING_ATLAS_LOGSEQ_SEMANTIC_OLD_REVIEW_PACKET_PATH=/private/old-review-packet.json \
+LIVING_ATLAS_LOGSEQ_SEMANTIC_OLD_REVIEW_RESOLUTION_PATH=/private/old-review-resolutions.json \
+LIVING_ATLAS_LOGSEQ_SEMANTIC_NEW_REVIEW_PACKET_PATH=/private/new-review-packet.json \
+LIVING_ATLAS_LOGSEQ_SEMANTIC_REKEYED_RESOLUTION_PATH=/private/new-review-resolutions.json \
+npm run logseq:semantic-review-rekey
+```
+
+The command matches reviewed decisions by normalized private target value plus
+reason code inside the private packets. It skips ambiguous duplicate targets or
+endpoint-type mismatches and prints counts only.
+
 ## Current V1 Direction
 
 Build:

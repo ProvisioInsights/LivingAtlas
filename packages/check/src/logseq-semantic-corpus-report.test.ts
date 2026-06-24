@@ -53,7 +53,13 @@ function ledgerRecord(input: {
   refs: string[];
   synced?: boolean;
   crudOk?: boolean;
+  totals?: Partial<typeof baseTotals>;
+  decisions?: Record<string, number>;
 }) {
+  const totals = {
+    ...baseTotals,
+    ...input.totals
+  };
   return {
     record_schema: "living-atlas-logseq-semantic-batch:v1",
     recorded_at: "2026-06-23T00:00:00.000Z",
@@ -66,9 +72,9 @@ function ledgerRecord(input: {
     actual_file_count: input.refs.length,
     ledger_id: `la_semantic_ledger_${input.mode}_${input.offset}`,
     plan_totals: {
-      ...baseTotals,
-      bytes: baseTotals.bytes * input.refs.length,
-      planned_objects: baseTotals.planned_objects * input.refs.length
+      ...totals,
+      bytes: input.totals?.bytes ?? baseTotals.bytes * input.refs.length,
+      planned_objects: input.totals?.planned_objects ?? baseTotals.planned_objects * input.refs.length
     },
     crud: {
       ok: input.crudOk ?? true,
@@ -79,7 +85,7 @@ function ledgerRecord(input: {
       ? {
           attempted: true,
           generation: input.offset + 1,
-          synced_objects: baseTotals.planned_objects * input.refs.length
+          synced_objects: input.totals?.planned_objects ?? baseTotals.planned_objects * input.refs.length
         }
       : {
           attempted: false
@@ -94,7 +100,7 @@ function ledgerRecord(input: {
       planned_objects: baseTotals.planned_objects,
       object_plan_hash: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
     })),
-    decisions: {
+    decisions: input.decisions ?? {
       "captured-encrypted": input.refs.length
     },
     plaintext_policy: "hash-counts-refs-only"
@@ -212,6 +218,37 @@ describe("Logseq semantic corpus aggregate report", () => {
     }
   });
 
+  it("keeps local completion false when manifest and ledger roots differ", async () => {
+    const root = await mkdtemp(join(tmpdir(), "living-atlas-corpus-report-"));
+    try {
+      const manifestPath = join(root, "manifest.json");
+      const ledgerPath = join(root, "ledger.jsonl");
+      await writeJson(manifestPath, manifest({
+        id: "la_semantic_manifest_markdown000001",
+        mode: "markdown-only",
+        rootRef: "sha256:manifest",
+        refs: [{ ref: "la_source_markdown000000000001", terminal: "pending" }]
+      }));
+      await writeFile(ledgerPath, `${JSON.stringify(ledgerRecord({
+        mode: "markdown-only",
+        rootRef: "sha256:ledger",
+        offset: 0,
+        refs: ["la_source_markdown000000000001"]
+      }))}\n`);
+
+      const report = await buildSemanticCorpusAggregateReport({
+        sources: [{ manifest_path: manifestPath, ledger_path: ledgerPath }],
+        completionMode: "local"
+      });
+
+      expect(report.complete).toBe(false);
+      expect(report.failures).toContain("manifest-ledger-root-mismatch");
+      expect(report.manifests.manifest_ledger_root_mismatches).toBe(1);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("rejects overlapping source refs across selected corpus slices", async () => {
     const root = await mkdtemp(join(tmpdir(), "living-atlas-corpus-report-"));
     try {
@@ -256,6 +293,112 @@ describe("Logseq semantic corpus aggregate report", () => {
       expect(report.complete).toBe(false);
       expect(report.failures).toContain("duplicate-source-refs-across-sources");
       expect(report.manifests.duplicate_source_refs).toBe(1);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("reports supplemental semantic passes without double-counting corpus coverage", async () => {
+    const root = await mkdtemp(join(tmpdir(), "living-atlas-corpus-report-"));
+    try {
+      const manifestPath = join(root, "manifest.json");
+      const ledgerPath = join(root, "ledger.jsonl");
+      const supplementalLedgerPath = join(root, "supplemental-ledger.jsonl");
+      await writeJson(manifestPath, manifest({
+        id: "la_semantic_manifest_markdown000001",
+        mode: "markdown-only",
+        rootRef: "sha256:markdown",
+        refs: [
+          { ref: "la_source_markdown000000000001", terminal: "pending" },
+          { ref: "la_source_markdown000000000002", terminal: "pending" }
+        ]
+      }));
+      await writeFile(ledgerPath, `${JSON.stringify(ledgerRecord({
+        mode: "markdown-only",
+        rootRef: "sha256:markdown",
+        offset: 0,
+        refs: ["la_source_markdown000000000001", "la_source_markdown000000000002"]
+      }))}\n`);
+      await writeFile(supplementalLedgerPath, `${JSON.stringify(ledgerRecord({
+        mode: "markdown-only",
+        rootRef: "sha256:markdown",
+        offset: 0,
+        refs: ["la_source_markdown000000000001", "la_source_markdown000000000002"],
+        totals: {
+          edge_candidates: 4,
+          valid_edge_candidates: 3,
+          quarantined_edge_candidates: 1,
+          edge_objects: 4,
+          quarantine_objects: 1,
+          planned_objects: 8
+        },
+        decisions: {
+          "property-edge-promoted": 3,
+          "direction-review": 1
+        }
+      }))}\n`);
+
+      const report = await buildSemanticCorpusAggregateReport({
+        sources: [{ manifest_path: manifestPath, ledger_path: ledgerPath }],
+        supplementalLedgerPaths: [supplementalLedgerPath],
+        completionMode: "local"
+      });
+
+      expect(report.complete).toBe(true);
+      expect(report.ledgers.covered_file_count).toBe(2);
+      expect(report.totals.edge_objects).toBe(0);
+      expect(report.supplemental).toMatchObject({
+        record_count: 1,
+        deduped_batch_count: 1,
+        local_only_batch_count: 1,
+        crud_failed_batch_count: 0,
+        needs_review: 0,
+        quarantine_objects: 1
+      });
+      expect(report.supplemental.totals.edge_objects).toBe(4);
+      expect(report.supplemental.decisions).toEqual({
+        "direction-review": 1,
+        "property-edge-promoted": 3
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("fails completion when a supplemental semantic pass failed CRUD", async () => {
+    const root = await mkdtemp(join(tmpdir(), "living-atlas-corpus-report-"));
+    try {
+      const manifestPath = join(root, "manifest.json");
+      const ledgerPath = join(root, "ledger.jsonl");
+      const supplementalLedgerPath = join(root, "supplemental-ledger.jsonl");
+      await writeJson(manifestPath, manifest({
+        id: "la_semantic_manifest_markdown000001",
+        mode: "markdown-only",
+        rootRef: "sha256:markdown",
+        refs: [{ ref: "la_source_markdown000000000001", terminal: "pending" }]
+      }));
+      await writeFile(ledgerPath, `${JSON.stringify(ledgerRecord({
+        mode: "markdown-only",
+        rootRef: "sha256:markdown",
+        offset: 0,
+        refs: ["la_source_markdown000000000001"]
+      }))}\n`);
+      await writeFile(supplementalLedgerPath, `${JSON.stringify(ledgerRecord({
+        mode: "markdown-only",
+        rootRef: "sha256:markdown",
+        offset: 0,
+        refs: ["la_source_markdown000000000001"],
+        crudOk: false
+      }))}\n`);
+
+      const report = await buildSemanticCorpusAggregateReport({
+        sources: [{ manifest_path: manifestPath, ledger_path: ledgerPath }],
+        supplementalLedgerPaths: [supplementalLedgerPath],
+        completionMode: "local"
+      });
+
+      expect(report.complete).toBe(false);
+      expect(report.failures).toContain("supplemental-crud-failed-batches");
     } finally {
       await rm(root, { recursive: true, force: true });
     }
