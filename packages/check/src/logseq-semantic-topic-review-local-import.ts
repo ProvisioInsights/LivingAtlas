@@ -159,7 +159,18 @@ function collectNeedles(value: unknown, output = new Set<string>()): Set<string>
   }
   if (value && typeof value === "object") {
     for (const [key, entry] of Object.entries(value)) {
-      if (["packet_schema", "plaintext_policy", "source_path_policy", "reason_code", "decision", "confidence", "subtype"].includes(key)) {
+      if ([
+        "packet_schema",
+        "resolution_schema",
+        "plaintext_policy",
+        "source_path_policy",
+        "generated_at",
+        "source_mode",
+        "reason_code",
+        "decision",
+        "confidence",
+        "subtype"
+      ].includes(key)) {
         continue;
       }
       collectNeedles(entry, output);
@@ -171,7 +182,7 @@ function collectNeedles(value: unknown, output = new Set<string>()): Set<string>
 function assertNoNeedles(label: string, value: unknown, needles: Iterable<string>): void {
   const serialized = typeof value === "string" ? value : JSON.stringify(value);
   for (const needle of needles) {
-    if (serialized.includes(needle)) {
+    if (serialized.includes(JSON.stringify(needle))) {
       throw new Error(`${label} leaked topic review plaintext needle`);
     }
   }

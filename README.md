@@ -347,6 +347,7 @@ npm run logseq:semantic-review-report
 npm run logseq:semantic-review-packet
 npm run logseq:semantic-topic-review-packet
 npm run logseq:semantic-topic-review-report
+npm run logseq:semantic-topic-review-resolution-draft
 npm run logseq:semantic-topic-review-local
 npm run logseq:semantic-corpus-report
 npm run connector:enrichment-report
@@ -425,6 +426,11 @@ resolutions, unresolved groups, and unresolved candidate occurrences.
 `review_complete` is false until every grouped candidate has a terminal
 decision. Set `LIVING_ATLAS_LOGSEQ_TOPIC_REVIEW_REQUIRE_COMPLETE=1` when every
 grouped topic candidate must have a terminal review decision before proceeding.
+`logseq:semantic-topic-review-resolution-draft` writes a conservative private
+resolution map that defers every grouped topic candidate. It is useful when
+unreviewed tag-derived candidates should be terminally accounted for without
+creating topic nodes. It does not promote topics; edit the private resolution
+map manually for high-confidence `promote-topic` decisions before local import.
 `logseq:semantic-topic-review-local` consumes the private packet plus a private
 high-confidence resolution map and writes encrypted local graph objects only.
 `promote-topic` decisions become encrypted `local-private` topic endpoint

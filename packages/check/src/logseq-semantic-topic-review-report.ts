@@ -17,7 +17,7 @@ type TopicCandidateReason = z.infer<typeof TopicCandidateReasonSchema>;
 const TopicReviewDecisionSchema = z.enum(["promote-topic", "defer", "reject"]);
 type TopicReviewDecision = z.infer<typeof TopicReviewDecisionSchema>;
 
-const TopicReviewResolutionSchema = z
+export const TopicReviewResolutionSchema = z
   .object({
     target_hash: z.string().regex(/^sha256:[a-f0-9]{64}$/),
     reason_code: TopicCandidateReasonSchema,
