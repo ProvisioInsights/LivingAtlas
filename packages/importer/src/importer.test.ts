@@ -103,6 +103,14 @@ describe("markdown importer planning", () => {
       source_kind: "logseq"
     })).toEqual({ supported: false, reason_code: "ignored-extension" });
     expect(classifyMarkdownSourcePath({
+      source_path: "pages/.fuse_hidden000001c800000162",
+      source_kind: "logseq"
+    })).toEqual({ supported: false, reason_code: "ignored-extension" });
+    expect(classifyMarkdownSourcePath({
+      source_path: ".trash/pages/Project Glass Lantern",
+      source_kind: "logseq"
+    })).toEqual({ supported: false, reason_code: "ignored-extension" });
+    expect(classifyMarkdownSourcePath({
       source_path: "pages/image.png",
       source_kind: "logseq"
     })).toEqual({ supported: false, reason_code: "ignored-extension" });

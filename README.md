@@ -324,6 +324,8 @@ Set `LIVING_ATLAS_LOGSEQ_SEMANTIC_SOURCE_MODE` to choose the corpus slice:
 
 Use separate ledger paths for materially different source modes. Offsets are
 relative to the selected source mode and must not be mixed across ledgers.
+Hidden filesystem artifacts and dotfiles, including `.fuse_hidden*` files, are
+excluded from semantic source discovery.
 
 For legacy semantic imports that already synced the graph objects before
 source-capsule refs existed, set

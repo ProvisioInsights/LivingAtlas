@@ -165,6 +165,7 @@ export function classifyMarkdownSourcePath(input: {
 }): MarkdownSourcePathClassification {
   const mode = input.mode ?? "logseq-notes";
   const normalized = normalizeMarkdownSourcePath(input.source_path);
+  const segments = normalized.split("/").filter(Boolean);
   if (
     normalized.startsWith(".git/")
     || normalized.includes("/.git/")
@@ -176,13 +177,13 @@ export function classifyMarkdownSourcePath(input: {
     || normalized.includes("/logseq/bak/")
     || normalized.startsWith("logseq/.recycle/")
     || normalized.includes("/logseq/.recycle/")
+    || segments.some((segment) => segment.startsWith("."))
   ) {
     return { supported: false, reason_code: "ignored-extension" };
   }
   const extension = extname(basename(normalized)).toLowerCase();
   const isMarkdown = extension === ".md" || extension === ".markdown";
   const isExtensionless = extension === "";
-  const segments = normalized.split("/").filter(Boolean);
   const isLogseqNotePath = input.source_kind === "logseq" && (segments[0] === "pages" || segments[0] === "journals");
 
   if (mode === "markdown-only") {

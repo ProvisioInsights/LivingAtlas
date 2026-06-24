@@ -350,6 +350,8 @@ Backfill requires `LIVING_ATLAS_LOGSEQ_SEMANTIC_SYNC_MODE=backfill` and
 Keep separate ledger files for separate source modes. Source offsets are mode
 relative, so mixing source modes in one ledger can hide gaps or duplicate
 imports.
+Hidden filesystem artifacts and dotfiles, including `.fuse_hidden*` files from
+local sync layers, are excluded from semantic source discovery.
 
 It calls `/api/usage/gate`, fails closed without an endpoint/token, and returns
 `safe-to-test` only when configured budgets remain under the selected threshold,

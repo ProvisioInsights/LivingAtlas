@@ -51,7 +51,9 @@ describe("Logseq semantic corpus manifest", () => {
       await mkdir(join(root, "assets"), { recursive: true });
 
       await writeFile(join(root, "pages", "Synthetic Private Page"), "- extensionless page\n");
+      await writeFile(join(root, "pages", ".fuse_hidden000001c800000162"), "- hidden filesystem artifact\n");
       await writeFile(join(root, "journals", "2026_06_23"), "- extensionless journal\n");
+      await writeFile(join(root, "journals", ".fuse_hidden000001c800000163"), "- hidden journal artifact\n");
       await writeFile(join(root, "assets", "Synthetic Attachment.png"), "not markdown");
       await writeFile(join(root, "assets", "Synthetic Attachment.pdf"), "%PDF-1.7");
 
@@ -97,6 +99,7 @@ describe("Logseq semantic corpus manifest", () => {
       expect(manifest.entries.filter((entry) => entry.reason_code === "ignored-extension")).toHaveLength(2);
       expect(JSON.stringify(manifest)).not.toContain("Synthetic Private Page");
       expect(JSON.stringify(manifest)).not.toContain("Synthetic Attachment");
+      expect(JSON.stringify(manifest)).not.toContain("fuse_hidden");
       expect(JSON.stringify(manifest)).not.toContain(root);
     } finally {
       await rm(root, { recursive: true, force: true });

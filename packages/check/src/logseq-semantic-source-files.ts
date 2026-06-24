@@ -12,6 +12,10 @@ export { SemanticSourceModeSchema, type SemanticSourceMode };
 
 const ignoredDirectories = new Set([".git", "node_modules", "dist", "build", ".wrangler", ".terraform"]);
 
+function isHiddenFilesystemArtifact(name: string): boolean {
+  return name.startsWith(".");
+}
+
 export type SemanticSourceClassification =
   | {
       supported: true;
@@ -64,12 +68,12 @@ export async function walkAllSemanticSourceFiles(root: string): Promise<string[]
     for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
       const path = join(dir, entry.name);
       if (entry.isDirectory()) {
-        if (!ignoredDirectories.has(entry.name)) {
+        if (!ignoredDirectories.has(entry.name) && !isHiddenFilesystemArtifact(entry.name)) {
           queue.push(path);
         }
         continue;
       }
-      if (entry.isFile()) {
+      if (entry.isFile() && !isHiddenFilesystemArtifact(entry.name)) {
         files.push(path);
       }
     }
