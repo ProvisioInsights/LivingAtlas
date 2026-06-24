@@ -387,6 +387,7 @@ Command map:
 | `npm run logseq:semantic-ledger-report` | Ledger only | No | Summarizes the plaintext-free semantic migration ledger: coverage, gaps, synced batches, totals, and decisions. |
 | `npm run logseq:semantic-review-report` | Ledger only | No | Summarizes plaintext-free review work from quarantine decisions: reason counts, affected batch windows, and opaque source refs. |
 | `npm run logseq:semantic-review-packet` | Yes, when pointed at a private local graph | No | Requires explicit acknowledgement and writes a local-private plaintext review packet outside the repo. Stdout is counts-only; the packet groups unresolved values by reason, target hash, property keys, suffixes, and opaque source refs. If `LIVING_ATLAS_LOGSEQ_SEMANTIC_REVIEW_RESOLUTION_PATH` is set, already-resolved or explicitly deferred targets are suppressed from the residual packet. |
+| `npm run logseq:semantic-topic-review-packet` | Yes, when pointed at a private local graph | No | Requires explicit acknowledgement and writes a local-private plaintext topic-candidate packet outside the repo. Stdout is counts-only; tag-derived candidates are grouped by hash and suffix edge tags are excluded. |
 | `npm run logseq:semantic-corpus-report` | Ledger/manifest only | No | Combines multiple plaintext-free manifests and ledgers into one local or synced completion gate across source modes. |
 | `npm run connector:enrichment-report` | Yes, when pointed at a private connector packet | No | Validates a local-private connector enrichment packet and emits only counts by connector, fact kind, decision, confidence, endpoint type, predicate, and evidence kind. Only high-confidence promote decisions are counted as promote-ready. |
 | `npm run connector:enrichment-local` | Yes, when pointed at a private connector packet | No | Requires an explicit local-write acknowledgement, unlocked local keyring, and local graph directory. Writes promote-ready candidates as encrypted local-private objects and held candidates as encrypted quarantine objects, then emits a plaintext-free local ledger. |
@@ -446,6 +447,16 @@ packet file. When a private resolution map is supplied through
 `LIVING_ATLAS_LOGSEQ_SEMANTIC_REVIEW_RESOLUTION_PATH`, resolved and explicitly
 deferred targets are omitted so the packet represents only residual review work. Do not
 commit, upload, or sync that packet to a public repo.
+
+Use `logseq:semantic-topic-review-packet` only for private local topic curation.
+It requires
+`LIVING_ATLAS_LOGSEQ_TOPIC_REVIEW_PACKET_ACK=write-local-private-topic-review-packet`
+and `LIVING_ATLAS_LOGSEQ_TOPIC_REVIEW_PACKET_PATH`, refuses to write inside the
+repository checkout, and may include plaintext tag/topic candidate values in the
+packet file. The command scans the selected semantic source mode, groups plain
+tag values, hash tags, and wikilink tag values by private target hash, excludes
+suffix tags that carry edge semantics, and prints only counts. Do not commit,
+upload, or sync that packet to a public repo.
 
 Use `connector:enrichment-report` before importing any connector-derived facts
 from mail, calendar, meeting, chat, document, or manual-file workflows. Set

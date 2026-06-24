@@ -345,6 +345,7 @@ npm run logseq:semantic-parity
 npm run logseq:semantic-ledger-report
 npm run logseq:semantic-review-report
 npm run logseq:semantic-review-packet
+npm run logseq:semantic-topic-review-packet
 npm run logseq:semantic-corpus-report
 npm run connector:enrichment-report
 npm run connector:enrichment-local
@@ -408,6 +409,13 @@ stdout summary remains counts-only. When
 suppresses targets already handled by high-confidence resolution entries,
 including explicit deferrals, so residual review counts match the resolved
 ledger.
+`logseq:semantic-topic-review-packet` is a separate opt-in local-private helper
+for controlled topic curation. It groups tag-derived topic candidates from
+plain `tags::` values, hash tags, and wikilink tag values into a private packet
+outside the repository. Stdout remains count-only, suffix tags used for edge
+semantics are excluded from topic candidates, and no `topic` endpoint is
+created until a human-reviewed high-confidence resolution/import path promotes
+it.
 `logseq:semantic-corpus-report` combines multiple manifest/ledger pairs, such
 as separate `markdown-only` and `logseq-extensionless-only` runs, into one
 plaintext-free local or synced completion gate. Configure it with comma-separated
