@@ -2,7 +2,10 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { createMarkdownSourceRef } from "@living-atlas/importer";
+import {
+  createLogseqSemanticReviewTargetHash,
+  createMarkdownSourceRef
+} from "@living-atlas/importer";
 import {
   buildSemanticReviewPacket
 } from "./logseq-semantic-review-packet";
@@ -111,6 +114,46 @@ describe("Logseq semantic review packet", () => {
     });
     expect(packet.groups[0]!.source_refs).toHaveLength(2);
     expect(packet.groups[0]!.target_hash).toMatch(/^sha256:[a-f0-9]{64}$/);
+  });
+
+  it("suppresses candidates already handled by a private review resolution map", () => {
+    const files = [
+      {
+        source_path: "pages/Synthetic Person.md",
+        markdown: "type:: person\nlocation:: Synthetic Unknown City\norg:: Synthetic Unknown Org\n\n- body text\n",
+        source_kind: "logseq" as const
+      }
+    ];
+    const resolvedOrgHash = createLogseqSemanticReviewTargetHash({
+      pathRedactionSecret,
+      reasonCode: "non-wikilink-organization-review",
+      value: "Synthetic Unknown Org"
+    });
+
+    const packet = buildSemanticReviewPacket({
+      files,
+      records: [batchRecord(files.map((file) => file.source_path))],
+      pathRedactionSecret,
+      reviewResolutions: [
+        {
+          target_hash: resolvedOrgHash,
+          reason_code: "non-wikilink-organization-review",
+          decision: "create-endpoint",
+          endpoint_type: "organization",
+          endpoint_title: "Synthetic Unknown Org",
+          aliases: [],
+          confidence: "high"
+        }
+      ],
+      generatedAt: "2026-06-24T00:00:00.000Z"
+    });
+
+    expect(packet.candidate_count).toBe(1);
+    expect(packet.grouped_candidate_count).toBe(1);
+    expect(packet.reason_counts).toEqual({
+      "non-wikilink-location-review": 1
+    });
+    expect(packet.groups.map((group) => group.target_value)).toEqual(["Synthetic Unknown City"]);
   });
 
   it("writes tests outside the repository without relying on private paths", async () => {

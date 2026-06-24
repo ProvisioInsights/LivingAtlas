@@ -349,7 +349,10 @@ batch windows, and opaque source refs for follow-up.
 reconstructs unresolved review targets from the source graph and writes
 actionable plaintext values to a caller-supplied path outside the repository.
 It requires an explicit acknowledgement and a stable path redaction secret; its
-stdout summary remains counts-only.
+stdout summary remains counts-only. When
+`LIVING_ATLAS_LOGSEQ_SEMANTIC_REVIEW_RESOLUTION_PATH` is set, the packet
+suppresses targets already handled by high-confidence non-deferred resolution
+entries so residual review counts match the resolved ledger.
 `logseq:semantic-corpus-report` combines multiple manifest/ledger pairs, such
 as separate `markdown-only` and `logseq-extensionless-only` runs, into one
 plaintext-free local or synced completion gate. Configure it with comma-separated

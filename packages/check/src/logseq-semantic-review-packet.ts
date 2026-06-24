@@ -1,9 +1,11 @@
-import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
+  createLogseqSemanticReviewTargetHash,
   createMarkdownSourceRef,
+  LogseqSemanticReviewResolutionMapSchema,
+  type LogseqSemanticReviewResolution,
   MarkdownImportSourceKindSchema,
   type MarkdownFileInput
 } from "@living-atlas/importer";
@@ -62,6 +64,8 @@ type ReviewCandidate = {
   source_path_ref: string;
 };
 
+type ReviewResolutionIndex = Map<string, LogseqSemanticReviewResolution>;
+
 export type SemanticReviewPacket = {
   packet_schema: "living-atlas-logseq-semantic-review-packet:v1";
   plaintext_policy: "local-private-review-packet";
@@ -96,10 +100,6 @@ function requireEnv(key: string): string {
     throw new Error(`missing ${key}`);
   }
   return value;
-}
-
-function sha256(value: string): `sha256:${string}` {
-  return `sha256:${createHash("sha256").update(value).digest("hex")}`;
 }
 
 function parsePropertyLine(line: string): LogseqProperty | undefined {
@@ -378,6 +378,34 @@ function reviewCandidates(file: ParsedReviewFile, index: Map<string, EndpointInd
   return candidates;
 }
 
+function buildReviewResolutionIndex(resolutions: LogseqSemanticReviewResolution[] | undefined): ReviewResolutionIndex {
+  const index: ReviewResolutionIndex = new Map();
+  for (const resolution of resolutions ?? []) {
+    if (resolution.decision === "defer") {
+      continue;
+    }
+    index.set(resolution.target_hash, resolution);
+  }
+  return index;
+}
+
+function isResolvedReviewCandidate(input: {
+  candidate: ReviewCandidate;
+  pathRedactionSecret: string;
+  reviewResolutionIndex?: ReviewResolutionIndex;
+}): boolean {
+  const targetHash = createLogseqSemanticReviewTargetHash({
+    pathRedactionSecret: input.pathRedactionSecret,
+    reasonCode: input.candidate.reason_code,
+    value: input.candidate.value
+  });
+  const resolution = input.reviewResolutionIndex?.get(targetHash);
+  return resolution !== undefined
+    && resolution.reason_code === input.candidate.reason_code
+    && resolution.endpoint_type !== undefined
+    && input.candidate.suggested_endpoint_types.includes(resolution.endpoint_type);
+}
+
 function latestRecords(records: BatchRecord[]): BatchRecord[] {
   const byWindow = new Map<string, BatchRecord>();
   for (const record of records) {
@@ -398,6 +426,7 @@ export function buildSemanticReviewPacket(input: {
   files: MarkdownFileInput[];
   records: BatchRecord[];
   pathRedactionSecret: string;
+  reviewResolutions?: LogseqSemanticReviewResolution[];
   generatedAt?: string;
 }): SemanticReviewPacket {
   const latest = latestRecords(input.records);
@@ -409,15 +438,25 @@ export function buildSemanticReviewPacket(input: {
     .map((file) => parsedReviewFile(file, input.pathRedactionSecret))
     .filter((file) => coveredSourceRefs.has(file.source_path_ref));
   const index = buildEndpointIndex(parsedFiles);
+  const reviewResolutionIndex = buildReviewResolutionIndex(input.reviewResolutions);
   const candidates = parsedFiles
     .filter((file) => reviewSourceRefs.has(file.source_path_ref))
-    .flatMap((file) => reviewCandidates(file, index));
+    .flatMap((file) => reviewCandidates(file, index))
+    .filter((candidate) => !isResolvedReviewCandidate({
+      candidate,
+      pathRedactionSecret: input.pathRedactionSecret,
+      reviewResolutionIndex
+    }));
   const reasonCounts: Record<string, number> = {};
   const groups = new Map<string, SemanticReviewPacket["groups"][number]>();
 
   for (const candidate of candidates) {
     reasonCounts[candidate.reason_code] = (reasonCounts[candidate.reason_code] ?? 0) + 1;
-    const targetHash = sha256(`semantic-review-packet:v1:${input.pathRedactionSecret}:${candidate.reason_code}:${candidate.value.trim().toLowerCase()}`);
+    const targetHash = createLogseqSemanticReviewTargetHash({
+      pathRedactionSecret: input.pathRedactionSecret,
+      reasonCode: candidate.reason_code,
+      value: candidate.value
+    });
     const key = `${candidate.reason_code}:${targetHash}`;
     const existing = groups.get(key);
     if (existing) {
@@ -511,6 +550,10 @@ async function main(): Promise<void> {
   assertOutputPathSafe(outputPath);
   const pathRedactionSecret = requireEnv("LIVING_ATLAS_REAL_DATA_PATH_REDACTION_SECRET");
   const records = await readRecords(requireEnv("LIVING_ATLAS_LOGSEQ_SEMANTIC_LEDGER_PATH"));
+  const reviewResolutionPath = envValue("LIVING_ATLAS_LOGSEQ_SEMANTIC_REVIEW_RESOLUTION_PATH");
+  const reviewResolutions = reviewResolutionPath
+    ? LogseqSemanticReviewResolutionMapSchema.parse(JSON.parse(await readFile(reviewResolutionPath, "utf8"))).resolutions
+    : undefined;
   const files = await sourceFilesForRecords({
     root: requireEnv("LIVING_ATLAS_REAL_MARKDOWN_ROOT"),
     records,
@@ -519,7 +562,8 @@ async function main(): Promise<void> {
   const packet = buildSemanticReviewPacket({
     files,
     records,
-    pathRedactionSecret
+    pathRedactionSecret,
+    reviewResolutions
   });
   await mkdir(dirname(outputPath), { recursive: true, mode: 0o700 });
   await writeFile(outputPath, `${JSON.stringify(packet, null, 2)}\n`, { mode: 0o600 });
