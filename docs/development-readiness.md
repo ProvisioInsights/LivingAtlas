@@ -403,6 +403,11 @@ Use `connector:enrichment-local` only after the report is reviewed. It requires
 import ledger outside the repository. The command keeps Cloudflare sync paused:
 promoted candidates become encrypted local-private objects, and held candidates
 become encrypted quarantine objects.
+By default, existing connector object ids are left unchanged and reported as
+`already-exists` for idempotency. Set
+`LIVING_ATLAS_CONNECTOR_ENRICHMENT_UPDATE_EXISTING_ACK=update-existing-encrypted-connector-objects`
+only for an intentional local repair pass that rewrites already-imported
+connector objects with the current schema-valid encrypted payload.
 
 `LIVING_ATLAS_LOGSEQ_SEMANTIC_SOURCE_MODE` controls discovery:
 

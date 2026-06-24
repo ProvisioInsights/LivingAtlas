@@ -4,6 +4,8 @@ import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
   AuthorityIdSchema,
+  EndpointRecordSchema,
+  TemporalEdgeSchema,
   type ObjectType
 } from "@living-atlas/contracts";
 import { FileLocalGraphStore } from "@living-atlas/local-graph-store";
@@ -33,6 +35,7 @@ export type ConnectorEnrichmentImportLedger = {
   };
   import_totals: {
     created_objects: number;
+    updated_existing_objects: number;
     already_existing_objects: number;
     promoted_objects: number;
     quarantine_objects: number;
@@ -56,7 +59,7 @@ export type ConnectorEnrichmentImportLedger = {
     object_id: string;
     object_type: ObjectType;
     access_class: "local-private" | "quarantine";
-    import_status: "promoted" | "quarantined" | "already-exists" | "failed";
+    import_status: "promoted" | "quarantined" | "updated-existing" | "already-exists" | "failed";
     source_id_hash: string;
     evidence_hash: string;
   }>;
@@ -143,25 +146,147 @@ function objectIdForCandidate(authorityId: string, candidate: EnrichmentCandidat
   return `la_object_${digest(`connector-enrichment:v1:${authorityId}:${candidate.candidate_id}:${status}`, 32)}`;
 }
 
+function stringField(payload: Record<string, unknown>, key: string): string | undefined {
+  const value = payload[key];
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
+}
+
+function stringArrayField(payload: Record<string, unknown>, key: string): string[] {
+  const value = payload[key];
+  return Array.isArray(value)
+    ? value.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0)
+    : [];
+}
+
+function payloadRecord(candidate: EnrichmentCandidate): Record<string, unknown> {
+  const payload = candidate.proposed_fact.local_private_payload;
+  return payload && typeof payload === "object" && !Array.isArray(payload) ? payload : {};
+}
+
+function occurrenceStatus(payload: Record<string, unknown>, recordedAt: string): "planned" | "occurred" | undefined {
+  const explicit = stringField(payload, "status");
+  if (explicit && ["planned", "occurred", "canceled", "moved", "tentative"].includes(explicit)) {
+    return explicit as "planned" | "occurred";
+  }
+  const scheduledEnd = stringField(payload, "scheduled_end");
+  return scheduledEnd && Date.parse(scheduledEnd) < Date.parse(recordedAt) ? "occurred" : "planned";
+}
+
+function defaultSubtype(type: string | undefined): string {
+  switch (type) {
+    case "person":
+      return "individual";
+    case "organization":
+    case "project":
+    case "location":
+    case "occurrence":
+    case "topic":
+      return "other";
+    default:
+      return "other";
+  }
+}
+
+function endpointRecordForCandidate(input: {
+  authorityId: string;
+  objectId: string;
+  candidate: EnrichmentCandidate;
+  recordedAt: string;
+}) {
+  const payload = payloadRecord(input.candidate);
+  const type = input.candidate.proposed_fact.endpoint_type;
+  const name = stringField(payload, "name") ?? stringField(payload, "title") ?? input.candidate.candidate_id;
+  const base = {
+    object_id: input.objectId,
+    name,
+    aliases: stringArrayField(payload, "aliases"),
+    description: stringField(payload, "description"),
+    access_class: "local-private",
+    source_ref: input.candidate.source.evidence_hash,
+    confidence: input.candidate.proposed_fact.confidence,
+    created_at: input.recordedAt,
+    updated_at: input.recordedAt
+  };
+
+  if (type === "occurrence") {
+    const status = occurrenceStatus(payload, input.recordedAt);
+    const scheduledStart = stringField(payload, "scheduled_start");
+    return EndpointRecordSchema.parse({
+      ...base,
+      type,
+      subtype: stringField(payload, "occurrence_kind") ?? stringField(payload, "subtype") ?? "other",
+      occurred_on: stringField(payload, "occurred_on") ?? (status === "occurred" ? scheduledStart : undefined),
+      occurred_until: stringField(payload, "occurred_until"),
+      scheduled_start: scheduledStart,
+      scheduled_end: stringField(payload, "scheduled_end"),
+      timezone: stringField(payload, "timezone"),
+      status
+    });
+  }
+
+  return EndpointRecordSchema.parse({
+    ...base,
+    type,
+    subtype: stringField(payload, "subtype") ?? defaultSubtype(type)
+  });
+}
+
+function promotedPayload(input: {
+  authorityId: string;
+  candidate: EnrichmentCandidate;
+  objectId: string;
+  recordedAt: string;
+}): unknown {
+  if (input.candidate.proposed_fact.kind === "edge") {
+    const edge = payloadRecord(input.candidate).edge;
+    return {
+      kind: "connector-edge",
+      candidate_id: input.candidate.candidate_id,
+      source: input.candidate.source,
+      edge: TemporalEdgeSchema.parse(edge)
+    };
+  }
+
+  if (["endpoint", "occurrence", "topic"].includes(input.candidate.proposed_fact.kind)) {
+    return {
+      kind: "connector-endpoint",
+      candidate_id: input.candidate.candidate_id,
+      source: input.candidate.source,
+      endpoint: endpointRecordForCandidate(input)
+    };
+  }
+
+  return {
+    kind: "connector-source-note",
+    candidate_id: input.candidate.candidate_id,
+    source: input.candidate.source,
+    proposed_fact: input.candidate.proposed_fact,
+    plaintext_evidence: input.candidate.plaintext_evidence,
+    rationale: input.candidate.rationale
+  };
+}
+
 function objectForCandidate(input: {
   authorityId: string;
   candidate: EnrichmentCandidate;
   recordedAt: string;
+  version?: number;
 }): ConnectorObjectDraft {
   const status = importStatusForCandidate(input.candidate);
   const accessClass = status === "promoted" ? "local-private" : "quarantine";
   const objectId = objectIdForCandidate(input.authorityId, input.candidate, status);
   const objectType = objectTypeForCandidate(input.candidate);
-  const payload = {
-    schema: "living-atlas-connector-enrichment-object:v1",
-    import_status: status,
-    candidate_id: input.candidate.candidate_id,
-    source: input.candidate.source,
-    proposed_fact: input.candidate.proposed_fact,
-    decision: input.candidate.decision,
-    plaintext_evidence: input.candidate.plaintext_evidence,
-    rationale: input.candidate.rationale
-  };
+  const payload = status === "promoted"
+    ? promotedPayload({ authorityId: input.authorityId, candidate: input.candidate, objectId, recordedAt: input.recordedAt })
+    : {
+        kind: "connector-quarantine",
+        candidate_id: input.candidate.candidate_id,
+        source: input.candidate.source,
+        proposed_fact: input.candidate.proposed_fact,
+        decision: input.candidate.decision,
+        plaintext_evidence: input.candidate.plaintext_evidence,
+        rationale: input.candidate.rationale
+      };
   const payloadJson = stableJson(payload);
 
   return {
@@ -173,7 +298,7 @@ function objectForCandidate(input: {
       authority_id: input.authorityId,
       object_id: objectId,
       object_type: objectType,
-      version: 1,
+      version: input.version ?? 1,
       access_class: accessClass,
       encryption_class: "plaintext",
       created_at: input.recordedAt,
@@ -262,6 +387,7 @@ export async function importConnectorEnrichmentPacket(input: {
   authorityId: string;
   ledgerPath?: string;
   recordedAt?: string;
+  updateExisting?: boolean;
 }): Promise<ConnectorEnrichmentImportLedger> {
   const packetText = await readFile(input.packetPath, "utf8");
   const packet = ConnectorEnrichmentPacketSchema.parse(JSON.parse(packetText));
@@ -284,6 +410,7 @@ export async function importConnectorEnrichmentPacket(input: {
   const needles = collectPacketPlaintextNeedles(packet);
   const objectRefs: ConnectorEnrichmentImportLedger["object_refs"] = [];
   let createdObjects = 0;
+  let updatedExistingObjects = 0;
   let alreadyExistingObjects = 0;
   let failedObjects = 0;
   let promotedObjects = 0;
@@ -291,12 +418,35 @@ export async function importConnectorEnrichmentPacket(input: {
 
   for (const candidate of packet.candidates) {
     const status = importStatusForCandidate(candidate);
-    const object = objectForCandidate({ authorityId, candidate, recordedAt });
+    const existing = store.readObject(objectIdForCandidate(authorityId, candidate, status));
+    const object = objectForCandidate({
+      authorityId,
+      candidate,
+      recordedAt,
+      version: existing && input.updateExisting ? existing.version + 1 : 1
+    });
     let importStatus: ConnectorEnrichmentImportLedger["object_refs"][number]["import_status"] = status === "promoted" ? "promoted" : "quarantined";
 
-    if (store.readObject(object.object_id)) {
+    if (existing && !input.updateExisting) {
       alreadyExistingObjects += 1;
       importStatus = "already-exists";
+    } else if (existing && input.updateExisting) {
+      const result = await store.updateObject({
+        expected_generation: store.status().generation,
+        expected_version: existing.version,
+        actor_id: "connector-enrichment-local-import",
+        operation_id: `la_operation_${digest(`connector-enrichment:${object.object_id}:update:${existing.version}`, 24)}`,
+        trace_id: `la_trace_${digest(`connector-enrichment:${packetHash}:${object.object_id}:update`, 24)}`,
+        recorded_at: recordedAt,
+        object: object.draft
+      });
+      if (!result.ok) {
+        failedObjects += 1;
+        importStatus = "failed";
+      } else {
+        updatedExistingObjects += 1;
+        importStatus = "updated-existing";
+      }
     } else {
       const result = await store.createObject({
         expected_generation: store.status().generation,
@@ -347,6 +497,7 @@ export async function importConnectorEnrichmentPacket(input: {
     },
     import_totals: {
       created_objects: createdObjects,
+      updated_existing_objects: updatedExistingObjects,
       already_existing_objects: alreadyExistingObjects,
       promoted_objects: promotedObjects,
       quarantine_objects: quarantineObjects,
@@ -399,7 +550,8 @@ async function main(): Promise<void> {
     keyringPath: requireEnv("LIVING_ATLAS_LOCAL_KEYRING"),
     keyringPassphrase: requireEnv("LIVING_ATLAS_LOCAL_KEYRING_PASSPHRASE"),
     authorityId: requireEnv("LIVING_ATLAS_LIVE_AUTHORITY_ID"),
-    ledgerPath: envValue("LIVING_ATLAS_CONNECTOR_ENRICHMENT_LEDGER_PATH")
+    ledgerPath: envValue("LIVING_ATLAS_CONNECTOR_ENRICHMENT_LEDGER_PATH"),
+    updateExisting: envValue("LIVING_ATLAS_CONNECTOR_ENRICHMENT_UPDATE_EXISTING_ACK") === "update-existing-encrypted-connector-objects"
   });
   console.log(JSON.stringify(ledger, null, 2));
 }

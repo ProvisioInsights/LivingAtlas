@@ -46,7 +46,10 @@ function fixturePacket() {
           confidence: "high",
           local_private_payload: {
             title: "Fixture Connector Event Alpha",
-            participant: "Fixture Connector Person Beta"
+            participant: "Fixture Connector Person Beta",
+            scheduled_start: "2026-06-23T18:00:00.000Z",
+            scheduled_end: "2026-06-23T18:30:00.000Z",
+            timezone: "America/Chicago"
           }
         },
         decision: "promote",
@@ -164,6 +167,49 @@ describe("connector enrichment local import", () => {
         failed_objects: 0
       });
       expect(second.graph_status.object_count).toBe(2);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("can update existing connector objects when explicitly requested", async () => {
+    const root = await mkdtemp(join(tmpdir(), "living-atlas-connector-import-update-"));
+    try {
+      const packetPath = join(root, "packet.json");
+      const keyringPath = join(root, "keyring.json");
+      const graphDir = join(root, "graph");
+      await writeFile(packetPath, JSON.stringify(fixturePacket(), null, 2));
+      await new FileLocalKeyringStore(keyringPath).write(createDefaultLocalKeyring({
+        authorityId,
+        createdAt: "2026-06-24T00:00:00.000Z"
+      }), "fixture-passphrase");
+
+      await importConnectorEnrichmentPacket({
+        packetPath,
+        localGraphDir: graphDir,
+        keyringPath,
+        keyringPassphrase: "fixture-passphrase",
+        authorityId,
+        recordedAt: "2026-06-24T00:00:00.000Z"
+      });
+      const updated = await importConnectorEnrichmentPacket({
+        packetPath,
+        localGraphDir: graphDir,
+        keyringPath,
+        keyringPassphrase: "fixture-passphrase",
+        authorityId,
+        recordedAt: "2026-06-24T00:01:00.000Z",
+        updateExisting: true
+      });
+
+      expect(updated.import_totals).toMatchObject({
+        created_objects: 0,
+        updated_existing_objects: 2,
+        already_existing_objects: 0,
+        failed_objects: 0
+      });
+      expect(updated.object_refs.every((ref) => ref.import_status === "updated-existing")).toBe(true);
+      expect(updated.graph_status.object_count).toBe(2);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

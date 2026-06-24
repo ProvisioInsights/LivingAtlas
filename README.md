@@ -385,7 +385,9 @@ review.
 write acknowledgement, an unlocked local keyring, and a local graph directory.
 It writes promote-ready candidates as encrypted `local-private` graph objects,
 writes held candidates as encrypted `quarantine` graph objects, and emits a
-plaintext-free ledger. It never attempts Cloudflare sync.
+plaintext-free ledger. It never attempts Cloudflare sync. Existing connector
+object ids are skipped by default for idempotency; an explicit update-existing
+acknowledgement is required for a local repair pass.
 
 `LIVING_ATLAS_LOGSEQ_SEMANTIC_SYNC_MODE` defaults to `local-only`. Cloudflare
 sync is paused unless `LIVING_ATLAS_LOGSEQ_SEMANTIC_SYNC_MODE=cloudflare` and
