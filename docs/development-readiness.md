@@ -327,6 +327,7 @@ Command map:
 | `npm run logseq:semantic-review-report` | Ledger only | No | Summarizes plaintext-free review work from quarantine decisions: reason counts, affected batch windows, and opaque source refs. |
 | `npm run logseq:semantic-review-packet` | Yes, when pointed at a private local graph | No | Requires explicit acknowledgement and writes a local-private plaintext review packet outside the repo. Stdout is counts-only; the packet groups unresolved values by reason, target hash, property keys, suffixes, and opaque source refs. If `LIVING_ATLAS_LOGSEQ_SEMANTIC_REVIEW_RESOLUTION_PATH` is set, already-resolved or explicitly deferred targets are suppressed from the residual packet. |
 | `npm run logseq:semantic-corpus-report` | Ledger/manifest only | No | Combines multiple plaintext-free manifests and ledgers into one local or synced completion gate across source modes. |
+| `npm run connector:enrichment-report` | Yes, when pointed at a private connector packet | No | Validates a local-private connector enrichment packet and emits only counts by connector, fact kind, decision, confidence, endpoint type, predicate, and evidence kind. Only high-confidence promote decisions are counted as promote-ready. |
 
 The deployed Cloudflare usage gate should run before any live mutating smoke or
 stress:
@@ -381,6 +382,15 @@ packet file. When a private resolution map is supplied through
 `LIVING_ATLAS_LOGSEQ_SEMANTIC_REVIEW_RESOLUTION_PATH`, resolved and explicitly
 deferred targets are omitted so the packet represents only residual review work. Do not
 commit, upload, or sync that packet to a public repo.
+
+Use `connector:enrichment-report` before importing any connector-derived facts
+from mail, calendar, meeting, chat, document, or manual-file workflows. Set
+`LIVING_ATLAS_CONNECTOR_ENRICHMENT_PACKET_PATH` to a local-private JSON packet
+with schema `living-atlas-connector-enrichment-packet:v1`. The packet may
+contain plaintext evidence for local review, but the command emits only
+hash/count summaries and never prints evidence text. Promote only candidates
+with `decision: promote` and `confidence: high`; everything else remains held
+for review, deferral, or rejection.
 
 `LIVING_ATLAS_LOGSEQ_SEMANTIC_SOURCE_MODE` controls discovery:
 
