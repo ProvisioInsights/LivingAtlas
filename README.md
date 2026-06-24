@@ -298,7 +298,9 @@ object and sync-batch estimates before any live mutation.
 `logseq:semantic-local` preserves each original file as an encrypted source
 capsule, preserves normalized encrypted page/block/reference-index objects,
 promotes explicit `type:: person|organization|project|location|occurrence|topic`
-pages into encrypted endpoint records, runs local CRUD/leakage proof, and
+pages into encrypted endpoint records, maps schema-defined endpoint fields such
+as aliases, dates, timezone, recurrence, and explicit wikilink refs when they
+validate, runs local CRUD/leakage proof, and
 writes per-file parity refs into the durable ledger without Cloudflare sync.
 `logseq:semantic-cloudflare` uses the
 same parity path but requires an explicit sync mode plus mutation

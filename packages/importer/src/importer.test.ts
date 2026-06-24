@@ -343,23 +343,37 @@ describe("markdown importer planning", () => {
   it("promotes explicit typed Logseq pages into encrypted endpoint objects", async () => {
     const file = {
       source_path: "/tmp/living-atlas-fixtures/Synthetic Topic.md",
-      markdown: "type:: topic\nsubtype:: theme\naliases:: Synthetic Theme, [[Synthetic Alias]]\n\n- body text\n",
+      markdown: "type:: topic\nsubtype:: theme\naliases:: Synthetic Theme, [[Synthetic Alias]]\nparent-topic:: [[Synthetic Parent Topic]]\ntags:: #alpha, beta\n\n- body text\n",
       source_kind: "logseq" as const
     };
+    const plaintextPayloads: string[] = [];
 
     const encrypted = await createLogseqSemanticGraphObjects([file], {
       authority_id: fixtureAuthorityId,
       created_at: "2026-06-22T12:00:00.000Z",
       path_redaction_secret: "fixture-path-redaction-secret-0001",
-      encrypt: async ({ plaintext, aad }) => ({
-        ciphertext: Buffer.from(`sealed:${aad}:${plaintext.length}`).toString("base64"),
-        nonce: "fixture-semantic-nonce",
-        hash: sha256(`sealed:${aad}:${plaintext.length}`),
-        algorithm: "fixture-aes-gcm"
-      })
+      encrypt: async ({ plaintext, aad }) => {
+        plaintextPayloads.push(plaintext);
+        return {
+          ciphertext: Buffer.from(`sealed:${aad}:${plaintext.length}`).toString("base64"),
+          nonce: "fixture-semantic-nonce",
+          hash: sha256(`sealed:${aad}:${plaintext.length}`),
+          algorithm: "fixture-aes-gcm"
+        };
+      }
     });
+    const endpointPayload = plaintextPayloads
+      .map((payload) => JSON.parse(payload) as { kind?: string; endpoint?: { type?: string; subtype?: string; aliases?: string[]; parent_topic_ref?: string; tags?: string[] } })
+      .find((payload) => payload.kind === "logseq-endpoint")!;
 
     expect(encrypted.ledger.decisions["typed-endpoint-promoted"]).toBe(1);
+    expect(endpointPayload.endpoint).toMatchObject({
+      type: "topic",
+      subtype: "theme",
+      aliases: ["Synthetic Theme", "Synthetic Alias"],
+      tags: ["alpha", "beta"]
+    });
+    expect(endpointPayload.endpoint?.parent_topic_ref).toMatch(/^la_object_[a-f0-9]{24}$/);
     expect(encrypted.ledger.files[0]!.objects).toContainEqual(expect.objectContaining({
       semantic_kind: "typed-endpoint",
       object_type: "page",
@@ -382,6 +396,70 @@ describe("markdown importer planning", () => {
     expect(JSON.stringify(encrypted.objects)).not.toContain("Synthetic Alias");
   });
 
+  it("maps occurrence endpoint timing, references, and RFC 5545 recurrence into encrypted payloads", async () => {
+    const file = {
+      source_path: "/tmp/living-atlas-fixtures/Synthetic Weekly Meeting.md",
+      markdown: [
+        "type:: occurrence",
+        "subtype:: meeting",
+        "occurred-on:: 2026-06-24",
+        "scheduled-start:: 2026-06-24T14:00:00.000Z",
+        "scheduled-end:: 2026-06-24T15:00:00.000Z",
+        "timezone:: America/Chicago",
+        "location:: [[Synthetic HQ]]",
+        "participants:: [[Person A]], [[Synthetic Org]]",
+        "organizer:: [[Person B]]",
+        "project:: [[Synthetic Project]]",
+        "recurrence-set:: DTSTART;TZID=America/Chicago:20260624T090000\\nRRULE:FREQ=WEEKLY;BYDAY=WE",
+        "duration:: PT1H",
+        "",
+        "- body text"
+      ].join("\n"),
+      source_kind: "logseq" as const
+    };
+    const plaintextPayloads: string[] = [];
+
+    const encrypted = await createLogseqSemanticGraphObjects([file], {
+      authority_id: fixtureAuthorityId,
+      created_at: "2026-06-22T12:00:00.000Z",
+      path_redaction_secret: "fixture-path-redaction-secret-0001",
+      encrypt: async ({ plaintext, aad }) => {
+        plaintextPayloads.push(plaintext);
+        return {
+          ciphertext: Buffer.from(`sealed:${aad}:${plaintext.length}`).toString("base64"),
+          nonce: "fixture-semantic-nonce",
+          hash: sha256(`sealed:${aad}:${plaintext.length}`),
+          algorithm: "fixture-aes-gcm"
+        };
+      }
+    });
+    const endpointPayload = plaintextPayloads
+      .map((payload) => JSON.parse(payload) as { kind?: string; endpoint?: Record<string, unknown> })
+      .find((payload) => payload.kind === "logseq-endpoint")!;
+
+    expect(encrypted.ledger.decisions["typed-endpoint-promoted"]).toBe(1);
+    expect(endpointPayload.endpoint).toMatchObject({
+      type: "occurrence",
+      subtype: "meeting",
+      occurred_on: "2026-06-24",
+      scheduled_start: "2026-06-24T14:00:00.000Z",
+      scheduled_end: "2026-06-24T15:00:00.000Z",
+      timezone: "America/Chicago",
+      recurrence: {
+        timezone: "America/Chicago",
+        recurrence_set: "DTSTART;TZID=America/Chicago:20260624T090000\nRRULE:FREQ=WEEKLY;BYDAY=WE",
+        duration: "PT1H",
+        exceptions: []
+      }
+    });
+    expect(endpointPayload.endpoint?.location_ref).toMatch(/^la_object_[a-f0-9]{24}$/);
+    expect(endpointPayload.endpoint?.participant_refs).toHaveLength(2);
+    expect(endpointPayload.endpoint?.organizer_refs).toHaveLength(1);
+    expect(endpointPayload.endpoint?.project_refs).toHaveLength(1);
+    expect(JSON.stringify(encrypted.ledger)).not.toContain("Synthetic Weekly Meeting");
+    expect(JSON.stringify(encrypted.objects)).not.toContain("Synthetic Weekly Meeting");
+  });
+
   it("does not promote pages without an accepted endpoint type", () => {
     const ledger = createLogseqSemanticParityLedger([
       {
@@ -401,6 +479,30 @@ describe("markdown importer planning", () => {
     }));
     expect(ledger.totals.quarantine_objects).toBe(0);
     expect(JSON.stringify(ledger)).not.toContain("Untyped Page");
+  });
+
+  it("keeps typed endpoint promotion when optional mapped fields are invalid", () => {
+    const ledger = createLogseqSemanticParityLedger([
+      {
+        source_path: "/tmp/living-atlas-fixtures/Synthetic Bad Optional Field.md",
+        markdown: "type:: organization\nfounded-year:: not-a-date\n\n- body text\n",
+        source_kind: "logseq"
+      }
+    ], {
+      authority_id: fixtureAuthorityId,
+      created_at: "2026-06-22T12:00:00.000Z",
+      path_redaction_secret: "fixture-path-redaction-secret-0001"
+    });
+
+    expect(ledger.decisions["typed-endpoint-promoted"]).toBe(1);
+    expect(ledger.totals.quarantine_objects).toBe(0);
+    expect(ledger.files[0]!.objects).toContainEqual(expect.objectContaining({
+      semantic_kind: "typed-endpoint",
+      decision: "captured-encrypted",
+      plaintext_in_plan: false
+    }));
+    expect(JSON.stringify(ledger)).not.toContain("Synthetic Bad Optional Field");
+    expect(JSON.stringify(ledger)).not.toContain("not-a-date");
   });
 
   it("quarantines cluster endpoints instead of promoting temporal edge objects", async () => {

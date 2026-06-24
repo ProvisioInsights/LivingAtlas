@@ -474,10 +474,83 @@ function parseAliasList(value: string | undefined): string[] {
   if (!value) {
     return [];
   }
+  return parseListValue(value)
+    .map((part) => parseWikilinkTitle(part) ?? normalizeEndpointTitle(part) ?? part.trim())
+    .filter((part, index, aliases) => part.length > 0 && aliases.indexOf(part) === index);
+}
+
+function parseListValue(value: string | undefined): string[] {
+  if (!value) {
+    return [];
+  }
   return value
     .split(/[,;]/)
-    .map((part) => part.replace(/^\[\[|\]\]$/g, "").trim())
-    .filter((part, index, aliases) => part.length > 0 && aliases.indexOf(part) === index);
+    .map((part) => part.trim())
+    .filter((part, index, values) => part.length > 0 && values.indexOf(part) === index);
+}
+
+function parseWikilinkTitle(value: string | undefined): string | undefined {
+  const normalized = value?.trim();
+  if (!normalized) {
+    return undefined;
+  }
+  const exact = /^\[\[([^\]\n]{1,256})\]\]$/.exec(normalized);
+  if (!exact) {
+    return undefined;
+  }
+  return normalizeEndpointTitle(exact[1]);
+}
+
+function parseWikilinkObjectId(value: string | undefined, options: {
+  authorityId: string;
+  pathRedactionSecret: string;
+}): string | undefined {
+  const title = parseWikilinkTitle(value);
+  return title ? semanticTitleObjectId(options.authorityId, options.pathRedactionSecret, title) : undefined;
+}
+
+function parseWikilinkObjectIds(value: string | undefined, options: {
+  authorityId: string;
+  pathRedactionSecret: string;
+}): string[] {
+  return parseListValue(value)
+    .map((part) => parseWikilinkObjectId(part, options))
+    .filter((objectId): objectId is string => objectId !== undefined);
+}
+
+function unescapePropertyBlock(value: string | undefined): string | undefined {
+  return value?.replaceAll("\\n", "\n").trim();
+}
+
+function addDefinedFields(target: Record<string, unknown>, fields: Record<string, unknown>): Record<string, unknown> {
+  for (const [key, value] of Object.entries(fields)) {
+    if (value !== undefined && (!Array.isArray(value) || value.length > 0)) {
+      target[key] = value;
+    }
+  }
+  return target;
+}
+
+function parseEndpointWithSubtypeFallback(
+  candidate: Record<string, unknown>,
+  subtype: string | undefined,
+  minimalCandidate?: Record<string, unknown>
+): TypedEndpointParseResult {
+  const withSubtype = subtype ? { ...candidate, subtype } : candidate;
+  const parsed = EndpointRecordSchema.safeParse(withSubtype);
+  if (parsed.success) {
+    return { kind: "promoted", endpoint: parsed.data };
+  }
+  if (subtype) {
+    const withoutSubtype = EndpointRecordSchema.safeParse(candidate);
+    if (withoutSubtype.success) {
+      return { kind: "promoted", endpoint: withoutSubtype.data };
+    }
+  }
+  if (minimalCandidate) {
+    return parseEndpointWithSubtypeFallback(minimalCandidate, subtype);
+  }
+  return { kind: "not-typed-endpoint" };
 }
 
 function parseTypedPageEndpoint(parsed: ParsedLogseqFile, options: {
@@ -504,18 +577,112 @@ function parseTypedPageEndpoint(parsed: ParsedLogseqFile, options: {
     updated_at: options.createdAt
   };
   const subtype = propertyValue(parsed.page_properties, "subtype")?.toLowerCase();
-  const withSubtype = subtype ? { ...base, subtype } : base;
-  const occurrenceTime = propertyValue(parsed.page_properties, "occurred-on")
-    ?? propertyValue(parsed.page_properties, "occurred_on")
-    ?? propertyValue(parsed.page_properties, "scheduled-start")
-    ?? propertyValue(parsed.page_properties, "scheduled_start");
-  const endpoint = EndpointRecordSchema.safeParse(type.data === "occurrence" && !occurrenceTime
-    ? { ...withSubtype, occurred_on: "unknown" }
-    : withSubtype);
+  const objectIdOptions = {
+    authorityId: options.authorityId,
+    pathRedactionSecret: options.pathRedactionSecret
+  };
+  const endpoint = { ...base };
+  const minimalEndpoint = type.data === "occurrence"
+    ? {
+        ...base,
+        occurred_on: propertyValue(parsed.page_properties, "occurred-on")
+          ?? propertyValue(parsed.page_properties, "occurred_on")
+          ?? propertyValue(parsed.page_properties, "date")
+          ?? "unknown"
+      }
+    : { ...base };
 
-  return endpoint.success
-    ? { kind: "promoted", endpoint: endpoint.data }
-    : { kind: "not-typed-endpoint" };
+  if (type.data === "person") {
+    addDefinedFields(endpoint, {
+      primary_location_ref: parseWikilinkObjectId(
+        propertyValue(parsed.page_properties, "primary-location")
+          ?? propertyValue(parsed.page_properties, "location")
+          ?? propertyValue(parsed.page_properties, "based-in"),
+        objectIdOptions
+      )
+    });
+  } else if (type.data === "organization") {
+    addDefinedFields(endpoint, {
+      founded_year: propertyValue(parsed.page_properties, "founded-year") ?? propertyValue(parsed.page_properties, "founded"),
+      homepage_ref: propertyValue(parsed.page_properties, "homepage") ?? propertyValue(parsed.page_properties, "website"),
+      primary_location_ref: parseWikilinkObjectId(
+        propertyValue(parsed.page_properties, "primary-location")
+          ?? propertyValue(parsed.page_properties, "headquarters")
+          ?? propertyValue(parsed.page_properties, "location")
+          ?? propertyValue(parsed.page_properties, "based-in"),
+        objectIdOptions
+      )
+    });
+  } else if (type.data === "project") {
+    addDefinedFields(endpoint, {
+      status: propertyValue(parsed.page_properties, "status"),
+      start_date: propertyValue(parsed.page_properties, "start-date") ?? propertyValue(parsed.page_properties, "start"),
+      end_date: propertyValue(parsed.page_properties, "end-date") ?? propertyValue(parsed.page_properties, "end"),
+      primary_location_ref: parseWikilinkObjectId(
+        propertyValue(parsed.page_properties, "primary-location") ?? propertyValue(parsed.page_properties, "location"),
+        objectIdOptions
+      )
+    });
+  } else if (type.data === "location") {
+    addDefinedFields(endpoint, {
+      parent_location_ref: parseWikilinkObjectId(
+        propertyValue(parsed.page_properties, "parent-location")
+          ?? propertyValue(parsed.page_properties, "located-in"),
+        objectIdOptions
+      ),
+      timezone: propertyValue(parsed.page_properties, "timezone")
+    });
+  } else if (type.data === "occurrence") {
+    const timezone = propertyValue(parsed.page_properties, "timezone");
+    const recurrenceSet = unescapePropertyBlock(
+      propertyValue(parsed.page_properties, "recurrence-set") ?? propertyValue(parsed.page_properties, "recurrence_set")
+    );
+    const recurrence = timezone && recurrenceSet
+      ? {
+          timezone,
+          recurrence_set: recurrenceSet,
+          duration: propertyValue(parsed.page_properties, "duration")
+        }
+      : undefined;
+    addDefinedFields(endpoint, {
+      occurred_on: propertyValue(parsed.page_properties, "occurred-on")
+        ?? propertyValue(parsed.page_properties, "occurred_on")
+        ?? propertyValue(parsed.page_properties, "date")
+        ?? "unknown",
+      occurred_until: propertyValue(parsed.page_properties, "occurred-until") ?? propertyValue(parsed.page_properties, "occurred_until"),
+      scheduled_start: propertyValue(parsed.page_properties, "scheduled-start") ?? propertyValue(parsed.page_properties, "scheduled_start"),
+      scheduled_end: propertyValue(parsed.page_properties, "scheduled-end") ?? propertyValue(parsed.page_properties, "scheduled_end"),
+      timezone,
+      location_ref: parseWikilinkObjectId(propertyValue(parsed.page_properties, "location"), objectIdOptions),
+      participant_refs: parseWikilinkObjectIds(
+        propertyValue(parsed.page_properties, "participants") ?? propertyValue(parsed.page_properties, "participant"),
+        objectIdOptions
+      ),
+      organizer_refs: parseWikilinkObjectIds(
+        propertyValue(parsed.page_properties, "organizers")
+          ?? propertyValue(parsed.page_properties, "organizer")
+          ?? propertyValue(parsed.page_properties, "hosts")
+          ?? propertyValue(parsed.page_properties, "host"),
+        objectIdOptions
+      ),
+      project_refs: parseWikilinkObjectIds(
+        propertyValue(parsed.page_properties, "projects") ?? propertyValue(parsed.page_properties, "project"),
+        objectIdOptions
+      ),
+      recurrence,
+      status: propertyValue(parsed.page_properties, "status")
+    });
+  } else if (type.data === "topic") {
+    addDefinedFields(endpoint, {
+      parent_topic_ref: parseWikilinkObjectId(
+        propertyValue(parsed.page_properties, "parent-topic") ?? propertyValue(parsed.page_properties, "part-of-topic"),
+        objectIdOptions
+      ),
+      tags: parseListValue(propertyValue(parsed.page_properties, "tags")).map((tag) => tag.replace(/^#/, ""))
+    });
+  }
+
+  return parseEndpointWithSubtypeFallback(endpoint, subtype, minimalEndpoint);
 }
 
 function parseLogseqFile(input: MarkdownFileInput, pathRedactionSecret: string): ParsedLogseqFile {
