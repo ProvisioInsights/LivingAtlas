@@ -347,6 +347,7 @@ npm run logseq:semantic-review-report
 npm run logseq:semantic-review-packet
 npm run logseq:semantic-topic-review-packet
 npm run logseq:semantic-topic-review-report
+npm run logseq:semantic-topic-review-local
 npm run logseq:semantic-corpus-report
 npm run connector:enrichment-report
 npm run connector:enrichment-local
@@ -424,6 +425,13 @@ resolutions, unresolved groups, and unresolved candidate occurrences.
 `review_complete` is false until every grouped candidate has a terminal
 decision. Set `LIVING_ATLAS_LOGSEQ_TOPIC_REVIEW_REQUIRE_COMPLETE=1` when every
 grouped topic candidate must have a terminal review decision before proceeding.
+`logseq:semantic-topic-review-local` consumes the private packet plus a private
+high-confidence resolution map and writes encrypted local graph objects only.
+`promote-topic` decisions become encrypted `local-private` topic endpoint
+objects; `defer` and `reject` decisions become encrypted `quarantine` terminal
+decision records. The command requires an explicit local-write acknowledgement,
+an unlocked local keyring, and a local graph directory; it never attempts
+Cloudflare sync and emits a hash/count-only ledger.
 `logseq:semantic-corpus-report` combines multiple manifest/ledger pairs, such
 as separate `markdown-only` and `logseq-extensionless-only` runs, into one
 plaintext-free local or synced completion gate. Configure it with comma-separated

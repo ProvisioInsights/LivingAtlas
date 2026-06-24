@@ -389,6 +389,7 @@ Command map:
 | `npm run logseq:semantic-review-packet` | Yes, when pointed at a private local graph | No | Requires explicit acknowledgement and writes a local-private plaintext review packet outside the repo. Stdout is counts-only; the packet groups unresolved values by reason, target hash, property keys, suffixes, and opaque source refs. If `LIVING_ATLAS_LOGSEQ_SEMANTIC_REVIEW_RESOLUTION_PATH` is set, already-resolved or explicitly deferred targets are suppressed from the residual packet. |
 | `npm run logseq:semantic-topic-review-packet` | Yes, when pointed at a private local graph | No | Requires explicit acknowledgement and writes a local-private plaintext topic-candidate packet outside the repo. Stdout is counts-only; tag-derived candidates are grouped by hash and suffix edge tags are excluded. |
 | `npm run logseq:semantic-topic-review-report` | Topic packet/resolution map only | No | Validates a private topic review packet and optional private resolution map, then emits only counts for promoted, deferred, rejected, duplicate, unknown, and unresolved topic candidates. |
+| `npm run logseq:semantic-topic-review-local` | Topic packet/resolution map only | No | Requires explicit acknowledgement, unlocked local keyring, and local graph directory. Writes promoted topics as encrypted local-private objects and terminal defer/reject decisions as encrypted quarantine objects, then emits a plaintext-free local ledger. |
 | `npm run logseq:semantic-corpus-report` | Ledger/manifest only | No | Combines multiple plaintext-free manifests and ledgers into one local or synced completion gate across source modes. |
 | `npm run connector:enrichment-report` | Yes, when pointed at a private connector packet | No | Validates a local-private connector enrichment packet and emits only counts by connector, fact kind, decision, confidence, endpoint type, predicate, and evidence kind. Only high-confidence promote decisions are counted as promote-ready. |
 | `npm run connector:enrichment-local` | Yes, when pointed at a private connector packet | No | Requires an explicit local-write acknowledgement, unlocked local keyring, and local graph directory. Writes promote-ready candidates as encrypted local-private objects and held candidates as encrypted quarantine objects, then emits a plaintext-free local ledger. |
@@ -471,6 +472,22 @@ and hashes. `complete` covers report validity unless hard-gated;
 `review_complete` is false until every grouped candidate has a terminal
 decision. Setting `LIVING_ATLAS_LOGSEQ_TOPIC_REVIEW_REQUIRE_COMPLETE=1` fails
 while any grouped topic candidate is unresolved.
+
+Use `logseq:semantic-topic-review-local` only after the topic review report is
+clean. It requires
+`LIVING_ATLAS_LOGSEQ_TOPIC_REVIEW_IMPORT_ACK=write-encrypted-local-topic-review-objects`,
+`LIVING_ATLAS_LOGSEQ_TOPIC_REVIEW_PACKET_PATH`,
+`LIVING_ATLAS_LOGSEQ_TOPIC_REVIEW_RESOLUTION_PATH`,
+`LIVING_ATLAS_LIVE_AUTHORITY_ID`, `LIVING_ATLAS_LOCAL_GRAPH_DIR`,
+`LIVING_ATLAS_LOCAL_KEYRING`, and
+`LIVING_ATLAS_LOCAL_KEYRING_PASSPHRASE`. Optionally set
+`LIVING_ATLAS_LOGSEQ_TOPIC_REVIEW_LEDGER_PATH` to write the plaintext-free
+ledger outside the repository. It writes promoted topics as encrypted
+`local-private` endpoint objects, writes terminal `defer`/`reject` decisions as
+encrypted `quarantine` review records, and never attempts Cloudflare sync.
+Existing topic review objects are left unchanged by default; set
+`LIVING_ATLAS_LOGSEQ_TOPIC_REVIEW_UPDATE_EXISTING_ACK=update-existing-encrypted-topic-review-objects`
+only for an intentional local repair pass.
 
 Use `connector:enrichment-report` before importing any connector-derived facts
 from mail, calendar, meeting, chat, document, or manual-file workflows. Set
