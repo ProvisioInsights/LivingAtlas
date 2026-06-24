@@ -346,6 +346,7 @@ npm run logseq:semantic-ledger-report
 npm run logseq:semantic-review-report
 npm run logseq:semantic-review-packet
 npm run logseq:semantic-topic-review-packet
+npm run logseq:semantic-topic-review-report
 npm run logseq:semantic-corpus-report
 npm run connector:enrichment-report
 npm run connector:enrichment-local
@@ -416,6 +417,13 @@ outside the repository. Stdout remains count-only, suffix tags used for edge
 semantics are excluded from topic candidates, and no `topic` endpoint is
 created until a human-reviewed high-confidence resolution/import path promotes
 it.
+`logseq:semantic-topic-review-report` validates that private topic packet plus
+an optional private resolution map and emits only counts: promoted topics,
+deferred candidates, rejected candidates, unknown resolution targets, duplicate
+resolutions, unresolved groups, and unresolved candidate occurrences.
+`review_complete` is false until every grouped candidate has a terminal
+decision. Set `LIVING_ATLAS_LOGSEQ_TOPIC_REVIEW_REQUIRE_COMPLETE=1` when every
+grouped topic candidate must have a terminal review decision before proceeding.
 `logseq:semantic-corpus-report` combines multiple manifest/ledger pairs, such
 as separate `markdown-only` and `logseq-extensionless-only` runs, into one
 plaintext-free local or synced completion gate. Configure it with comma-separated
