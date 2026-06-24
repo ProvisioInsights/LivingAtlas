@@ -30,6 +30,7 @@
     "logseq:semantic-ledger-report": "tsx packages/check/src/logseq-semantic-ledger-report.ts",
     "logseq:semantic-manifest": "tsx packages/check/src/logseq-semantic-manifest.ts",
     "logseq:semantic-estimate": "tsx packages/check/src/logseq-semantic-estimate.ts",
+    "logseq:semantic-inventory": "tsx packages/check/src/logseq-semantic-inventory.ts",
     "logseq:semantic-batch-plan": "tsx packages/check/src/logseq-semantic-batch-plan.ts",
     "logseq:semantic-local": "LIVING_ATLAS_LOGSEQ_SEMANTIC_SYNC_MODE=local-only tsx packages/check/src/logseq-semantic-parity.ts",
     "logseq:semantic-cloudflare": "LIVING_ATLAS_LOGSEQ_SEMANTIC_SYNC_MODE=cloudflare tsx packages/check/src/logseq-semantic-parity.ts",

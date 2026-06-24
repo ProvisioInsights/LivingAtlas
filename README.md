@@ -282,6 +282,7 @@ commands:
 ```bash
 npm run logseq:semantic-manifest
 npm run logseq:semantic-estimate
+npm run logseq:semantic-inventory
 npm run logseq:semantic-batch-plan
 npm run logseq:semantic-local
 npm run logseq:semantic-parity
@@ -295,6 +296,10 @@ files. `logseq:semantic-batch-plan` reads a configured private markdown root and
 emits only counts, offsets, object totals, and opaque root refs.
 `logseq:semantic-estimate` scans the selected source mode and emits counts-only
 object and sync-batch estimates before any live mutation.
+`logseq:semantic-inventory` emits a plaintext-free inventory of schema-relevant
+property keys, accepted endpoint type counts, rejected type values, date-like
+properties, wikilinks, tags, block refs, and asset refs. Unknown property keys
+are hashed with the path redaction secret instead of printed.
 `logseq:semantic-local` preserves each original file as an encrypted source
 capsule, preserves normalized encrypted page/block/reference-index objects,
 promotes explicit `type:: person|organization|project|location|occurrence|topic`
