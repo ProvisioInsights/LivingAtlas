@@ -244,6 +244,21 @@ npm run logseq:semantic-review-rekey
 The rekey command writes the new private resolution map outside the repository
 and prints count-only diagnostics.
 
+After applying review resolutions, generate a count-only knowledge summary for
+node and edge type coverage:
+
+```bash
+LIVING_ATLAS_REAL_MARKDOWN_ROOT=/private/logseq-root \
+LIVING_ATLAS_REAL_DATA_PATH_REDACTION_SECRET=from-private-env \
+LIVING_ATLAS_LOGSEQ_SEMANTIC_SOURCE_MODE=logseq-notes \
+LIVING_ATLAS_LOGSEQ_SEMANTIC_REVIEW_RESOLUTION_PATH=/private/review-resolutions.json \
+npm run logseq:semantic-knowledge-report
+```
+
+This report recomputes the semantic draft plan and emits endpoint type counts,
+occurrence/topic totals, edge predicate counts, and quarantine reason counts
+without source paths or plaintext values.
+
 Validate the Cloudflare infrastructure skeleton:
 
 ```bash

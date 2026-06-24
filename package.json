@@ -35,6 +35,7 @@
     "logseq:semantic-review-report": "tsx packages/check/src/logseq-semantic-review-report.ts",
     "logseq:semantic-review-packet": "tsx packages/check/src/logseq-semantic-review-packet.ts",
     "logseq:semantic-review-rekey": "tsx packages/check/src/logseq-semantic-review-resolution-rekey.ts",
+    "logseq:semantic-knowledge-report": "tsx packages/check/src/logseq-semantic-knowledge-report.ts",
     "logseq:semantic-local": "LIVING_ATLAS_LOGSEQ_SEMANTIC_SYNC_MODE=local-only tsx packages/check/src/logseq-semantic-parity.ts",
     "logseq:semantic-cloudflare": "LIVING_ATLAS_LOGSEQ_SEMANTIC_SYNC_MODE=cloudflare tsx packages/check/src/logseq-semantic-parity.ts",
     "logseq:semantic-backfill": "LIVING_ATLAS_LOGSEQ_SEMANTIC_SYNC_MODE=backfill tsx packages/check/src/logseq-semantic-parity.ts",

@@ -235,6 +235,21 @@ The command matches reviewed decisions by normalized private target value plus
 reason code inside the private packets. It skips ambiguous duplicate targets or
 endpoint-type mismatches and prints counts only.
 
+After a reviewed local-only semantic import, use the knowledge summary report to
+prove node and edge shape without exposing content:
+
+```bash
+LIVING_ATLAS_REAL_MARKDOWN_ROOT=/private/logseq-root \
+LIVING_ATLAS_REAL_DATA_PATH_REDACTION_SECRET=from-private-env \
+LIVING_ATLAS_LOGSEQ_SEMANTIC_SOURCE_MODE=logseq-notes \
+LIVING_ATLAS_LOGSEQ_SEMANTIC_REVIEW_RESOLUTION_PATH=/private/review-resolutions.json \
+npm run logseq:semantic-knowledge-report
+```
+
+The summary recomputes the same semantic draft plan used by the encrypted import
+and reports endpoint type counts, occurrence/topic totals, recurrence counts,
+edge predicate counts, and quarantine reason counts. It must stay count-only.
+
 ## Current V1 Direction
 
 Build:

@@ -210,6 +210,29 @@ export type LogseqSemanticGraphObjectsResult = {
   objects: GraphObjectEnvelope[];
 };
 
+export type LogseqSemanticKnowledgeSummary = {
+  report_schema: "living-atlas-logseq-semantic-knowledge-summary:v1";
+  plaintext_policy: "counts-only";
+  source_file_count: number;
+  object_count: number;
+  semantic_kind_counts: Record<LogseqSemanticObjectKind, number>;
+  object_type_counts: Record<ObjectType, number>;
+  endpoint_type_counts: Record<EndpointType, number>;
+  endpoint_subtype_counts: Record<string, number>;
+  endpoints_with_aliases: number;
+  occurrence_count: number;
+  occurrence_with_recurrence_count: number;
+  occurrence_with_timezone_count: number;
+  occurrence_with_participants_count: number;
+  topic_count: number;
+  edge_count: number;
+  edge_predicate_counts: Record<string, number>;
+  edge_source_type_counts: Record<EndpointType, number>;
+  edge_target_type_counts: Record<EndpointType, number>;
+  quarantine_object_count: number;
+  quarantine_reason_counts: Record<string, number>;
+};
+
 type LogseqProperty = {
   key: string;
   value: string;
@@ -1539,6 +1562,48 @@ function increment(record: Record<string, number>, key: string): void {
   record[key] = (record[key] ?? 0) + 1;
 }
 
+function emptyEndpointTypeRecord(): Record<EndpointType, number> {
+  return {
+    person: 0,
+    organization: 0,
+    project: 0,
+    location: 0,
+    occurrence: 0,
+    topic: 0
+  };
+}
+
+function emptyObjectTypeRecord(): Record<ObjectType, number> {
+  return {
+    page: 0,
+    block: 0,
+    edge: 0,
+    event: 0,
+    index: 0,
+    attachment: 0,
+    manifest: 0,
+    audit: 0,
+    change: 0,
+    config: 0
+  };
+}
+
+function emptySemanticKindRecord(): Record<LogseqSemanticObjectKind, number> {
+  return {
+    "source-capsule": 0,
+    page: 0,
+    block: 0,
+    "reference-index": 0,
+    "typed-endpoint": 0,
+    "edge-candidate": 0,
+    "typed-edge": 0
+  };
+}
+
+function sortedNumberRecord(source: Record<string, number>): Record<string, number> {
+  return Object.fromEntries(Object.entries(source).sort(([left], [right]) => left.localeCompare(right)));
+}
+
 function plannedObject(input: {
   authorityId: string;
   sourcePathRef: string;
@@ -2167,6 +2232,99 @@ export function createLogseqSemanticParityLedger(
   options: CreateLogseqSemanticImportOptions
 ): LogseqSemanticParityLedger {
   return buildSemanticDrafts(files, options).ledger;
+}
+
+export function createLogseqSemanticKnowledgeSummary(
+  files: MarkdownFileInput[],
+  options: CreateLogseqSemanticImportOptions
+): LogseqSemanticKnowledgeSummary {
+  const built = buildSemanticDrafts(files, options);
+  const semanticKindCounts = emptySemanticKindRecord();
+  const objectTypeCounts = emptyObjectTypeRecord();
+  const endpointTypeCounts = emptyEndpointTypeRecord();
+  const edgeSourceTypeCounts = emptyEndpointTypeRecord();
+  const edgeTargetTypeCounts = emptyEndpointTypeRecord();
+  const endpointSubtypeCounts: Record<string, number> = {};
+  const edgePredicateCounts: Record<string, number> = {};
+  const quarantineReasonCounts: Record<string, number> = {};
+  let endpointsWithAliases = 0;
+  let occurrenceCount = 0;
+  let occurrenceWithRecurrenceCount = 0;
+  let occurrenceWithTimezoneCount = 0;
+  let occurrenceWithParticipantsCount = 0;
+  let topicCount = 0;
+  let edgeCount = 0;
+  let quarantineObjectCount = 0;
+
+  for (const draft of built.drafts) {
+    semanticKindCounts[draft.semantic_kind] += 1;
+    objectTypeCounts[draft.object_type] += 1;
+
+    if (draft.plan.access_class === "quarantine") {
+      quarantineObjectCount += 1;
+      increment(quarantineReasonCounts, draft.plan.reason_code);
+    }
+
+    const payload = draft.plaintext_payload;
+    if (typeof payload !== "object" || payload === null) {
+      continue;
+    }
+
+    const endpoint = EndpointRecordSchema.safeParse((payload as { endpoint?: unknown }).endpoint);
+    if (endpoint.success) {
+      endpointTypeCounts[endpoint.data.type] += 1;
+      increment(endpointSubtypeCounts, `${endpoint.data.type}:${endpoint.data.subtype}`);
+      if (endpoint.data.aliases.length > 0) {
+        endpointsWithAliases += 1;
+      }
+      if (endpoint.data.type === "occurrence") {
+        occurrenceCount += 1;
+        if (endpoint.data.recurrence || endpoint.data.recurrence_ref) {
+          occurrenceWithRecurrenceCount += 1;
+        }
+        if (endpoint.data.timezone || endpoint.data.recurrence?.timezone) {
+          occurrenceWithTimezoneCount += 1;
+        }
+        if (endpoint.data.participant_refs.length > 0) {
+          occurrenceWithParticipantsCount += 1;
+        }
+      }
+      if (endpoint.data.type === "topic") {
+        topicCount += 1;
+      }
+    }
+
+    const edge = TemporalEdgeSchema.safeParse((payload as { edge?: unknown }).edge);
+    if (edge.success) {
+      edgeCount += 1;
+      increment(edgePredicateCounts, edge.data.predicate);
+      edgeSourceTypeCounts[edge.data.source_type] += 1;
+      edgeTargetTypeCounts[edge.data.target_type] += 1;
+    }
+  }
+
+  return {
+    report_schema: "living-atlas-logseq-semantic-knowledge-summary:v1",
+    plaintext_policy: "counts-only",
+    source_file_count: built.ledger.file_count,
+    object_count: built.drafts.length,
+    semantic_kind_counts: semanticKindCounts,
+    object_type_counts: objectTypeCounts,
+    endpoint_type_counts: endpointTypeCounts,
+    endpoint_subtype_counts: sortedNumberRecord(endpointSubtypeCounts),
+    endpoints_with_aliases: endpointsWithAliases,
+    occurrence_count: occurrenceCount,
+    occurrence_with_recurrence_count: occurrenceWithRecurrenceCount,
+    occurrence_with_timezone_count: occurrenceWithTimezoneCount,
+    occurrence_with_participants_count: occurrenceWithParticipantsCount,
+    topic_count: topicCount,
+    edge_count: edgeCount,
+    edge_predicate_counts: sortedNumberRecord(edgePredicateCounts),
+    edge_source_type_counts: edgeSourceTypeCounts,
+    edge_target_type_counts: edgeTargetTypeCounts,
+    quarantine_object_count: quarantineObjectCount,
+    quarantine_reason_counts: sortedNumberRecord(quarantineReasonCounts)
+  };
 }
 
 export async function createLogseqSemanticGraphObjects(
