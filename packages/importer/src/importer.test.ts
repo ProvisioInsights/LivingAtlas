@@ -898,8 +898,12 @@ describe("markdown importer planning", () => {
     const edgePayloads = plaintextPayloads
       .map((payload) => JSON.parse(payload) as { kind?: string; edge?: { predicate?: string; target_type?: string; attrs?: Record<string, unknown> } })
       .filter((payload) => payload.kind === "logseq-temporal-edge");
+    const endpointPayloads = plaintextPayloads
+      .map((payload) => JSON.parse(payload) as { kind?: string; review_target_hash?: string; endpoint?: { type?: string; name?: string } })
+      .filter((payload) => payload.kind === "logseq-endpoint");
 
     expect(encrypted.ledger.decisions["typed-endpoint-promoted"]).toBe(1);
+    expect(encrypted.ledger.decisions["review-endpoint-created"]).toBe(1);
     expect(encrypted.ledger.decisions["property-edge-promoted"]).toBe(2);
     expect(encrypted.ledger.decisions["non-wikilink-location-review"]).toBeUndefined();
     expect(encrypted.ledger.decisions["non-wikilink-organization-review"]).toBeUndefined();
@@ -924,6 +928,12 @@ describe("markdown importer planning", () => {
           target_resolution: "review-resolution",
           review_target_hash: organizationTargetHash
         })
+      })
+    ]));
+    expect(endpointPayloads).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        review_target_hash: organizationTargetHash,
+        endpoint: expect.objectContaining({ type: "organization", name: "Synthetic Canonical Org" })
       })
     ]));
     expect(JSON.stringify(encrypted.ledger)).not.toContain("Synthetic Unresolved Place");

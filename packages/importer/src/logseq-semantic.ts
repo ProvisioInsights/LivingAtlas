@@ -287,8 +287,11 @@ type PropertyTargetResolution = "wikilink" | "exact-typed-title" | "exact-typed-
 type PropertyEdgeTarget = {
   key: string;
   title: string;
+  endpointType: EndpointType;
   resolution: PropertyTargetResolution;
   reviewTargetHash?: `sha256:${string}`;
+  reviewDecision?: "map-to-endpoint" | "create-endpoint";
+  aliases?: string[];
 };
 
 function sha256(value: string): `sha256:${string}` {
@@ -854,7 +857,12 @@ function resolveReviewResolution(input: {
   reasonCode: string;
   targetType: EndpointType;
   value: string;
-}): { title: string; reviewTargetHash: `sha256:${string}` } | undefined {
+}): {
+  title: string;
+  reviewTargetHash: `sha256:${string}`;
+  reviewDecision: "map-to-endpoint" | "create-endpoint";
+  aliases: string[];
+} | undefined {
   const reviewTargetHash = createLogseqSemanticReviewTargetHash({
     pathRedactionSecret: input.pathRedactionSecret,
     reasonCode: input.reasonCode,
@@ -872,7 +880,9 @@ function resolveReviewResolution(input: {
   }
   return {
     title: resolution.endpoint_title,
-    reviewTargetHash
+    reviewTargetHash,
+    reviewDecision: resolution.decision,
+    aliases: resolution.aliases
   };
 }
 
@@ -896,8 +906,8 @@ function exactTypedEndpointPropertyTargets(
   targetType: EndpointType,
   endpointTitleIndex: EndpointTitleIndex | undefined,
   splitList: boolean
-): Array<{ key: string; title: string; resolution: "exact-typed-title" | "exact-typed-alias" }> {
-  const targets: Array<{ key: string; title: string; resolution: "exact-typed-title" | "exact-typed-alias" }> = [];
+): PropertyEdgeTarget[] {
+  const targets: PropertyEdgeTarget[] = [];
   const seen = new Set<string>();
   for (const target of nonWikilinkPropertyTargets(properties, keys, splitList)) {
     const resolved = resolveExactTypedEndpoint(endpointTitleIndex, targetType, target.value);
@@ -909,7 +919,7 @@ function exactTypedEndpointPropertyTargets(
       continue;
     }
     seen.add(dedupeKey);
-    targets.push({ key: target.key, title: resolved.title, resolution: resolved.resolution });
+    targets.push({ key: target.key, title: resolved.title, endpointType: targetType, resolution: resolved.resolution });
   }
   return targets;
 }
@@ -944,8 +954,11 @@ function reviewResolutionPropertyTargets(input: {
     targets.push({
       key: target.key,
       title: resolved.title,
+      endpointType: input.targetType,
       resolution: "review-resolution",
-      reviewTargetHash: resolved.reviewTargetHash
+      reviewTargetHash: resolved.reviewTargetHash,
+      reviewDecision: resolved.reviewDecision,
+      aliases: resolved.aliases
     });
   }
   return targets;
@@ -973,7 +986,7 @@ function propertyEdgeTargets(input: {
   };
 
   for (const wikilink of propertyEdgeTargetTitles(input.properties, input.keys)) {
-    add({ ...wikilink, resolution: "wikilink" });
+    add({ ...wikilink, endpointType: input.targetType, resolution: "wikilink" });
   }
   for (const exact of exactTypedEndpointPropertyTargets(
     input.properties,
@@ -1014,6 +1027,35 @@ function propertyTargetAttrs(target: PropertyEdgeTarget): Record<string, unknown
   return target.reviewTargetHash
     ? { target_resolution: target.resolution, review_target_hash: target.reviewTargetHash }
     : { target_resolution: target.resolution };
+}
+
+function reviewCreatedEndpointRecord(input: {
+  authorityId: string;
+  pathRedactionSecret: string;
+  createdAt: string;
+  defaultAccessClass: AccessClass;
+  sourcePathRef: string;
+  target: PropertyEdgeTarget;
+}): EndpointRecord | undefined {
+  if (
+    input.target.resolution !== "review-resolution"
+    || input.target.reviewDecision !== "create-endpoint"
+    || !input.target.reviewTargetHash
+  ) {
+    return undefined;
+  }
+  const parsed = EndpointRecordSchema.safeParse({
+    object_id: semanticTitleObjectId(input.authorityId, input.pathRedactionSecret, input.target.title),
+    type: input.target.endpointType,
+    name: input.target.title,
+    aliases: input.target.aliases ?? [],
+    access_class: input.defaultAccessClass,
+    source_ref: input.sourcePathRef,
+    confidence: "high",
+    created_at: input.createdAt,
+    updated_at: input.createdAt
+  });
+  return parsed.success ? parsed.data : undefined;
 }
 
 function typedPropertyEdge(input: {
@@ -1200,6 +1242,55 @@ function nonWikilinkPropertyReviewCandidates(
   }
 
   return candidates;
+}
+
+function reviewCreatedEndpointTargetsForEndpoint(parsed: ParsedLogseqFile, options: {
+  endpoint: EndpointRecord;
+  endpointTitleIndex?: EndpointTitleIndex;
+  reviewResolutionIndex?: ReviewResolutionIndex;
+  pathRedactionSecret: string;
+}): PropertyEdgeTarget[] {
+  const targets: PropertyEdgeTarget[] = [];
+  const addTargets = (input: {
+    keys: string[];
+    targetType: EndpointType;
+    reasonCode: string;
+    splitList?: boolean;
+  }) => {
+    targets.push(...propertyEdgeTargets({
+      properties: parsed.page_properties,
+      keys: input.keys,
+      targetType: input.targetType,
+      endpointTitleIndex: options.endpointTitleIndex,
+      reviewResolutionIndex: options.reviewResolutionIndex,
+      pathRedactionSecret: options.pathRedactionSecret,
+      reasonCode: input.reasonCode,
+      splitList: input.splitList
+    }).filter((target) => target.reviewDecision === "create-endpoint"));
+  };
+
+  if (options.endpoint.type === "person") {
+    addTargets({ keys: ["primary-location", "location", "based-in"], targetType: "location", reasonCode: "non-wikilink-location-review" });
+    addTargets({ keys: ["org", "organization", "employer-current", "employer-historical"], targetType: "organization", reasonCode: "non-wikilink-organization-review", splitList: true });
+    addTargets({ keys: ["spouse", "estranged-from"], targetType: "person", reasonCode: "non-wikilink-person-review" });
+  } else if (options.endpoint.type === "organization") {
+    addTargets({ keys: ["primary-location", "headquarters", "location", "based-in"], targetType: "location", reasonCode: "non-wikilink-location-review" });
+    addTargets({ keys: ["acquired-by", "customer-of"], targetType: "organization", reasonCode: "non-wikilink-organization-review", splitList: true });
+  } else if (options.endpoint.type === "occurrence") {
+    addTargets({ keys: ["location"], targetType: "location", reasonCode: "non-wikilink-location-review" });
+  } else if (options.endpoint.type === "topic") {
+    addTargets({ keys: ["parent-topic", "part-of-topic"], targetType: "topic", reasonCode: "non-wikilink-topic-review" });
+  }
+
+  const seen = new Set<string>();
+  return targets.filter((target) => {
+    const dedupeKey = `${target.endpointType}:${target.title.toLowerCase()}`;
+    if (seen.has(dedupeKey)) {
+      return false;
+    }
+    seen.add(dedupeKey);
+    return true;
+  });
 }
 
 function propertyEdgesForEndpoint(parsed: ParsedLogseqFile, options: {
@@ -1453,6 +1544,7 @@ function draftObjectsForFile(parsed: ParsedLogseqFile, options: {
   defaultAccessClass: AccessClass;
   endpointTitleIndex?: EndpointTitleIndex;
   reviewResolutionIndex?: ReviewResolutionIndex;
+  createdReviewEndpointIds?: Set<string>;
 }): DraftObject[] {
   const drafts: DraftObject[] = [];
   drafts.push(plannedObject({
@@ -1530,6 +1622,42 @@ function draftObjectsForFile(parsed: ParsedLogseqFile, options: {
           kind: "logseq-temporal-edge",
           source_path_ref: parsed.source_path_ref,
           edge
+        }
+      }));
+    }
+    for (const target of reviewCreatedEndpointTargetsForEndpoint(parsed, {
+      endpoint: typedEndpoint.endpoint,
+      endpointTitleIndex: options.endpointTitleIndex,
+      reviewResolutionIndex: options.reviewResolutionIndex,
+      pathRedactionSecret: options.pathRedactionSecret
+    })) {
+      const endpoint = reviewCreatedEndpointRecord({
+        authorityId: options.authorityId,
+        pathRedactionSecret: options.pathRedactionSecret,
+        createdAt: options.createdAt,
+        defaultAccessClass: options.defaultAccessClass,
+        sourcePathRef: parsed.source_path_ref,
+        target
+      });
+      if (!endpoint || options.createdReviewEndpointIds?.has(endpoint.object_id)) {
+        continue;
+      }
+      options.createdReviewEndpointIds?.add(endpoint.object_id);
+      drafts.push(plannedObject({
+        authorityId: options.authorityId,
+        sourcePathRef: parsed.source_path_ref,
+        objectId: endpoint.object_id,
+        semanticKind: "typed-endpoint",
+        objectType: "page",
+        localRef: `review-endpoint:${target.reviewTargetHash}`,
+        accessClass: options.defaultAccessClass,
+        decision: "captured-encrypted",
+        reasonCode: "review-endpoint-created",
+        plaintextPayload: {
+          kind: "logseq-endpoint",
+          source_path_ref: parsed.source_path_ref,
+          review_target_hash: target.reviewTargetHash,
+          endpoint
         }
       }));
     }
@@ -1904,6 +2032,7 @@ function buildSemanticDrafts(files: MarkdownFileInput[], options: CreateLogseqSe
   });
   const reviewResolutionIndex = buildReviewResolutionIndex(options.review_resolutions);
   const draftsBySourceRef = new Map<string, DraftObject[]>();
+  const createdReviewEndpointIds = new Set<string>();
   const drafts: DraftObject[] = [];
 
   for (const parsed of parsedFiles) {
@@ -1913,7 +2042,8 @@ function buildSemanticDrafts(files: MarkdownFileInput[], options: CreateLogseqSe
       createdAt,
       defaultAccessClass,
       endpointTitleIndex,
-      reviewResolutionIndex
+      reviewResolutionIndex,
+      createdReviewEndpointIds
     });
     draftsBySourceRef.set(parsed.source_path_ref, fileDrafts);
     drafts.push(...fileDrafts);
