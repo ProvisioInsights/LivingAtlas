@@ -381,9 +381,6 @@ function reviewCandidates(file: ParsedReviewFile, index: Map<string, EndpointInd
 function buildReviewResolutionIndex(resolutions: LogseqSemanticReviewResolution[] | undefined): ReviewResolutionIndex {
   const index: ReviewResolutionIndex = new Map();
   for (const resolution of resolutions ?? []) {
-    if (resolution.decision === "defer") {
-      continue;
-    }
     index.set(resolution.target_hash, resolution);
   }
   return index;
@@ -402,8 +399,13 @@ function isResolvedReviewCandidate(input: {
   const resolution = input.reviewResolutionIndex?.get(targetHash);
   return resolution !== undefined
     && resolution.reason_code === input.candidate.reason_code
-    && resolution.endpoint_type !== undefined
-    && input.candidate.suggested_endpoint_types.includes(resolution.endpoint_type);
+    && (
+      resolution.decision === "defer"
+      || (
+        resolution.endpoint_type !== undefined
+        && input.candidate.suggested_endpoint_types.includes(resolution.endpoint_type)
+      )
+    );
 }
 
 function latestRecords(records: BatchRecord[]): BatchRecord[] {

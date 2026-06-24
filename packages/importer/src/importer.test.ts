@@ -908,6 +908,7 @@ describe("markdown importer planning", () => {
     expect(encrypted.ledger.decisions["non-wikilink-location-review"]).toBeUndefined();
     expect(encrypted.ledger.decisions["non-wikilink-organization-review"]).toBeUndefined();
     expect(encrypted.ledger.decisions["non-wikilink-person-review"]).toBe(1);
+    expect(encrypted.ledger.files[0]!.review_status).toBe("reviewed");
     expect(encrypted.ledger.totals.edge_candidates).toBe(3);
     expect(encrypted.ledger.totals.valid_edge_candidates).toBe(2);
     expect(encrypted.ledger.totals.quarantined_edge_candidates).toBe(1);
@@ -941,6 +942,49 @@ describe("markdown importer planning", () => {
     expect(JSON.stringify(encrypted.ledger)).not.toContain("Synthetic Deferred Person");
     expect(JSON.stringify(encrypted.objects)).not.toContain("Synthetic Unresolved Place");
     expect(JSON.stringify(encrypted.objects)).not.toContain("Synthetic Unresolved Org");
+    expect(JSON.stringify(encrypted.objects)).not.toContain("Synthetic Deferred Person");
+  });
+
+  it("keeps explicit defer decisions quarantined but marks the file reviewed", async () => {
+    const pathRedactionSecret = "fixture-path-redaction-secret-0001";
+    const personTargetHash = createLogseqSemanticReviewTargetHash({
+      pathRedactionSecret,
+      reasonCode: "non-wikilink-person-review",
+      value: "Synthetic Deferred Person"
+    });
+    const file = {
+      source_path: "/tmp/living-atlas-fixtures/Synthetic Deferred Person Review.md",
+      markdown: "type:: person\nspouse:: Synthetic Deferred Person\n\n- body text\n",
+      source_kind: "logseq" as const
+    };
+
+    const encrypted = await createLogseqSemanticGraphObjects([file], {
+      authority_id: fixtureAuthorityId,
+      created_at: "2026-06-22T12:00:00.000Z",
+      path_redaction_secret: pathRedactionSecret,
+      review_resolutions: [
+        {
+          target_hash: personTargetHash,
+          reason_code: "non-wikilink-person-review",
+          decision: "defer",
+          aliases: [],
+          confidence: "high"
+        }
+      ],
+      encrypt: async ({ plaintext, aad }) => ({
+        ciphertext: Buffer.from(`sealed:${aad}:${plaintext.length}`).toString("base64"),
+        nonce: "fixture-semantic-nonce",
+        hash: sha256(`sealed:${aad}:${plaintext.length}`),
+        algorithm: "fixture-aes-gcm"
+      })
+    });
+
+    expect(encrypted.ledger.decisions["non-wikilink-person-review"]).toBe(1);
+    expect(encrypted.ledger.files[0]!.review_status).toBe("reviewed");
+    expect(encrypted.ledger.totals.valid_edge_candidates).toBe(0);
+    expect(encrypted.ledger.totals.quarantined_edge_candidates).toBe(1);
+    expect(encrypted.ledger.totals.quarantine_objects).toBe(1);
+    expect(JSON.stringify(encrypted.ledger)).not.toContain("Synthetic Deferred Person");
     expect(JSON.stringify(encrypted.objects)).not.toContain("Synthetic Deferred Person");
   });
 

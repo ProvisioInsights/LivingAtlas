@@ -283,6 +283,7 @@ type EndpointTitleIndexEntry = {
 
 type EndpointTitleIndex = Map<string, EndpointTitleIndexEntry>;
 type ReviewResolutionIndex = Map<string, LogseqSemanticReviewResolution>;
+type ReviewDeferralIndex = Map<string, LogseqSemanticReviewResolution>;
 type PropertyTargetResolution = "wikilink" | "exact-typed-title" | "exact-typed-alias" | "review-resolution";
 type PropertyEdgeTarget = {
   key: string;
@@ -886,6 +887,24 @@ function resolveReviewResolution(input: {
   };
 }
 
+function resolveReviewDeferral(input: {
+  reviewDeferralIndex?: ReviewDeferralIndex;
+  pathRedactionSecret: string;
+  reasonCode: string;
+  value: string;
+}): { reviewTargetHash: `sha256:${string}` } | undefined {
+  const reviewTargetHash = createLogseqSemanticReviewTargetHash({
+    pathRedactionSecret: input.pathRedactionSecret,
+    reasonCode: input.reasonCode,
+    value: input.value
+  });
+  const resolution = input.reviewDeferralIndex?.get(reviewTargetHash);
+  if (!resolution || resolution.decision !== "defer" || resolution.reason_code !== input.reasonCode) {
+    return undefined;
+  }
+  return { reviewTargetHash };
+}
+
 function resolvesToAnyTarget(input: {
   endpointTitleIndex?: EndpointTitleIndex;
   reviewResolutionIndex?: ReviewResolutionIndex;
@@ -1175,6 +1194,21 @@ function suffixTagReviewCandidates(parsed: ParsedLogseqFile, endpoint: EndpointR
   return taggedSuffixes(parsed.page_properties)
     .map((tagged) => ({ ...tagged, reason: suffixTagReviewReason(tagged.suffix) }))
     .filter((tagged): tagged is { title: string; suffix: string; reason: string } => tagged.reason !== undefined);
+}
+
+function reviewDeferralAttrs(input: {
+  reviewDeferralIndex?: ReviewDeferralIndex;
+  pathRedactionSecret: string;
+  reasonCode: string;
+  value: string;
+}): Record<string, unknown> {
+  const deferred = resolveReviewDeferral(input);
+  return deferred
+    ? {
+        review_resolution: "defer",
+        review_target_hash: deferred.reviewTargetHash
+      }
+    : {};
 }
 
 function nonWikilinkPropertyTargets(properties: LogseqProperty[], keys: string[], splitList: boolean): Array<{ key: string; value: string }> {
@@ -1544,6 +1578,7 @@ function draftObjectsForFile(parsed: ParsedLogseqFile, options: {
   defaultAccessClass: AccessClass;
   endpointTitleIndex?: EndpointTitleIndex;
   reviewResolutionIndex?: ReviewResolutionIndex;
+  reviewDeferralIndex?: ReviewDeferralIndex;
   createdReviewEndpointIds?: Set<string>;
 }): DraftObject[] {
   const drafts: DraftObject[] = [];
@@ -1679,7 +1714,13 @@ function draftObjectsForFile(parsed: ParsedLogseqFile, options: {
           canonical_predicate: undefined,
           canonicalization: "suffix-tag-review",
           source_value_hash: sha256(`tags:${candidate.title}:${candidate.suffix}`),
-          tag_suffix: candidate.suffix
+          tag_suffix: candidate.suffix,
+          ...reviewDeferralAttrs({
+            reviewDeferralIndex: options.reviewDeferralIndex,
+            pathRedactionSecret: options.pathRedactionSecret,
+            reasonCode: candidate.reason,
+            value: candidate.title
+          })
         }
       }));
     }
@@ -1705,7 +1746,13 @@ function draftObjectsForFile(parsed: ParsedLogseqFile, options: {
           canonical_predicate: undefined,
           canonicalization: "non-wikilink-property-review",
           source_value_hash: sha256(`${candidate.key}:${candidate.value}`),
-          property_key: candidate.key
+          property_key: candidate.key,
+          ...reviewDeferralAttrs({
+            reviewDeferralIndex: options.reviewDeferralIndex,
+            pathRedactionSecret: options.pathRedactionSecret,
+            reasonCode: candidate.reason,
+            value: candidate.value
+          })
         }
       }));
     }
@@ -1892,15 +1939,28 @@ function collectTypedEndpointObjectIds(parsedFiles: ParsedLogseqFile[], options:
 
 function buildReviewResolutionIndex(resolutions: LogseqSemanticReviewResolution[] | undefined): ReviewResolutionIndex {
   const index: ReviewResolutionIndex = new Map();
+  const seen = new Set<string>();
   for (const resolution of resolutions ?? []) {
     const parsed = LogseqSemanticReviewResolutionSchema.parse(resolution);
+    if (seen.has(parsed.target_hash)) {
+      throw new Error(`duplicate semantic review resolution for ${parsed.target_hash}`);
+    }
+    seen.add(parsed.target_hash);
     if (parsed.decision === "defer") {
       continue;
     }
-    if (index.has(parsed.target_hash)) {
-      throw new Error(`duplicate semantic review resolution for ${parsed.target_hash}`);
-    }
     index.set(parsed.target_hash, parsed);
+  }
+  return index;
+}
+
+function buildReviewDeferralIndex(resolutions: LogseqSemanticReviewResolution[] | undefined): ReviewDeferralIndex {
+  const index: ReviewDeferralIndex = new Map();
+  for (const resolution of resolutions ?? []) {
+    const parsed = LogseqSemanticReviewResolutionSchema.parse(resolution);
+    if (parsed.decision === "defer") {
+      index.set(parsed.target_hash, parsed);
+    }
   }
   return index;
 }
@@ -1952,6 +2012,9 @@ function ledgerFromDrafts(input: {
     const sourceCapsules = drafts.filter((draft) => draft.plan.semantic_kind === "source-capsule").length;
     const blockPropertyCount = parsed.blocks.reduce((sum, block) => sum + block.properties.length, 0);
     const quarantineObjects = drafts.filter((draft) => draft.plan.access_class === "quarantine").length;
+    const unreviewedQuarantineObjects = drafts.filter((draft) =>
+      draft.plan.access_class === "quarantine" && !isReviewedQuarantineDraft(draft)
+    ).length;
     const counts = {
       source_capsules: sourceCapsules,
       pages: 1,
@@ -2001,7 +2064,9 @@ function ledgerFromDrafts(input: {
       source_path_ref: parsed.source_path_ref,
       source_kind: parsed.source_kind,
       migration_status: "planned",
-      review_status: quarantineObjects > 0 ? "needs-review" : "not-required",
+      review_status: quarantineObjects > 0
+        ? (unreviewedQuarantineObjects > 0 ? "needs-review" : "reviewed")
+        : "not-required",
       parity_status: "planned",
       source_capsule_object_id: drafts.find((draft) => draft.plan.semantic_kind === "source-capsule")?.plan.object_id,
       byte_size: parsed.byte_size,
@@ -2028,6 +2093,16 @@ function ledgerFromDrafts(input: {
   });
 }
 
+function isReviewedQuarantineDraft(draft: DraftObject): boolean {
+  if (draft.plan.access_class !== "quarantine") {
+    return true;
+  }
+  const payload = draft.plaintext_payload;
+  return typeof payload === "object"
+    && payload !== null
+    && (payload as { review_resolution?: unknown }).review_resolution === "defer";
+}
+
 function buildSemanticDrafts(files: MarkdownFileInput[], options: CreateLogseqSemanticImportOptions): {
   authorityId: string;
   createdAt: string;
@@ -2047,6 +2122,7 @@ function buildSemanticDrafts(files: MarkdownFileInput[], options: CreateLogseqSe
     defaultAccessClass
   });
   const reviewResolutionIndex = buildReviewResolutionIndex(options.review_resolutions);
+  const reviewDeferralIndex = buildReviewDeferralIndex(options.review_resolutions);
   const draftsBySourceRef = new Map<string, DraftObject[]>();
   const createdReviewEndpointIds = collectTypedEndpointObjectIds(parsedFiles, {
     authorityId,
@@ -2064,6 +2140,7 @@ function buildSemanticDrafts(files: MarkdownFileInput[], options: CreateLogseqSe
       defaultAccessClass,
       endpointTitleIndex,
       reviewResolutionIndex,
+      reviewDeferralIndex,
       createdReviewEndpointIds
     });
     draftsBySourceRef.set(parsed.source_path_ref, fileDrafts);

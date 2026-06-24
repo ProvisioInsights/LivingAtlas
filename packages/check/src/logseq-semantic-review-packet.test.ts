@@ -156,6 +156,44 @@ describe("Logseq semantic review packet", () => {
     expect(packet.groups.map((group) => group.target_value)).toEqual(["Synthetic Unknown City"]);
   });
 
+  it("suppresses explicitly deferred candidates from residual packets", () => {
+    const files = [
+      {
+        source_path: "pages/Synthetic Person.md",
+        markdown: "type:: person\nspouse:: Synthetic Deferred Person\norg:: Synthetic Unknown Org\n\n- body text\n",
+        source_kind: "logseq" as const
+      }
+    ];
+    const deferredPersonHash = createLogseqSemanticReviewTargetHash({
+      pathRedactionSecret,
+      reasonCode: "non-wikilink-person-review",
+      value: "Synthetic Deferred Person"
+    });
+
+    const packet = buildSemanticReviewPacket({
+      files,
+      records: [batchRecord(files.map((file) => file.source_path))],
+      pathRedactionSecret,
+      reviewResolutions: [
+        {
+          target_hash: deferredPersonHash,
+          reason_code: "non-wikilink-person-review",
+          decision: "defer",
+          aliases: [],
+          confidence: "high"
+        }
+      ],
+      generatedAt: "2026-06-24T00:00:00.000Z"
+    });
+
+    expect(packet.candidate_count).toBe(1);
+    expect(packet.grouped_candidate_count).toBe(1);
+    expect(packet.reason_counts).toEqual({
+      "non-wikilink-organization-review": 1
+    });
+    expect(packet.groups.map((group) => group.target_value)).toEqual(["Synthetic Unknown Org"]);
+  });
+
   it("writes tests outside the repository without relying on private paths", async () => {
     const root = await mkdtemp(join(tmpdir(), "living-atlas-review-packet-"));
     try {

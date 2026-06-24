@@ -159,8 +159,10 @@ Generate a review packet outside the repo, review each unresolved target, then
 set `LIVING_ATLAS_LOGSEQ_SEMANTIC_REVIEW_RESOLUTION_PATH` to a private JSON
 file before rerunning the local semantic import. Only high-confidence
 hash-addressed decisions promote edges; deferred or missing entries remain
-encrypted quarantine records. Keep the packet and resolution map out of the
-public repo.
+encrypted quarantine records. Explicit `defer` decisions are treated as
+reviewed quarantine: the source stays accounted for and withheld, but it no
+longer appears as open review work. Keep the packet and resolution map out of
+the public repo.
 
 Check deployed synthetic usage before running any live Cloudflare stress:
 
@@ -351,8 +353,9 @@ actionable plaintext values to a caller-supplied path outside the repository.
 It requires an explicit acknowledgement and a stable path redaction secret; its
 stdout summary remains counts-only. When
 `LIVING_ATLAS_LOGSEQ_SEMANTIC_REVIEW_RESOLUTION_PATH` is set, the packet
-suppresses targets already handled by high-confidence non-deferred resolution
-entries so residual review counts match the resolved ledger.
+suppresses targets already handled by high-confidence resolution entries,
+including explicit deferrals, so residual review counts match the resolved
+ledger.
 `logseq:semantic-corpus-report` combines multiple manifest/ledger pairs, such
 as separate `markdown-only` and `logseq-extensionless-only` runs, into one
 plaintext-free local or synced completion gate. Configure it with comma-separated
