@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import type { GraphObjectEnvelope } from "@living-atlas/contracts";
-import { selectSemanticObjectsForSyncScope } from "./logseq-semantic-parity";
+import {
+  parseSemanticSyncMode,
+  resolveSemanticSyncMode,
+  selectSemanticObjectsForSyncScope
+} from "./logseq-semantic-parity";
 
 function envelope(id: string, schemaNamespace: string): GraphObjectEnvelope {
   return {
@@ -55,5 +59,43 @@ describe("Logseq semantic parity sync scope", () => {
 
     expect(selected.objectsToSync).toEqual([sourceCapsule]);
     expect(selected.knownPreviouslySyncedObjects).toBe(2);
+  });
+});
+
+describe("Logseq semantic parity sync mode", () => {
+  it("defaults to local-only so Cloudflare sync is explicitly opt-in", () => {
+    expect(parseSemanticSyncMode(undefined)).toBe("local-only");
+    expect(resolveSemanticSyncMode({})).toBe("local-only");
+  });
+
+  it("rejects stale mutation acknowledgements while paused", () => {
+    expect(() => resolveSemanticSyncMode({
+      syncMode: "local-only",
+      liveAck: "sync-semantic-ciphertext-to-cloudflare"
+    })).toThrow("rejects");
+    expect(() => resolveSemanticSyncMode({
+      syncMode: "local-only",
+      backfillAck: "record-known-synced-batch"
+    })).toThrow("rejects");
+  });
+
+  it("requires both cloudflare mode and live acknowledgement before syncing", () => {
+    expect(() => resolveSemanticSyncMode({
+      syncMode: "cloudflare"
+    })).toThrow("requires");
+    expect(resolveSemanticSyncMode({
+      syncMode: "cloudflare",
+      liveAck: "sync-semantic-ciphertext-to-cloudflare"
+    })).toBe("cloudflare");
+  });
+
+  it("keeps backfill as an explicit non-Cloudflare mutation mode", () => {
+    expect(() => resolveSemanticSyncMode({
+      syncMode: "backfill"
+    })).toThrow("requires");
+    expect(resolveSemanticSyncMode({
+      syncMode: "backfill",
+      backfillAck: "record-known-synced-batch"
+    })).toBe("backfill");
   });
 });

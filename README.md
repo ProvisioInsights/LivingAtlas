@@ -283,6 +283,7 @@ commands:
 npm run logseq:semantic-manifest
 npm run logseq:semantic-estimate
 npm run logseq:semantic-batch-plan
+npm run logseq:semantic-local
 npm run logseq:semantic-parity
 npm run logseq:semantic-ledger-report
 ```
@@ -293,14 +294,23 @@ files. `logseq:semantic-batch-plan` reads a configured private markdown root and
 emits only counts, offsets, object totals, and opaque root refs.
 `logseq:semantic-estimate` scans the selected source mode and emits counts-only
 object and sync-batch estimates before any live mutation.
-`logseq:semantic-parity` preserves each original file as an encrypted source
-capsule, can split a large semantic window into multiple sync batches, and
-writes per-file parity refs into the durable ledger. `logseq:semantic-ledger-report`
+`logseq:semantic-local` preserves each original file as an encrypted source
+capsule, runs local CRUD/leakage proof, and writes per-file parity refs into the
+durable ledger without Cloudflare sync. `logseq:semantic-cloudflare` uses the
+same parity path but requires an explicit sync mode plus mutation
+acknowledgement before it can split and submit live Cloudflare sync batches.
+`logseq:semantic-ledger-report`
 can run as a hard completion gate with
 `LIVING_ATLAS_LOGSEQ_SEMANTIC_REQUIRE_COMPLETE=1`. Manifest entries with a
 terminal `skipped` or `quarantined` decision are reported as terminal accounting
 outcomes; they do not require ledger objects unless they were readable semantic
 markdown entries.
+
+`LIVING_ATLAS_LOGSEQ_SEMANTIC_SYNC_MODE` defaults to `local-only`. Cloudflare
+sync is paused unless `LIVING_ATLAS_LOGSEQ_SEMANTIC_SYNC_MODE=cloudflare` and
+`LIVING_ATLAS_LOGSEQ_SEMANTIC_SYNC_ACK=sync-semantic-ciphertext-to-cloudflare`
+are both set. Local-only mode rejects stale sync/backfill acknowledgements so a
+shell with old mutation env vars cannot accidentally push.
 
 Set `LIVING_ATLAS_LOGSEQ_SEMANTIC_SOURCE_MODE` to choose the corpus slice:
 
@@ -315,6 +325,7 @@ relative to the selected source mode and must not be mixed across ledgers.
 
 For legacy semantic imports that already synced the graph objects before
 source-capsule refs existed, set
+`LIVING_ATLAS_LOGSEQ_SEMANTIC_SYNC_MODE=cloudflare` plus
 `LIVING_ATLAS_LOGSEQ_SEMANTIC_SYNC_SCOPE=source-capsules-only` with the live
 sync acknowledgement. That pushes only the encrypted source capsules and marks
 the batch complete only when the old synced object count plus the new capsules

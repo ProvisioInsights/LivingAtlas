@@ -46,12 +46,17 @@ const liveAckEnv = "LIVING_ATLAS_LOGSEQ_SEMANTIC_SYNC_ACK";
 const liveAckValue = "sync-semantic-ciphertext-to-cloudflare";
 const backfillAckEnv = "LIVING_ATLAS_LOGSEQ_SEMANTIC_BACKFILL_ACK";
 const backfillAckValue = "record-known-synced-batch";
+const syncModeEnv = "LIVING_ATLAS_LOGSEQ_SEMANTIC_SYNC_MODE";
 const syncScopeEnv = "LIVING_ATLAS_LOGSEQ_SEMANTIC_SYNC_SCOPE";
 const allObjectsSyncScope = "all";
 const sourceCapsulesOnlySyncScope = "source-capsules-only";
+const localOnlySyncMode = "local-only";
+const cloudflareSyncMode = "cloudflare";
+const backfillSyncMode = "backfill";
 const textEncoder = new TextEncoder();
 
 type SemanticSyncScope = typeof allObjectsSyncScope | typeof sourceCapsulesOnlySyncScope;
+export type SemanticSyncMode = typeof localOnlySyncMode | typeof cloudflareSyncMode | typeof backfillSyncMode;
 
 type CrudCase = {
   name: string;
@@ -144,6 +149,51 @@ function parseSemanticSyncScope(value: string | undefined): SemanticSyncScope {
     return sourceCapsulesOnlySyncScope;
   }
   throw new Error(`${syncScopeEnv} must be ${allObjectsSyncScope} or ${sourceCapsulesOnlySyncScope}`);
+}
+
+export function parseSemanticSyncMode(value: string | undefined): SemanticSyncMode {
+  const mode = value ?? localOnlySyncMode;
+  if (mode === localOnlySyncMode || mode === cloudflareSyncMode || mode === backfillSyncMode) {
+    return mode;
+  }
+  throw new Error(`${syncModeEnv} must be ${localOnlySyncMode}, ${cloudflareSyncMode}, or ${backfillSyncMode}`);
+}
+
+export function resolveSemanticSyncMode(input: {
+  syncMode?: string;
+  liveAck?: string;
+  backfillAck?: string;
+}): SemanticSyncMode {
+  const mode = parseSemanticSyncMode(input.syncMode);
+  const hasLiveAck = input.liveAck !== undefined;
+  const hasBackfillAck = input.backfillAck !== undefined;
+  const liveAckValid = input.liveAck === liveAckValue;
+  const backfillAckValid = input.backfillAck === backfillAckValue;
+
+  if (mode === localOnlySyncMode) {
+    if (hasLiveAck || hasBackfillAck) {
+      throw new Error(`${syncModeEnv}=${localOnlySyncMode} rejects ${liveAckEnv} and ${backfillAckEnv}; unset them or choose an explicit mutating mode`);
+    }
+    return mode;
+  }
+
+  if (mode === cloudflareSyncMode) {
+    if (!liveAckValid) {
+      throw new Error(`${syncModeEnv}=${cloudflareSyncMode} requires ${liveAckEnv}=${liveAckValue}`);
+    }
+    if (hasBackfillAck) {
+      throw new Error(`${syncModeEnv}=${cloudflareSyncMode} cannot be combined with ${backfillAckEnv}`);
+    }
+    return mode;
+  }
+
+  if (!backfillAckValid) {
+    throw new Error(`${syncModeEnv}=${backfillSyncMode} requires ${backfillAckEnv}=${backfillAckValue}`);
+  }
+  if (hasLiveAck) {
+    throw new Error(`${syncModeEnv}=${backfillSyncMode} cannot be combined with ${liveAckEnv}`);
+  }
+  return mode;
 }
 
 function isSourceCapsuleObject(object: GraphObjectEnvelope): boolean {
@@ -602,8 +652,12 @@ async function main(): Promise<void> {
   const configuredPathRedactionSecret = envValue("LIVING_ATLAS_REAL_DATA_PATH_REDACTION_SECRET");
   const sourceKind = MarkdownImportSourceKindSchema.parse(envValue("LIVING_ATLAS_REAL_MARKDOWN_SOURCE_KIND") ?? "logseq");
   const sourceMode = SemanticSourceModeSchema.parse(envValue("LIVING_ATLAS_LOGSEQ_SEMANTIC_SOURCE_MODE") ?? "logseq-notes");
-  const mutatesOrBackfills = envValue(liveAckEnv) === liveAckValue || envValue(backfillAckEnv) === backfillAckValue;
-  if (mutatesOrBackfills && !configuredPathRedactionSecret) {
+  const syncMode = resolveSemanticSyncMode({
+    syncMode: envValue(syncModeEnv),
+    liveAck: envValue(liveAckEnv),
+    backfillAck: envValue(backfillAckEnv)
+  });
+  if (syncMode !== localOnlySyncMode && !configuredPathRedactionSecret) {
     throw new Error("LIVING_ATLAS_REAL_DATA_PATH_REDACTION_SECRET is required for live semantic sync or ledger backfill");
   }
   const pathRedactionSecret = configuredPathRedactionSecret ?? randomBytes(32).toString("hex");
@@ -648,16 +702,13 @@ async function main(): Promise<void> {
   }
 
   console.log("Living Atlas Logseq semantic parity and CRUD passed");
-  console.log(`files=${result.ledger.file_count}; offset=${fileOffset}; source_mode=${sourceMode}; objects=${result.objects.length}; local_generation=${crud.generation}`);
+  console.log(`files=${result.ledger.file_count}; offset=${fileOffset}; source_mode=${sourceMode}; sync_mode=${syncMode}; objects=${result.objects.length}; local_generation=${crud.generation}`);
   console.log(`pages=${result.ledger.totals.pages}; blocks=${result.ledger.totals.blocks}; indexes=${result.ledger.totals.reference_index_objects_planned}; edges=${result.ledger.totals.edge_objects}; quarantine=${result.ledger.totals.quarantine_objects}`);
   console.log(`wikilinks=${result.ledger.totals.wikilinks}; tags=${result.ledger.totals.hash_tags}; block_refs=${result.ledger.totals.block_refs}; page_properties=${result.ledger.totals.page_properties}; block_properties=${result.ledger.totals.block_properties}`);
   const rootRef = `sha256:${digest(`${pathRedactionSecret}:semantic-root:v1:${root}`, 64)}` as const;
   console.log(`bytes=${result.ledger.totals.bytes}; root_ref=${rootRef}`);
 
-  if (envValue(backfillAckEnv) === backfillAckValue) {
-    if (envValue(liveAckEnv) === liveAckValue) {
-      throw new Error(`${backfillAckEnv} and ${liveAckEnv} cannot both request mutation modes`);
-    }
+  if (syncMode === backfillSyncMode) {
     if (!batchLedgerPath) {
       throw new Error("LIVING_ATLAS_LOGSEQ_SEMANTIC_LEDGER_PATH is required for semantic ledger backfill");
     }
@@ -720,7 +771,7 @@ async function main(): Promise<void> {
     return;
   }
 
-  if (envValue(liveAckEnv) !== liveAckValue) {
+  if (syncMode === localOnlySyncMode) {
     await appendBatchLedgerRecord(batchLedgerPath, {
       record_schema: "living-atlas-logseq-semantic-batch:v1",
       recorded_at: new Date().toISOString(),
@@ -763,7 +814,7 @@ async function main(): Promise<void> {
       decisions: result.ledger.decisions,
       plaintext_policy: "hash-counts-refs-only"
     }, needles);
-    console.log(`live_sync=skipped; set ${liveAckEnv}=${liveAckValue} to sync semantic ciphertext to Cloudflare`);
+    console.log(`live_sync=paused; set ${syncModeEnv}=${cloudflareSyncMode} and ${liveAckEnv}=${liveAckValue} to sync semantic ciphertext to Cloudflare`);
     return;
   }
 
