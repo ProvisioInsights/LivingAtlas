@@ -154,6 +154,14 @@ Run the local stress gate when changing CRUD, policy, sync, or leakage code:
 npm run stress:local
 ```
 
+Real Logseq semantic review runs can also use a local-private resolution map.
+Generate a review packet outside the repo, review each unresolved target, then
+set `LIVING_ATLAS_LOGSEQ_SEMANTIC_REVIEW_RESOLUTION_PATH` to a private JSON
+file before rerunning the local semantic import. Only high-confidence
+hash-addressed decisions promote edges; deferred or missing entries remain
+encrypted quarantine records. Keep the packet and resolution map out of the
+public repo.
+
 Check deployed synthetic usage before running any live Cloudflare stress:
 
 ```bash

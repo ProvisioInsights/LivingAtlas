@@ -158,11 +158,47 @@ export type LogseqSemanticPayloadToEncrypt = {
 
 export type LogseqSemanticEncryptor = (input: LogseqSemanticPayloadToEncrypt) => Promise<LogseqSemanticEncryptedPayload>;
 
+export const LogseqSemanticReviewResolutionSchema = z
+  .object({
+    target_hash: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+    reason_code: z.string().regex(/^[a-z0-9][a-z0-9._:-]{0,95}$/),
+    decision: z.enum(["map-to-endpoint", "create-endpoint", "defer"]),
+    endpoint_type: EndpointTypeSchema.optional(),
+    endpoint_title: z.string().min(1).max(256).optional(),
+    aliases: z.array(z.string().min(1).max(256)).default([]),
+    confidence: z.literal("high"),
+    reviewed_at: z.string().refine((value) => value.includes("T") && !Number.isNaN(Date.parse(value))).optional(),
+    rationale_hash: z.string().regex(/^sha256:[a-f0-9]{64}$/).optional()
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    if (value.decision === "defer") {
+      return;
+    }
+    if (!value.endpoint_type) {
+      ctx.addIssue({ code: "custom", path: ["endpoint_type"], message: "endpoint_type is required for promoted review resolutions" });
+    }
+    if (!value.endpoint_title) {
+      ctx.addIssue({ code: "custom", path: ["endpoint_title"], message: "endpoint_title is required for promoted review resolutions" });
+    }
+  });
+export type LogseqSemanticReviewResolution = z.infer<typeof LogseqSemanticReviewResolutionSchema>;
+
+export const LogseqSemanticReviewResolutionMapSchema = z
+  .object({
+    resolution_schema: z.literal("living-atlas-logseq-semantic-review-resolution-map:v1"),
+    plaintext_policy: z.literal("local-private-review-resolution-map"),
+    resolutions: z.array(LogseqSemanticReviewResolutionSchema)
+  })
+  .strict();
+export type LogseqSemanticReviewResolutionMap = z.infer<typeof LogseqSemanticReviewResolutionMapSchema>;
+
 export type CreateLogseqSemanticImportOptions = {
   authority_id: string;
   created_at?: string;
   path_redaction_secret?: string;
   default_access_class?: AccessClass;
+  review_resolutions?: LogseqSemanticReviewResolution[];
 };
 
 export type CreateLogseqSemanticGraphObjectsOptions = CreateLogseqSemanticImportOptions & {
@@ -246,10 +282,25 @@ type EndpointTitleIndexEntry = {
 };
 
 type EndpointTitleIndex = Map<string, EndpointTitleIndexEntry>;
-type PropertyTargetResolution = "wikilink" | "exact-typed-title" | "exact-typed-alias";
+type ReviewResolutionIndex = Map<string, LogseqSemanticReviewResolution>;
+type PropertyTargetResolution = "wikilink" | "exact-typed-title" | "exact-typed-alias" | "review-resolution";
+type PropertyEdgeTarget = {
+  key: string;
+  title: string;
+  resolution: PropertyTargetResolution;
+  reviewTargetHash?: `sha256:${string}`;
+};
 
 function sha256(value: string): `sha256:${string}` {
   return `sha256:${createHash("sha256").update(value).digest("hex")}`;
+}
+
+export function createLogseqSemanticReviewTargetHash(input: {
+  pathRedactionSecret: string;
+  reasonCode: string;
+  value: string;
+}): `sha256:${string}` {
+  return sha256(`semantic-review-packet:v1:${input.pathRedactionSecret}:${input.reasonCode}:${input.value.trim().toLowerCase()}`);
 }
 
 function shortHash(value: string, length = 24): string {
@@ -797,6 +848,48 @@ function resolvesToAnyExactTypedEndpoint(
   return targetTypes.some((targetType) => resolveExactTypedEndpoint(endpointTitleIndex, targetType, value) !== undefined);
 }
 
+function resolveReviewResolution(input: {
+  reviewResolutionIndex?: ReviewResolutionIndex;
+  pathRedactionSecret: string;
+  reasonCode: string;
+  targetType: EndpointType;
+  value: string;
+}): { title: string; reviewTargetHash: `sha256:${string}` } | undefined {
+  const reviewTargetHash = createLogseqSemanticReviewTargetHash({
+    pathRedactionSecret: input.pathRedactionSecret,
+    reasonCode: input.reasonCode,
+    value: input.value
+  });
+  const resolution = input.reviewResolutionIndex?.get(reviewTargetHash);
+  if (
+    !resolution
+    || resolution.decision === "defer"
+    || resolution.reason_code !== input.reasonCode
+    || resolution.endpoint_type !== input.targetType
+    || !resolution.endpoint_title
+  ) {
+    return undefined;
+  }
+  return {
+    title: resolution.endpoint_title,
+    reviewTargetHash
+  };
+}
+
+function resolvesToAnyTarget(input: {
+  endpointTitleIndex?: EndpointTitleIndex;
+  reviewResolutionIndex?: ReviewResolutionIndex;
+  pathRedactionSecret: string;
+  reasonCode: string;
+  targetTypes: EndpointType[];
+  value: string;
+}): boolean {
+  if (resolvesToAnyExactTypedEndpoint(input.endpointTitleIndex, input.targetTypes, input.value)) {
+    return true;
+  }
+  return input.targetTypes.some((targetType) => resolveReviewResolution({ ...input, targetType }) !== undefined);
+}
+
 function exactTypedEndpointPropertyTargets(
   properties: LogseqProperty[],
   keys: string[],
@@ -821,16 +914,56 @@ function exactTypedEndpointPropertyTargets(
   return targets;
 }
 
+function reviewResolutionPropertyTargets(input: {
+  properties: LogseqProperty[];
+  keys: string[];
+  targetType: EndpointType;
+  reviewResolutionIndex?: ReviewResolutionIndex;
+  pathRedactionSecret: string;
+  reasonCode: string;
+  splitList: boolean;
+}): PropertyEdgeTarget[] {
+  const targets: PropertyEdgeTarget[] = [];
+  const seen = new Set<string>();
+  for (const target of nonWikilinkPropertyTargets(input.properties, input.keys, input.splitList)) {
+    const resolved = resolveReviewResolution({
+      reviewResolutionIndex: input.reviewResolutionIndex,
+      pathRedactionSecret: input.pathRedactionSecret,
+      reasonCode: input.reasonCode,
+      targetType: input.targetType,
+      value: target.value
+    });
+    if (!resolved) {
+      continue;
+    }
+    const dedupeKey = `${input.targetType}:${resolved.title.toLowerCase()}`;
+    if (seen.has(dedupeKey)) {
+      continue;
+    }
+    seen.add(dedupeKey);
+    targets.push({
+      key: target.key,
+      title: resolved.title,
+      resolution: "review-resolution",
+      reviewTargetHash: resolved.reviewTargetHash
+    });
+  }
+  return targets;
+}
+
 function propertyEdgeTargets(input: {
   properties: LogseqProperty[];
   keys: string[];
   targetType: EndpointType;
   endpointTitleIndex?: EndpointTitleIndex;
+  reviewResolutionIndex?: ReviewResolutionIndex;
+  pathRedactionSecret: string;
+  reasonCode: string;
   splitList?: boolean;
-}): Array<{ key: string; title: string; resolution: PropertyTargetResolution }> {
-  const targets: Array<{ key: string; title: string; resolution: PropertyTargetResolution }> = [];
+}): PropertyEdgeTarget[] {
+  const targets: PropertyEdgeTarget[] = [];
   const seen = new Set<string>();
-  const add = (target: { key: string; title: string; resolution: PropertyTargetResolution }) => {
+  const add = (target: PropertyEdgeTarget) => {
     const dedupeKey = `${input.targetType}:${target.title.toLowerCase()}`;
     if (seen.has(dedupeKey)) {
       return;
@@ -851,6 +984,17 @@ function propertyEdgeTargets(input: {
   )) {
     add(exact);
   }
+  for (const reviewed of reviewResolutionPropertyTargets({
+    properties: input.properties,
+    keys: input.keys,
+    targetType: input.targetType,
+    reviewResolutionIndex: input.reviewResolutionIndex,
+    pathRedactionSecret: input.pathRedactionSecret,
+    reasonCode: input.reasonCode,
+    splitList: input.splitList ?? false
+  })) {
+    add(reviewed);
+  }
   return targets;
 }
 
@@ -859,8 +1003,17 @@ function firstPropertyEdgeTarget(input: {
   keys: string[];
   targetType: EndpointType;
   endpointTitleIndex?: EndpointTitleIndex;
-}): { key: string; title: string; resolution: PropertyTargetResolution } | undefined {
+  reviewResolutionIndex?: ReviewResolutionIndex;
+  pathRedactionSecret: string;
+  reasonCode: string;
+}): PropertyEdgeTarget | undefined {
   return propertyEdgeTargets(input)[0];
+}
+
+function propertyTargetAttrs(target: PropertyEdgeTarget): Record<string, unknown> {
+  return target.reviewTargetHash
+    ? { target_resolution: target.resolution, review_target_hash: target.reviewTargetHash }
+    : { target_resolution: target.resolution };
 }
 
 function typedPropertyEdge(input: {
@@ -1007,12 +1160,23 @@ function nonWikilinkPropertyTargets(properties: LogseqProperty[], keys: string[]
 function nonWikilinkPropertyReviewCandidates(
   parsed: ParsedLogseqFile,
   endpoint: EndpointRecord,
-  endpointTitleIndex?: EndpointTitleIndex
+  options: {
+    endpointTitleIndex?: EndpointTitleIndex;
+    reviewResolutionIndex?: ReviewResolutionIndex;
+    pathRedactionSecret: string;
+  }
 ): Array<{ key: string; value: string; reason: string }> {
   const candidates: Array<{ key: string; value: string; reason: string }> = [];
   const add = (keys: string[], reason: string, targetTypes: EndpointType[], splitList = false) => {
     candidates.push(...nonWikilinkPropertyTargets(parsed.page_properties, keys, splitList)
-      .filter((target) => !resolvesToAnyExactTypedEndpoint(endpointTitleIndex, targetTypes, target.value))
+      .filter((target) => !resolvesToAnyTarget({
+        endpointTitleIndex: options.endpointTitleIndex,
+        reviewResolutionIndex: options.reviewResolutionIndex,
+        pathRedactionSecret: options.pathRedactionSecret,
+        reasonCode: reason,
+        targetTypes,
+        value: target.value
+      }))
       .map((target) => ({ ...target, reason })));
   };
 
@@ -1043,6 +1207,7 @@ function propertyEdgesForEndpoint(parsed: ParsedLogseqFile, options: {
   pathRedactionSecret: string;
   endpoint: EndpointRecord;
   endpointTitleIndex?: EndpointTitleIndex;
+  reviewResolutionIndex?: ReviewResolutionIndex;
 }): TemporalEdge[] {
   const edgesById = new Map<string, TemporalEdge>();
   const addEdge = (edge: TemporalEdge | undefined) => {
@@ -1063,7 +1228,10 @@ function propertyEdgesForEndpoint(parsed: ParsedLogseqFile, options: {
       properties: parsed.page_properties,
       keys: ["primary-location", "location", "based-in"],
       targetType: "location",
-      endpointTitleIndex: options.endpointTitleIndex
+      endpointTitleIndex: options.endpointTitleIndex,
+      reviewResolutionIndex: options.reviewResolutionIndex,
+      pathRedactionSecret: options.pathRedactionSecret,
+      reasonCode: "non-wikilink-location-review"
     });
     addEdge(target ? typedCurrentPagePropertyEdge({
       ...common,
@@ -1071,13 +1239,16 @@ function propertyEdgesForEndpoint(parsed: ParsedLogseqFile, options: {
       targetType: "location",
       predicate: "based-in",
       propertyKey: target.key,
-      attrs: { target_resolution: target.resolution }
+      attrs: propertyTargetAttrs(target)
     }) : undefined);
     for (const employer of propertyEdgeTargets({
       properties: parsed.page_properties,
       keys: ["org", "organization", "employer-current", "employer-historical"],
       targetType: "organization",
       endpointTitleIndex: options.endpointTitleIndex,
+      reviewResolutionIndex: options.reviewResolutionIndex,
+      pathRedactionSecret: options.pathRedactionSecret,
+      reasonCode: "non-wikilink-organization-review",
       splitList: true
     })) {
       addEdge(typedCurrentPagePropertyEdge({
@@ -1087,25 +1258,60 @@ function propertyEdgesForEndpoint(parsed: ParsedLogseqFile, options: {
         predicate: "employed-by",
         propertyKey: employer.key,
         status: employer.key === "employer-historical" ? "ended" : "active",
-        attrs: { target_resolution: employer.resolution }
+        attrs: propertyTargetAttrs(employer)
       }));
     }
-    const spouse = firstPropertyEdgeTarget({ properties: parsed.page_properties, keys: ["spouse"], targetType: "person", endpointTitleIndex: options.endpointTitleIndex });
-    addEdge(spouse ? typedCurrentPagePropertyEdge({ ...common, targetTitle: spouse.title, targetType: "person", predicate: "spouse-of", propertyKey: spouse.key, attrs: { target_resolution: spouse.resolution } }) : undefined);
-    const estranged = firstPropertyEdgeTarget({ properties: parsed.page_properties, keys: ["estranged-from"], targetType: "person", endpointTitleIndex: options.endpointTitleIndex });
-    addEdge(estranged ? typedCurrentPagePropertyEdge({ ...common, targetTitle: estranged.title, targetType: "person", predicate: "estranged-from", propertyKey: estranged.key, attrs: { target_resolution: estranged.resolution } }) : undefined);
+    const spouse = firstPropertyEdgeTarget({
+      properties: parsed.page_properties,
+      keys: ["spouse"],
+      targetType: "person",
+      endpointTitleIndex: options.endpointTitleIndex,
+      reviewResolutionIndex: options.reviewResolutionIndex,
+      pathRedactionSecret: options.pathRedactionSecret,
+      reasonCode: "non-wikilink-person-review"
+    });
+    addEdge(spouse ? typedCurrentPagePropertyEdge({ ...common, targetTitle: spouse.title, targetType: "person", predicate: "spouse-of", propertyKey: spouse.key, attrs: propertyTargetAttrs(spouse) }) : undefined);
+    const estranged = firstPropertyEdgeTarget({
+      properties: parsed.page_properties,
+      keys: ["estranged-from"],
+      targetType: "person",
+      endpointTitleIndex: options.endpointTitleIndex,
+      reviewResolutionIndex: options.reviewResolutionIndex,
+      pathRedactionSecret: options.pathRedactionSecret,
+      reasonCode: "non-wikilink-person-review"
+    });
+    addEdge(estranged ? typedCurrentPagePropertyEdge({ ...common, targetTitle: estranged.title, targetType: "person", predicate: "estranged-from", propertyKey: estranged.key, attrs: propertyTargetAttrs(estranged) }) : undefined);
   } else if (options.endpoint.type === "organization") {
     const target = firstPropertyEdgeTarget({
       properties: parsed.page_properties,
       keys: ["primary-location", "headquarters", "location", "based-in"],
       targetType: "location",
-      endpointTitleIndex: options.endpointTitleIndex
+      endpointTitleIndex: options.endpointTitleIndex,
+      reviewResolutionIndex: options.reviewResolutionIndex,
+      pathRedactionSecret: options.pathRedactionSecret,
+      reasonCode: "non-wikilink-location-review"
     });
-    addEdge(target ? typedCurrentPagePropertyEdge({ ...common, targetTitle: target.title, targetType: "location", predicate: "based-in", propertyKey: target.key, attrs: { target_resolution: target.resolution } }) : undefined);
-    const acquirer = firstPropertyEdgeTarget({ properties: parsed.page_properties, keys: ["acquired-by"], targetType: "organization", endpointTitleIndex: options.endpointTitleIndex });
-    addEdge(acquirer ? typedCurrentPagePropertyEdge({ ...common, targetTitle: acquirer.title, targetType: "organization", predicate: "acquired-by", propertyKey: acquirer.key, attrs: { target_resolution: acquirer.resolution } }) : undefined);
-    const customerTarget = firstPropertyEdgeTarget({ properties: parsed.page_properties, keys: ["customer-of"], targetType: "organization", endpointTitleIndex: options.endpointTitleIndex });
-    addEdge(customerTarget ? typedCurrentPagePropertyEdge({ ...common, targetTitle: customerTarget.title, targetType: "organization", predicate: "customer-of", propertyKey: customerTarget.key, attrs: { target_resolution: customerTarget.resolution } }) : undefined);
+    addEdge(target ? typedCurrentPagePropertyEdge({ ...common, targetTitle: target.title, targetType: "location", predicate: "based-in", propertyKey: target.key, attrs: propertyTargetAttrs(target) }) : undefined);
+    const acquirer = firstPropertyEdgeTarget({
+      properties: parsed.page_properties,
+      keys: ["acquired-by"],
+      targetType: "organization",
+      endpointTitleIndex: options.endpointTitleIndex,
+      reviewResolutionIndex: options.reviewResolutionIndex,
+      pathRedactionSecret: options.pathRedactionSecret,
+      reasonCode: "non-wikilink-organization-review"
+    });
+    addEdge(acquirer ? typedCurrentPagePropertyEdge({ ...common, targetTitle: acquirer.title, targetType: "organization", predicate: "acquired-by", propertyKey: acquirer.key, attrs: propertyTargetAttrs(acquirer) }) : undefined);
+    const customerTarget = firstPropertyEdgeTarget({
+      properties: parsed.page_properties,
+      keys: ["customer-of"],
+      targetType: "organization",
+      endpointTitleIndex: options.endpointTitleIndex,
+      reviewResolutionIndex: options.reviewResolutionIndex,
+      pathRedactionSecret: options.pathRedactionSecret,
+      reasonCode: "non-wikilink-organization-review"
+    });
+    addEdge(customerTarget ? typedCurrentPagePropertyEdge({ ...common, targetTitle: customerTarget.title, targetType: "organization", predicate: "customer-of", propertyKey: customerTarget.key, attrs: propertyTargetAttrs(customerTarget) }) : undefined);
     for (const tagged of taggedSuffixes(parsed.page_properties)) {
       const sourceObjectId = semanticTitleObjectId(options.authorityId, options.pathRedactionSecret, tagged.title);
       const reverseCommon = {
@@ -1136,11 +1342,27 @@ function propertyEdgesForEndpoint(parsed: ParsedLogseqFile, options: {
       }
     }
   } else if (options.endpoint.type === "occurrence") {
-    const target = firstPropertyEdgeTarget({ properties: parsed.page_properties, keys: ["location"], targetType: "location", endpointTitleIndex: options.endpointTitleIndex });
-    addEdge(target ? typedCurrentPagePropertyEdge({ ...common, targetTitle: target.title, targetType: "location", predicate: "occurred-at", propertyKey: target.key, attrs: { target_resolution: target.resolution } }) : undefined);
+    const target = firstPropertyEdgeTarget({
+      properties: parsed.page_properties,
+      keys: ["location"],
+      targetType: "location",
+      endpointTitleIndex: options.endpointTitleIndex,
+      reviewResolutionIndex: options.reviewResolutionIndex,
+      pathRedactionSecret: options.pathRedactionSecret,
+      reasonCode: "non-wikilink-location-review"
+    });
+    addEdge(target ? typedCurrentPagePropertyEdge({ ...common, targetTitle: target.title, targetType: "location", predicate: "occurred-at", propertyKey: target.key, attrs: propertyTargetAttrs(target) }) : undefined);
   } else if (options.endpoint.type === "topic") {
-    const target = firstPropertyEdgeTarget({ properties: parsed.page_properties, keys: ["parent-topic", "part-of-topic"], targetType: "topic", endpointTitleIndex: options.endpointTitleIndex });
-    addEdge(target ? typedCurrentPagePropertyEdge({ ...common, targetTitle: target.title, targetType: "topic", predicate: "part-of-topic", propertyKey: target.key, attrs: { target_resolution: target.resolution } }) : undefined);
+    const target = firstPropertyEdgeTarget({
+      properties: parsed.page_properties,
+      keys: ["parent-topic", "part-of-topic"],
+      targetType: "topic",
+      endpointTitleIndex: options.endpointTitleIndex,
+      reviewResolutionIndex: options.reviewResolutionIndex,
+      pathRedactionSecret: options.pathRedactionSecret,
+      reasonCode: "non-wikilink-topic-review"
+    });
+    addEdge(target ? typedCurrentPagePropertyEdge({ ...common, targetTitle: target.title, targetType: "topic", predicate: "part-of-topic", propertyKey: target.key, attrs: propertyTargetAttrs(target) }) : undefined);
   }
 
   return [...edgesById.values()];
@@ -1230,6 +1452,7 @@ function draftObjectsForFile(parsed: ParsedLogseqFile, options: {
   createdAt: string;
   defaultAccessClass: AccessClass;
   endpointTitleIndex?: EndpointTitleIndex;
+  reviewResolutionIndex?: ReviewResolutionIndex;
 }): DraftObject[] {
   const drafts: DraftObject[] = [];
   drafts.push(plannedObject({
@@ -1291,7 +1514,8 @@ function draftObjectsForFile(parsed: ParsedLogseqFile, options: {
       authorityId: options.authorityId,
       pathRedactionSecret: options.pathRedactionSecret,
       endpoint: typedEndpoint.endpoint,
-      endpointTitleIndex: options.endpointTitleIndex
+      endpointTitleIndex: options.endpointTitleIndex,
+      reviewResolutionIndex: options.reviewResolutionIndex
     })) {
       drafts.push(plannedObject({
         authorityId: options.authorityId,
@@ -1331,7 +1555,11 @@ function draftObjectsForFile(parsed: ParsedLogseqFile, options: {
         }
       }));
     }
-    for (const candidate of nonWikilinkPropertyReviewCandidates(parsed, typedEndpoint.endpoint, options.endpointTitleIndex)) {
+    for (const candidate of nonWikilinkPropertyReviewCandidates(parsed, typedEndpoint.endpoint, {
+      endpointTitleIndex: options.endpointTitleIndex,
+      reviewResolutionIndex: options.reviewResolutionIndex,
+      pathRedactionSecret: options.pathRedactionSecret
+    })) {
       drafts.push(plannedObject({
         authorityId: options.authorityId,
         sourcePathRef: parsed.source_path_ref,
@@ -1518,6 +1746,21 @@ function buildEndpointTitleIndex(parsedFiles: ParsedLogseqFile[], options: {
   return index;
 }
 
+function buildReviewResolutionIndex(resolutions: LogseqSemanticReviewResolution[] | undefined): ReviewResolutionIndex {
+  const index: ReviewResolutionIndex = new Map();
+  for (const resolution of resolutions ?? []) {
+    const parsed = LogseqSemanticReviewResolutionSchema.parse(resolution);
+    if (parsed.decision === "defer") {
+      continue;
+    }
+    if (index.has(parsed.target_hash)) {
+      throw new Error(`duplicate semantic review resolution for ${parsed.target_hash}`);
+    }
+    index.set(parsed.target_hash, parsed);
+  }
+  return index;
+}
+
 function emptyTotals(): LogseqSemanticParityLedger["totals"] {
   return {
     bytes: 0,
@@ -1659,6 +1902,7 @@ function buildSemanticDrafts(files: MarkdownFileInput[], options: CreateLogseqSe
     createdAt,
     defaultAccessClass
   });
+  const reviewResolutionIndex = buildReviewResolutionIndex(options.review_resolutions);
   const draftsBySourceRef = new Map<string, DraftObject[]>();
   const drafts: DraftObject[] = [];
 
@@ -1668,7 +1912,8 @@ function buildSemanticDrafts(files: MarkdownFileInput[], options: CreateLogseqSe
       pathRedactionSecret,
       createdAt,
       defaultAccessClass,
-      endpointTitleIndex
+      endpointTitleIndex,
+      reviewResolutionIndex
     });
     draftsBySourceRef.set(parsed.source_path_ref, fileDrafts);
     drafts.push(...fileDrafts);

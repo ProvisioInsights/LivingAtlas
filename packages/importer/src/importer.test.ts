@@ -10,6 +10,7 @@ import {
   createMarkdownWatcherPlan,
   createLogseqSemanticGraphObjects,
   createLogseqSemanticParityLedger,
+  createLogseqSemanticReviewTargetHash,
   planWatcherFileEvent,
   summarizeMarkdownFile
 } from "./index";
@@ -825,6 +826,202 @@ describe("markdown importer planning", () => {
     expect(JSON.stringify(encrypted.ledger)).not.toContain("Shared Synthetic Alias");
     expect(JSON.stringify(encrypted.objects)).not.toContain("Synthetic Alias Org");
     expect(JSON.stringify(encrypted.objects)).not.toContain("Synthetic Duplicate Alias Person");
+  });
+
+  it("promotes approved private review resolutions without exposing target plaintext", async () => {
+    const pathRedactionSecret = "fixture-path-redaction-secret-0001";
+    const locationTargetHash = createLogseqSemanticReviewTargetHash({
+      pathRedactionSecret,
+      reasonCode: "non-wikilink-location-review",
+      value: "Synthetic Unresolved Place"
+    });
+    const organizationTargetHash = createLogseqSemanticReviewTargetHash({
+      pathRedactionSecret,
+      reasonCode: "non-wikilink-organization-review",
+      value: "Synthetic Unresolved Org"
+    });
+    const personTargetHash = createLogseqSemanticReviewTargetHash({
+      pathRedactionSecret,
+      reasonCode: "non-wikilink-person-review",
+      value: "Synthetic Deferred Person"
+    });
+    const files = [
+      {
+        source_path: "/tmp/living-atlas-fixtures/Synthetic Review Person.md",
+        markdown: "type:: person\nlocation:: Synthetic Unresolved Place\norg:: Synthetic Unresolved Org\nspouse:: Synthetic Deferred Person\n\n- body text\n",
+        source_kind: "logseq" as const
+      }
+    ];
+    const plaintextPayloads: string[] = [];
+
+    const encrypted = await createLogseqSemanticGraphObjects(files, {
+      authority_id: fixtureAuthorityId,
+      created_at: "2026-06-22T12:00:00.000Z",
+      path_redaction_secret: pathRedactionSecret,
+      review_resolutions: [
+        {
+          target_hash: locationTargetHash,
+          reason_code: "non-wikilink-location-review",
+          decision: "map-to-endpoint",
+          endpoint_type: "location",
+          endpoint_title: "Synthetic Canonical Place",
+          aliases: [],
+          confidence: "high"
+        },
+        {
+          target_hash: organizationTargetHash,
+          reason_code: "non-wikilink-organization-review",
+          decision: "create-endpoint",
+          endpoint_type: "organization",
+          endpoint_title: "Synthetic Canonical Org",
+          aliases: [],
+          confidence: "high"
+        },
+        {
+          target_hash: personTargetHash,
+          reason_code: "non-wikilink-person-review",
+          decision: "defer",
+          aliases: [],
+          confidence: "high"
+        }
+      ],
+      encrypt: async ({ plaintext, aad }) => {
+        plaintextPayloads.push(plaintext);
+        return {
+          ciphertext: Buffer.from(`sealed:${aad}:${plaintext.length}`).toString("base64"),
+          nonce: "fixture-semantic-nonce",
+          hash: sha256(`sealed:${aad}:${plaintext.length}`),
+          algorithm: "fixture-aes-gcm"
+        };
+      }
+    });
+    const edgePayloads = plaintextPayloads
+      .map((payload) => JSON.parse(payload) as { kind?: string; edge?: { predicate?: string; target_type?: string; attrs?: Record<string, unknown> } })
+      .filter((payload) => payload.kind === "logseq-temporal-edge");
+
+    expect(encrypted.ledger.decisions["typed-endpoint-promoted"]).toBe(1);
+    expect(encrypted.ledger.decisions["property-edge-promoted"]).toBe(2);
+    expect(encrypted.ledger.decisions["non-wikilink-location-review"]).toBeUndefined();
+    expect(encrypted.ledger.decisions["non-wikilink-organization-review"]).toBeUndefined();
+    expect(encrypted.ledger.decisions["non-wikilink-person-review"]).toBe(1);
+    expect(encrypted.ledger.totals.edge_candidates).toBe(3);
+    expect(encrypted.ledger.totals.valid_edge_candidates).toBe(2);
+    expect(encrypted.ledger.totals.quarantined_edge_candidates).toBe(1);
+    expect(encrypted.ledger.totals.quarantine_objects).toBe(1);
+    expect(edgePayloads.map((payload) => payload.edge)).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        predicate: "based-in",
+        target_type: "location",
+        attrs: expect.objectContaining({
+          target_resolution: "review-resolution",
+          review_target_hash: locationTargetHash
+        })
+      }),
+      expect.objectContaining({
+        predicate: "employed-by",
+        target_type: "organization",
+        attrs: expect.objectContaining({
+          target_resolution: "review-resolution",
+          review_target_hash: organizationTargetHash
+        })
+      })
+    ]));
+    expect(JSON.stringify(encrypted.ledger)).not.toContain("Synthetic Unresolved Place");
+    expect(JSON.stringify(encrypted.ledger)).not.toContain("Synthetic Unresolved Org");
+    expect(JSON.stringify(encrypted.ledger)).not.toContain("Synthetic Deferred Person");
+    expect(JSON.stringify(encrypted.objects)).not.toContain("Synthetic Unresolved Place");
+    expect(JSON.stringify(encrypted.objects)).not.toContain("Synthetic Unresolved Org");
+    expect(JSON.stringify(encrypted.objects)).not.toContain("Synthetic Deferred Person");
+  });
+
+  it("rejects duplicate non-deferred private review resolutions for the same target hash", async () => {
+    const pathRedactionSecret = "fixture-path-redaction-secret-0001";
+    const targetHash = createLogseqSemanticReviewTargetHash({
+      pathRedactionSecret,
+      reasonCode: "non-wikilink-location-review",
+      value: "Synthetic Unresolved Place"
+    });
+    const file = {
+      source_path: "/tmp/living-atlas-fixtures/Synthetic Review Person.md",
+      markdown: "type:: person\nlocation:: Synthetic Unresolved Place\n\n- body text\n",
+      source_kind: "logseq" as const
+    };
+
+    await expect(createLogseqSemanticGraphObjects([file], {
+      authority_id: fixtureAuthorityId,
+      created_at: "2026-06-22T12:00:00.000Z",
+      path_redaction_secret: pathRedactionSecret,
+      review_resolutions: [
+        {
+          target_hash: targetHash,
+          reason_code: "non-wikilink-location-review",
+          decision: "map-to-endpoint",
+          endpoint_type: "location",
+          endpoint_title: "Synthetic Canonical Place",
+          aliases: [],
+          confidence: "high"
+        },
+        {
+          target_hash: targetHash,
+          reason_code: "non-wikilink-location-review",
+          decision: "map-to-endpoint",
+          endpoint_type: "location",
+          endpoint_title: "Synthetic Alternate Place",
+          aliases: [],
+          confidence: "high"
+        }
+      ],
+      encrypt: async ({ plaintext, aad }) => ({
+        ciphertext: Buffer.from(`sealed:${aad}:${plaintext.length}`).toString("base64"),
+        nonce: "fixture-semantic-nonce",
+        hash: sha256(`sealed:${aad}:${plaintext.length}`),
+        algorithm: "fixture-aes-gcm"
+      })
+    })).rejects.toThrow(`duplicate semantic review resolution for ${targetHash}`);
+  });
+
+  it("does not promote a private review resolution with a mismatched reason code", async () => {
+    const pathRedactionSecret = "fixture-path-redaction-secret-0001";
+    const targetHash = createLogseqSemanticReviewTargetHash({
+      pathRedactionSecret,
+      reasonCode: "non-wikilink-location-review",
+      value: "Synthetic Unresolved Place"
+    });
+    const file = {
+      source_path: "/tmp/living-atlas-fixtures/Synthetic Review Person.md",
+      markdown: "type:: person\nlocation:: Synthetic Unresolved Place\n\n- body text\n",
+      source_kind: "logseq" as const
+    };
+
+    const encrypted = await createLogseqSemanticGraphObjects([file], {
+      authority_id: fixtureAuthorityId,
+      created_at: "2026-06-22T12:00:00.000Z",
+      path_redaction_secret: pathRedactionSecret,
+      review_resolutions: [
+        {
+          target_hash: targetHash,
+          reason_code: "non-wikilink-organization-review",
+          decision: "map-to-endpoint",
+          endpoint_type: "location",
+          endpoint_title: "Synthetic Canonical Place",
+          aliases: [],
+          confidence: "high"
+        }
+      ],
+      encrypt: async ({ plaintext, aad }) => ({
+        ciphertext: Buffer.from(`sealed:${aad}:${plaintext.length}`).toString("base64"),
+        nonce: "fixture-semantic-nonce",
+        hash: sha256(`sealed:${aad}:${plaintext.length}`),
+        algorithm: "fixture-aes-gcm"
+      })
+    });
+
+    expect(encrypted.ledger.decisions["property-edge-promoted"]).toBeUndefined();
+    expect(encrypted.ledger.decisions["non-wikilink-location-review"]).toBe(1);
+    expect(encrypted.ledger.totals.valid_edge_candidates).toBe(0);
+    expect(encrypted.ledger.totals.quarantined_edge_candidates).toBe(1);
+    expect(JSON.stringify(encrypted.ledger)).not.toContain("Synthetic Unresolved Place");
+    expect(JSON.stringify(encrypted.objects)).not.toContain("Synthetic Unresolved Place");
   });
 
   it("quarantines cluster endpoints instead of promoting temporal edge objects", async () => {

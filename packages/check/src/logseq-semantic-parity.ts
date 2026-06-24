@@ -10,6 +10,7 @@ import {
 } from "@living-atlas/contracts";
 import {
   createLogseqSemanticGraphObjects,
+  LogseqSemanticReviewResolutionMapSchema,
   MarkdownImportSourceKindSchema,
   type MarkdownFileInput
 } from "@living-atlas/importer";
@@ -663,6 +664,7 @@ async function main(): Promise<void> {
   const fileCount = parseInteger(envValue("LIVING_ATLAS_LOGSEQ_SEMANTIC_FILE_COUNT"), defaultFileCount, 1, fileCountLimit);
   const fileOffset = parseInteger(envValue("LIVING_ATLAS_LOGSEQ_SEMANTIC_FILE_OFFSET"), 0, 0, maxFileOffset);
   const batchLedgerPath = envValue("LIVING_ATLAS_LOGSEQ_SEMANTIC_LEDGER_PATH");
+  const reviewResolutionPath = envValue("LIVING_ATLAS_LOGSEQ_SEMANTIC_REVIEW_RESOLUTION_PATH");
   const authorityId = envValue("LIVING_ATLAS_LIVE_AUTHORITY_ID") ?? "la_authority_logseqsemantic0001";
   const configuredPathRedactionSecret = envValue("LIVING_ATLAS_REAL_DATA_PATH_REDACTION_SECRET");
   const sourceKind = MarkdownImportSourceKindSchema.parse(envValue("LIVING_ATLAS_REAL_MARKDOWN_SOURCE_KIND") ?? "logseq");
@@ -684,6 +686,10 @@ async function main(): Promise<void> {
     throw new Error(`no semantic source files found under configured root at offset ${fileOffset}`);
   }
 
+  const reviewResolutions = reviewResolutionPath
+    ? LogseqSemanticReviewResolutionMapSchema.parse(JSON.parse(await readFile(reviewResolutionPath, "utf8"))).resolutions
+    : undefined;
+
   const files: MarkdownFileInput[] = [];
   for (const path of paths) {
     files.push({
@@ -697,6 +703,7 @@ async function main(): Promise<void> {
     authority_id: authorityId,
     created_at: createdAt,
     path_redaction_secret: pathRedactionSecret,
+    review_resolutions: reviewResolutions,
     encrypt: async ({ plaintext, aad }) => encryptPayload(plaintext, aad)
   });
 

@@ -164,6 +164,29 @@ The fixture graph intentionally contains sensitive bait and local-private
 ciphertext references so policy and leakage checks have something to catch. Do
 not replace those fixtures with personal graph content.
 
+## Local-Private Semantic Review Resolutions
+
+The semantic review packet groups unresolved non-wikilink relationship targets
+by hash so private values can be reviewed outside the public repo. After review,
+a local operator may provide
+`LIVING_ATLAS_LOGSEQ_SEMANTIC_REVIEW_RESOLUTION_PATH` pointing at a private JSON
+map with `resolution_schema:
+living-atlas-logseq-semantic-review-resolution-map:v1`.
+
+Resolution entries are intentionally narrow:
+
+- `target_hash` must match the review packet hash.
+- `reason_code` records which review class produced the hash.
+- `decision` is `map-to-endpoint`, `create-endpoint`, or `defer`.
+- promoted entries require `endpoint_type`, `endpoint_title`, and
+  `confidence: high`.
+
+Only matching high-confidence promoted entries become typed edges. Deferred,
+missing, duplicate, wrong-type, or schema-invalid entries do not silently
+promote ambiguous data; they remain quarantined or fail the run before write.
+The review packet and resolution map may contain private plaintext context and
+must be written outside this repository with private filesystem permissions.
+
 ## Current V1 Direction
 
 Build:
