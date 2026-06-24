@@ -228,6 +228,29 @@ The report prints counts, hashes, status flags, and decision categories only.
 Supplemental ledgers are reported separately from source coverage so repeated
 local enhancement passes do not inflate migrated file counts.
 
+Generate the full local real-data readiness rollup after semantic import,
+topic review, and connector enrichment artifacts exist in private storage:
+
+```bash
+LIVING_ATLAS_LOGSEQ_SEMANTIC_AGGREGATE_MANIFEST_PATHS=/private/semantic-manifest.json \
+LIVING_ATLAS_LOGSEQ_SEMANTIC_AGGREGATE_LEDGER_PATHS=/private/semantic-ledger.jsonl \
+LIVING_ATLAS_LOGSEQ_SEMANTIC_SUPPLEMENTAL_LEDGER_PATHS=/private/reviewed-edge-ledger.jsonl \
+LIVING_ATLAS_LOGSEQ_TOPIC_REVIEW_PACKET_PATH=/private/topic-review-packet.json \
+LIVING_ATLAS_LOGSEQ_TOPIC_REVIEW_RESOLUTION_PATH=/private/topic-review-resolutions.json \
+LIVING_ATLAS_LOGSEQ_TOPIC_REVIEW_LEDGER_PATH=/private/topic-review-local-ledger.json \
+LIVING_ATLAS_CONNECTOR_COVERAGE_MANIFEST_PATH=/private/connector-coverage.json \
+LIVING_ATLAS_CONNECTOR_ENRICHMENT_LEDGER_PATHS=/private/connector-enrichment-ledger.json \
+LIVING_ATLAS_REAL_DATA_LOCAL_READINESS_REQUIRED_COMPONENTS=topic-review,topic-local-import,connector-coverage,connector-enrichment \
+LIVING_ATLAS_REAL_DATA_LOCAL_READINESS_REQUIRE_COMPLETE=1 \
+npm run real-data:local-readiness-report
+```
+
+The readiness rollup emits only counts, hashes, status flags, and known gaps.
+It fails complete mode if required artifact families are missing, source
+coverage is incomplete, review work is unresolved, local persistence was not
+encrypted, connector imports failed, connector probes mutated data, or any
+local real-data artifact shows a Cloudflare sync attempt.
+
 When a private review packet is regenerated with a new path-redaction secret,
 previous high-confidence review decisions can be re-keyed by matching normalized
 review target values inside private packets:

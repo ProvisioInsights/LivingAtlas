@@ -50,6 +50,7 @@
     "connector:enrichment-corpus-report": "tsx packages/check/src/connector-enrichment-corpus-report.ts",
     "connector:coverage-report": "tsx packages/check/src/connector-coverage-report.ts",
     "real-data:readiness": "tsx packages/check/src/real-data-readiness.ts",
+    "real-data:local-readiness-report": "tsx packages/check/src/real-data-local-readiness-report.ts",
     "stress:local": "tsx packages/check/src/local-stress.ts",
     "local:install-smoke": "tsx packages/check/src/local-install-smoke.ts",
     "local-mcp:fixture": "tsx packages/local-mcp/src/cli.ts",

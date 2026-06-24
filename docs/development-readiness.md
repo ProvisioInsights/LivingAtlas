@@ -250,6 +250,37 @@ The summary recomputes the same semantic draft plan used by the encrypted import
 and reports endpoint type counts, occurrence/topic totals, recurrence counts,
 edge predicate counts, and quarantine reason counts. It must stay count-only.
 
+## Local Real-Data Readiness Rollup
+
+After private semantic import, topic review, connector coverage, and connector
+enrichment artifacts exist, use the local readiness rollup as the single
+count-only proof surface:
+
+```bash
+LIVING_ATLAS_LOGSEQ_SEMANTIC_AGGREGATE_MANIFEST_PATHS=/private/semantic-manifest.json \
+LIVING_ATLAS_LOGSEQ_SEMANTIC_AGGREGATE_LEDGER_PATHS=/private/semantic-ledger.jsonl \
+LIVING_ATLAS_LOGSEQ_SEMANTIC_SUPPLEMENTAL_LEDGER_PATHS=/private/reviewed-edge-ledger.jsonl \
+LIVING_ATLAS_LOGSEQ_TOPIC_REVIEW_PACKET_PATH=/private/topic-review-packet.json \
+LIVING_ATLAS_LOGSEQ_TOPIC_REVIEW_RESOLUTION_PATH=/private/topic-review-resolutions.json \
+LIVING_ATLAS_LOGSEQ_TOPIC_REVIEW_LEDGER_PATH=/private/topic-review-local-ledger.json \
+LIVING_ATLAS_CONNECTOR_COVERAGE_MANIFEST_PATH=/private/connector-coverage.json \
+LIVING_ATLAS_CONNECTOR_ENRICHMENT_LEDGER_PATHS=/private/connector-enrichment-ledger.json \
+LIVING_ATLAS_REAL_DATA_LOCAL_READINESS_REQUIRED_COMPONENTS=topic-review,topic-local-import,connector-coverage,connector-enrichment \
+LIVING_ATLAS_REAL_DATA_LOCAL_READINESS_REQUIRE_COMPLETE=1 \
+npm run real-data:local-readiness-report
+```
+
+The command composes existing private artifacts without reading source
+plaintext. It reports source coverage, edge/quarantine counts, topic review
+status, encrypted topic-import persistence, connector coverage, connector
+enrichment, and whether any artifact attempted Cloudflare sync. It emits
+private-safe counts and status flags only.
+
+Complete mode fails when required artifact families are missing, semantic
+coverage is incomplete, topic review has unresolved groups, topic or connector
+imports failed, connector probes mutated data, local graph persistence is not
+encrypted, or any local real-data artifact shows Cloudflare sync activity.
+
 ## Current V1 Direction
 
 Build:
