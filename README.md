@@ -374,11 +374,12 @@ the required proof.
 `connector:enrichment-report` validates a local-private connector enrichment
 packet from approved sources such as email, calendar, meeting, chat, document,
 or manual-file review workflows, then emits only counts and hash-addressed
-categories. The packet may contain plaintext evidence and must stay outside the
-repository. The report is the public-safe gate before any connector-derived
-facts are promoted into the graph: only `decision: promote` plus
-`confidence: high` is counted as promote-ready; proposed, deferred, rejected, or
-lower-confidence candidates stay held for local review.
+categories. The packet may contain plaintext evidence and local-private
+proposed fact payloads, and must stay outside the repository. The report is the
+public-safe gate before any connector-derived facts are promoted into the graph:
+only `decision: promote` plus `confidence: high` is counted as promote-ready;
+proposed, deferred, rejected, or lower-confidence candidates stay held for local
+review.
 
 `LIVING_ATLAS_LOGSEQ_SEMANTIC_SYNC_MODE` defaults to `local-only`. Cloudflare
 sync is paused unless `LIVING_ATLAS_LOGSEQ_SEMANTIC_SYNC_MODE=cloudflare` and

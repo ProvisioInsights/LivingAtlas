@@ -387,10 +387,11 @@ Use `connector:enrichment-report` before importing any connector-derived facts
 from mail, calendar, meeting, chat, document, or manual-file workflows. Set
 `LIVING_ATLAS_CONNECTOR_ENRICHMENT_PACKET_PATH` to a local-private JSON packet
 with schema `living-atlas-connector-enrichment-packet:v1`. The packet may
-contain plaintext evidence for local review, but the command emits only
-hash/count summaries and never prints evidence text. Promote only candidates
-with `decision: promote` and `confidence: high`; everything else remains held
-for review, deferral, or rejection.
+contain plaintext evidence and local-private proposed fact payloads for local
+review, but the command emits only hash/count summaries and never prints
+evidence text or proposed payload values. Promote only candidates with
+`decision: promote` and `confidence: high`; everything else remains held for
+review, deferral, or rejection.
 
 `LIVING_ATLAS_LOGSEQ_SEMANTIC_SOURCE_MODE` controls discovery:
 

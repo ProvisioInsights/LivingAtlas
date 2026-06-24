@@ -49,7 +49,8 @@ const EnrichmentCandidateSchema = z
         kind: ProposedFactKindSchema,
         endpoint_type: EndpointTypeSchema.optional(),
         predicate: PredicateSchema.optional(),
-        confidence: ConfidenceSchema
+        confidence: ConfidenceSchema,
+        local_private_payload: z.record(z.string(), z.unknown()).optional()
       })
       .strict(),
     decision: CandidateDecisionSchema,

@@ -33,7 +33,10 @@ const basePacket = {
       proposed_fact: {
         kind: "endpoint",
         endpoint_type: "person",
-        confidence: "high"
+        confidence: "high",
+        local_private_payload: {
+          name: "Fixture payload bait delta"
+        }
       },
       decision: "promote",
       plaintext_evidence: "Fixture evidence bait alpha that must not be reported.",
@@ -99,6 +102,7 @@ describe("connector enrichment report", () => {
       expect(JSON.stringify(report)).not.toContain("Fixture evidence bait alpha");
       expect(JSON.stringify(report)).not.toContain("Fixture evidence bait gamma");
       expect(JSON.stringify(report)).not.toContain("Fixture review bait beta");
+      expect(JSON.stringify(report)).not.toContain("Fixture payload bait delta");
     } finally {
       await rm(root, { recursive: true, force: true });
     }
