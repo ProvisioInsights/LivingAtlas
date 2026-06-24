@@ -164,6 +164,23 @@ reviewed quarantine: the source stays accounted for and withheld, but it no
 longer appears as open review work. Keep the packet and resolution map out of
 the public repo.
 
+Topic review can use the same private-map pattern. For a conservative first
+pass, generate a curated draft that promotes only recurring wikilink tag groups
+as controlled topics and defers plain tags, hash tags, and one-off wikilink
+tags:
+
+```bash
+LIVING_ATLAS_LOGSEQ_TOPIC_REVIEW_CURATED_DRAFT_ACK=write-local-private-topic-review-curated-draft \
+LIVING_ATLAS_LOGSEQ_TOPIC_REVIEW_PACKET_PATH=/private/topic-review-packet.json \
+LIVING_ATLAS_LOGSEQ_TOPIC_REVIEW_RESOLUTION_PATH=/private/topic-review-resolutions-curated.json \
+npm run logseq:semantic-topic-review-curated-draft
+```
+
+The curated draft command prints only counts and reason-code buckets. The
+private resolution map contains topic labels and must stay outside the repo.
+Set `LIVING_ATLAS_LOGSEQ_TOPIC_REVIEW_CURATED_PROMOTE_REASONS` only when a
+local operator has decided additional explicit tag classes are high confidence.
+
 Check deployed synthetic usage before running any live Cloudflare stress:
 
 ```bash

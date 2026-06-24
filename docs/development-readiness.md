@@ -189,6 +189,25 @@ quarantined or fail the run before write.
 The review packet and resolution map may contain private plaintext context and
 must be written outside this repository with private filesystem permissions.
 
+Topic review resolution maps can be generated as either all-defer drafts or
+curated drafts. The curated draft is intentionally conservative: by default it
+promotes only recurring `wikilink-tag-topic-review` groups into controlled
+`topic` endpoints and defers plain tags, hash tags, and one-off wikilink tags.
+
+```bash
+LIVING_ATLAS_LOGSEQ_TOPIC_REVIEW_CURATED_DRAFT_ACK=write-local-private-topic-review-curated-draft \
+LIVING_ATLAS_LOGSEQ_TOPIC_REVIEW_PACKET_PATH=/private/topic-review-packet.json \
+LIVING_ATLAS_LOGSEQ_TOPIC_REVIEW_RESOLUTION_PATH=/private/topic-review-resolutions-curated.json \
+npm run logseq:semantic-topic-review-curated-draft
+```
+
+Operators may tune `LIVING_ATLAS_LOGSEQ_TOPIC_REVIEW_CURATED_MIN_OCCURRENCES`,
+`LIVING_ATLAS_LOGSEQ_TOPIC_REVIEW_CURATED_PROMOTE_REASONS`, and
+`LIVING_ATLAS_LOGSEQ_TOPIC_REVIEW_CURATED_SUBTYPE`, but broad promotion of
+plain/hash tags should be treated as a deliberate local review decision. The
+command output is count-only; the generated resolution map contains private
+topic labels and must stay outside the repo.
+
 ## Local Semantic Corpus Proof With Supplemental Ledgers
 
 The aggregate corpus report accepts two required comma-separated lists:

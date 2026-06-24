@@ -37,6 +37,7 @@
     "logseq:semantic-topic-review-packet": "tsx packages/check/src/logseq-semantic-topic-review-packet.ts",
     "logseq:semantic-topic-review-report": "tsx packages/check/src/logseq-semantic-topic-review-report.ts",
     "logseq:semantic-topic-review-resolution-draft": "tsx packages/check/src/logseq-semantic-topic-review-resolution-draft.ts",
+    "logseq:semantic-topic-review-curated-draft": "tsx packages/check/src/logseq-semantic-topic-review-curated-draft.ts",
     "logseq:semantic-topic-review-local": "tsx packages/check/src/logseq-semantic-topic-review-local-import.ts",
     "logseq:semantic-review-rekey": "tsx packages/check/src/logseq-semantic-review-resolution-rekey.ts",
     "logseq:semantic-knowledge-report": "tsx packages/check/src/logseq-semantic-knowledge-report.ts",
