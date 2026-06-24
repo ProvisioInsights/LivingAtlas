@@ -558,7 +558,7 @@ describe("markdown importer planning", () => {
     const files = [
       {
         source_path: "/tmp/living-atlas-fixtures/Synthetic Person.md",
-        markdown: "type:: person\nlocation:: [[Synthetic City]]\nemployer-current:: [[Synthetic Employer]]\nspouse:: [[Synthetic Spouse]]\nestranged-from:: [[Synthetic Estranged Person]]\n\n- body text\n",
+        markdown: "type:: person\nlocation:: [[Synthetic City]]\norg:: [[Synthetic Primary Org]]\nemployer-current:: [[Synthetic Employer]]\nspouse:: [[Synthetic Spouse]]\nestranged-from:: [[Synthetic Estranged Person]]\n\n- body text\n",
         source_kind: "logseq" as const
       },
       {
@@ -598,9 +598,9 @@ describe("markdown importer planning", () => {
       .filter((payload) => payload.kind === "logseq-temporal-edge");
 
     expect(encrypted.ledger.decisions["typed-endpoint-promoted"]).toBe(4);
-    expect(encrypted.ledger.decisions["property-edge-promoted"]).toBe(9);
-    expect(encrypted.ledger.totals.edge_candidates).toBe(9);
-    expect(encrypted.ledger.totals.valid_edge_candidates).toBe(9);
+    expect(encrypted.ledger.decisions["property-edge-promoted"]).toBe(10);
+    expect(encrypted.ledger.totals.edge_candidates).toBe(10);
+    expect(encrypted.ledger.totals.valid_edge_candidates).toBe(10);
     expect(encrypted.ledger.totals.quarantine_objects).toBe(0);
     expect(edgePayloads.map((payload) => payload.edge)).toEqual(expect.arrayContaining([
       expect.objectContaining({ predicate: "based-in", source_type: "person", target_type: "location" }),
@@ -614,7 +614,9 @@ describe("markdown importer planning", () => {
       expect.objectContaining({ predicate: "part-of-topic", source_type: "topic", target_type: "topic" })
     ]));
     expect(edgePayloads.every((payload) => typeof payload.edge?.attrs?.source_value_hash === "string")).toBe(true);
+    expect(edgePayloads.some((payload) => payload.edge?.predicate === "employed-by" && payload.edge.attrs?.property_key === "org")).toBe(true);
     expect(JSON.stringify(encrypted.ledger)).not.toContain("Synthetic City");
+    expect(JSON.stringify(encrypted.ledger)).not.toContain("Synthetic Primary Org");
     expect(JSON.stringify(encrypted.ledger)).not.toContain("Synthetic Parent Topic");
     expect(JSON.stringify(encrypted.objects)).not.toContain("Synthetic Room");
   });

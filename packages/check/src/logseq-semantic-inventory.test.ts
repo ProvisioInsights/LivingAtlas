@@ -15,6 +15,7 @@ describe("Logseq semantic inventory report", () => {
         "aliases:: Synthetic Co, [[Synthetic Company]]",
         "founded-year:: 2024",
         "headquarters:: [[Synthetic City]]",
+        "org:: [[Synthetic Parent Org]]",
         "custom-secret-key:: hidden-value",
         "",
         "- see [[Synthetic Person]] and ((block-ref-001)) #synthetic",
@@ -34,17 +35,18 @@ describe("Logseq semantic inventory report", () => {
       expect(report.totals.canonical_endpoint_type_pages).toBe(1);
       expect(report.totals.safe_alias_endpoint_type_pages).toBe(0);
       expect(report.totals.rejected_endpoint_type_pages).toBe(0);
-      expect(report.totals.page_properties).toBe(6);
+      expect(report.totals.page_properties).toBe(7);
       expect(report.known_property_key_counts).toMatchObject({
         aliases: 1,
         "founded-year": 1,
         headquarters: 1,
+        org: 1,
         subtype: 1,
         type: 1
       });
       expect(report.totals.unknown_property_keys).toBe(1);
       expect(Object.keys(report.unknown_property_key_hash_counts)).toHaveLength(1);
-      expect(report.totals.wikilinks).toBe(3);
+      expect(report.totals.wikilinks).toBe(4);
       expect(report.totals.hash_tags).toBe(1);
       expect(report.totals.block_refs).toBe(1);
       expect(report.totals.asset_refs).toBe(1);

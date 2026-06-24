@@ -743,6 +743,26 @@ function propertyEdgeTargetTitle(properties: LogseqProperty[], keys: string[]): 
   return undefined;
 }
 
+function propertyEdgeTargetTitles(properties: LogseqProperty[], keys: string[]): Array<{ key: string; title: string }> {
+  const targets: Array<{ key: string; title: string }> = [];
+  const seen = new Set<string>();
+  for (const key of keys) {
+    for (const value of propertyValues(properties, [key]).flatMap(parseListValue)) {
+      const title = parseWikilinkTitle(value);
+      if (!title) {
+        continue;
+      }
+      const dedupeKey = title.toLowerCase();
+      if (seen.has(dedupeKey)) {
+        continue;
+      }
+      seen.add(dedupeKey);
+      targets.push({ key, title });
+    }
+  }
+  return targets;
+}
+
 function typedPropertyEdge(input: {
   authorityId: string;
   pathRedactionSecret: string;
@@ -753,6 +773,7 @@ function typedPropertyEdge(input: {
   targetType: TemporalEdge["target_type"];
   predicate: TemporalEdge["predicate"];
   propertyKey: string;
+  status?: TemporalEdge["status"];
 }): TemporalEdge | undefined {
   const parsed = TemporalEdgeSchema.safeParse({
     edge_id: semanticPropertyEdgeId(input.authorityId, input.sourcePathRef, input.predicate, input.propertyKey, input.targetTitle),
@@ -762,7 +783,7 @@ function typedPropertyEdge(input: {
     target_type: input.targetType,
     predicate: input.predicate,
     valid_from: "unknown",
-    status: "active",
+    status: input.status ?? "active",
     confidence: "high",
     source: "logseq-page-property",
     attrs: {
@@ -794,9 +815,17 @@ function propertyEdgesForEndpoint(parsed: ParsedLogseqFile, options: {
     const target = propertyEdgeTargetTitle(parsed.page_properties, ["primary-location", "location", "based-in"]);
     const edge = target ? typedPropertyEdge({ ...common, targetTitle: target.title, targetType: "location", predicate: "based-in", propertyKey: target.key }) : undefined;
     if (edge) edges.push(edge);
-    const employer = propertyEdgeTargetTitle(parsed.page_properties, ["employer-current", "employer-historical"]);
-    const employmentEdge = employer ? typedPropertyEdge({ ...common, targetTitle: employer.title, targetType: "organization", predicate: "employed-by", propertyKey: employer.key }) : undefined;
-    if (employmentEdge) edges.push(employmentEdge);
+    for (const employer of propertyEdgeTargetTitles(parsed.page_properties, ["org", "organization", "employer-current", "employer-historical"])) {
+      const employmentEdge = typedPropertyEdge({
+        ...common,
+        targetTitle: employer.title,
+        targetType: "organization",
+        predicate: "employed-by",
+        propertyKey: employer.key,
+        status: employer.key === "employer-historical" ? "ended" : "active"
+      });
+      if (employmentEdge) edges.push(employmentEdge);
+    }
     const spouse = propertyEdgeTargetTitle(parsed.page_properties, ["spouse"]);
     const spouseEdge = spouse ? typedPropertyEdge({ ...common, targetTitle: spouse.title, targetType: "person", predicate: "spouse-of", propertyKey: spouse.key }) : undefined;
     if (spouseEdge) edges.push(spouseEdge);

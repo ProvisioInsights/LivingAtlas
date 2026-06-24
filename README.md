@@ -309,7 +309,7 @@ validate, applies conservative endpoint type aliases such as `org` to
 `organization` and occurrence-like page categories to `occurrence`, runs local
 CRUD/leakage proof, and promotes high-confidence property-derived temporal
 edges for explicit wikilink relationship fields such as location, topic parent,
-employer, acquisition, customer, spouse, and estrangement relationships. It then
+`org`/employer affiliation, acquisition, customer, spouse, and estrangement relationships. It then
 writes per-file parity refs into the durable ledger without Cloudflare sync.
 `logseq:semantic-cloudflare` uses the
 same parity path but requires an explicit sync mode plus mutation
