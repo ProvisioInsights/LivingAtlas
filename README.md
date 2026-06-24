@@ -287,6 +287,7 @@ npm run logseq:semantic-batch-plan
 npm run logseq:semantic-local
 npm run logseq:semantic-parity
 npm run logseq:semantic-ledger-report
+npm run logseq:semantic-review-report
 npm run logseq:semantic-corpus-report
 ```
 
@@ -327,6 +328,9 @@ can run as a hard completion gate with
 terminal `skipped` or `quarantined` decision are reported as terminal accounting
 outcomes; they do not require ledger objects unless they were readable semantic
 markdown entries.
+`logseq:semantic-review-report` reads a semantic ledger and emits a
+plaintext-free review queue summary: review reason counts, quarantine totals,
+batch windows, and opaque source refs for follow-up.
 `logseq:semantic-corpus-report` combines multiple manifest/ledger pairs, such
 as separate `markdown-only` and `logseq-extensionless-only` runs, into one
 plaintext-free local or synced completion gate. Configure it with comma-separated
