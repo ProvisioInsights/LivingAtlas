@@ -5,10 +5,12 @@ import {
   AccessClassSchema,
   EndpointTypeSchema,
   AuthorityIdSchema,
+  EndpointRecordSchema,
   GraphObjectEnvelopeSchema,
   ObjectIdSchema,
   TemporalEdgeSchema,
   type AccessClass,
+  type EndpointRecord,
   type GraphObjectEnvelope,
   type ObjectType,
   type TemporalEdge
@@ -28,6 +30,7 @@ export const LogseqSemanticObjectKindSchema = z.enum([
   "page",
   "block",
   "reference-index",
+  "typed-endpoint",
   "edge-candidate",
   "typed-edge"
 ]);
@@ -205,6 +208,10 @@ type TypedEdgeParseResult =
   | { kind: "not-typed-edge" }
   | { kind: "promoted"; edge: TemporalEdge }
   | { kind: "rejected"; reason: "invalid-endpoint-type" | "invalid-temporal-edge-schema" };
+
+type TypedEndpointParseResult =
+  | { kind: "not-typed-endpoint" }
+  | { kind: "promoted"; endpoint: EndpointRecord };
 
 type ParsedLogseqFile = {
   source_path_ref: string;
@@ -448,6 +455,69 @@ function parseTypedEdgeCandidate(edge: EdgeCandidate, options: {
     : { kind: "rejected", reason: "invalid-temporal-edge-schema" };
 }
 
+function propertyValue(properties: LogseqProperty[], key: string): string | undefined {
+  return properties.find((property) => property.key === key)?.value.trim();
+}
+
+function propertyValues(properties: LogseqProperty[], keys: string[]): string[] {
+  const values: string[] = [];
+  for (const key of keys) {
+    const value = propertyValue(properties, key);
+    if (value) {
+      values.push(value);
+    }
+  }
+  return values;
+}
+
+function parseAliasList(value: string | undefined): string[] {
+  if (!value) {
+    return [];
+  }
+  return value
+    .split(/[,;]/)
+    .map((part) => part.replace(/^\[\[|\]\]$/g, "").trim())
+    .filter((part, index, aliases) => part.length > 0 && aliases.indexOf(part) === index);
+}
+
+function parseTypedPageEndpoint(parsed: ParsedLogseqFile, options: {
+  authorityId: string;
+  pathRedactionSecret: string;
+  createdAt: string;
+  defaultAccessClass: AccessClass;
+}): TypedEndpointParseResult {
+  const type = EndpointTypeSchema.safeParse(propertyValue(parsed.page_properties, "type")?.toLowerCase());
+  if (!type.success) {
+    return { kind: "not-typed-endpoint" };
+  }
+
+  const aliases = propertyValues(parsed.page_properties, ["alias", "aliases"]).flatMap(parseAliasList);
+  const base = {
+    object_id: semanticTitleObjectId(options.authorityId, options.pathRedactionSecret, parsed.page_title),
+    type: type.data,
+    name: parsed.page_title,
+    aliases,
+    access_class: options.defaultAccessClass,
+    source_ref: parsed.source_path_ref,
+    confidence: "high",
+    created_at: options.createdAt,
+    updated_at: options.createdAt
+  };
+  const subtype = propertyValue(parsed.page_properties, "subtype")?.toLowerCase();
+  const withSubtype = subtype ? { ...base, subtype } : base;
+  const occurrenceTime = propertyValue(parsed.page_properties, "occurred-on")
+    ?? propertyValue(parsed.page_properties, "occurred_on")
+    ?? propertyValue(parsed.page_properties, "scheduled-start")
+    ?? propertyValue(parsed.page_properties, "scheduled_start");
+  const endpoint = EndpointRecordSchema.safeParse(type.data === "occurrence" && !occurrenceTime
+    ? { ...withSubtype, occurred_on: "unknown" }
+    : withSubtype);
+
+  return endpoint.success
+    ? { kind: "promoted", endpoint: endpoint.data }
+    : { kind: "not-typed-endpoint" };
+}
+
 function parseLogseqFile(input: MarkdownFileInput, pathRedactionSecret: string): ParsedLogseqFile {
   const parsed = MarkdownFileInputSchema.parse(input);
   const lines = parsed.markdown.split(/\r?\n/);
@@ -497,6 +567,7 @@ function increment(record: Record<string, number>, key: string): void {
 function plannedObject(input: {
   authorityId: string;
   sourcePathRef: string;
+  objectId?: string;
   semanticKind: LogseqSemanticObjectKind;
   objectType: "page" | "block" | "edge" | "index" | "attachment";
   localRef: string;
@@ -506,7 +577,7 @@ function plannedObject(input: {
   reasonCode: string;
   plaintextPayload: unknown;
 }): DraftObject {
-  const objectId = semanticObjectId(input.authorityId, input.semanticKind, input.sourcePathRef, input.localRef);
+  const objectId = input.objectId ?? semanticObjectId(input.authorityId, input.semanticKind, input.sourcePathRef, input.localRef);
   return {
     plan: LogseqSemanticObjectPlanSchema.parse({
       object_id: objectId,
@@ -528,6 +599,7 @@ function plannedObject(input: {
 function draftObjectsForFile(parsed: ParsedLogseqFile, options: {
   authorityId: string;
   pathRedactionSecret: string;
+  createdAt: string;
   defaultAccessClass: AccessClass;
 }): DraftObject[] {
   const drafts: DraftObject[] = [];
@@ -567,6 +639,26 @@ function draftObjectsForFile(parsed: ParsedLogseqFile, options: {
       content_hash: parsed.content_hash
     }
   }));
+
+  const typedEndpoint = parseTypedPageEndpoint(parsed, options);
+  if (typedEndpoint.kind === "promoted") {
+    drafts.push(plannedObject({
+      authorityId: options.authorityId,
+      sourcePathRef: parsed.source_path_ref,
+      objectId: typedEndpoint.endpoint.object_id,
+      semanticKind: "typed-endpoint",
+      objectType: "page",
+      localRef: `typed-endpoint:${typedEndpoint.endpoint.type}`,
+      accessClass: options.defaultAccessClass,
+      decision: "captured-encrypted",
+      reasonCode: "typed-endpoint-promoted",
+      plaintextPayload: {
+        kind: "logseq-endpoint",
+        source_path_ref: parsed.source_path_ref,
+        endpoint: typedEndpoint.endpoint
+      }
+    }));
+  }
 
   for (const block of parsed.blocks) {
     drafts.push(plannedObject({
@@ -829,6 +921,7 @@ function buildSemanticDrafts(files: MarkdownFileInput[], options: CreateLogseqSe
     const fileDrafts = draftObjectsForFile(parsed, {
       authorityId,
       pathRedactionSecret,
+      createdAt,
       defaultAccessClass
     });
     draftsBySourceRef.set(parsed.source_path_ref, fileDrafts);

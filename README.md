@@ -296,8 +296,11 @@ emits only counts, offsets, object totals, and opaque root refs.
 `logseq:semantic-estimate` scans the selected source mode and emits counts-only
 object and sync-batch estimates before any live mutation.
 `logseq:semantic-local` preserves each original file as an encrypted source
-capsule, runs local CRUD/leakage proof, and writes per-file parity refs into the
-durable ledger without Cloudflare sync. `logseq:semantic-cloudflare` uses the
+capsule, preserves normalized encrypted page/block/reference-index objects,
+promotes explicit `type:: person|organization|project|location|occurrence|topic`
+pages into encrypted endpoint records, runs local CRUD/leakage proof, and
+writes per-file parity refs into the durable ledger without Cloudflare sync.
+`logseq:semantic-cloudflare` uses the
 same parity path but requires an explicit sync mode plus mutation
 acknowledgement before it can split and submit live Cloudflare sync batches.
 `logseq:semantic-ledger-report`

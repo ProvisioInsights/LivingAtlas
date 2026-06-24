@@ -340,6 +340,69 @@ describe("markdown importer planning", () => {
     expect(JSON.stringify(encrypted.objects)).not.toContain("Project Glass Lantern");
   });
 
+  it("promotes explicit typed Logseq pages into encrypted endpoint objects", async () => {
+    const file = {
+      source_path: "/tmp/living-atlas-fixtures/Synthetic Topic.md",
+      markdown: "type:: topic\nsubtype:: theme\naliases:: Synthetic Theme, [[Synthetic Alias]]\n\n- body text\n",
+      source_kind: "logseq" as const
+    };
+
+    const encrypted = await createLogseqSemanticGraphObjects([file], {
+      authority_id: fixtureAuthorityId,
+      created_at: "2026-06-22T12:00:00.000Z",
+      path_redaction_secret: "fixture-path-redaction-secret-0001",
+      encrypt: async ({ plaintext, aad }) => ({
+        ciphertext: Buffer.from(`sealed:${aad}:${plaintext.length}`).toString("base64"),
+        nonce: "fixture-semantic-nonce",
+        hash: sha256(`sealed:${aad}:${plaintext.length}`),
+        algorithm: "fixture-aes-gcm"
+      })
+    });
+
+    expect(encrypted.ledger.decisions["typed-endpoint-promoted"]).toBe(1);
+    expect(encrypted.ledger.files[0]!.objects).toContainEqual(expect.objectContaining({
+      semantic_kind: "typed-endpoint",
+      object_type: "page",
+      decision: "captured-encrypted",
+      plaintext_in_plan: false
+    }));
+    expect(encrypted.objects).toContainEqual(expect.objectContaining({
+      object_type: "page",
+      visible_metadata: expect.objectContaining({
+        schema_namespace: "import/logseq-semantic/typed-endpoint",
+        remote_indexable: false
+      }),
+      payload: expect.objectContaining({
+        kind: "ciphertext-inline"
+      })
+    }));
+    expect(JSON.stringify(encrypted.ledger)).not.toContain("Synthetic Topic");
+    expect(JSON.stringify(encrypted.ledger)).not.toContain("Synthetic Alias");
+    expect(JSON.stringify(encrypted.objects)).not.toContain("Synthetic Topic");
+    expect(JSON.stringify(encrypted.objects)).not.toContain("Synthetic Alias");
+  });
+
+  it("does not promote pages without an accepted endpoint type", () => {
+    const ledger = createLogseqSemanticParityLedger([
+      {
+        source_path: "/tmp/living-atlas-fixtures/Untyped Page.md",
+        markdown: "type:: loose-note\n\n- body text\n",
+        source_kind: "logseq"
+      }
+    ], {
+      authority_id: fixtureAuthorityId,
+      created_at: "2026-06-22T12:00:00.000Z",
+      path_redaction_secret: "fixture-path-redaction-secret-0001"
+    });
+
+    expect(ledger.decisions["typed-endpoint-promoted"]).toBeUndefined();
+    expect(ledger.files[0]!.objects).not.toContainEqual(expect.objectContaining({
+      semantic_kind: "typed-endpoint"
+    }));
+    expect(ledger.totals.quarantine_objects).toBe(0);
+    expect(JSON.stringify(ledger)).not.toContain("Untyped Page");
+  });
+
   it("quarantines cluster endpoints instead of promoting temporal edge objects", async () => {
     const file = {
       source_path: "/tmp/living-atlas-fixtures/Cluster Endpoint.md",
