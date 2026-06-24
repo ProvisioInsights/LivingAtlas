@@ -883,6 +883,56 @@ function suffixTagReviewCandidates(parsed: ParsedLogseqFile, endpoint: EndpointR
     .filter((tagged): tagged is { title: string; suffix: string; reason: string } => tagged.reason !== undefined);
 }
 
+function nonWikilinkPropertyTargets(properties: LogseqProperty[], keys: string[], splitList: boolean): Array<{ key: string; value: string }> {
+  const targets: Array<{ key: string; value: string }> = [];
+  const seen = new Set<string>();
+  for (const key of keys) {
+    for (const rawValue of allPropertyValues(properties, key)) {
+      const values = splitList ? parseListValue(rawValue) : [rawValue.trim()];
+      for (const value of values) {
+        if (!value || parseWikilinkTitle(value)) {
+          continue;
+        }
+        const dedupeKey = `${key}:${value.toLowerCase()}`;
+        if (seen.has(dedupeKey)) {
+          continue;
+        }
+        seen.add(dedupeKey);
+        targets.push({ key, value });
+      }
+    }
+  }
+  return targets;
+}
+
+function nonWikilinkPropertyReviewCandidates(parsed: ParsedLogseqFile, endpoint: EndpointRecord): Array<{ key: string; value: string; reason: string }> {
+  const candidates: Array<{ key: string; value: string; reason: string }> = [];
+  const add = (keys: string[], reason: string, splitList = false) => {
+    candidates.push(...nonWikilinkPropertyTargets(parsed.page_properties, keys, splitList).map((target) => ({ ...target, reason })));
+  };
+
+  if (endpoint.type === "person") {
+    add(["primary-location", "location", "based-in"], "non-wikilink-location-review");
+    add(["org", "organization", "employer-current", "employer-historical"], "non-wikilink-organization-review", true);
+    add(["spouse", "estranged-from"], "non-wikilink-person-review");
+  } else if (endpoint.type === "organization") {
+    add(["primary-location", "headquarters", "location", "based-in"], "non-wikilink-location-review");
+    add(["acquired-by", "customer-of"], "non-wikilink-organization-review", true);
+  } else if (endpoint.type === "project") {
+    add(["primary-location", "location"], "non-wikilink-location-review");
+  } else if (endpoint.type === "occurrence") {
+    add(["location"], "non-wikilink-location-review");
+    add(["participants", "participant", "organizers", "organizer", "hosts", "host"], "non-wikilink-participant-review", true);
+    add(["projects", "project"], "non-wikilink-project-review", true);
+  } else if (endpoint.type === "location") {
+    add(["parent-location", "located-in"], "non-wikilink-location-review");
+  } else if (endpoint.type === "topic") {
+    add(["parent-topic", "part-of-topic"], "non-wikilink-topic-review");
+  }
+
+  return candidates;
+}
+
 function propertyEdgesForEndpoint(parsed: ParsedLogseqFile, options: {
   authorityId: string;
   pathRedactionSecret: string;
@@ -1150,6 +1200,28 @@ function draftObjectsForFile(parsed: ParsedLogseqFile, options: {
           canonicalization: "suffix-tag-review",
           source_value_hash: sha256(`tags:${candidate.title}:${candidate.suffix}`),
           tag_suffix: candidate.suffix
+        }
+      }));
+    }
+    for (const candidate of nonWikilinkPropertyReviewCandidates(parsed, typedEndpoint.endpoint)) {
+      drafts.push(plannedObject({
+        authorityId: options.authorityId,
+        sourcePathRef: parsed.source_path_ref,
+        semanticKind: "edge-candidate",
+        objectType: "edge",
+        localRef: `property-review:${shortHash(`${candidate.key}:${candidate.value}`, 24)}`,
+        accessClass: "quarantine",
+        decision: "quarantined",
+        reasonCode: candidate.reason,
+        plaintextPayload: {
+          kind: "logseq-edge-candidate",
+          source_path_ref: parsed.source_path_ref,
+          source_text: `${candidate.key}:: ${candidate.value}`,
+          predicate_text: candidate.key,
+          canonical_predicate: undefined,
+          canonicalization: "non-wikilink-property-review",
+          source_value_hash: sha256(`${candidate.key}:${candidate.value}`),
+          property_key: candidate.key
         }
       }));
     }

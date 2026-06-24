@@ -629,6 +629,54 @@ describe("markdown importer planning", () => {
     expect(JSON.stringify(encrypted.objects)).not.toContain("Synthetic Weak Tie");
   });
 
+  it("quarantines non-wikilink relationship property targets for encrypted review", async () => {
+    const files = [
+      {
+        source_path: "/tmp/living-atlas-fixtures/Synthetic Plain Person.md",
+        markdown: "type:: person\nlocation:: Synthetic City\norg:: Synthetic Employer\nspouse:: Synthetic Spouse\n\n- body text\n",
+        source_kind: "logseq" as const
+      },
+      {
+        source_path: "/tmp/living-atlas-fixtures/Synthetic Plain Org.md",
+        markdown: "type:: organization\nheadquarters:: Synthetic HQ\ncustomer-of:: Synthetic Customer\n\n- body text\n",
+        source_kind: "logseq" as const
+      },
+      {
+        source_path: "/tmp/living-atlas-fixtures/Synthetic Plain Meeting.md",
+        markdown: "type:: meeting\nlocation:: Synthetic Room\nparticipants:: Synthetic Attendee\nproject:: Synthetic Project\n\n- body text\n",
+        source_kind: "logseq" as const
+      }
+    ];
+
+    const encrypted = await createLogseqSemanticGraphObjects(files, {
+      authority_id: fixtureAuthorityId,
+      created_at: "2026-06-22T12:00:00.000Z",
+      path_redaction_secret: "fixture-path-redaction-secret-0001",
+      encrypt: async ({ plaintext, aad }) => ({
+        ciphertext: Buffer.from(`sealed:${aad}:${plaintext.length}`).toString("base64"),
+        nonce: "fixture-semantic-nonce",
+        hash: sha256(`sealed:${aad}:${plaintext.length}`),
+        algorithm: "fixture-aes-gcm"
+      })
+    });
+
+    expect(encrypted.ledger.decisions["typed-endpoint-promoted"]).toBe(3);
+    expect(encrypted.ledger.decisions["non-wikilink-location-review"]).toBe(3);
+    expect(encrypted.ledger.decisions["non-wikilink-organization-review"]).toBe(2);
+    expect(encrypted.ledger.decisions["non-wikilink-person-review"]).toBe(1);
+    expect(encrypted.ledger.decisions["non-wikilink-participant-review"]).toBe(1);
+    expect(encrypted.ledger.decisions["non-wikilink-project-review"]).toBe(1);
+    expect(encrypted.ledger.decisions["property-edge-promoted"]).toBeUndefined();
+    expect(encrypted.ledger.totals.edge_candidates).toBe(8);
+    expect(encrypted.ledger.totals.valid_edge_candidates).toBe(0);
+    expect(encrypted.ledger.totals.quarantined_edge_candidates).toBe(8);
+    expect(encrypted.ledger.totals.quarantine_objects).toBe(8);
+    expect(JSON.stringify(encrypted.ledger)).not.toContain("Synthetic Employer");
+    expect(JSON.stringify(encrypted.ledger)).not.toContain("Synthetic Room");
+    expect(JSON.stringify(encrypted.objects)).not.toContain("Synthetic Attendee");
+    expect(JSON.stringify(encrypted.objects)).not.toContain("Synthetic Project");
+  });
+
   it("quarantines cluster endpoints instead of promoting temporal edge objects", async () => {
     const file = {
       source_path: "/tmp/living-atlas-fixtures/Cluster Endpoint.md",

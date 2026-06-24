@@ -314,8 +314,10 @@ also promotes exact high-confidence suffix tags such as past employer,
 education, cohort, revenue, and past advisory markers when endpoint direction is
 schema-safe; ambiguous weak-tie and direction-sensitive relationship suffixes
 are preserved as encrypted source data and also become encrypted quarantine
-review candidates instead of typed edges. It then writes per-file parity refs
-into the durable ledger without Cloudflare sync.
+review candidates instead of typed edges. Relationship-like properties with
+plain-text targets, such as non-wikilink locations or affiliations, are also
+captured as encrypted review candidates rather than guessed into nodes. It then
+writes per-file parity refs into the durable ledger without Cloudflare sync.
 `logseq:semantic-cloudflare` uses the
 same parity path but requires an explicit sync mode plus mutation
 acknowledgement before it can split and submit live Cloudflare sync batches.
