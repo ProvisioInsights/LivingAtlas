@@ -310,14 +310,19 @@ validate, applies conservative endpoint type aliases such as `org` to
 `organization` and occurrence-like page categories to `occurrence`, runs local
 CRUD/leakage proof, and promotes high-confidence property-derived temporal
 edges for explicit wikilink relationship fields such as location, topic parent,
-`org`/employer affiliation, acquisition, customer, spouse, and estrangement relationships. It then
+`org`/employer affiliation, acquisition, customer, spouse, and estrangement
+relationships. It can also promote a non-wikilink property target only when
+that value exactly matches one unique typed endpoint title of the required type
+inside the same import batch; wrong-type, duplicate, fuzzy, or unresolved
+targets stay in encrypted review. It then
 also promotes exact high-confidence suffix tags such as past employer,
 education, cohort, revenue, and past advisory markers when endpoint direction is
 schema-safe; ambiguous weak-tie and direction-sensitive relationship suffixes
 are preserved as encrypted source data and also become encrypted quarantine
 review candidates instead of typed edges. Relationship-like properties with
-plain-text targets, such as non-wikilink locations or affiliations, are also
-captured as encrypted review candidates rather than guessed into nodes. It then
+plain-text targets that do not meet the exact typed-title rule, such as
+unresolved locations or affiliations, are also captured as encrypted review
+candidates rather than guessed into nodes. It then
 writes per-file parity refs into the durable ledger without Cloudflare sync.
 `logseq:semantic-cloudflare` uses the
 same parity path but requires an explicit sync mode plus mutation

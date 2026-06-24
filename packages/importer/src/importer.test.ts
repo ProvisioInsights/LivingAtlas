@@ -677,6 +677,77 @@ describe("markdown importer planning", () => {
     expect(JSON.stringify(encrypted.objects)).not.toContain("Synthetic Project");
   });
 
+  it("promotes exact non-wikilink property targets only when they match a unique typed endpoint title", async () => {
+    const files = [
+      {
+        source_path: "/tmp/living-atlas-fixtures/Synthetic City.md",
+        markdown: "type:: location\n\n- body text\n",
+        source_kind: "logseq" as const
+      },
+      {
+        source_path: "/tmp/living-atlas-fixtures/Synthetic Employer.md",
+        markdown: "type:: organization\n\n- body text\n",
+        source_kind: "logseq" as const
+      },
+      {
+        source_path: "/tmp/living-atlas-fixtures/Synthetic Exact Person.md",
+        markdown: "type:: person\nlocation:: Synthetic City\norg:: Synthetic Employer\nspouse:: Synthetic Unknown Spouse\n\n- body text\n",
+        source_kind: "logseq" as const
+      },
+      {
+        source_path: "/tmp/living-atlas-fixtures/Synthetic Wrong Type Person.md",
+        markdown: "type:: person\nlocation:: Synthetic Employer\n\n- body text\n",
+        source_kind: "logseq" as const
+      }
+    ];
+    const plaintextPayloads: string[] = [];
+
+    const encrypted = await createLogseqSemanticGraphObjects(files, {
+      authority_id: fixtureAuthorityId,
+      created_at: "2026-06-22T12:00:00.000Z",
+      path_redaction_secret: "fixture-path-redaction-secret-0001",
+      encrypt: async ({ plaintext, aad }) => {
+        plaintextPayloads.push(plaintext);
+        return {
+          ciphertext: Buffer.from(`sealed:${aad}:${plaintext.length}`).toString("base64"),
+          nonce: "fixture-semantic-nonce",
+          hash: sha256(`sealed:${aad}:${plaintext.length}`),
+          algorithm: "fixture-aes-gcm"
+        };
+      }
+    });
+    const edgePayloads = plaintextPayloads
+      .map((payload) => JSON.parse(payload) as { kind?: string; edge?: { predicate?: string; target_type?: string; attrs?: Record<string, unknown> } })
+      .filter((payload) => payload.kind === "logseq-temporal-edge");
+
+    expect(encrypted.ledger.decisions["typed-endpoint-promoted"]).toBe(4);
+    expect(encrypted.ledger.decisions["property-edge-promoted"]).toBe(2);
+    expect(encrypted.ledger.decisions["non-wikilink-organization-review"]).toBeUndefined();
+    expect(encrypted.ledger.decisions["non-wikilink-location-review"]).toBe(1);
+    expect(encrypted.ledger.decisions["non-wikilink-person-review"]).toBe(1);
+    expect(encrypted.ledger.totals.edge_candidates).toBe(4);
+    expect(encrypted.ledger.totals.valid_edge_candidates).toBe(2);
+    expect(encrypted.ledger.totals.quarantined_edge_candidates).toBe(2);
+    expect(encrypted.ledger.totals.quarantine_objects).toBe(2);
+    expect(edgePayloads.map((payload) => payload.edge)).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        predicate: "based-in",
+        target_type: "location",
+        attrs: expect.objectContaining({ target_resolution: "exact-typed-title" })
+      }),
+      expect.objectContaining({
+        predicate: "employed-by",
+        target_type: "organization",
+        attrs: expect.objectContaining({ target_resolution: "exact-typed-title" })
+      })
+    ]));
+    expect(JSON.stringify(encrypted.ledger)).not.toContain("Synthetic City");
+    expect(JSON.stringify(encrypted.ledger)).not.toContain("Synthetic Employer");
+    expect(JSON.stringify(encrypted.ledger)).not.toContain("Synthetic Unknown Spouse");
+    expect(JSON.stringify(encrypted.objects)).not.toContain("Synthetic Exact Person");
+    expect(JSON.stringify(encrypted.objects)).not.toContain("Synthetic Wrong Type Person");
+  });
+
   it("quarantines cluster endpoints instead of promoting temporal edge objects", async () => {
     const file = {
       source_path: "/tmp/living-atlas-fixtures/Cluster Endpoint.md",

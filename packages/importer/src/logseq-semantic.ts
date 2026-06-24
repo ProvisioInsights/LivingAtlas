@@ -239,6 +239,13 @@ type DraftObject = {
   plaintext_payload: unknown;
 };
 
+type EndpointTitleIndexEntry = {
+  endpoint?: EndpointRecord;
+  count: number;
+};
+
+type EndpointTitleIndex = Map<string, EndpointTitleIndexEntry>;
+
 function sha256(value: string): `sha256:${string}` {
   return `sha256:${createHash("sha256").update(value).digest("hex")}`;
 }
@@ -401,6 +408,11 @@ function extractEdgeCandidates(lines: string[]): EdgeCandidate[] {
 function normalizeEndpointTitle(value: string | undefined): string | undefined {
   const normalized = value?.split("|", 1)[0]?.split("#", 1)[0]?.trim();
   return normalized && normalized.length > 0 ? normalized : undefined;
+}
+
+function endpointTitleIndexKey(type: EndpointType, title: string | undefined): string | undefined {
+  const normalized = normalizeEndpointTitle(title)?.toLowerCase();
+  return normalized ? `${type}:${normalized}` : undefined;
 }
 
 function parseTypedEndpoint(title: string | undefined, type: string | undefined): TypedEdgeEndpoint | undefined {
@@ -736,16 +748,6 @@ function parseTypedPageEndpoint(parsed: ParsedLogseqFile, options: {
   return parseEndpointWithSubtypeFallback(endpoint, subtype, minimalEndpoint);
 }
 
-function propertyEdgeTargetTitle(properties: LogseqProperty[], keys: string[]): { key: string; title: string } | undefined {
-  for (const key of keys) {
-    const title = parseWikilinkTitle(propertyValue(properties, key));
-    if (title) {
-      return { key, title };
-    }
-  }
-  return undefined;
-}
-
 function propertyEdgeTargetTitles(properties: LogseqProperty[], keys: string[]): Array<{ key: string; title: string }> {
   const targets: Array<{ key: string; title: string }> = [];
   const seen = new Set<string>();
@@ -764,6 +766,99 @@ function propertyEdgeTargetTitles(properties: LogseqProperty[], keys: string[]):
     }
   }
   return targets;
+}
+
+function resolveExactTypedTitle(
+  endpointTitleIndex: EndpointTitleIndex | undefined,
+  targetType: EndpointType,
+  value: string
+): { title: string; endpoint: EndpointRecord } | undefined {
+  if (parseWikilinkTitle(value)) {
+    return undefined;
+  }
+  const key = endpointTitleIndexKey(targetType, value);
+  if (!key) {
+    return undefined;
+  }
+  const match = endpointTitleIndex?.get(key);
+  if (!match?.endpoint || match.count !== 1) {
+    return undefined;
+  }
+  return { title: match.endpoint.name, endpoint: match.endpoint };
+}
+
+function resolvesToAnyExactTypedTitle(
+  endpointTitleIndex: EndpointTitleIndex | undefined,
+  targetTypes: EndpointType[],
+  value: string
+): boolean {
+  return targetTypes.some((targetType) => resolveExactTypedTitle(endpointTitleIndex, targetType, value) !== undefined);
+}
+
+function exactTypedTitlePropertyTargets(
+  properties: LogseqProperty[],
+  keys: string[],
+  targetType: EndpointType,
+  endpointTitleIndex: EndpointTitleIndex | undefined,
+  splitList: boolean
+): Array<{ key: string; title: string; resolution: "exact-typed-title" }> {
+  const targets: Array<{ key: string; title: string; resolution: "exact-typed-title" }> = [];
+  const seen = new Set<string>();
+  for (const target of nonWikilinkPropertyTargets(properties, keys, splitList)) {
+    const resolved = resolveExactTypedTitle(endpointTitleIndex, targetType, target.value);
+    if (!resolved) {
+      continue;
+    }
+    const dedupeKey = `${targetType}:${resolved.title.toLowerCase()}`;
+    if (seen.has(dedupeKey)) {
+      continue;
+    }
+    seen.add(dedupeKey);
+    targets.push({ key: target.key, title: resolved.title, resolution: "exact-typed-title" });
+  }
+  return targets;
+}
+
+function propertyEdgeTargets(input: {
+  properties: LogseqProperty[];
+  keys: string[];
+  targetType: EndpointType;
+  endpointTitleIndex?: EndpointTitleIndex;
+  splitList?: boolean;
+}): Array<{ key: string; title: string; resolution: "wikilink" | "exact-typed-title" }> {
+  const targets: Array<{ key: string; title: string; resolution: "wikilink" | "exact-typed-title" }> = [];
+  const seen = new Set<string>();
+  const add = (target: { key: string; title: string; resolution: "wikilink" | "exact-typed-title" }) => {
+    const dedupeKey = `${input.targetType}:${target.title.toLowerCase()}`;
+    if (seen.has(dedupeKey)) {
+      return;
+    }
+    seen.add(dedupeKey);
+    targets.push(target);
+  };
+
+  for (const wikilink of propertyEdgeTargetTitles(input.properties, input.keys)) {
+    add({ ...wikilink, resolution: "wikilink" });
+  }
+  for (const exact of exactTypedTitlePropertyTargets(
+    input.properties,
+    input.keys,
+    input.targetType,
+    input.endpointTitleIndex,
+    input.splitList ?? false
+  )) {
+    add(exact);
+  }
+  return targets;
+}
+
+function firstPropertyEdgeTarget(input: {
+  properties: LogseqProperty[];
+  keys: string[];
+  targetType: EndpointType;
+  endpointTitleIndex?: EndpointTitleIndex;
+}): { key: string; title: string; resolution: "wikilink" | "exact-typed-title" } | undefined {
+  return propertyEdgeTargets(input)[0];
 }
 
 function typedPropertyEdge(input: {
@@ -815,6 +910,7 @@ function typedCurrentPagePropertyEdge(input: {
   predicate: TemporalEdge["predicate"];
   propertyKey: string;
   status?: TemporalEdge["status"];
+  attrs?: Record<string, unknown>;
 }): TemporalEdge | undefined {
   return typedPropertyEdge({
     authorityId: input.authorityId,
@@ -828,7 +924,8 @@ function typedCurrentPagePropertyEdge(input: {
     predicate: input.predicate,
     propertyKey: input.propertyKey,
     sourceValueHash: sha256(`${input.propertyKey}:${input.targetTitle}`),
-    status: input.status
+    status: input.status,
+    attrs: input.attrs
   });
 }
 
@@ -905,29 +1002,35 @@ function nonWikilinkPropertyTargets(properties: LogseqProperty[], keys: string[]
   return targets;
 }
 
-function nonWikilinkPropertyReviewCandidates(parsed: ParsedLogseqFile, endpoint: EndpointRecord): Array<{ key: string; value: string; reason: string }> {
+function nonWikilinkPropertyReviewCandidates(
+  parsed: ParsedLogseqFile,
+  endpoint: EndpointRecord,
+  endpointTitleIndex?: EndpointTitleIndex
+): Array<{ key: string; value: string; reason: string }> {
   const candidates: Array<{ key: string; value: string; reason: string }> = [];
-  const add = (keys: string[], reason: string, splitList = false) => {
-    candidates.push(...nonWikilinkPropertyTargets(parsed.page_properties, keys, splitList).map((target) => ({ ...target, reason })));
+  const add = (keys: string[], reason: string, targetTypes: EndpointType[], splitList = false) => {
+    candidates.push(...nonWikilinkPropertyTargets(parsed.page_properties, keys, splitList)
+      .filter((target) => !resolvesToAnyExactTypedTitle(endpointTitleIndex, targetTypes, target.value))
+      .map((target) => ({ ...target, reason })));
   };
 
   if (endpoint.type === "person") {
-    add(["primary-location", "location", "based-in"], "non-wikilink-location-review");
-    add(["org", "organization", "employer-current", "employer-historical"], "non-wikilink-organization-review", true);
-    add(["spouse", "estranged-from"], "non-wikilink-person-review");
+    add(["primary-location", "location", "based-in"], "non-wikilink-location-review", ["location"]);
+    add(["org", "organization", "employer-current", "employer-historical"], "non-wikilink-organization-review", ["organization"], true);
+    add(["spouse", "estranged-from"], "non-wikilink-person-review", ["person"]);
   } else if (endpoint.type === "organization") {
-    add(["primary-location", "headquarters", "location", "based-in"], "non-wikilink-location-review");
-    add(["acquired-by", "customer-of"], "non-wikilink-organization-review", true);
+    add(["primary-location", "headquarters", "location", "based-in"], "non-wikilink-location-review", ["location"]);
+    add(["acquired-by", "customer-of"], "non-wikilink-organization-review", ["organization"], true);
   } else if (endpoint.type === "project") {
-    add(["primary-location", "location"], "non-wikilink-location-review");
+    add(["primary-location", "location"], "non-wikilink-location-review", ["location"]);
   } else if (endpoint.type === "occurrence") {
-    add(["location"], "non-wikilink-location-review");
-    add(["participants", "participant", "organizers", "organizer", "hosts", "host"], "non-wikilink-participant-review", true);
-    add(["projects", "project"], "non-wikilink-project-review", true);
+    add(["location"], "non-wikilink-location-review", ["location"]);
+    add(["participants", "participant", "organizers", "organizer", "hosts", "host"], "non-wikilink-participant-review", ["person", "organization"], true);
+    add(["projects", "project"], "non-wikilink-project-review", ["project"], true);
   } else if (endpoint.type === "location") {
-    add(["parent-location", "located-in"], "non-wikilink-location-review");
+    add(["parent-location", "located-in"], "non-wikilink-location-review", ["location"]);
   } else if (endpoint.type === "topic") {
-    add(["parent-topic", "part-of-topic"], "non-wikilink-topic-review");
+    add(["parent-topic", "part-of-topic"], "non-wikilink-topic-review", ["topic"]);
   }
 
   return candidates;
@@ -937,8 +1040,14 @@ function propertyEdgesForEndpoint(parsed: ParsedLogseqFile, options: {
   authorityId: string;
   pathRedactionSecret: string;
   endpoint: EndpointRecord;
+  endpointTitleIndex?: EndpointTitleIndex;
 }): TemporalEdge[] {
-  const edges: TemporalEdge[] = [];
+  const edgesById = new Map<string, TemporalEdge>();
+  const addEdge = (edge: TemporalEdge | undefined) => {
+    if (edge) {
+      edgesById.set(edge.edge_id, edge);
+    }
+  };
   const common = {
     authorityId: options.authorityId,
     pathRedactionSecret: options.pathRedactionSecret,
@@ -948,36 +1057,53 @@ function propertyEdgesForEndpoint(parsed: ParsedLogseqFile, options: {
   };
 
   if (options.endpoint.type === "person") {
-    const target = propertyEdgeTargetTitle(parsed.page_properties, ["primary-location", "location", "based-in"]);
-    const edge = target ? typedCurrentPagePropertyEdge({ ...common, targetTitle: target.title, targetType: "location", predicate: "based-in", propertyKey: target.key }) : undefined;
-    if (edge) edges.push(edge);
-    for (const employer of propertyEdgeTargetTitles(parsed.page_properties, ["org", "organization", "employer-current", "employer-historical"])) {
-      const employmentEdge = typedCurrentPagePropertyEdge({
+    const target = firstPropertyEdgeTarget({
+      properties: parsed.page_properties,
+      keys: ["primary-location", "location", "based-in"],
+      targetType: "location",
+      endpointTitleIndex: options.endpointTitleIndex
+    });
+    addEdge(target ? typedCurrentPagePropertyEdge({
+      ...common,
+      targetTitle: target.title,
+      targetType: "location",
+      predicate: "based-in",
+      propertyKey: target.key,
+      attrs: { target_resolution: target.resolution }
+    }) : undefined);
+    for (const employer of propertyEdgeTargets({
+      properties: parsed.page_properties,
+      keys: ["org", "organization", "employer-current", "employer-historical"],
+      targetType: "organization",
+      endpointTitleIndex: options.endpointTitleIndex,
+      splitList: true
+    })) {
+      addEdge(typedCurrentPagePropertyEdge({
         ...common,
         targetTitle: employer.title,
         targetType: "organization",
         predicate: "employed-by",
         propertyKey: employer.key,
-        status: employer.key === "employer-historical" ? "ended" : "active"
-      });
-      if (employmentEdge) edges.push(employmentEdge);
+        status: employer.key === "employer-historical" ? "ended" : "active",
+        attrs: { target_resolution: employer.resolution }
+      }));
     }
-    const spouse = propertyEdgeTargetTitle(parsed.page_properties, ["spouse"]);
-    const spouseEdge = spouse ? typedCurrentPagePropertyEdge({ ...common, targetTitle: spouse.title, targetType: "person", predicate: "spouse-of", propertyKey: spouse.key }) : undefined;
-    if (spouseEdge) edges.push(spouseEdge);
-    const estranged = propertyEdgeTargetTitle(parsed.page_properties, ["estranged-from"]);
-    const estrangedEdge = estranged ? typedCurrentPagePropertyEdge({ ...common, targetTitle: estranged.title, targetType: "person", predicate: "estranged-from", propertyKey: estranged.key }) : undefined;
-    if (estrangedEdge) edges.push(estrangedEdge);
+    const spouse = firstPropertyEdgeTarget({ properties: parsed.page_properties, keys: ["spouse"], targetType: "person", endpointTitleIndex: options.endpointTitleIndex });
+    addEdge(spouse ? typedCurrentPagePropertyEdge({ ...common, targetTitle: spouse.title, targetType: "person", predicate: "spouse-of", propertyKey: spouse.key, attrs: { target_resolution: spouse.resolution } }) : undefined);
+    const estranged = firstPropertyEdgeTarget({ properties: parsed.page_properties, keys: ["estranged-from"], targetType: "person", endpointTitleIndex: options.endpointTitleIndex });
+    addEdge(estranged ? typedCurrentPagePropertyEdge({ ...common, targetTitle: estranged.title, targetType: "person", predicate: "estranged-from", propertyKey: estranged.key, attrs: { target_resolution: estranged.resolution } }) : undefined);
   } else if (options.endpoint.type === "organization") {
-    const target = propertyEdgeTargetTitle(parsed.page_properties, ["primary-location", "headquarters", "location", "based-in"]);
-    const edge = target ? typedCurrentPagePropertyEdge({ ...common, targetTitle: target.title, targetType: "location", predicate: "based-in", propertyKey: target.key }) : undefined;
-    if (edge) edges.push(edge);
-    const acquirer = propertyEdgeTargetTitle(parsed.page_properties, ["acquired-by"]);
-    const acquisitionEdge = acquirer ? typedCurrentPagePropertyEdge({ ...common, targetTitle: acquirer.title, targetType: "organization", predicate: "acquired-by", propertyKey: acquirer.key }) : undefined;
-    if (acquisitionEdge) edges.push(acquisitionEdge);
-    const customerTarget = propertyEdgeTargetTitle(parsed.page_properties, ["customer-of"]);
-    const customerEdge = customerTarget ? typedCurrentPagePropertyEdge({ ...common, targetTitle: customerTarget.title, targetType: "organization", predicate: "customer-of", propertyKey: customerTarget.key }) : undefined;
-    if (customerEdge) edges.push(customerEdge);
+    const target = firstPropertyEdgeTarget({
+      properties: parsed.page_properties,
+      keys: ["primary-location", "headquarters", "location", "based-in"],
+      targetType: "location",
+      endpointTitleIndex: options.endpointTitleIndex
+    });
+    addEdge(target ? typedCurrentPagePropertyEdge({ ...common, targetTitle: target.title, targetType: "location", predicate: "based-in", propertyKey: target.key, attrs: { target_resolution: target.resolution } }) : undefined);
+    const acquirer = firstPropertyEdgeTarget({ properties: parsed.page_properties, keys: ["acquired-by"], targetType: "organization", endpointTitleIndex: options.endpointTitleIndex });
+    addEdge(acquirer ? typedCurrentPagePropertyEdge({ ...common, targetTitle: acquirer.title, targetType: "organization", predicate: "acquired-by", propertyKey: acquirer.key, attrs: { target_resolution: acquirer.resolution } }) : undefined);
+    const customerTarget = firstPropertyEdgeTarget({ properties: parsed.page_properties, keys: ["customer-of"], targetType: "organization", endpointTitleIndex: options.endpointTitleIndex });
+    addEdge(customerTarget ? typedCurrentPagePropertyEdge({ ...common, targetTitle: customerTarget.title, targetType: "organization", predicate: "customer-of", propertyKey: customerTarget.key, attrs: { target_resolution: customerTarget.resolution } }) : undefined);
     for (const tagged of taggedSuffixes(parsed.page_properties)) {
       const sourceObjectId = semanticTitleObjectId(options.authorityId, options.pathRedactionSecret, tagged.title);
       const reverseCommon = {
@@ -992,32 +1118,30 @@ function propertyEdgesForEndpoint(parsed: ParsedLogseqFile, options: {
       };
       if (tagged.suffix === "employer-past") {
         const edge = typedPropertyEdge({ ...reverseCommon, sourceObjectId, sourceType: "person", targetType: "organization", predicate: "employed-by", status: "ended" });
-        if (edge) edges.push(edge);
+        addEdge(edge);
       } else if (tagged.suffix === "education") {
         const edge = typedPropertyEdge({ ...reverseCommon, sourceObjectId, sourceType: "person", targetType: "organization", predicate: "alumnus-of" });
-        if (edge) edges.push(edge);
+        addEdge(edge);
       } else if (tagged.suffix === "cohort") {
         const edge = typedPropertyEdge({ ...reverseCommon, sourceObjectId, sourceType: "person", targetType: "organization", predicate: "member-of" });
-        if (edge) edges.push(edge);
+        addEdge(edge);
       } else if (tagged.suffix === "revenue") {
         const edge = typedPropertyEdge({ ...reverseCommon, sourceObjectId, sourceType: "organization", targetType: "organization", predicate: "customer-of" });
-        if (edge) edges.push(edge);
+        addEdge(edge);
       } else if (tagged.suffix === "advisory-past") {
         const edge = typedPropertyEdge({ ...reverseCommon, sourceObjectId, sourceType: "person", targetType: "organization", predicate: "advises", status: "ended" });
-        if (edge) edges.push(edge);
+        addEdge(edge);
       }
     }
   } else if (options.endpoint.type === "occurrence") {
-    const target = propertyEdgeTargetTitle(parsed.page_properties, ["location"]);
-    const edge = target ? typedCurrentPagePropertyEdge({ ...common, targetTitle: target.title, targetType: "location", predicate: "occurred-at", propertyKey: target.key }) : undefined;
-    if (edge) edges.push(edge);
+    const target = firstPropertyEdgeTarget({ properties: parsed.page_properties, keys: ["location"], targetType: "location", endpointTitleIndex: options.endpointTitleIndex });
+    addEdge(target ? typedCurrentPagePropertyEdge({ ...common, targetTitle: target.title, targetType: "location", predicate: "occurred-at", propertyKey: target.key, attrs: { target_resolution: target.resolution } }) : undefined);
   } else if (options.endpoint.type === "topic") {
-    const target = propertyEdgeTargetTitle(parsed.page_properties, ["parent-topic", "part-of-topic"]);
-    const edge = target ? typedCurrentPagePropertyEdge({ ...common, targetTitle: target.title, targetType: "topic", predicate: "part-of-topic", propertyKey: target.key }) : undefined;
-    if (edge) edges.push(edge);
+    const target = firstPropertyEdgeTarget({ properties: parsed.page_properties, keys: ["parent-topic", "part-of-topic"], targetType: "topic", endpointTitleIndex: options.endpointTitleIndex });
+    addEdge(target ? typedCurrentPagePropertyEdge({ ...common, targetTitle: target.title, targetType: "topic", predicate: "part-of-topic", propertyKey: target.key, attrs: { target_resolution: target.resolution } }) : undefined);
   }
 
-  return edges;
+  return [...edgesById.values()];
 }
 
 function parseLogseqFile(input: MarkdownFileInput, pathRedactionSecret: string): ParsedLogseqFile {
@@ -1103,6 +1227,7 @@ function draftObjectsForFile(parsed: ParsedLogseqFile, options: {
   pathRedactionSecret: string;
   createdAt: string;
   defaultAccessClass: AccessClass;
+  endpointTitleIndex?: EndpointTitleIndex;
 }): DraftObject[] {
   const drafts: DraftObject[] = [];
   drafts.push(plannedObject({
@@ -1163,7 +1288,8 @@ function draftObjectsForFile(parsed: ParsedLogseqFile, options: {
     for (const edge of propertyEdgesForEndpoint(parsed, {
       authorityId: options.authorityId,
       pathRedactionSecret: options.pathRedactionSecret,
-      endpoint: typedEndpoint.endpoint
+      endpoint: typedEndpoint.endpoint,
+      endpointTitleIndex: options.endpointTitleIndex
     })) {
       drafts.push(plannedObject({
         authorityId: options.authorityId,
@@ -1203,7 +1329,7 @@ function draftObjectsForFile(parsed: ParsedLogseqFile, options: {
         }
       }));
     }
-    for (const candidate of nonWikilinkPropertyReviewCandidates(parsed, typedEndpoint.endpoint)) {
+    for (const candidate of nonWikilinkPropertyReviewCandidates(parsed, typedEndpoint.endpoint, options.endpointTitleIndex)) {
       drafts.push(plannedObject({
         authorityId: options.authorityId,
         sourcePathRef: parsed.source_path_ref,
@@ -1346,6 +1472,32 @@ function draftObjectsForFile(parsed: ParsedLogseqFile, options: {
   return drafts;
 }
 
+function buildEndpointTitleIndex(parsedFiles: ParsedLogseqFile[], options: {
+  authorityId: string;
+  pathRedactionSecret: string;
+  createdAt: string;
+  defaultAccessClass: AccessClass;
+}): EndpointTitleIndex {
+  const index: EndpointTitleIndex = new Map();
+  for (const parsed of parsedFiles) {
+    const typedEndpoint = parseTypedPageEndpoint(parsed, options);
+    if (typedEndpoint.kind !== "promoted") {
+      continue;
+    }
+    const key = endpointTitleIndexKey(typedEndpoint.endpoint.type, typedEndpoint.endpoint.name);
+    if (!key) {
+      continue;
+    }
+    const existing = index.get(key);
+    if (existing) {
+      index.set(key, { count: existing.count + 1 });
+    } else {
+      index.set(key, { endpoint: typedEndpoint.endpoint, count: 1 });
+    }
+  }
+  return index;
+}
+
 function emptyTotals(): LogseqSemanticParityLedger["totals"] {
   return {
     bytes: 0,
@@ -1481,6 +1633,12 @@ function buildSemanticDrafts(files: MarkdownFileInput[], options: CreateLogseqSe
   const defaultAccessClass = AccessClassSchema.parse(options.default_access_class ?? "local-private");
   const pathRedactionSecret = options.path_redaction_secret ?? shortHash(`${authorityId}:${createdAt}:ephemeral-path-redaction`, 32);
   const parsedFiles = files.map((file) => parseLogseqFile(file, pathRedactionSecret));
+  const endpointTitleIndex = buildEndpointTitleIndex(parsedFiles, {
+    authorityId,
+    pathRedactionSecret,
+    createdAt,
+    defaultAccessClass
+  });
   const draftsBySourceRef = new Map<string, DraftObject[]>();
   const drafts: DraftObject[] = [];
 
@@ -1489,7 +1647,8 @@ function buildSemanticDrafts(files: MarkdownFileInput[], options: CreateLogseqSe
       authorityId,
       pathRedactionSecret,
       createdAt,
-      defaultAccessClass
+      defaultAccessClass,
+      endpointTitleIndex
     });
     draftsBySourceRef.set(parsed.source_path_ref, fileDrafts);
     drafts.push(...fileDrafts);
