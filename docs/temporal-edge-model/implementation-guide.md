@@ -325,8 +325,9 @@ The git guard caps at **`GIT_MAX_CHANGED_FILES=25`**, so bulk migration must run
 4. **Suffix-hacks** -> typed edges via the §4 decode map; flip direction (they're authored from the counterparty side); human-review the suffix->predicate mapping. This is the bulk of the effort.
 5. **`location::`/`headquarters::` plain-text values** -> emit `based-in`
    edges only when the value exactly matches one unique typed `location`
-   endpoint title in the same import batch; otherwise keep the encrypted review
-   candidate so a human or later resolver can link it safely.
+   endpoint title or explicit alias in the same import batch; otherwise keep
+   the encrypted review candidate so a human or later resolver can link it
+   safely.
 Big-bang migration through the MCP is forbidden because it has too much
 blast-radius and too many filesystem/sync edge cases for a first pass.
 

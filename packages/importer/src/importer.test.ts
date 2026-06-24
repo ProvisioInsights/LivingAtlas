@@ -748,6 +748,85 @@ describe("markdown importer planning", () => {
     expect(JSON.stringify(encrypted.objects)).not.toContain("Synthetic Wrong Type Person");
   });
 
+  it("promotes exact non-wikilink aliases only when one typed endpoint owns the alias", async () => {
+    const files = [
+      {
+        source_path: "/tmp/living-atlas-fixtures/Synthetic Alias City.md",
+        markdown: "type:: location\nalias:: Synthetic Metro\n\n- body text\n",
+        source_kind: "logseq" as const
+      },
+      {
+        source_path: "/tmp/living-atlas-fixtures/Synthetic Alias Employer.md",
+        markdown: "type:: organization\naliases:: Synthetic Alias Org\n\n- body text\n",
+        source_kind: "logseq" as const
+      },
+      {
+        source_path: "/tmp/living-atlas-fixtures/Synthetic Alias Person.md",
+        markdown: "type:: person\nlocation:: Synthetic Metro\norg:: Synthetic Alias Org\n\n- body text\n",
+        source_kind: "logseq" as const
+      },
+      {
+        source_path: "/tmp/living-atlas-fixtures/Synthetic Duplicate Org A.md",
+        markdown: "type:: organization\nalias:: Shared Synthetic Alias\n\n- body text\n",
+        source_kind: "logseq" as const
+      },
+      {
+        source_path: "/tmp/living-atlas-fixtures/Synthetic Duplicate Org B.md",
+        markdown: "type:: organization\nalias:: Shared Synthetic Alias\n\n- body text\n",
+        source_kind: "logseq" as const
+      },
+      {
+        source_path: "/tmp/living-atlas-fixtures/Synthetic Duplicate Alias Person.md",
+        markdown: "type:: person\norg:: Shared Synthetic Alias\n\n- body text\n",
+        source_kind: "logseq" as const
+      }
+    ];
+    const plaintextPayloads: string[] = [];
+
+    const encrypted = await createLogseqSemanticGraphObjects(files, {
+      authority_id: fixtureAuthorityId,
+      created_at: "2026-06-22T12:00:00.000Z",
+      path_redaction_secret: "fixture-path-redaction-secret-0001",
+      encrypt: async ({ plaintext, aad }) => {
+        plaintextPayloads.push(plaintext);
+        return {
+          ciphertext: Buffer.from(`sealed:${aad}:${plaintext.length}`).toString("base64"),
+          nonce: "fixture-semantic-nonce",
+          hash: sha256(`sealed:${aad}:${plaintext.length}`),
+          algorithm: "fixture-aes-gcm"
+        };
+      }
+    });
+    const edgePayloads = plaintextPayloads
+      .map((payload) => JSON.parse(payload) as { kind?: string; edge?: { predicate?: string; target_type?: string; attrs?: Record<string, unknown> } })
+      .filter((payload) => payload.kind === "logseq-temporal-edge");
+
+    expect(encrypted.ledger.decisions["typed-endpoint-promoted"]).toBe(6);
+    expect(encrypted.ledger.decisions["property-edge-promoted"]).toBe(2);
+    expect(encrypted.ledger.decisions["non-wikilink-location-review"]).toBeUndefined();
+    expect(encrypted.ledger.decisions["non-wikilink-organization-review"]).toBe(1);
+    expect(encrypted.ledger.totals.edge_candidates).toBe(3);
+    expect(encrypted.ledger.totals.valid_edge_candidates).toBe(2);
+    expect(encrypted.ledger.totals.quarantined_edge_candidates).toBe(1);
+    expect(encrypted.ledger.totals.quarantine_objects).toBe(1);
+    expect(edgePayloads.map((payload) => payload.edge)).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        predicate: "based-in",
+        target_type: "location",
+        attrs: expect.objectContaining({ target_resolution: "exact-typed-alias" })
+      }),
+      expect.objectContaining({
+        predicate: "employed-by",
+        target_type: "organization",
+        attrs: expect.objectContaining({ target_resolution: "exact-typed-alias" })
+      })
+    ]));
+    expect(JSON.stringify(encrypted.ledger)).not.toContain("Synthetic Metro");
+    expect(JSON.stringify(encrypted.ledger)).not.toContain("Shared Synthetic Alias");
+    expect(JSON.stringify(encrypted.objects)).not.toContain("Synthetic Alias Org");
+    expect(JSON.stringify(encrypted.objects)).not.toContain("Synthetic Duplicate Alias Person");
+  });
+
   it("quarantines cluster endpoints instead of promoting temporal edge objects", async () => {
     const file = {
       source_path: "/tmp/living-atlas-fixtures/Cluster Endpoint.md",

@@ -242,9 +242,11 @@ type DraftObject = {
 type EndpointTitleIndexEntry = {
   endpoint?: EndpointRecord;
   count: number;
+  resolution?: "exact-typed-title" | "exact-typed-alias";
 };
 
 type EndpointTitleIndex = Map<string, EndpointTitleIndexEntry>;
+type PropertyTargetResolution = "wikilink" | "exact-typed-title" | "exact-typed-alias";
 
 function sha256(value: string): `sha256:${string}` {
   return `sha256:${createHash("sha256").update(value).digest("hex")}`;
@@ -768,11 +770,11 @@ function propertyEdgeTargetTitles(properties: LogseqProperty[], keys: string[]):
   return targets;
 }
 
-function resolveExactTypedTitle(
+function resolveExactTypedEndpoint(
   endpointTitleIndex: EndpointTitleIndex | undefined,
   targetType: EndpointType,
   value: string
-): { title: string; endpoint: EndpointRecord } | undefined {
+): { title: string; endpoint: EndpointRecord; resolution: "exact-typed-title" | "exact-typed-alias" } | undefined {
   if (parseWikilinkTitle(value)) {
     return undefined;
   }
@@ -781,31 +783,31 @@ function resolveExactTypedTitle(
     return undefined;
   }
   const match = endpointTitleIndex?.get(key);
-  if (!match?.endpoint || match.count !== 1) {
+  if (!match?.endpoint || match.count !== 1 || !match.resolution) {
     return undefined;
   }
-  return { title: match.endpoint.name, endpoint: match.endpoint };
+  return { title: match.endpoint.name, endpoint: match.endpoint, resolution: match.resolution };
 }
 
-function resolvesToAnyExactTypedTitle(
+function resolvesToAnyExactTypedEndpoint(
   endpointTitleIndex: EndpointTitleIndex | undefined,
   targetTypes: EndpointType[],
   value: string
 ): boolean {
-  return targetTypes.some((targetType) => resolveExactTypedTitle(endpointTitleIndex, targetType, value) !== undefined);
+  return targetTypes.some((targetType) => resolveExactTypedEndpoint(endpointTitleIndex, targetType, value) !== undefined);
 }
 
-function exactTypedTitlePropertyTargets(
+function exactTypedEndpointPropertyTargets(
   properties: LogseqProperty[],
   keys: string[],
   targetType: EndpointType,
   endpointTitleIndex: EndpointTitleIndex | undefined,
   splitList: boolean
-): Array<{ key: string; title: string; resolution: "exact-typed-title" }> {
-  const targets: Array<{ key: string; title: string; resolution: "exact-typed-title" }> = [];
+): Array<{ key: string; title: string; resolution: "exact-typed-title" | "exact-typed-alias" }> {
+  const targets: Array<{ key: string; title: string; resolution: "exact-typed-title" | "exact-typed-alias" }> = [];
   const seen = new Set<string>();
   for (const target of nonWikilinkPropertyTargets(properties, keys, splitList)) {
-    const resolved = resolveExactTypedTitle(endpointTitleIndex, targetType, target.value);
+    const resolved = resolveExactTypedEndpoint(endpointTitleIndex, targetType, target.value);
     if (!resolved) {
       continue;
     }
@@ -814,7 +816,7 @@ function exactTypedTitlePropertyTargets(
       continue;
     }
     seen.add(dedupeKey);
-    targets.push({ key: target.key, title: resolved.title, resolution: "exact-typed-title" });
+    targets.push({ key: target.key, title: resolved.title, resolution: resolved.resolution });
   }
   return targets;
 }
@@ -825,10 +827,10 @@ function propertyEdgeTargets(input: {
   targetType: EndpointType;
   endpointTitleIndex?: EndpointTitleIndex;
   splitList?: boolean;
-}): Array<{ key: string; title: string; resolution: "wikilink" | "exact-typed-title" }> {
-  const targets: Array<{ key: string; title: string; resolution: "wikilink" | "exact-typed-title" }> = [];
+}): Array<{ key: string; title: string; resolution: PropertyTargetResolution }> {
+  const targets: Array<{ key: string; title: string; resolution: PropertyTargetResolution }> = [];
   const seen = new Set<string>();
-  const add = (target: { key: string; title: string; resolution: "wikilink" | "exact-typed-title" }) => {
+  const add = (target: { key: string; title: string; resolution: PropertyTargetResolution }) => {
     const dedupeKey = `${input.targetType}:${target.title.toLowerCase()}`;
     if (seen.has(dedupeKey)) {
       return;
@@ -840,7 +842,7 @@ function propertyEdgeTargets(input: {
   for (const wikilink of propertyEdgeTargetTitles(input.properties, input.keys)) {
     add({ ...wikilink, resolution: "wikilink" });
   }
-  for (const exact of exactTypedTitlePropertyTargets(
+  for (const exact of exactTypedEndpointPropertyTargets(
     input.properties,
     input.keys,
     input.targetType,
@@ -857,7 +859,7 @@ function firstPropertyEdgeTarget(input: {
   keys: string[];
   targetType: EndpointType;
   endpointTitleIndex?: EndpointTitleIndex;
-}): { key: string; title: string; resolution: "wikilink" | "exact-typed-title" } | undefined {
+}): { key: string; title: string; resolution: PropertyTargetResolution } | undefined {
   return propertyEdgeTargets(input)[0];
 }
 
@@ -1010,7 +1012,7 @@ function nonWikilinkPropertyReviewCandidates(
   const candidates: Array<{ key: string; value: string; reason: string }> = [];
   const add = (keys: string[], reason: string, targetTypes: EndpointType[], splitList = false) => {
     candidates.push(...nonWikilinkPropertyTargets(parsed.page_properties, keys, splitList)
-      .filter((target) => !resolvesToAnyExactTypedTitle(endpointTitleIndex, targetTypes, target.value))
+      .filter((target) => !resolvesToAnyExactTypedEndpoint(endpointTitleIndex, targetTypes, target.value))
       .map((target) => ({ ...target, reason })));
   };
 
@@ -1472,6 +1474,30 @@ function draftObjectsForFile(parsed: ParsedLogseqFile, options: {
   return drafts;
 }
 
+function addEndpointTitleIndexEntry(
+  index: EndpointTitleIndex,
+  endpoint: EndpointRecord,
+  resolution: "exact-typed-title" | "exact-typed-alias",
+  value: string | undefined
+): void {
+  const key = endpointTitleIndexKey(endpoint.type, value);
+  if (!key) {
+    return;
+  }
+  const existing = index.get(key);
+  if (!existing) {
+    index.set(key, { endpoint, count: 1, resolution });
+    return;
+  }
+  if (existing.endpoint?.object_id === endpoint.object_id) {
+    if (existing.resolution !== "exact-typed-title" && resolution === "exact-typed-title") {
+      index.set(key, { endpoint, count: existing.count, resolution });
+    }
+    return;
+  }
+  index.set(key, { count: existing.count + 1 });
+}
+
 function buildEndpointTitleIndex(parsedFiles: ParsedLogseqFile[], options: {
   authorityId: string;
   pathRedactionSecret: string;
@@ -1484,15 +1510,9 @@ function buildEndpointTitleIndex(parsedFiles: ParsedLogseqFile[], options: {
     if (typedEndpoint.kind !== "promoted") {
       continue;
     }
-    const key = endpointTitleIndexKey(typedEndpoint.endpoint.type, typedEndpoint.endpoint.name);
-    if (!key) {
-      continue;
-    }
-    const existing = index.get(key);
-    if (existing) {
-      index.set(key, { count: existing.count + 1 });
-    } else {
-      index.set(key, { endpoint: typedEndpoint.endpoint, count: 1 });
+    addEndpointTitleIndexEntry(index, typedEndpoint.endpoint, "exact-typed-title", typedEndpoint.endpoint.name);
+    for (const alias of typedEndpoint.endpoint.aliases) {
+      addEndpointTitleIndexEntry(index, typedEndpoint.endpoint, "exact-typed-alias", alias);
     }
   }
   return index;

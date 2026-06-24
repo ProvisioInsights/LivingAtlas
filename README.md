@@ -312,9 +312,9 @@ CRUD/leakage proof, and promotes high-confidence property-derived temporal
 edges for explicit wikilink relationship fields such as location, topic parent,
 `org`/employer affiliation, acquisition, customer, spouse, and estrangement
 relationships. It can also promote a non-wikilink property target only when
-that value exactly matches one unique typed endpoint title of the required type
-inside the same import batch; wrong-type, duplicate, fuzzy, or unresolved
-targets stay in encrypted review. It then
+that value exactly matches one unique typed endpoint title or explicit endpoint
+alias of the required type inside the same import batch; wrong-type, duplicate,
+fuzzy, or unresolved targets stay in encrypted review. It then
 also promotes exact high-confidence suffix tags such as past employer,
 education, cohort, revenue, and past advisory markers when endpoint direction is
 schema-safe; ambiguous weak-tie and direction-sensitive relationship suffixes
