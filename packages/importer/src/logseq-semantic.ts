@@ -1874,6 +1874,22 @@ function buildEndpointTitleIndex(parsedFiles: ParsedLogseqFile[], options: {
   return index;
 }
 
+function collectTypedEndpointObjectIds(parsedFiles: ParsedLogseqFile[], options: {
+  authorityId: string;
+  pathRedactionSecret: string;
+  createdAt: string;
+  defaultAccessClass: AccessClass;
+}): Set<string> {
+  const objectIds = new Set<string>();
+  for (const parsed of parsedFiles) {
+    const typedEndpoint = parseTypedPageEndpoint(parsed, options);
+    if (typedEndpoint.kind === "promoted") {
+      objectIds.add(typedEndpoint.endpoint.object_id);
+    }
+  }
+  return objectIds;
+}
+
 function buildReviewResolutionIndex(resolutions: LogseqSemanticReviewResolution[] | undefined): ReviewResolutionIndex {
   const index: ReviewResolutionIndex = new Map();
   for (const resolution of resolutions ?? []) {
@@ -2032,7 +2048,12 @@ function buildSemanticDrafts(files: MarkdownFileInput[], options: CreateLogseqSe
   });
   const reviewResolutionIndex = buildReviewResolutionIndex(options.review_resolutions);
   const draftsBySourceRef = new Map<string, DraftObject[]>();
-  const createdReviewEndpointIds = new Set<string>();
+  const createdReviewEndpointIds = collectTypedEndpointObjectIds(parsedFiles, {
+    authorityId,
+    pathRedactionSecret,
+    createdAt,
+    defaultAccessClass
+  });
   const drafts: DraftObject[] = [];
 
   for (const parsed of parsedFiles) {
