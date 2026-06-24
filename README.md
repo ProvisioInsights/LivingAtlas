@@ -349,6 +349,7 @@ npm run logseq:semantic-corpus-report
 npm run connector:enrichment-report
 npm run connector:enrichment-local
 npm run connector:enrichment-corpus-report
+npm run connector:coverage-report
 ```
 
 `logseq:semantic-manifest` creates a plaintext-free corpus manifest with one
@@ -441,6 +442,14 @@ packet hash, uses the latest ledger for each packet, fails completion on failed
 imports, non-encrypted local persistence, or accidental sync attempts, and can
 run as a hard gate with
 `LIVING_ATLAS_CONNECTOR_ENRICHMENT_REQUIRE_COMPLETE=1`.
+`connector:coverage-report` validates a local-private connector coverage
+manifest and emits only counts by connector, query kind, status, evidence kind,
+and terminal reason code. Use it before or alongside enrichment packets to
+prove which authorized connector surfaces were queried, limited, unavailable,
+skipped, or failed. The manifest must use hashed query refs only, must stay
+outside the repository, and read-only coverage probes with `status: failed`
+make the report incomplete. Mutating probes and private query-text fields are
+schema-invalid.
 
 `LIVING_ATLAS_LOGSEQ_SEMANTIC_SYNC_MODE` defaults to `local-only`. Cloudflare
 sync is paused unless `LIVING_ATLAS_LOGSEQ_SEMANTIC_SYNC_MODE=cloudflare` and

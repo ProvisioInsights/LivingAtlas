@@ -391,6 +391,7 @@ Command map:
 | `npm run connector:enrichment-report` | Yes, when pointed at a private connector packet | No | Validates a local-private connector enrichment packet and emits only counts by connector, fact kind, decision, confidence, endpoint type, predicate, and evidence kind. Only high-confidence promote decisions are counted as promote-ready. |
 | `npm run connector:enrichment-local` | Yes, when pointed at a private connector packet | No | Requires an explicit local-write acknowledgement, unlocked local keyring, and local graph directory. Writes promote-ready candidates as encrypted local-private objects and held candidates as encrypted quarantine objects, then emits a plaintext-free local ledger. |
 | `npm run connector:enrichment-corpus-report` | Connector ledgers only | No | Combines plaintext-free connector import ledgers into one local completion gate, deduped by packet hash. |
+| `npm run connector:coverage-report` | Connector coverage manifest only | No | Validates a local-private connector coverage manifest and emits only counts by connector, query kind, status, evidence kind, and reason code. It records connector availability without printing query text or payloads. |
 
 The deployed Cloudflare usage gate should run before any live mutating smoke or
 stress:
@@ -477,6 +478,19 @@ comma-separated list of private connector import ledgers. Set
 `LIVING_ATLAS_CONNECTOR_ENRICHMENT_REQUIRE_COMPLETE=1` to fail on failed import
 objects, non-encrypted local persistence, or any connector import ledger that
 attempted sync.
+
+Use `connector:coverage-report` to prove connector availability before a broad
+enrichment sweep. Set `LIVING_ATLAS_CONNECTOR_COVERAGE_MANIFEST_PATH` to a
+private JSON manifest with schema
+`living-atlas-connector-coverage-manifest:v1`. Each entry records only the
+connector id, query kind, time window, optional query hash, result count,
+status, and terminal reason code. Do not include subjects, attendees,
+transcript text, filenames, message bodies, source paths, or connector payloads.
+Statuses of `limited`, `unavailable`, and `skipped` are terminal accounting
+outcomes when they include a reason code. `failed` makes the report incomplete,
+and `mutation_attempted: true` is rejected because coverage probes must be
+read-only. Set `LIVING_ATLAS_CONNECTOR_COVERAGE_REQUIRE_COMPLETE=1` to fail the
+command when the report is incomplete.
 
 `LIVING_ATLAS_LOGSEQ_SEMANTIC_SOURCE_MODE` controls discovery:
 
