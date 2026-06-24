@@ -328,6 +328,7 @@ Command map:
 | `npm run logseq:semantic-review-packet` | Yes, when pointed at a private local graph | No | Requires explicit acknowledgement and writes a local-private plaintext review packet outside the repo. Stdout is counts-only; the packet groups unresolved values by reason, target hash, property keys, suffixes, and opaque source refs. If `LIVING_ATLAS_LOGSEQ_SEMANTIC_REVIEW_RESOLUTION_PATH` is set, already-resolved or explicitly deferred targets are suppressed from the residual packet. |
 | `npm run logseq:semantic-corpus-report` | Ledger/manifest only | No | Combines multiple plaintext-free manifests and ledgers into one local or synced completion gate across source modes. |
 | `npm run connector:enrichment-report` | Yes, when pointed at a private connector packet | No | Validates a local-private connector enrichment packet and emits only counts by connector, fact kind, decision, confidence, endpoint type, predicate, and evidence kind. Only high-confidence promote decisions are counted as promote-ready. |
+| `npm run connector:enrichment-local` | Yes, when pointed at a private connector packet | No | Requires an explicit local-write acknowledgement, unlocked local keyring, and local graph directory. Writes promote-ready candidates as encrypted local-private objects and held candidates as encrypted quarantine objects, then emits a plaintext-free local ledger. |
 
 The deployed Cloudflare usage gate should run before any live mutating smoke or
 stress:
@@ -392,6 +393,16 @@ review, but the command emits only hash/count summaries and never prints
 evidence text or proposed payload values. Promote only candidates with
 `decision: promote` and `confidence: high`; everything else remains held for
 review, deferral, or rejection.
+
+Use `connector:enrichment-local` only after the report is reviewed. It requires
+`LIVING_ATLAS_CONNECTOR_ENRICHMENT_IMPORT_ACK=write-encrypted-local-connector-objects`,
+`LIVING_ATLAS_LIVE_AUTHORITY_ID`, `LIVING_ATLAS_LOCAL_GRAPH_DIR`,
+`LIVING_ATLAS_LOCAL_KEYRING`, and
+`LIVING_ATLAS_LOCAL_KEYRING_PASSPHRASE`. Optionally set
+`LIVING_ATLAS_CONNECTOR_ENRICHMENT_LEDGER_PATH` to write the plaintext-free
+import ledger outside the repository. The command keeps Cloudflare sync paused:
+promoted candidates become encrypted local-private objects, and held candidates
+become encrypted quarantine objects.
 
 `LIVING_ATLAS_LOGSEQ_SEMANTIC_SOURCE_MODE` controls discovery:
 

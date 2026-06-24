@@ -301,6 +301,7 @@ npm run logseq:semantic-review-report
 npm run logseq:semantic-review-packet
 npm run logseq:semantic-corpus-report
 npm run connector:enrichment-report
+npm run connector:enrichment-local
 ```
 
 `logseq:semantic-manifest` creates a plaintext-free corpus manifest with one
@@ -380,6 +381,11 @@ public-safe gate before any connector-derived facts are promoted into the graph:
 only `decision: promote` plus `confidence: high` is counted as promote-ready;
 proposed, deferred, rejected, or lower-confidence candidates stay held for local
 review.
+`connector:enrichment-local` consumes the same packet with an explicit local
+write acknowledgement, an unlocked local keyring, and a local graph directory.
+It writes promote-ready candidates as encrypted `local-private` graph objects,
+writes held candidates as encrypted `quarantine` graph objects, and emits a
+plaintext-free ledger. It never attempts Cloudflare sync.
 
 `LIVING_ATLAS_LOGSEQ_SEMANTIC_SYNC_MODE` defaults to `local-only`. Cloudflare
 sync is paused unless `LIVING_ATLAS_LOGSEQ_SEMANTIC_SYNC_MODE=cloudflare` and

@@ -40,6 +40,7 @@
     "logseq:semantic-parity": "tsx packages/check/src/logseq-semantic-parity.ts",
     "logseq:semantic-corpus-report": "tsx packages/check/src/logseq-semantic-corpus-report.ts",
     "connector:enrichment-report": "tsx packages/check/src/connector-enrichment-report.ts",
+    "connector:enrichment-local": "tsx packages/check/src/connector-enrichment-local-import.ts",
     "real-data:readiness": "tsx packages/check/src/real-data-readiness.ts",
     "stress:local": "tsx packages/check/src/local-stress.ts",
     "local:install-smoke": "tsx packages/check/src/local-install-smoke.ts",
