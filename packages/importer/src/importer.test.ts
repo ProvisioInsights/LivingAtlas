@@ -2,15 +2,16 @@ import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { fixtureAuthorityId, sensitiveBaitRegistry } from "@living-atlas/fixtures";
 import { scanForBaitStrings } from "@living-atlas/leakage";
-	import {
-	  createMarkdownImportPlan,
-	  createMarkdownObjectId,
-	  createMarkdownSourceRef,
-	  createMarkdownWatcherPlan,
-	  createLogseqSemanticGraphObjects,
-	  createLogseqSemanticParityLedger,
-	  planWatcherFileEvent,
-	  summarizeMarkdownFile
+import {
+  classifyMarkdownSourcePath,
+  createMarkdownImportPlan,
+  createMarkdownObjectId,
+  createMarkdownSourceRef,
+  createMarkdownWatcherPlan,
+  createLogseqSemanticGraphObjects,
+  createLogseqSemanticParityLedger,
+  planWatcherFileEvent,
+  summarizeMarkdownFile
 } from "./index";
 
 const syntheticSensitiveMarkdown = `---
@@ -72,21 +73,56 @@ describe("markdown importer planning", () => {
     expect(scanForBaitStrings([{ name: "import-plan", content: JSON.stringify(plan) }], sensitiveBaitRegistry)).toEqual([]);
   });
 
-	  it("creates inert watcher plans and redacted per-event actions", () => {
+  it("classifies Logseq extensionless page and journal files without accepting attachments", () => {
+    expect(classifyMarkdownSourcePath({
+      source_path: "pages/Project Glass Lantern",
+      source_kind: "logseq"
+    })).toEqual({ supported: true, reason_code: "logseq-extensionless-note" });
+    expect(classifyMarkdownSourcePath({
+      source_path: "journals/2026_06_23",
+      source_kind: "logseq"
+    })).toEqual({ supported: true, reason_code: "logseq-extensionless-note" });
+    expect(classifyMarkdownSourcePath({
+      source_path: "pages/Project Glass Lantern.md",
+      source_kind: "logseq"
+    })).toEqual({ supported: true, reason_code: "markdown-file" });
+    expect(classifyMarkdownSourcePath({
+      source_path: "pages/Project Glass Lantern",
+      source_kind: "obsidian"
+    })).toEqual({ supported: false, reason_code: "unsupported-extensionless" });
+    expect(classifyMarkdownSourcePath({
+      source_path: "assets/blob",
+      source_kind: "logseq"
+    })).toEqual({ supported: false, reason_code: "unsupported-extensionless" });
+    expect(classifyMarkdownSourcePath({
+      source_path: "assets/pages/blob",
+      source_kind: "logseq"
+    })).toEqual({ supported: false, reason_code: "unsupported-extensionless" });
+    expect(classifyMarkdownSourcePath({
+      source_path: "logseq/bak/pages/Old Page",
+      source_kind: "logseq"
+    })).toEqual({ supported: false, reason_code: "ignored-extension" });
+    expect(classifyMarkdownSourcePath({
+      source_path: "pages/image.png",
+      source_kind: "logseq"
+    })).toEqual({ supported: false, reason_code: "ignored-extension" });
+  });
+
+  it("creates inert watcher plans and redacted per-event actions", () => {
     const watcher = createMarkdownWatcherPlan(
-      [{ root_path: "/tmp/living-atlas-fixtures/Avery North vault", source_kind: "obsidian" }],
+      [{ root_path: "/tmp/living-atlas-fixtures/Avery North vault", source_kind: "logseq" }],
       { created_at: "2026-06-22T12:00:00.000Z", debounce_ms: 250 }
     );
 
     expect(watcher.execution_mode).toBe("planning-only");
-    expect(watcher.roots[0]!.include_globs).toContain("**/*.md");
+    expect(watcher.roots[0]!.include_globs).toEqual(expect.arrayContaining(["pages/**", "journals/**", "whiteboards/**/*.md"]));
     expect(JSON.stringify(watcher)).not.toContain("Avery North");
 
     const changed = planWatcherFileEvent(
       {
         event_type: "modified",
-        source_path: "/tmp/living-atlas-fixtures/Avery North vault/Project Glass Lantern.md",
-        source_kind: "obsidian"
+        source_path: "pages/Project Glass Lantern",
+        source_kind: "logseq"
       },
       { authority_id: fixtureAuthorityId }
     );
@@ -104,51 +140,72 @@ describe("markdown importer planning", () => {
     );
     expect(deleted.action).toBe("plan-tombstone");
     expect(deleted.requires_content_read).toBe(false);
+
+    const ignoredAttachment = planWatcherFileEvent(
+      {
+        event_type: "modified",
+        source_path: "assets/blob",
+        source_kind: "logseq"
+      },
+      { authority_id: fixtureAuthorityId }
+    );
+    expect(ignoredAttachment.action).toBe("ignore");
+    expect(ignoredAttachment.requires_content_read).toBe(false);
+
+    const ignoredBackup = planWatcherFileEvent(
+      {
+        event_type: "modified",
+        source_path: "logseq/bak/pages/Old Page",
+        source_kind: "logseq"
+      },
+      { authority_id: fixtureAuthorityId }
+    );
+    expect(ignoredBackup.action).toBe("ignore");
   });
 
   it("uses a caller secret to make markdown path refs stable without deterministic unsalted path hashes", () => {
     const sourcePath = "/tmp/living-atlas-fixtures/Avery North vault/Project Glass Lantern.md";
     const fixedSecret = "fixture-path-redaction-secret-0001";
 
-	    expect(createMarkdownSourceRef(sourcePath, { path_redaction_secret: fixedSecret })).toBe(
-	      createMarkdownSourceRef(sourcePath, { path_redaction_secret: fixedSecret })
-	    );
-	    expect(createMarkdownObjectId(fixtureAuthorityId, sourcePath, { path_redaction_secret: fixedSecret })).toBe(
-	      createMarkdownObjectId(fixtureAuthorityId, sourcePath, { path_redaction_secret: fixedSecret })
-	    );
-	    expect(createMarkdownSourceRef(sourcePath, { path_redaction_secret: fixedSecret })).not.toBe(
-	      createMarkdownSourceRef(sourcePath, { path_redaction_secret: "fixture-path-redaction-secret-0002" })
-	    );
+    expect(createMarkdownSourceRef(sourcePath, { path_redaction_secret: fixedSecret })).toBe(
+      createMarkdownSourceRef(sourcePath, { path_redaction_secret: fixedSecret })
+    );
+    expect(createMarkdownObjectId(fixtureAuthorityId, sourcePath, { path_redaction_secret: fixedSecret })).toBe(
+      createMarkdownObjectId(fixtureAuthorityId, sourcePath, { path_redaction_secret: fixedSecret })
+    );
+    expect(createMarkdownSourceRef(sourcePath, { path_redaction_secret: fixedSecret })).not.toBe(
+      createMarkdownSourceRef(sourcePath, { path_redaction_secret: "fixture-path-redaction-secret-0002" })
+    );
     expect(createMarkdownSourceRef(sourcePath)).not.toBe(createMarkdownSourceRef(sourcePath));
 
     const firstPlan = createMarkdownImportPlan([
-	      {
-	        source_path: sourcePath,
-	        markdown: syntheticSensitiveMarkdown,
-	        source_kind: "obsidian"
-	      }
-	    ], {
-	      authority_id: fixtureAuthorityId,
-	      created_at: "2026-06-22T12:00:00.000Z",
-	      path_redaction_secret: fixedSecret
+      {
+        source_path: sourcePath,
+        markdown: syntheticSensitiveMarkdown,
+        source_kind: "obsidian"
+      }
+    ], {
+      authority_id: fixtureAuthorityId,
+      created_at: "2026-06-22T12:00:00.000Z",
+      path_redaction_secret: fixedSecret
     });
     const secondPlan = createMarkdownImportPlan([
-	      {
-	        source_path: sourcePath,
-	        markdown: syntheticSensitiveMarkdown,
-	        source_kind: "obsidian"
-	      }
-	    ], {
-	      authority_id: fixtureAuthorityId,
-	      created_at: "2026-06-22T12:00:00.000Z",
-	      path_redaction_secret: fixedSecret
+      {
+        source_path: sourcePath,
+        markdown: syntheticSensitiveMarkdown,
+        source_kind: "obsidian"
+      }
+    ], {
+      authority_id: fixtureAuthorityId,
+      created_at: "2026-06-22T12:00:00.000Z",
+      path_redaction_secret: fixedSecret
     });
 
     expect(firstPlan.plan_id).toBe(secondPlan.plan_id);
-	    expect(firstPlan.files[0]!.summary.source_path_ref).toBe(secondPlan.files[0]!.summary.source_path_ref);
-	    expect(firstPlan.files[0]!.planned_object.object_id).toBe(secondPlan.files[0]!.planned_object.object_id);
-	    expect(JSON.stringify(firstPlan)).not.toContain(sourcePath);
-	  });
+    expect(firstPlan.files[0]!.summary.source_path_ref).toBe(secondPlan.files[0]!.summary.source_path_ref);
+    expect(firstPlan.files[0]!.planned_object.object_id).toBe(secondPlan.files[0]!.planned_object.object_id);
+    expect(JSON.stringify(firstPlan)).not.toContain(sourcePath);
+  });
 
   it("builds a plaintext-free Logseq semantic parity ledger and encrypted semantic objects", async () => {
     const file = {
@@ -383,4 +440,4 @@ describe("markdown importer planning", () => {
     expect(JSON.stringify(encrypted.objects)).not.toContain("Synthetic Market Theme");
     expect(JSON.stringify(encrypted.objects)).not.toContain("Synthetic Planning Meeting");
   });
-	});
+});

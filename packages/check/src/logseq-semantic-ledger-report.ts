@@ -1,12 +1,19 @@
 import { readFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
+import { MarkdownImportSourceKindSchema, type MarkdownImportSourceKind } from "@living-atlas/importer";
 import { z } from "zod";
+import {
+  SemanticSourceModeSchema,
+  type SemanticSourceMode
+} from "./logseq-semantic-source-files";
 
 const BatchRecordSchema = z.object({
   record_schema: z.literal("living-atlas-logseq-semantic-batch:v1"),
   recorded_at: z.string(),
   authority_id: z.string(),
   root_ref: z.string(),
+  source_kind: MarkdownImportSourceKindSchema.optional(),
+  source_mode: SemanticSourceModeSchema.optional(),
   file_offset: z.number().int().nonnegative(),
   requested_file_count: z.number().int().positive(),
   actual_file_count: z.number().int().nonnegative(),
@@ -144,10 +151,20 @@ function gaps(ranges: Array<{ start: number; end: number }>): Array<{ start: num
   return output;
 }
 
+function recordSourceKind(record: BatchRecord): MarkdownImportSourceKind {
+  return record.source_kind ?? "logseq";
+}
+
+function recordSourceMode(record: BatchRecord): SemanticSourceMode {
+  return record.source_mode ?? "markdown-only";
+}
+
 const ManifestSchema = z.object({
   manifest_schema: z.literal("living-atlas-logseq-semantic-corpus-manifest:v1"),
   manifest_id: z.string(),
   root_ref: z.string(),
+  source_kind: MarkdownImportSourceKindSchema.optional(),
+  source_mode: SemanticSourceModeSchema.optional(),
   total_entries: z.number().int().nonnegative(),
   entries: z.array(z.object({
     ordinal: z.number().int().nonnegative(),
@@ -189,17 +206,37 @@ async function main(): Promise<void> {
     record.sync.generation ?? 0,
     ...(record.sync.generations ?? [])
   ]));
+  const sourceKinds = [...new Set(latest.map(recordSourceKind))].sort();
+  const sourceModes = [...new Set(latest.map(recordSourceMode))].sort();
+  const expectedSourceKind = envValue("LIVING_ATLAS_REAL_MARKDOWN_SOURCE_KIND")
+    ? MarkdownImportSourceKindSchema.parse(envValue("LIVING_ATLAS_REAL_MARKDOWN_SOURCE_KIND"))
+    : undefined;
+  const expectedSourceMode = envValue("LIVING_ATLAS_LOGSEQ_SEMANTIC_SOURCE_MODE")
+    ? SemanticSourceModeSchema.parse(envValue("LIVING_ATLAS_LOGSEQ_SEMANTIC_SOURCE_MODE"))
+    : undefined;
+  const expectedSourceMismatches = latest.filter((record) => (
+    (expectedSourceKind && recordSourceKind(record) !== expectedSourceKind)
+    || (expectedSourceMode && recordSourceMode(record) !== expectedSourceMode)
+  ));
+  const manifestSourceMismatch = Boolean(manifest && (
+    (expectedSourceKind && manifest.source_kind && manifest.source_kind !== expectedSourceKind)
+    || (expectedSourceMode && manifest.source_mode && manifest.source_mode !== expectedSourceMode)
+  ));
   const summary = {
     report_schema: "living-atlas-logseq-semantic-ledger-report:v1",
     record_count: records.length,
     deduped_batch_count: latest.length,
     authority_id: latest[0]?.authority_id ?? null,
     root_ref: latest[0]?.root_ref ?? null,
+    source_kinds: sourceKinds,
+    source_modes: sourceModes,
     covered_file_count: latest.reduce((sum, record) => sum + record.actual_file_count, 0),
     synced_batch_count: synced.length,
     latest_sync_generation: latestGeneration,
     manifest: manifest ? {
       manifest_id: manifest.manifest_id,
+      source_kind: manifest.source_kind ?? null,
+      source_mode: manifest.source_mode ?? null,
       total_entries: manifest.total_entries,
       accounted_entries: coveredSourceRefs.size,
       pending_entries: manifestPending.length,
@@ -227,7 +264,11 @@ async function main(): Promise<void> {
       ...(gaps(ranges).length > 0 ? ["coverage-gaps"] : []),
       ...(localOnly.length > 0 ? ["local-only-batches"] : []),
       ...(unsynced.length > 0 ? ["synced-object-count-mismatch"] : []),
-      ...(manifest && manifestPending.length > 0 ? ["manifest-pending-entries"] : [])
+      ...(manifest && manifestPending.length > 0 ? ["manifest-pending-entries"] : []),
+      ...(sourceKinds.length > 1 ? ["mixed-source-kinds"] : []),
+      ...(sourceModes.length > 1 ? ["mixed-source-modes"] : []),
+      ...(expectedSourceMismatches.length > 0 ? ["source-mode-mismatch"] : []),
+      ...(manifestSourceMismatch ? ["manifest-source-mode-mismatch"] : [])
     ];
     if (failures.length > 0) {
       throw new Error(`semantic ledger incomplete: ${failures.join(",")}`);

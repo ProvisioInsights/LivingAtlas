@@ -1,9 +1,16 @@
 import { createHash } from "node:crypto";
-import { mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
-import { dirname, join, relative } from "node:path";
+import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { dirname, relative } from "node:path";
 import { pathToFileURL } from "node:url";
 import { z } from "zod";
 import { createMarkdownSourceRef } from "@living-atlas/importer";
+import {
+  classifySemanticSourcePath,
+  isLikelyTextBuffer,
+  SemanticSourceModeSchema,
+  walkAllSemanticSourceFiles,
+  type SemanticSourceMode
+} from "./logseq-semantic-source-files";
 
 const defaultMaxFileBytes = 256_000;
 
@@ -25,6 +32,8 @@ export const SemanticManifestSchema = z.object({
   manifest_id: z.string().regex(/^la_semantic_manifest_[a-f0-9]{24}$/),
   created_at: z.string(),
   root_ref: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+  source_kind: z.enum(["logseq", "obsidian", "generic-markdown"]),
+  source_mode: SemanticSourceModeSchema,
   source_path_policy: z.literal("redacted"),
   plaintext_policy: z.literal("hash-counts-refs-only"),
   total_entries: z.number().int().nonnegative(),
@@ -69,39 +78,18 @@ function parseInteger(value: string | undefined, fallback: number, min: number, 
   return parsed;
 }
 
-async function walkFiles(root: string): Promise<string[]> {
-  const files: string[] = [];
-  const queue = [root];
-  const ignored = new Set([".git", "node_modules", "dist", "build", ".wrangler", ".terraform"]);
-  while (queue.length > 0) {
-    const dir = queue.shift()!;
-    const entries = await readdir(dir, { withFileTypes: true }).catch(() => []);
-    for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
-      const path = join(dir, entry.name);
-      if (entry.isDirectory()) {
-        if (!ignored.has(entry.name)) {
-          queue.push(path);
-        }
-        continue;
-      }
-      if (entry.isFile()) {
-        files.push(path);
-      }
-    }
-  }
-  return files.sort((left, right) => relative(root, left).localeCompare(relative(root, right)));
-}
-
 export async function createSemanticCorpusManifest(input: {
   root: string;
   pathRedactionSecret: string;
   sourceKind: "logseq" | "obsidian" | "generic-markdown";
+  sourceMode?: SemanticSourceMode;
   maxFileBytes?: number;
   now?: string;
 }): Promise<SemanticManifest> {
   const maxFileBytes = input.maxFileBytes ?? defaultMaxFileBytes;
+  const sourceMode = input.sourceMode ?? "logseq-notes";
   const entries: SemanticManifestEntry[] = [];
-  const paths = await walkFiles(input.root);
+  const paths = await walkAllSemanticSourceFiles(input.root);
 
   for (const path of paths) {
     const sourcePath = relative(input.root, path);
@@ -119,14 +107,20 @@ export async function createSemanticCorpusManifest(input: {
       continue;
     }
 
-    if (!path.toLowerCase().endsWith(".md")) {
+    const classification = classifySemanticSourcePath({
+      root: input.root,
+      path,
+      sourceKind: input.sourceKind,
+      mode: sourceMode
+    });
+    if (!classification.supported) {
       entries.push(SemanticManifestEntrySchema.parse({
         ordinal: entries.length,
         source_path_ref: sourcePathRef,
         source_kind: input.sourceKind,
         discovery_status: "ignored-extension",
         terminal_decision: "skipped",
-        reason_code: "ignored-extension",
+        reason_code: classification.reason_code,
         byte_size: info.size
       }));
       continue;
@@ -161,6 +155,19 @@ export async function createSemanticCorpusManifest(input: {
       continue;
     }
 
+    if (!isLikelyTextBuffer(content)) {
+      entries.push(SemanticManifestEntrySchema.parse({
+        ordinal: entries.length,
+        source_path_ref: sourcePathRef,
+        source_kind: input.sourceKind,
+        discovery_status: "unreadable",
+        terminal_decision: "quarantined",
+        reason_code: "binary-or-nontext",
+        byte_size: info.size
+      }));
+      continue;
+    }
+
     entries.push(SemanticManifestEntrySchema.parse({
       ordinal: entries.length,
       source_path_ref: sourcePathRef,
@@ -178,6 +185,7 @@ export async function createSemanticCorpusManifest(input: {
   const orderedManifestHash = sha256(JSON.stringify(entries.map((entry) => ({
     ordinal: entry.ordinal,
     source_path_ref: entry.source_path_ref,
+    source_kind: entry.source_kind,
     discovery_status: entry.discovery_status,
     terminal_decision: entry.terminal_decision,
     reason_code: entry.reason_code,
@@ -186,9 +194,11 @@ export async function createSemanticCorpusManifest(input: {
   }))));
   return SemanticManifestSchema.parse({
     manifest_schema: "living-atlas-logseq-semantic-corpus-manifest:v1",
-    manifest_id: `la_semantic_manifest_${digest(`${rootRef}:${orderedManifestHash}`)}`,
+    manifest_id: `la_semantic_manifest_${digest(`${rootRef}:${input.sourceKind}:${sourceMode}:${orderedManifestHash}`)}`,
     created_at: input.now ?? new Date().toISOString(),
     root_ref: rootRef,
+    source_kind: input.sourceKind,
+    source_mode: sourceMode,
     source_path_policy: "redacted",
     plaintext_policy: "hash-counts-refs-only",
     total_entries: entries.length,
@@ -201,11 +211,13 @@ async function main(): Promise<void> {
   const root = envValue("LIVING_ATLAS_REAL_MARKDOWN_ROOT") ?? "./private-markdown-root";
   const pathRedactionSecret = requireEnv("LIVING_ATLAS_REAL_DATA_PATH_REDACTION_SECRET");
   const sourceKind = z.enum(["logseq", "obsidian", "generic-markdown"]).parse(envValue("LIVING_ATLAS_REAL_MARKDOWN_SOURCE_KIND") ?? "logseq");
+  const sourceMode = SemanticSourceModeSchema.parse(envValue("LIVING_ATLAS_LOGSEQ_SEMANTIC_SOURCE_MODE") ?? "logseq-notes");
   const maxFileBytes = parseInteger(envValue("LIVING_ATLAS_LOGSEQ_SEMANTIC_MAX_FILE_BYTES"), defaultMaxFileBytes, 1, 100_000_000);
   const manifest = await createSemanticCorpusManifest({
     root,
     pathRedactionSecret,
     sourceKind,
+    sourceMode,
     maxFileBytes
   });
   const outputPath = envValue("LIVING_ATLAS_LOGSEQ_SEMANTIC_MANIFEST_PATH");
@@ -223,6 +235,7 @@ async function main(): Promise<void> {
     skipped: manifest.entries.filter((entry) => entry.terminal_decision === "skipped").length,
     quarantined: manifest.entries.filter((entry) => entry.terminal_decision === "quarantined").length,
     pending: manifest.entries.filter((entry) => entry.terminal_decision === "pending").length,
+    source_mode: sourceMode,
     manifest_written: Boolean(outputPath)
   }, null, 2));
 }

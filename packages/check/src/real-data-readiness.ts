@@ -1,6 +1,6 @@
 import { createHash, randomBytes, webcrypto } from "node:crypto";
-import { readdir, readFile, stat } from "node:fs/promises";
-import { join, relative } from "node:path";
+import { readFile } from "node:fs/promises";
+import { relative } from "node:path";
 import { pathToFileURL } from "node:url";
 import { createAtlasClient } from "@living-atlas/atlas-client";
 import {
@@ -19,12 +19,17 @@ import {
 import {
   createMarkdownImportPlan,
   MarkdownImportSourceKindSchema,
+  type MarkdownImportSourceKind,
   type MarkdownFileInput
 } from "../../importer/src";
 import {
   printCloudflareLiveUsageGateResult,
   runCloudflareLiveUsageGate
 } from "./cloudflare-live-usage-gate";
+import {
+  SemanticSourceModeSchema,
+  walkImportableSemanticSourceFiles
+} from "./logseq-semantic-source-files";
 
 const liveAckEnv = "LIVING_ATLAS_REAL_DATA_PUSH_ACK";
 const liveAckValue = "sync-real-ciphertext-to-cloudflare";
@@ -78,41 +83,7 @@ function parseNonNegativeInt(value: string | undefined, fallback: number, max: n
   return parsed;
 }
 
-async function walkMarkdown(root: string, maxFiles: number, offset: number): Promise<string[]> {
-  const selected: string[] = [];
-  const queue = [root];
-  const ignored = new Set([".git", "node_modules", "dist", "build", ".wrangler", ".terraform"]);
-  const scanLimit = offset + maxFiles;
-
-  while (queue.length > 0 && selected.length < scanLimit) {
-    const dir = queue.shift()!;
-    const entries = await readdir(dir, { withFileTypes: true }).catch(() => []);
-    for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
-      const path = join(dir, entry.name);
-      if (entry.isDirectory()) {
-        if (!ignored.has(entry.name)) {
-          queue.push(path);
-        }
-        continue;
-      }
-      if (!entry.isFile() || !entry.name.toLowerCase().endsWith(".md")) {
-        continue;
-      }
-      const info = await stat(path).catch(() => undefined);
-      if (!info || info.size <= 0 || info.size > maxFileBytes) {
-        continue;
-      }
-      selected.push(path);
-      if (selected.length >= scanLimit) {
-        break;
-      }
-    }
-  }
-
-  return selected.slice(offset);
-}
-
-function sourceKindForRoot(root: string): MarkdownFileInput["source_kind"] {
+function sourceKindForRoot(root: string): MarkdownImportSourceKind {
   const configured = envValue("LIVING_ATLAS_REAL_MARKDOWN_SOURCE_KIND");
   if (configured) {
     return MarkdownImportSourceKindSchema.parse(configured);
@@ -274,9 +245,17 @@ async function main(): Promise<void> {
   const maxFiles = parsePositiveInt(envValue("LIVING_ATLAS_REAL_DATA_FILE_COUNT"), defaultMaxFiles, maxHardFiles);
   const fileOffset = parseNonNegativeInt(envValue("LIVING_ATLAS_REAL_DATA_FILE_OFFSET"), 0, maxFileOffset);
   const sourceKind = sourceKindForRoot(root);
-  const paths = await walkMarkdown(root, maxFiles, fileOffset);
+  const sourceMode = SemanticSourceModeSchema.parse(envValue("LIVING_ATLAS_LOGSEQ_SEMANTIC_SOURCE_MODE") ?? "logseq-notes");
+  const paths = await walkImportableSemanticSourceFiles({
+    root,
+    sourceKind,
+    mode: sourceMode,
+    maxFiles,
+    offset: fileOffset,
+    maxFileBytes
+  });
   if (paths.length === 0) {
-    throw new Error(`no markdown files found under configured root at offset ${fileOffset}`);
+    throw new Error(`no semantic source files found under configured root at offset ${fileOffset}`);
   }
 
   const files: MarkdownFileInput[] = [];
@@ -308,7 +287,7 @@ async function main(): Promise<void> {
   assertNoNeedles("encrypted real graph envelopes", objects, needles);
 
   console.log("Living Atlas real-data local readiness passed");
-  console.log(`files=${files.length}; offset=${fileOffset}; source_kind=${sourceKind}; objects=${objects.length}; plaintext_needles=${needles.length}`);
+  console.log(`files=${files.length}; offset=${fileOffset}; source_kind=${sourceKind}; source_mode=${sourceMode}; objects=${objects.length}; plaintext_needles=${needles.length}`);
   console.log(`bytes=${files.reduce((sum, file) => sum + Buffer.byteLength(file.markdown, "utf8"), 0)}; root_ref=sha256:${digest(root, 64)}`);
 
   const liveAck = envValue(liveAckEnv);

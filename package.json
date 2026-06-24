@@ -29,6 +29,7 @@
     "local:deploy-synthetic": "tsx packages/check/src/local-deploy-synthetic.ts",
     "logseq:semantic-ledger-report": "tsx packages/check/src/logseq-semantic-ledger-report.ts",
     "logseq:semantic-manifest": "tsx packages/check/src/logseq-semantic-manifest.ts",
+    "logseq:semantic-estimate": "tsx packages/check/src/logseq-semantic-estimate.ts",
     "logseq:semantic-batch-plan": "tsx packages/check/src/logseq-semantic-batch-plan.ts",
     "logseq:semantic-parity": "tsx packages/check/src/logseq-semantic-parity.ts",
     "real-data:readiness": "tsx packages/check/src/real-data-readiness.ts",

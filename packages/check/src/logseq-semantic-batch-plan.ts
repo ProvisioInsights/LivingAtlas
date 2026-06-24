@@ -1,12 +1,19 @@
 import { createHash } from "node:crypto";
-import { readFile, readdir, stat } from "node:fs/promises";
-import { join, relative } from "node:path";
+import { readFile } from "node:fs/promises";
+import { relative } from "node:path";
 import { pathToFileURL } from "node:url";
 import { z } from "zod";
 import {
   createLogseqSemanticParityLedger,
+  type MarkdownImportSourceKind,
+  MarkdownImportSourceKindSchema,
   type MarkdownFileInput
 } from "@living-atlas/importer";
+import {
+  SemanticSourceModeSchema,
+  type SemanticSourceMode,
+  walkImportableSemanticSourceFiles
+} from "./logseq-semantic-source-files";
 
 const defaultMaxObjects = 240;
 const hardMaxObjects = 250;
@@ -18,7 +25,9 @@ const maxFileBytes = 256_000;
 
 const BatchRecordSchema = z.object({
   file_offset: z.number().int().nonnegative(),
-  actual_file_count: z.number().int().nonnegative()
+  actual_file_count: z.number().int().nonnegative(),
+  source_kind: MarkdownImportSourceKindSchema.optional(),
+  source_mode: SemanticSourceModeSchema.optional()
 });
 
 function envValue(key: string): string | undefined {
@@ -41,41 +50,19 @@ function digest(value: string, length = 64): string {
   return createHash("sha256").update(value).digest("hex").slice(0, length);
 }
 
-async function walkMarkdown(root: string, maxFiles: number, offset: number): Promise<string[]> {
-  const selected: string[] = [];
-  const queue = [root];
-  const ignored = new Set([".git", "node_modules", "dist", "build", ".wrangler", ".terraform"]);
-  const scanLimit = offset + maxFiles;
-
-  while (queue.length > 0 && selected.length < scanLimit) {
-    const dir = queue.shift()!;
-    const entries = await readdir(dir, { withFileTypes: true }).catch(() => []);
-    for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
-      const path = join(dir, entry.name);
-      if (entry.isDirectory()) {
-        if (!ignored.has(entry.name)) {
-          queue.push(path);
-        }
-        continue;
-      }
-      if (!entry.isFile() || !entry.name.toLowerCase().endsWith(".md")) {
-        continue;
-      }
-      const info = await stat(path).catch(() => undefined);
-      if (!info || info.size <= 0 || info.size > maxFileBytes) {
-        continue;
-      }
-      selected.push(path);
-      if (selected.length >= scanLimit) {
-        break;
-      }
-    }
-  }
-
-  return selected.slice(offset);
+function isCompatibleLedgerRecord(record: z.infer<typeof BatchRecordSchema>, expected: {
+  sourceKind: MarkdownImportSourceKind;
+  sourceMode: SemanticSourceMode;
+}): boolean {
+  const recordSourceKind = record.source_kind ?? "logseq";
+  const recordSourceMode = record.source_mode ?? "markdown-only";
+  return recordSourceKind === expected.sourceKind && recordSourceMode === expected.sourceMode;
 }
 
-async function nextOffsetFromLedger(path: string | undefined): Promise<number | undefined> {
+export async function nextOffsetFromLedger(path: string | undefined, expected: {
+  sourceKind: MarkdownImportSourceKind;
+  sourceMode: SemanticSourceMode;
+}): Promise<number | undefined> {
   if (!path) {
     return undefined;
   }
@@ -91,6 +78,11 @@ async function nextOffsetFromLedger(path: string | undefined): Promise<number | 
     const parsed = BatchRecordSchema.safeParse(JSON.parse(line));
     if (!parsed.success) {
       continue;
+    }
+    if (!isCompatibleLedgerRecord(parsed.data, expected)) {
+      const recordSourceKind = parsed.data.source_kind ?? "logseq";
+      const recordSourceMode = parsed.data.source_mode ?? "markdown-only";
+      throw new Error(`semantic ledger source mismatch: record has ${recordSourceKind}/${recordSourceMode}, requested ${expected.sourceKind}/${expected.sourceMode}`);
     }
     nextOffset = Math.max(nextOffset, parsed.data.file_offset + parsed.data.actual_file_count);
   }
@@ -150,7 +142,9 @@ export function recommendNextSemanticBatch(entries: PlanEntry[], maxObjects: num
 async function main(): Promise<void> {
   const root = envValue("LIVING_ATLAS_REAL_MARKDOWN_ROOT") ?? "./private-markdown-root";
   const ledgerPath = envValue("LIVING_ATLAS_LOGSEQ_SEMANTIC_LEDGER_PATH");
-  const inferredOffset = await nextOffsetFromLedger(ledgerPath);
+  const sourceKind = MarkdownImportSourceKindSchema.parse(envValue("LIVING_ATLAS_REAL_MARKDOWN_SOURCE_KIND") ?? "logseq");
+  const sourceMode = SemanticSourceModeSchema.parse(envValue("LIVING_ATLAS_LOGSEQ_SEMANTIC_SOURCE_MODE") ?? "logseq-notes");
+  const inferredOffset = await nextOffsetFromLedger(ledgerPath, { sourceKind, sourceMode });
   const offset = parseInteger(envValue("LIVING_ATLAS_LOGSEQ_SEMANTIC_FILE_OFFSET"), inferredOffset ?? 0, 0, maxFileOffset);
   const lookaheadFiles = parseInteger(envValue("LIVING_ATLAS_LOGSEQ_SEMANTIC_PLAN_LOOKAHEAD_FILES"), defaultLookaheadFiles, 1, maxLookaheadFiles);
   const maxObjects = parseInteger(envValue("LIVING_ATLAS_LOGSEQ_SEMANTIC_PLAN_MAX_OBJECTS"), defaultMaxObjects, 1, hardMaxObjects);
@@ -162,10 +156,16 @@ async function main(): Promise<void> {
   );
   const authorityId = envValue("LIVING_ATLAS_LIVE_AUTHORITY_ID") ?? "la_authority_logseqsemantic0001";
   const pathRedactionSecret = envValue("LIVING_ATLAS_REAL_DATA_PATH_REDACTION_SECRET") ?? `planner:${digest(`${authorityId}:${root}`, 32)}`;
-  const sourceKind = (envValue("LIVING_ATLAS_REAL_MARKDOWN_SOURCE_KIND") ?? "logseq") as MarkdownFileInput["source_kind"];
-  const paths = await walkMarkdown(root, lookaheadFiles, offset);
+  const paths = await walkImportableSemanticSourceFiles({
+    root,
+    sourceKind,
+    mode: sourceMode,
+    maxFiles: lookaheadFiles,
+    offset,
+    maxFileBytes
+  });
   if (paths.length === 0) {
-    throw new Error(`no markdown files found under configured root at offset ${offset}`);
+    throw new Error(`no semantic source files found under configured root at offset ${offset}`);
   }
 
   const entries: PlanEntry[] = [];
@@ -196,6 +196,7 @@ async function main(): Promise<void> {
     report_schema: "living-atlas-logseq-semantic-batch-plan:v1",
     root_ref: `sha256:${digest(`${pathRedactionSecret}:semantic-root:v1:${root}`)}`,
     authority_id: authorityId,
+    source_mode: sourceMode,
     start_offset: offset,
     max_objects: maxObjects,
     max_files_per_batch: maxFilesPerBatch,

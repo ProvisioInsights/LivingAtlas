@@ -1,9 +1,9 @@
 import { createHash, randomBytes } from "node:crypto";
-import { extname } from "node:path";
 import { AuthorityIdSchema, ObjectIdSchema } from "@living-atlas/contracts";
 import { z } from "zod";
 import {
   MarkdownImportSourceKindSchema,
+  classifyMarkdownSourcePath,
   createMarkdownObjectId,
   createMarkdownSourceRef,
   type MarkdownPathRedactionOptions,
@@ -93,7 +93,7 @@ const DefaultIgnoreGlobs = [
 ];
 
 const IncludeGlobsByKind: Record<z.infer<typeof MarkdownImportSourceKindSchema>, string[]> = {
-  logseq: ["pages/**/*.md", "journals/**/*.md", "whiteboards/**/*.md", "*.md"],
+  logseq: ["pages/**", "journals/**", "whiteboards/**/*.md", "*.md"],
   obsidian: ["**/*.md"],
   "generic-markdown": ["**/*.md", "*.markdown"]
 };
@@ -104,11 +104,6 @@ function shortHash(value: string, length = 24): string {
 
 function createWatcherRootRef(rootPath: string, pathRedactionSecret: string | undefined): string {
   return `la_watch_root_${shortHash(`${pathRedactionSecret ?? randomBytes(16).toString("hex")}:${normalizeMarkdownSourcePath(rootPath)}`, 24)}`;
-}
-
-function isMarkdownPath(sourcePath: string): boolean {
-  const extension = extname(sourcePath).toLowerCase();
-  return extension === ".md" || extension === ".markdown";
 }
 
 function isIgnoredPath(sourcePath: string): boolean {
@@ -183,11 +178,17 @@ export function planWatcherFileEvent(
     });
   }
 
-  if (!isMarkdownPath(parsed.source_path)) {
+  const classification = classifyMarkdownSourcePath({
+    source_path: parsed.source_path,
+    source_kind: parsed.source_kind
+  });
+  if (!classification.supported) {
     return WatcherImportActionPlanSchema.parse({
       action_schema: "living-atlas-markdown-watcher-action:v1",
       action: "ignore",
-      reason: "file extension is not markdown",
+      reason: classification.reason_code === "unsupported-extensionless"
+        ? "extensionless file is not a Logseq page or journal"
+        : "file extension is not markdown",
       source_path_ref: sourcePathRef,
       previous_source_path_ref: previousSourcePathRef,
       source_kind: parsed.source_kind,

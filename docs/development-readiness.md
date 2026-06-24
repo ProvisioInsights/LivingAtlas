@@ -291,6 +291,7 @@ Command map:
 | `npm run preflight:synthetic` | No | No | Full synthetic preflight before real Cloudflare work. |
 | `npm run cloudflare:live-concurrency-smoke` | No real graph data | Yes | Optional live deployed-Worker sync race smoke; requires explicit mutation acknowledgement. |
 | `npm run logseq:semantic-manifest` | Yes, when pointed at a private local graph | No | Builds a plaintext-free corpus manifest with one terminal accounting entry per discovered source file. |
+| `npm run logseq:semantic-estimate` | Yes, when pointed at a private local graph | No | Emits counts-only object totals, extraction totals, object-size buckets, and estimated minimum sync batches for the selected source mode. |
 | `npm run logseq:semantic-batch-plan` | Yes, when pointed at a private local graph | No | Plans the next plaintext-free semantic batch from ledger coverage and object counts, including chunked-sync flags for large single files. |
 | `npm run logseq:semantic-parity` | Yes, when pointed at a private local graph | Optional | Converts a bounded markdown window into encrypted semantic objects, runs local CRUD/leakage checks, and can either sync ciphertext in one or more sync batches, sync only encrypted source capsules for legacy-ledger reconciliation, or backfill a known synced ledger window with explicit acknowledgement. |
 | `npm run logseq:semantic-ledger-report` | Ledger only | No | Summarizes the plaintext-free semantic migration ledger: coverage, gaps, synced batches, totals, and decisions. |
@@ -321,6 +322,18 @@ The ledger completion report treats manifest `skipped` and `quarantined`
 entries as terminal accounting outcomes. `LIVING_ATLAS_LOGSEQ_SEMANTIC_REQUIRE_COMPLETE=1`
 fails on remaining pending entries, coverage gaps, local-only batches, or sync
 count mismatches.
+
+`LIVING_ATLAS_LOGSEQ_SEMANTIC_SOURCE_MODE` controls discovery:
+
+- `markdown-only` covers `.md` / `.markdown` files.
+- `logseq-notes` covers markdown plus extensionless Logseq `pages/` and
+  `journals/` notes.
+- `logseq-extensionless-only` covers only extensionless Logseq `pages/` and
+  `journals/` notes.
+
+Keep separate ledger files for separate source modes. Source offsets are mode
+relative, so mixing source modes in one ledger can hide gaps or duplicate
+imports.
 
 It calls `/api/usage/gate`, fails closed without an endpoint/token, and returns
 `safe-to-test` only when configured budgets remain under the selected threshold,

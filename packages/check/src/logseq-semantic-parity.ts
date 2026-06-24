@@ -1,5 +1,5 @@
 import { createHash, randomBytes, webcrypto } from "node:crypto";
-import { appendFile, mkdir, mkdtemp, readFile, readdir, stat } from "node:fs/promises";
+import { appendFile, mkdir, mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -8,7 +8,11 @@ import {
   type GraphObjectEnvelope,
   type LocalControlState
 } from "@living-atlas/contracts";
-import { createLogseqSemanticGraphObjects, type MarkdownFileInput } from "@living-atlas/importer";
+import {
+  createLogseqSemanticGraphObjects,
+  MarkdownImportSourceKindSchema,
+  type MarkdownFileInput
+} from "@living-atlas/importer";
 import { createFixtureLocalControlState } from "@living-atlas/local-control-store";
 import { FileLocalGraphStore } from "@living-atlas/local-graph-store";
 import {
@@ -26,6 +30,10 @@ import {
   printCloudflareLiveUsageGateResult,
   runCloudflareLiveUsageGate
 } from "./cloudflare-live-usage-gate";
+import {
+  SemanticSourceModeSchema,
+  walkImportableSemanticSourceFiles
+} from "./logseq-semantic-source-files";
 
 const defaultFileCount = 5;
 const maxFileCount = 10;
@@ -56,6 +64,8 @@ type SemanticBatchLedgerRecord = {
   recorded_at: string;
   authority_id: string;
   root_ref: `sha256:${string}`;
+  source_kind: "logseq" | "obsidian" | "generic-markdown";
+  source_mode: "markdown-only" | "logseq-notes" | "logseq-extensionless-only";
   file_offset: number;
   requested_file_count: number;
   actual_file_count: number;
@@ -205,40 +215,6 @@ async function fetchSyncEnvelopesWithRetry(options: FetchSyncEnvelopesOptions): 
     result = await fetchSyncEnvelopes(options);
   }
   return result;
-}
-
-async function walkMarkdown(root: string, maxFiles: number, offset: number): Promise<string[]> {
-  const selected: string[] = [];
-  const queue = [root];
-  const ignored = new Set([".git", "node_modules", "dist", "build", ".wrangler", ".terraform"]);
-  const scanLimit = offset + maxFiles;
-
-  while (queue.length > 0 && selected.length < scanLimit) {
-    const dir = queue.shift()!;
-    const entries = await readdir(dir, { withFileTypes: true }).catch(() => []);
-    for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
-      const path = join(dir, entry.name);
-      if (entry.isDirectory()) {
-        if (!ignored.has(entry.name)) {
-          queue.push(path);
-        }
-        continue;
-      }
-      if (!entry.isFile() || !entry.name.toLowerCase().endsWith(".md")) {
-        continue;
-      }
-      const info = await stat(path).catch(() => undefined);
-      if (!info || info.size <= 0 || info.size > maxFileBytes) {
-        continue;
-      }
-      selected.push(path);
-      if (selected.length >= scanLimit) {
-        break;
-      }
-    }
-  }
-
-  return selected.slice(offset);
 }
 
 function collectPlaintextNeedles(files: MarkdownFileInput[]): string[] {
@@ -624,16 +600,24 @@ async function main(): Promise<void> {
   const batchLedgerPath = envValue("LIVING_ATLAS_LOGSEQ_SEMANTIC_LEDGER_PATH");
   const authorityId = envValue("LIVING_ATLAS_LIVE_AUTHORITY_ID") ?? "la_authority_logseqsemantic0001";
   const configuredPathRedactionSecret = envValue("LIVING_ATLAS_REAL_DATA_PATH_REDACTION_SECRET");
-  const sourceKind = (envValue("LIVING_ATLAS_REAL_MARKDOWN_SOURCE_KIND") ?? "logseq") as MarkdownFileInput["source_kind"];
+  const sourceKind = MarkdownImportSourceKindSchema.parse(envValue("LIVING_ATLAS_REAL_MARKDOWN_SOURCE_KIND") ?? "logseq");
+  const sourceMode = SemanticSourceModeSchema.parse(envValue("LIVING_ATLAS_LOGSEQ_SEMANTIC_SOURCE_MODE") ?? "logseq-notes");
   const mutatesOrBackfills = envValue(liveAckEnv) === liveAckValue || envValue(backfillAckEnv) === backfillAckValue;
   if (mutatesOrBackfills && !configuredPathRedactionSecret) {
     throw new Error("LIVING_ATLAS_REAL_DATA_PATH_REDACTION_SECRET is required for live semantic sync or ledger backfill");
   }
   const pathRedactionSecret = configuredPathRedactionSecret ?? randomBytes(32).toString("hex");
   const createdAt = new Date().toISOString();
-  const paths = await walkMarkdown(root, fileCount, fileOffset);
+  const paths = await walkImportableSemanticSourceFiles({
+    root,
+    sourceKind,
+    mode: sourceMode,
+    maxFiles: fileCount,
+    offset: fileOffset,
+    maxFileBytes
+  });
   if (paths.length === 0) {
-    throw new Error(`no markdown files found under configured root at offset ${fileOffset}`);
+    throw new Error(`no semantic source files found under configured root at offset ${fileOffset}`);
   }
 
   const files: MarkdownFileInput[] = [];
@@ -664,7 +648,7 @@ async function main(): Promise<void> {
   }
 
   console.log("Living Atlas Logseq semantic parity and CRUD passed");
-  console.log(`files=${result.ledger.file_count}; offset=${fileOffset}; objects=${result.objects.length}; local_generation=${crud.generation}`);
+  console.log(`files=${result.ledger.file_count}; offset=${fileOffset}; source_mode=${sourceMode}; objects=${result.objects.length}; local_generation=${crud.generation}`);
   console.log(`pages=${result.ledger.totals.pages}; blocks=${result.ledger.totals.blocks}; indexes=${result.ledger.totals.reference_index_objects_planned}; edges=${result.ledger.totals.edge_objects}; quarantine=${result.ledger.totals.quarantine_objects}`);
   console.log(`wikilinks=${result.ledger.totals.wikilinks}; tags=${result.ledger.totals.hash_tags}; block_refs=${result.ledger.totals.block_refs}; page_properties=${result.ledger.totals.page_properties}; block_properties=${result.ledger.totals.block_properties}`);
   const rootRef = `sha256:${digest(`${pathRedactionSecret}:semantic-root:v1:${root}`, 64)}` as const;
@@ -692,6 +676,8 @@ async function main(): Promise<void> {
       recorded_at: new Date().toISOString(),
       authority_id: authorityId,
       root_ref: rootRef,
+      source_kind: sourceKind,
+      source_mode: sourceMode,
       file_offset: fileOffset,
       requested_file_count: fileCount,
       actual_file_count: result.ledger.file_count,
@@ -740,6 +726,8 @@ async function main(): Promise<void> {
       recorded_at: new Date().toISOString(),
       authority_id: authorityId,
       root_ref: rootRef,
+      source_kind: sourceKind,
+      source_mode: sourceMode,
       file_offset: fileOffset,
       requested_file_count: fileCount,
       actual_file_count: result.ledger.file_count,
@@ -795,6 +783,8 @@ async function main(): Promise<void> {
     recorded_at: new Date().toISOString(),
     authority_id: authorityId,
     root_ref: rootRef,
+    source_kind: sourceKind,
+    source_mode: sourceMode,
     file_offset: fileOffset,
     requested_file_count: fileCount,
     actual_file_count: result.ledger.file_count,

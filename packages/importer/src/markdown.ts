@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
-import { extname } from "node:path";
+import { basename, extname } from "node:path";
 import {
   AccessClassSchema,
   AuthorityIdSchema,
@@ -13,6 +13,13 @@ import { z } from "zod";
 
 export const MarkdownImportSourceKindSchema = z.enum(["logseq", "obsidian", "generic-markdown"]);
 export type MarkdownImportSourceKind = z.infer<typeof MarkdownImportSourceKindSchema>;
+
+export const MarkdownSourceModeSchema = z.enum([
+  "markdown-only",
+  "logseq-notes",
+  "logseq-extensionless-only"
+]);
+export type MarkdownSourceMode = z.infer<typeof MarkdownSourceModeSchema>;
 
 export const MarkdownFileInputSchema = z
   .object({
@@ -140,6 +147,64 @@ export type CreateMarkdownImportPlanOptions = {
 export type MarkdownPathRedactionOptions = {
   path_redaction_secret?: string;
 };
+
+export type MarkdownSourcePathClassification =
+  | {
+      supported: true;
+      reason_code: "markdown-file" | "logseq-extensionless-note";
+    }
+  | {
+      supported: false;
+      reason_code: "ignored-extension" | "unsupported-extensionless";
+    };
+
+export function classifyMarkdownSourcePath(input: {
+  source_path: string;
+  source_kind: MarkdownImportSourceKind;
+  mode?: MarkdownSourceMode;
+}): MarkdownSourcePathClassification {
+  const mode = input.mode ?? "logseq-notes";
+  const normalized = normalizeMarkdownSourcePath(input.source_path);
+  if (
+    normalized.startsWith(".git/")
+    || normalized.includes("/.git/")
+    || normalized.startsWith("node_modules/")
+    || normalized.includes("/node_modules/")
+    || normalized.startsWith(".obsidian/")
+    || normalized.includes("/.obsidian/")
+    || normalized.startsWith("logseq/bak/")
+    || normalized.includes("/logseq/bak/")
+    || normalized.startsWith("logseq/.recycle/")
+    || normalized.includes("/logseq/.recycle/")
+  ) {
+    return { supported: false, reason_code: "ignored-extension" };
+  }
+  const extension = extname(basename(normalized)).toLowerCase();
+  const isMarkdown = extension === ".md" || extension === ".markdown";
+  const isExtensionless = extension === "";
+  const segments = normalized.split("/").filter(Boolean);
+  const isLogseqNotePath = input.source_kind === "logseq" && (segments[0] === "pages" || segments[0] === "journals");
+
+  if (mode === "markdown-only") {
+    return isMarkdown
+      ? { supported: true, reason_code: "markdown-file" }
+      : { supported: false, reason_code: isExtensionless ? "unsupported-extensionless" : "ignored-extension" };
+  }
+
+  if (mode === "logseq-extensionless-only") {
+    return isExtensionless && isLogseqNotePath
+      ? { supported: true, reason_code: "logseq-extensionless-note" }
+      : { supported: false, reason_code: isExtensionless ? "unsupported-extensionless" : "ignored-extension" };
+  }
+
+  if (isMarkdown) {
+    return { supported: true, reason_code: "markdown-file" };
+  }
+  if (isExtensionless && isLogseqNotePath) {
+    return { supported: true, reason_code: "logseq-extensionless-note" };
+  }
+  return { supported: false, reason_code: isExtensionless ? "unsupported-extensionless" : "ignored-extension" };
+}
 
 const KnownFrontmatterFields = new Set(["aliases", "tags", "title", "created", "updated"]);
 
