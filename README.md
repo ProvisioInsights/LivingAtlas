@@ -360,8 +360,10 @@ emits only counts, offsets, object totals, and opaque root refs.
 object and sync-batch estimates before any live mutation.
 `logseq:semantic-inventory` emits a plaintext-free inventory of schema-relevant
 property keys, accepted endpoint type counts, rejected type values, date-like
-properties, wikilinks, tags, block refs, and asset refs. Unknown property keys
-are hashed with the path redaction secret instead of printed.
+properties, wikilinks, tags, block refs, asset refs, and topic-candidate source
+counts. Tags and hash tags are counted as candidate topic signals only; they
+are not auto-promoted into controlled `topic` nodes. Unknown property keys are
+hashed with the path redaction secret instead of printed.
 `logseq:semantic-local` preserves each original file as an encrypted source
 capsule, preserves normalized encrypted page/block/reference-index objects,
 promotes explicit `type:: person|organization|project|location|occurrence|topic`

@@ -16,6 +16,8 @@ describe("Logseq semantic inventory report", () => {
         "founded-year:: 2024",
         "headquarters:: [[Synthetic City]]",
         "org:: [[Synthetic Parent Org]]",
+        "tags:: #alpha, beta, [[Synthetic Company]]-cohort, [[Synthetic Theme]]",
+        "topic:: [[Synthetic Topic]]",
         "custom-secret-key:: hidden-value",
         "",
         "- see [[Synthetic Person]] and ((block-ref-001)) #synthetic",
@@ -35,23 +37,32 @@ describe("Logseq semantic inventory report", () => {
       expect(report.totals.canonical_endpoint_type_pages).toBe(1);
       expect(report.totals.safe_alias_endpoint_type_pages).toBe(0);
       expect(report.totals.rejected_endpoint_type_pages).toBe(0);
-      expect(report.totals.page_properties).toBe(7);
+      expect(report.totals.page_properties).toBe(9);
       expect(report.known_property_key_counts).toMatchObject({
         aliases: 1,
         "founded-year": 1,
         headquarters: 1,
         org: 1,
         subtype: 1,
+        tags: 1,
+        topic: 1,
         type: 1
       });
       expect(report.totals.unknown_property_keys).toBe(1);
       expect(Object.keys(report.unknown_property_key_hash_counts)).toHaveLength(1);
-      expect(report.totals.wikilinks).toBe(4);
-      expect(report.totals.hash_tags).toBe(1);
+      expect(report.totals.wikilinks).toBe(7);
+      expect(report.totals.hash_tags).toBe(2);
       expect(report.totals.block_refs).toBe(1);
       expect(report.totals.asset_refs).toBe(1);
       expect(report.totals.date_like_properties).toBe(1);
+      expect(report.totals.tag_property_values).toBe(4);
+      expect(report.totals.plain_tag_topic_candidates).toBe(2);
+      expect(report.totals.hash_tag_topic_candidates).toBe(2);
+      expect(report.totals.wikilink_tag_values).toBe(1);
+      expect(report.totals.suffix_tag_values).toBe(1);
+      expect(report.totals.topic_property_values).toBe(1);
       expect(JSON.stringify(report)).not.toContain("Synthetic Org");
+      expect(JSON.stringify(report)).not.toContain("Synthetic Topic");
       expect(JSON.stringify(report)).not.toContain("hidden-value");
       expect(JSON.stringify(report)).not.toContain("custom-secret-key");
       expect(JSON.stringify(report)).not.toContain(root);

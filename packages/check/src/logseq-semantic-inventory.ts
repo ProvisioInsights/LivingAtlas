@@ -17,6 +17,7 @@ const defaultMaxFileBytes = 256_000;
 const knownSchemaPropertyKeys = new Set([
   "alias",
   "aliases",
+  "about",
   "based-in",
   "date",
   "duration",
@@ -50,6 +51,7 @@ const knownSchemaPropertyKeys = new Set([
   "projects",
   "recurrence-set",
   "recurrence_set",
+  "related-topic",
   "scheduled-end",
   "scheduled-start",
   "spouse",
@@ -59,6 +61,8 @@ const knownSchemaPropertyKeys = new Set([
   "subtype",
   "tags",
   "timezone",
+  "topic",
+  "topics",
   "type",
   "website"
 ]);
@@ -99,6 +103,12 @@ export type SemanticInventoryReport = {
     block_refs: number;
     asset_refs: number;
     date_like_properties: number;
+    tag_property_values: number;
+    plain_tag_topic_candidates: number;
+    hash_tag_topic_candidates: number;
+    wikilink_tag_values: number;
+    suffix_tag_values: number;
+    topic_property_values: number;
   };
   known_property_key_counts: Record<string, number>;
   unknown_property_key_hash_counts: Record<`sha256:${string}`, number>;
@@ -154,6 +164,27 @@ function propertyLine(line: string): { key: string; value: string } | undefined 
 
 function countMatches(value: string, pattern: RegExp): number {
   return [...value.matchAll(pattern)].length;
+}
+
+function splitListValue(value: string): string[] {
+  return value.split(",").map((entry) => entry.trim()).filter(Boolean);
+}
+
+function hashTagMatches(value: string): string[] {
+  return [...value.matchAll(/(^|[\s([{])#([A-Za-z0-9_/-]{1,80})/gm)].map((match) => match[2]!).filter(Boolean);
+}
+
+function isWikilinkValue(value: string): boolean {
+  return /\[\[[^\]\n]{1,256}\]\]/.test(value);
+}
+
+function isSuffixTagValue(value: string): boolean {
+  return /\]\]-[A-Za-z0-9_-]{2,64}$/.test(value.trim());
+}
+
+function isPlainTopicCandidate(value: string): boolean {
+  const normalized = value.trim().replace(/^#/, "");
+  return /^[A-Za-z0-9][A-Za-z0-9_/-]{1,80}$/.test(normalized);
 }
 
 function emptyEndpointTypeCounts(): Record<EndpointType, number> {
@@ -230,7 +261,13 @@ export async function buildSemanticInventoryReport(input: {
     hash_tags: 0,
     block_refs: 0,
     asset_refs: 0,
-    date_like_properties: 0
+    date_like_properties: 0,
+    tag_property_values: 0,
+    plain_tag_topic_candidates: 0,
+    hash_tag_topic_candidates: 0,
+    wikilink_tag_values: 0,
+    suffix_tag_values: 0,
+    topic_property_values: 0
   };
 
   for (const path of paths) {
@@ -238,7 +275,9 @@ export async function buildSemanticInventoryReport(input: {
     totals.bytes += Buffer.byteLength(markdown, "utf8");
     totals.lines += markdown.length === 0 ? 0 : markdown.split(/\r?\n/).length;
     totals.wikilinks += countMatches(markdown, /\[\[([^\]\n]{1,256})\]\]/g);
-    totals.hash_tags += countMatches(markdown, /(^|[\s([{])#([A-Za-z0-9_/-]{1,80})/gm);
+    const hashTags = hashTagMatches(markdown);
+    totals.hash_tags += hashTags.length;
+    totals.hash_tag_topic_candidates += hashTags.length;
     totals.block_refs += countMatches(markdown, /\(\(([A-Za-z0-9_-]{3,128})\)\)/g);
     totals.asset_refs += countMatches(markdown, /(?:\]\(|\s)(?:\.\.?\/)?assets\/[^)\s]+/gi);
 
@@ -260,6 +299,21 @@ export async function buildSemanticInventoryReport(input: {
       }
       if (dateLikePropertyKeys.has(property.key)) {
         totals.date_like_properties += 1;
+      }
+      if (property.key === "tags") {
+        for (const tagValue of splitListValue(property.value)) {
+          totals.tag_property_values += 1;
+          if (isSuffixTagValue(tagValue)) {
+            totals.suffix_tag_values += 1;
+          } else if (isWikilinkValue(tagValue)) {
+            totals.wikilink_tag_values += 1;
+          } else if (isPlainTopicCandidate(tagValue)) {
+            totals.plain_tag_topic_candidates += 1;
+          }
+        }
+      }
+      if (property.key === "topic" || property.key === "topics" || property.key === "about" || property.key === "related-topic") {
+        totals.topic_property_values += splitListValue(property.value).length;
       }
       if (property.key === "type") {
         const endpointType = canonicalizeEndpointType(property.value);
