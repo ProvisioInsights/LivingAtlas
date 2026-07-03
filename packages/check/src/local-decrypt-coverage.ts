@@ -29,6 +29,8 @@ export type DecryptCoverageResult = {
   report_schema: "living-atlas-local-decrypt-coverage:v1";
   plaintext_policy: "counts-and-refs-only";
   total_objects: number;
+  /** Tombstoned objects are excluded: dead-by-intent is not unreadable-by-accident. */
+  tombstoned_objects: number;
   ciphertext_objects: number;
   covered_objects: number;
   uncovered_objects: number;
@@ -50,7 +52,9 @@ export async function runLocalDecryptCoverage(options: {
   const sampleLimit = options.sampleLimit ?? 50;
   const keyringIds = new Set(options.keyring.keys.map((key) => key.key_id));
 
-  const ciphertextObjects = options.objects.filter((object) => object.payload.kind !== "plaintext-json");
+  const liveObjects = options.objects.filter((object) => !object.visible_metadata.tombstone);
+  const tombstonedCount = options.objects.length - liveObjects.length;
+  const ciphertextObjects = liveObjects.filter((object) => object.payload.kind !== "plaintext-json");
   const covered: GraphObjectEnvelope[] = [];
   const uncoveredPrefixes: Record<string, number> = {};
 
@@ -80,6 +84,7 @@ export async function runLocalDecryptCoverage(options: {
     report_schema: "living-atlas-local-decrypt-coverage:v1",
     plaintext_policy: "counts-and-refs-only",
     total_objects: options.objects.length,
+    tombstoned_objects: tombstonedCount,
     ciphertext_objects: ciphertextObjects.length,
     covered_objects: covered.length,
     uncovered_objects: uncoveredCount,

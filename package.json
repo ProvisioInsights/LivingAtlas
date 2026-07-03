@@ -61,7 +61,8 @@
     "smoke:local": "npm run local:install-smoke && npm run cloudflare:local-smoke",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
-    "real-data:decrypt-coverage": "tsx packages/check/src/local-decrypt-coverage.ts"
+    "real-data:decrypt-coverage": "tsx packages/check/src/local-decrypt-coverage.ts",
+    "real-data:tombstone-orphans": "tsx packages/check/src/local-tombstone-orphans.ts"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "4.20260621.1",

@@ -85,4 +85,21 @@ describe("runLocalDecryptCoverage", () => {
     expect(result.complete).toBe(false);
     expect(result.sampled_decrypt_failures).toBeGreaterThan(0);
   });
+
+  it("excludes tombstoned objects: dead-by-intent is not unreadable-by-accident", async () => {
+    const keyring = createDefaultLocalKeyring({ authorityId, createdAt: now });
+    const live = await coveredObject(keyring, "la_object_coverage0007");
+    const tombstonedOrphan = {
+      ...(await coveredObject(keyring, "la_object_coverage0008")),
+      key_ref: "la_key_logseqsem9999999999abcd",
+      visible_metadata: { tombstone: true, remote_indexable: false }
+    };
+
+    const result = await runLocalDecryptCoverage({ keyring, objects: [live, tombstonedOrphan] });
+
+    expect(result.complete).toBe(true);
+    expect(result.uncovered_objects).toBe(0);
+    expect(result.tombstoned_objects).toBe(1);
+    expect(result.ciphertext_objects).toBe(1);
+  });
 });
