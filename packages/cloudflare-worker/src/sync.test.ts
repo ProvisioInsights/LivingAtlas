@@ -2905,3 +2905,106 @@ describe("Worker sync batch acceptance", () => {
     });
   });
 });
+
+
+describe("Cloud-unlock key custody", () => {
+  it("never persists or echoes the transient unlock key across success, failure, and audit surfaces", async () => {
+    const { env, graphBucket, controlDb } = await createEnv();
+    const rawKey = new Uint8Array(Array.from({ length: 32 }, (_, index) => index + 101));
+    const unlockKey = testToBase64(rawKey);
+    const wrongUnlockKey = testToBase64(new Uint8Array(Array.from({ length: 32 }, (_, index) => index + 201)));
+    const malformedUnlockKey = "%%%not-base64-key-material%%%";
+    const rawKeyHex = [...rawKey].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+    const unlockKeyUrlSafe = unlockKey.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+    const keyForms = [unlockKey, unlockKeyUrlSafe, rawKeyHex, wrongUnlockKey, malformedUnlockKey];
+
+    const batch = await cloudUnlockBatch(rawKey);
+    const seedResponse = await handleBootstrapRequest(new Request("https://living-atlas.example/api/sync/batch", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-living-atlas-sync-token": syncToken
+      },
+      body: JSON.stringify(batch)
+    }), env);
+    expect(seedResponse.status).toBe(202);
+    const storageBaseline = graphBucket.puts.length + controlDb.records.length;
+
+    const decryptCall = (key: string, objectId: string, id: number) =>
+      handleBootstrapRequest(new Request("https://living-atlas.example/mcp", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-living-atlas-sync-token": syncToken,
+          "x-living-atlas-sync-capability-id": cloudUnlockCapabilityId,
+          "x-living-atlas-cloud-unlock-key": key
+        },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id,
+          method: "tools/call",
+          params: {
+            name: "sensitive_decrypt",
+            arguments: {
+              authority_id: "la_authority_worker0001",
+              object_id: objectId
+            }
+          }
+        })
+      }), env);
+
+    const surfaces: string[] = [];
+    const captureResponse = async (response: Response): Promise<Record<string, unknown>> => {
+      const body = await response.json() as Record<string, unknown>;
+      surfaces.push(JSON.stringify(body));
+      surfaces.push(JSON.stringify([...response.headers.entries()]));
+      return body;
+    };
+
+    const wrongKeyBody = await captureResponse(await decryptCall(wrongUnlockKey, "la_object_cloudunlock0001", 301));
+    expect(wrongKeyBody).toMatchObject({
+      result: { structuredContent: { ok: false, reason: "decrypt-failed", key_persisted_by_cloudflare: false } }
+    });
+
+    const malformedKeyBody = await captureResponse(await decryptCall(malformedUnlockKey, "la_object_cloudunlock0001", 302));
+    expect(malformedKeyBody).toMatchObject({
+      result: { structuredContent: { ok: false, reason: "invalid-unlock-key" } }
+    });
+
+    const missingObjectBody = await captureResponse(await decryptCall(unlockKey, "la_object_doesnotexist0001", 303));
+    expect(missingObjectBody).toMatchObject({
+      result: { structuredContent: { ok: false, reason: "object-not-found" } }
+    });
+
+    const successBody = await captureResponse(await decryptCall(unlockKey, "la_object_cloudunlock0001", 304));
+    expect(successBody).toMatchObject({
+      result: {
+        structuredContent: {
+          ok: true,
+          object_id: "la_object_cloudunlock0001",
+          key_persisted_by_cloudflare: false
+        }
+      }
+    });
+    // Positive control: the scan surface really sees decrypted content.
+    expect(JSON.stringify(successBody)).toContain("Cloud unlock plaintext only appears after the transient key is supplied.");
+
+    // Denied attempts must be auditable, so storage writes are expected...
+    expect(controlDb.records.some((record) => record.query.includes("audit_events"))).toBe(true);
+
+    // ...but no storage write and no response surface may carry the key in any form.
+    for (const put of graphBucket.puts) {
+      surfaces.push(put.key, put.value, JSON.stringify(put.options ?? {}));
+    }
+    for (const record of controlDb.records) {
+      surfaces.push(record.query, JSON.stringify(record.bindings ?? []));
+    }
+    expect(graphBucket.puts.length + controlDb.records.length).toBeGreaterThan(storageBaseline);
+
+    for (const surface of surfaces) {
+      for (const form of keyForms) {
+        expect(surface).not.toContain(form);
+      }
+    }
+  });
+});

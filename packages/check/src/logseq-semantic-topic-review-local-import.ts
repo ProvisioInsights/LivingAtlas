@@ -8,7 +8,7 @@ import {
   type ObjectType
 } from "@living-atlas/contracts";
 import { FileLocalGraphStore } from "@living-atlas/local-graph-store";
-import { FileLocalKeyringStore } from "@living-atlas/local-keyring";
+import { FileLocalKeyringStore, resolveLocalSecret } from "@living-atlas/local-keyring";
 import {
   SemanticTopicReviewPacketSchema
 } from "./logseq-semantic-topic-review-packet";
@@ -92,6 +92,14 @@ function requireEnv(key: string): string {
     throw new Error(`missing ${key}`);
   }
   return value;
+}
+
+function requireLocalSecret(name: string): string {
+  const resolved = resolveLocalSecret(name);
+  if (!resolved) {
+    throw new Error(`missing ${name} (set it directly or via ${name}_KEYCHAIN_SERVICE)`);
+  }
+  return resolved.value;
 }
 
 function sha256(value: string): `sha256:${string}` {
@@ -485,7 +493,7 @@ async function main(): Promise<void> {
     resolutionPath: requireEnv("LIVING_ATLAS_LOGSEQ_TOPIC_REVIEW_RESOLUTION_PATH"),
     localGraphDir: requireEnv("LIVING_ATLAS_LOCAL_GRAPH_DIR"),
     keyringPath: requireEnv("LIVING_ATLAS_LOCAL_KEYRING"),
-    keyringPassphrase: requireEnv("LIVING_ATLAS_LOCAL_KEYRING_PASSPHRASE"),
+    keyringPassphrase: requireLocalSecret("LIVING_ATLAS_LOCAL_KEYRING_PASSPHRASE"),
     authorityId: requireEnv("LIVING_ATLAS_LIVE_AUTHORITY_ID"),
     ledgerPath: envValue("LIVING_ATLAS_LOGSEQ_TOPIC_REVIEW_LEDGER_PATH"),
     updateExisting: envValue("LIVING_ATLAS_LOGSEQ_TOPIC_REVIEW_UPDATE_EXISTING_ACK") === "update-existing-encrypted-topic-review-objects"

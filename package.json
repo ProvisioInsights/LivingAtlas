@@ -60,7 +60,8 @@
     "preflight:synthetic": "npm run check && npm run local:deploy-synthetic && npm run stress:local && npm run cloudflare:wrangler-smoke && npm run infra:fmt && npm run infra:validate",
     "smoke:local": "npm run local:install-smoke && npm run cloudflare:local-smoke",
     "test": "vitest run",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "real-data:decrypt-coverage": "tsx packages/check/src/local-decrypt-coverage.ts"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "4.20260621.1",

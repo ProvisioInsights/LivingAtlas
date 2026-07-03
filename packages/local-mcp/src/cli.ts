@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { FileLocalControlStore, createFixtureLocalControlState } from "@living-atlas/local-control-store";
 import { FileLocalGraphStore } from "@living-atlas/local-graph-store";
-import { FileLocalKeyringStore } from "@living-atlas/local-keyring";
+import { FileLocalKeyringStore, resolveLocalSecret } from "@living-atlas/local-keyring";
 import { syntheticGraphObjects } from "@living-atlas/fixtures";
 import { FileLocalMcpActivitySink } from "./activity";
 import { InMemoryLocalMcpAuditSink } from "./audit";
@@ -12,7 +12,7 @@ import type { LocalControlState } from "@living-atlas/contracts";
 
 async function loadControlState() {
   const storePath = process.env.LIVING_ATLAS_LOCAL_CONTROL_STORE;
-  const passphrase = process.env.LIVING_ATLAS_LOCAL_CONTROL_STORE_PASSPHRASE;
+  const passphrase = resolveLocalSecret("LIVING_ATLAS_LOCAL_CONTROL_STORE_PASSPHRASE")?.value;
   const fixtureToken = process.env.LIVING_ATLAS_LOCAL_MCP_TOKEN;
 
   if (storePath && passphrase) {
@@ -66,7 +66,7 @@ async function loadGraphStore(controlState: LocalControlState): Promise<FileLoca
     return undefined;
   }
   const keyringPath = process.env.LIVING_ATLAS_LOCAL_KEYRING;
-  const keyringPassphrase = process.env.LIVING_ATLAS_LOCAL_KEYRING_PASSPHRASE;
+  const keyringPassphrase = resolveLocalSecret("LIVING_ATLAS_LOCAL_KEYRING_PASSPHRASE")?.value;
   const keyring = keyringPath && keyringPassphrase
     ? await new FileLocalKeyringStore(keyringPath).read(keyringPassphrase)
     : undefined;
