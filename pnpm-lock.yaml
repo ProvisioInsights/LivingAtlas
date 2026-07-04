@@ -52,6 +52,12 @@ importers:
         specifier: workspace:*
         version: link:../mcp-contract
 
+  packages/backup:
+    dependencies:
+      zod:
+        specifier: 4.4.3
+        version: 4.4.3
+
   packages/check:
     dependencies:
       '@living-atlas/atlas-client':

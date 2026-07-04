@@ -1,0 +1,16 @@
+{
+  "name": "@living-atlas/backup",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "vitest run --root ../.. packages/backup/src",
+    "typecheck": "tsc --ignoreConfig --noEmit --target ES2022 --module ESNext --moduleResolution Bundler --strict --noUncheckedIndexedAccess --isolatedModules --skipLibCheck --types node,vitest,@cloudflare/workers-types src/index.ts src/smoke.test.ts"
+  },
+  "dependencies": {
+    "zod": "4.4.3"
+  }
+}
