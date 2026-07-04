@@ -62,7 +62,9 @@
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "real-data:decrypt-coverage": "tsx packages/check/src/local-decrypt-coverage.ts",
-    "real-data:tombstone-orphans": "tsx packages/check/src/local-tombstone-orphans.ts"
+    "real-data:tombstone-orphans": "tsx packages/check/src/local-tombstone-orphans.ts",
+    "backup:run": "tsx packages/check/src/backup-run.ts",
+    "backup:restore": "tsx packages/check/src/backup-restore.ts"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "4.20260621.1",

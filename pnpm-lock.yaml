@@ -63,6 +63,9 @@ importers:
       '@living-atlas/atlas-client':
         specifier: workspace:*
         version: link:../atlas-client
+      '@living-atlas/backup':
+        specifier: workspace:*
+        version: link:../backup
       '@living-atlas/cloudflare-worker':
         specifier: workspace:*
         version: link:../cloudflare-worker
