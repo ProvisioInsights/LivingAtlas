@@ -8,7 +8,7 @@
   },
   "scripts": {
     "test": "vitest run --root ../.. packages/backup/src",
-    "typecheck": "tsc --ignoreConfig --noEmit --target ES2022 --module ESNext --moduleResolution Bundler --strict --noUncheckedIndexedAccess --isolatedModules --skipLibCheck --types node,vitest,@cloudflare/workers-types src/index.ts src/smoke.test.ts src/manifest.ts src/manifest.test.ts src/retention.ts src/retention.test.ts"
+    "typecheck": "tsc --ignoreConfig --noEmit --target ES2022 --module ESNext --moduleResolution Bundler --strict --noUncheckedIndexedAccess --isolatedModules --skipLibCheck --types node,vitest,@cloudflare/workers-types src/index.ts src/smoke.test.ts src/manifest.ts src/manifest.test.ts src/retention.ts src/retention.test.ts src/escrow.ts src/escrow.test.ts"
   },
   "dependencies": {
     "zod": "4.4.3"
