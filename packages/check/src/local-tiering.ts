@@ -260,7 +260,11 @@ export type ReencryptTierResult =
  * them to the cloud). Lossless (identity preserved) and idempotent (an object
  * already in its correct target tier is skipped).
  */
-export async function reencryptToTier(object: GraphObjectEnvelope, options: TieringOptions): Promise<ReencryptTierResult> {
+export async function reencryptToTier(
+  object: GraphObjectEnvelope,
+  options: TieringOptions,
+  retierOptions: { targetVersion?: number; updatedAt?: string } = {}
+): Promise<ReencryptTierResult> {
   if (isAlreadyEscalated(object)) {
     return { action: "skipped-already-escalated", tier: "super-sensitive", object };
   }
@@ -286,7 +290,16 @@ export async function reencryptToTier(object: GraphObjectEnvelope, options: Tier
   }
 
   const { content_hash: _contentHash, payload: _payload, ...identity } = object;
-  const envelope = { ...identity, key_ref: object.key_ref };
+  // The AAD binds to the object's identity INCLUDING version/updated_at, so any
+  // version bump (needed when writing back to the store as an update) must be
+  // reflected in the sealed identity. Default to the object's own values so the
+  // pure re-encrypt (no bump) is unchanged.
+  const envelope = {
+    ...identity,
+    key_ref: object.key_ref,
+    version: retierOptions.targetVersion ?? object.version,
+    updated_at: retierOptions.updatedAt ?? object.updated_at
+  };
 
   if (decision.tier === "super-sensitive") {
     if (!options.escalationKey) {
@@ -309,6 +322,91 @@ export async function reencryptToTier(object: GraphObjectEnvelope, options: Tier
     encodedUnlockKey: options.unlockKey
   });
   return { action: "reencrypted-normal", tier: "normal", object: reencrypted };
+}
+
+/**
+ * Explicit acknowledgement required to WRITE a re-tiered object back into a
+ * local graph store. The apply path is OFF by default: without this exact ack
+ * value, {@link applyRetierToStore} refuses to write and the store is untouched.
+ */
+export const RETIER_APPLY_ACK = "reencrypt-two-key-tiers-real-data";
+
+export type ApplyRetierOptions = TieringOptions & {
+  /** Actor id recorded on the store update. */
+  actorId: string;
+  /** Explicit ack. Must equal RETIER_APPLY_ACK or the write is refused. */
+  ack?: string;
+  /** Recorded/updated timestamp for the store update (defaults to now). */
+  recordedAt?: string;
+};
+
+export type ApplyRetierResult =
+  | { action: "refused-no-ack"; object: GraphObjectEnvelope }
+  | { action: "written-normal"; tier: "normal"; object: GraphObjectEnvelope }
+  | { action: "written-escalated"; tier: "super-sensitive"; object: GraphObjectEnvelope }
+  | { action: "skipped-already-normal"; tier: "normal"; object: GraphObjectEnvelope }
+  | { action: "skipped-already-escalated"; tier: "super-sensitive"; object: GraphObjectEnvelope }
+  | { action: "skipped-undecryptable"; tier: "held"; object: GraphObjectEnvelope }
+  | { action: "store-conflict"; reason: string; object: GraphObjectEnvelope };
+
+type MinimalGraphStore = {
+  status(): { generation: number };
+  readObject(objectId: string): GraphObjectEnvelope | undefined;
+  updateObject(input: {
+    object: GraphObjectEnvelope;
+    expected_generation: number;
+    expected_version?: number;
+    actor_id: string;
+    recorded_at?: string;
+  }): Promise<{ ok: true } | { ok: false; reason: string }>;
+};
+
+/**
+ * ACK-GATED APPLY: re-encrypt an object IN PLACE and write it back to the store
+ * as a version-bumped update, preserving object_id/authority. OFF by default —
+ * an absent or wrong ack returns "refused-no-ack" and NEVER writes. With the
+ * correct ack, the object is re-sealed to its target tier (normal ->
+ * cloud-unlock-v1, super-sensitive -> cloud-unlock-escalated-v1) at version+1
+ * and committed via store.updateObject. Idempotent skips and undecryptable
+ * holds are surfaced without writing.
+ */
+export async function applyRetierToStore(
+  store: MinimalGraphStore,
+  object: GraphObjectEnvelope,
+  options: ApplyRetierOptions
+): Promise<ApplyRetierResult> {
+  if (options.ack !== RETIER_APPLY_ACK) {
+    return { action: "refused-no-ack", object };
+  }
+
+  const targetVersion = object.version + 1;
+  const updatedAt = options.recordedAt ?? new Date().toISOString();
+  const retier = await reencryptToTier(object, options, { targetVersion, updatedAt });
+
+  if (retier.action === "skipped-already-normal") {
+    return { action: "skipped-already-normal", tier: "normal", object: retier.object };
+  }
+  if (retier.action === "skipped-already-escalated") {
+    return { action: "skipped-already-escalated", tier: "super-sensitive", object: retier.object };
+  }
+  if (retier.action === "skipped-undecryptable") {
+    return { action: "skipped-undecryptable", tier: "held", object: retier.object };
+  }
+
+  const update = await store.updateObject({
+    object: retier.object,
+    expected_generation: store.status().generation,
+    expected_version: object.version,
+    actor_id: options.actorId,
+    recorded_at: updatedAt
+  });
+  if (!update.ok) {
+    return { action: "store-conflict", reason: update.reason, object: retier.object };
+  }
+
+  return retier.action === "reencrypted-escalated"
+    ? { action: "written-escalated", tier: "super-sensitive", object: retier.object }
+    : { action: "written-normal", tier: "normal", object: retier.object };
 }
 
 function requireEnv(name: string): string {
