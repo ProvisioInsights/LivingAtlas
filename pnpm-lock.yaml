@@ -242,6 +242,9 @@ importers:
       '@living-atlas/contracts':
         specifier: workspace:*
         version: link:../contracts
+      '@living-atlas/remote-crypto':
+        specifier: workspace:*
+        version: link:../remote-crypto
       zod:
         specifier: 4.4.3
         version: 4.4.3

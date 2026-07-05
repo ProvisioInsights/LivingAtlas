@@ -19,11 +19,28 @@ import {
   type AuthorityId,
   type GraphObjectEnvelope
 } from "@living-atlas/contracts";
+import {
+  CloudUnlockObjectAlgorithm,
+  CloudUnlockEscalatedObjectAlgorithm,
+  decryptCloudUnlockObject,
+  decryptEscalatedCloudUnlockObject
+} from "@living-atlas/remote-crypto";
 
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
 const defaultIterations = 210_000;
 const localObjectAlgorithm = "AES-GCM-256+local-keyring-v1";
+
+// Stable key_ids the tiering (data-encryption) key records are carried under.
+// Declared here (not imported from ./escalation-key) to avoid an import cycle:
+// escalation-key already imports LocalKeyringStateSchema from this module. The
+// authoritative constants live in ./escalation-key and are re-asserted there.
+const PRIMARY_CLOUD_UNLOCK_KEY_ID_LITERAL = "la_key_tiering_primary";
+const ESCALATION_KEY_ID_LITERAL = "la_key_tiering_escalation";
+
+function tieringKeyMaterialBase64(keyring: LocalKeyringState, keyId: string): string | undefined {
+  return keyring.keys.find((key) => key.key_id === keyId && !key.revoked_at)?.material_base64;
+}
 
 export const LocalKeyRecordSchema = z
   .object({
@@ -396,7 +413,34 @@ export async function decryptGraphObjectPayload(input: GraphObjectEnvelope, keyr
     return object.payload;
   }
 
-  if (object.payload.kind !== "ciphertext-inline" || object.payload.algorithm !== localObjectAlgorithm) {
+  if (object.payload.kind !== "ciphertext-inline") {
+    return undefined;
+  }
+
+  // Cloud-tier payloads: the local keyring carries BOTH tiering (data-encryption)
+  // keys, so a local holder can open normal (cloud-unlock-v1) AND super-sensitive
+  // (cloud-unlock-escalated-v1) objects with no escalation friction. If the
+  // required tiering key is absent from THIS keyring, return undefined (no throw)
+  // rather than exposing a decrypt failure.
+  if (object.payload.algorithm === CloudUnlockObjectAlgorithm) {
+    const primary = tieringKeyMaterialBase64(keyring, PRIMARY_CLOUD_UNLOCK_KEY_ID_LITERAL);
+    if (!primary) {
+      return undefined;
+    }
+    const result = await decryptCloudUnlockObject(object, primary);
+    return result.ok ? result.plaintext : undefined;
+  }
+
+  if (object.payload.algorithm === CloudUnlockEscalatedObjectAlgorithm) {
+    const escalation = tieringKeyMaterialBase64(keyring, ESCALATION_KEY_ID_LITERAL);
+    if (!escalation) {
+      return undefined;
+    }
+    const result = await decryptEscalatedCloudUnlockObject(object, escalation);
+    return result.ok ? result.plaintext : undefined;
+  }
+
+  if (object.payload.algorithm !== localObjectAlgorithm) {
     return undefined;
   }
 

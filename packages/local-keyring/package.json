@@ -11,10 +11,11 @@
   },
   "scripts": {
     "test": "vitest run --root ../.. packages/local-keyring/src/local-keyring.test.ts",
-    "typecheck": "tsc --ignoreConfig --noEmit --target ES2022 --module ESNext --moduleResolution Bundler --strict --noUncheckedIndexedAccess --isolatedModules --skipLibCheck --types node,vitest,@cloudflare/workers-types src/local-keyring.ts src/local-keyring.test.ts"
+    "typecheck": "tsc --ignoreConfig --noEmit --target ES2022 --module ESNext --moduleResolution Bundler --strict --noUncheckedIndexedAccess --isolatedModules --skipLibCheck --types node,vitest,@cloudflare/workers-types src/local-keyring.ts src/local-keyring.test.ts src/escalation-key.ts src/local-keyring-tier-decrypt.test.ts"
   },
   "dependencies": {
     "@living-atlas/contracts": "workspace:*",
+    "@living-atlas/remote-crypto": "workspace:*",
     "zod": "4.4.3"
   },
   "devDependencies": {
