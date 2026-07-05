@@ -1,0 +1,21 @@
+{
+  "name": "@living-atlas/graph-workbench",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@living-atlas/contracts": "workspace:*",
+    "@living-atlas/local-graph-store": "workspace:*",
+    "@living-atlas/local-keyring": "workspace:*",
+    "esbuild": "^0.28.1",
+    "graphology": "^0.26.0",
+    "graphology-layout-forceatlas2": "^0.10.1",
+    "graphology-layout-noverlap": "^0.4.2",
+    "sigma": "^3.0.3"
+  },
+  "scripts": {
+    "dev": "tsx src/server.ts",
+    "smoke": "tsx src/server-smoke.ts",
+    "test": "vitest run src"
+  }
+}

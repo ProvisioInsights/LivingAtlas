@@ -1,0 +1,18 @@
+{
+  "name": "@living-atlas/remote-crypto",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./cloud-unlock": "./src/cloud-unlock.ts",
+    "./cloud-unlock-escalated": "./src/cloud-unlock-escalated.ts"
+  },
+  "scripts": {
+    "test": "vitest run --root ../.. packages/remote-crypto/src",
+    "typecheck": "tsc --ignoreConfig --noEmit --target ES2022 --module ESNext --moduleResolution Bundler --strict --noUncheckedIndexedAccess --isolatedModules --skipLibCheck --types node,vitest,@cloudflare/workers-types src/index.ts src/index.test.ts src/cloud-unlock.ts src/cloud-unlock.test.ts src/cloud-unlock-escalated.ts src/cloud-unlock-escalated.test.ts src/grant-format.ts"
+  },
+  "dependencies": {
+    "@living-atlas/contracts": "workspace:*"
+  }
+}

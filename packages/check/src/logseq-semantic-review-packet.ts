@@ -19,7 +19,7 @@ import {
 const packetAckValue = "write-local-private-review-packet";
 const maxFileBytes = 256_000;
 
-const EndpointTypeSchema = z.enum(["person", "organization", "project", "location", "occurrence", "topic"]);
+const EndpointTypeSchema = z.enum(["person", "organization", "project", "location", "occurrence", "topic", "offering", "item"]);
 type EndpointType = z.infer<typeof EndpointTypeSchema>;
 
 const BatchRecordSchema = z.object({
@@ -303,6 +303,16 @@ function suffixReviewReason(suffix: string): string | undefined {
   return undefined;
 }
 
+function suffixSuggestedEndpointTypes(suffix: string): EndpointType[] {
+  if (suffix === "vendor") {
+    return ["organization"];
+  }
+  if (suffix === "adjacent" || suffix === "orbit" || suffix === "comparable" || suffix === "fundraise-comparable") {
+    return ["person", "organization", "project", "topic", "offering", "item"];
+  }
+  return ["person", "organization"];
+}
+
 function addNonWikilinkCandidates(input: {
   candidates: ReviewCandidate[];
   file: ParsedReviewFile;
@@ -357,7 +367,7 @@ function reviewCandidates(file: ParsedReviewFile, index: Map<string, EndpointInd
         candidates.push({
           reason_code: reasonCode,
           value: title,
-          suggested_endpoint_types: suffix.includes("vendor") ? ["organization"] : ["person", "organization"],
+          suggested_endpoint_types: suffixSuggestedEndpointTypes(suffix),
           suffix,
           source_path_ref: file.source_path_ref
         });

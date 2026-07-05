@@ -32,7 +32,7 @@ export type LivingAtlasMcpToolDefinition = {
   inputSchema: JsonSchemaObject;
 };
 
-const EndpointTypeMcpEnum = ["person", "organization", "project", "location", "occurrence", "topic"] as const;
+const EndpointTypeMcpEnum = ["person", "organization", "project", "location", "occurrence", "topic", "offering", "item"] as const;
 const PredicateMcpEnum = [
   "employed-by",
   "reports-to",
@@ -55,6 +55,13 @@ const PredicateMcpEnum = [
   "hosted",
   "discussed-at",
   "about",
+  "offered-by",
+  "instance-of",
+  "purchased-from",
+  "purchased",
+  "owns",
+  "created",
+  "created-for",
   "related-topic",
   "part-of-topic",
   "spouse-of",

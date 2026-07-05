@@ -25,6 +25,7 @@ docs control what graph facts mean.
 
 ## Document Map
 
+- [**Getting Started**](docs/getting-started.md) - **start here**: install, configure an encrypted local replica, and connect an MCP client (Claude Desktop/Code/Codex) to your graph.
 - [PRD](docs/product/prd.md) - product goals, users, requirements, non-goals.
 - [Architecture Requirements](docs/architecture/ard-0001-system-architecture.md) - system shape and constraints.
 - [V1 Architecture Decisions](docs/architecture/v1-architecture-decisions.md) - accepted V1 runtime and privacy decisions.
@@ -46,6 +47,7 @@ docs control what graph facts mean.
 - [Identity, Configuration, And Key Control Plane](docs/architecture/identity-configuration-control-plane.md) - user/device/client setup, capability grants, key config, recovery, and admin surfaces.
 - [Event Subsystems](docs/architecture/event-subsystems.md) - sync change log, durable audit ledger, and live activity stream.
 - [MCP Tools](docs/mcp-tools.md) - canonical local/remote MCP tool catalog, access modes, batching, and Praxis integration notes.
+- [Graph Workbench](docs/graph-workbench.md) - synthetic local browser surface for visual graph review, CRUD shaping, validation, and MCP operation drafts.
 - [Metadata Leakage Budget](docs/architecture/metadata-leakage-budget.md) - Cloudflare-visible metadata and path/index constraints.
 - [Compaction And Retention](docs/architecture/compaction-and-retention.md) - tombstones, snapshots, long-offline clients, and erasure.
 - [Local MCP Authentication](docs/architecture/local-mcp-authentication.md) - local auth, capabilities, admin mode, and localhost threat model.
@@ -53,6 +55,7 @@ docs control what graph facts mean.
 - [CRUD Observability](docs/architecture/crud-observability.md) - how create/read/update/delete activity is seen and audited.
 - [Implementation Plan](docs/implementation-plan.md) - build phases and validation gates.
 - [Development Readiness Checklist](docs/development-readiness.md) - first build slice, pre-deploy gates, and before-real-data tests.
+- [Data Source Intake](docs/data-source-intake.md) - public-safe rules for notes, travel, commerce, connector exports, review packets, and provider data requests.
 - [Private Cloudflare Deployment Overlay](docs/deployment/private-cloudflare-overlay-repo.md) - recommended private repo pattern for account-specific Cloudflare deployment state.
 - [Temporal Edge Model](docs/temporal-edge-model/README.md) - schema package entrypoint for edge/event ontology and migration semantics.
 - [Contributing](CONTRIBUTING.md), [Security](SECURITY.md), and [Code of Conduct](CODE_OF_CONDUCT.md) - public collaboration and reporting policies.
@@ -153,6 +156,16 @@ Run the local stress gate when changing CRUD, policy, sync, or leakage code:
 ```bash
 npm run stress:local
 ```
+
+Run the synthetic graph workbench:
+
+```bash
+npm run workbench:dev
+```
+
+The workbench is a local browser UI for graph visualization, CRUD shaping,
+validation, audit review, and MCP operation drafts. It uses synthetic data only
+until a policy-scoped MCP/API adapter is wired.
 
 Real Logseq semantic review runs can also use a local-private resolution map.
 Generate a review packet outside the repo, review each unresolved target, then
@@ -389,6 +402,11 @@ npm run logseq:semantic-topic-review-packet
 npm run logseq:semantic-topic-review-report
 npm run logseq:semantic-topic-review-resolution-draft
 npm run logseq:semantic-topic-review-local
+npm run logseq:offering-item-review-packet
+npm run logseq:offering-item-review-groups
+npm run logseq:offering-item-review-report
+npm run logseq:offering-item-review-resolution-draft
+npm run logseq:offering-item-review-local
 npm run logseq:semantic-corpus-report
 npm run connector:enrichment-report
 npm run connector:enrichment-local
@@ -410,7 +428,8 @@ are not auto-promoted into controlled `topic` nodes. Unknown property keys are
 hashed with the path redaction secret instead of printed.
 `logseq:semantic-local` preserves each original file as an encrypted source
 capsule, preserves normalized encrypted page/block/reference-index objects,
-promotes explicit `type:: person|organization|project|location|occurrence|topic`
+promotes explicit
+`type:: person|organization|project|location|occurrence|topic|offering|item`
 pages into encrypted endpoint records, maps schema-defined endpoint fields such
 as aliases, dates, timezone, recurrence, and explicit wikilink refs when they
 validate, applies conservative endpoint type aliases such as `org` to
@@ -466,6 +485,30 @@ resolutions, unresolved groups, and unresolved candidate occurrences.
 `review_complete` is false until every grouped candidate has a terminal
 decision. Set `LIVING_ATLAS_LOGSEQ_TOPIC_REVIEW_REQUIRE_COMPLETE=1` when every
 grouped topic candidate must have a terminal review decision before proceeding.
+`logseq:offering-item-review-packet` is an opt-in local-private helper for
+commerce, travel, reservation, product/service, and created-work extraction. It
+scans private notes for explicit `offering`/`item` properties and prose
+signals such as purchases, payments, reservations, flights, hotel stays,
+tickets, seats, rooms, products, subscriptions, deliverables, and provider/model
+links. The command writes plaintext snippets only to a caller-supplied path
+outside the repository and prints counts only. High-confidence structured
+fields may become reviewable offering/item endpoints and commerce/creation
+edges; prose-derived candidates require human review before import.
+`logseq:offering-item-review-groups` reads that private packet and writes a
+second local-private grouped packet outside the repository. It groups related
+candidates by kind, proposed node/edge shape, and normalized snippet tokens so
+review can happen by clustered evidence rather than line by line. The grouped
+packet may contain representative plaintext snippets; stdout remains
+hash/count-only.
+`logseq:offering-item-review-report` validates grouped offering/item review
+coverage with an optional private resolution map and emits only counts and
+hashes. `logseq:offering-item-review-resolution-draft` creates a conservative
+private all-defer resolution map for every unresolved group. It is useful when
+unreviewed commerce/travel/creation candidates should be terminally accounted
+for without promoting guessed facts. `logseq:offering-item-review-local`
+consumes the grouped packet and private resolution map, then writes promoted
+normalized endpoint/edge facts or terminal quarantine records as encrypted
+local graph objects only. It never attempts Cloudflare sync.
 `logseq:semantic-topic-review-resolution-draft` writes a conservative private
 resolution map that defers every grouped topic candidate. It is useful when
 unreviewed tag-derived candidates should be terminally accounted for without

@@ -56,13 +56,14 @@ bridge between this package and the Living Atlas runtime.
 ## Safe V1 Defaults
 
 - Implemented temporal edge endpoints are `person`, `organization`, `project`,
-  `location`, `occurrence`, and `topic`.
+  `location`, `occurrence`, `topic`, `offering`, and `item`.
 - Use `occurrence`, not `event`, for graph happenings so knowledge happenings
   remain distinct from runtime audit/sync/change events.
-- `artifact`, broad `concept`, `source`, and `cluster` are not temporal edge
-  endpoints. Artifacts and sources remain provenance/storage concepts;
-  concepts remain tags/indexes unless explicitly promoted to controlled
-  `topic`; clusters remain derived views.
+- Broad `concept`, `source`, and `cluster` are not temporal edge endpoints.
+  Sources remain provenance/storage metadata; concepts remain tags/indexes
+  unless explicitly promoted to controlled `topic`; clusters remain derived
+  views. Concrete documents, tickets, reservations, receipts, devices, rooms,
+  seats, and deliverables use `item` when intentionally promoted.
 - Dormancy threshold: 365 days.
 - `comparable-to`: attribute, not predicate.
 - Edge embeddings: deferred.

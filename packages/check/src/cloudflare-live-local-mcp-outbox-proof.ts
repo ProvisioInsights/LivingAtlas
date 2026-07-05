@@ -10,6 +10,7 @@ import {
 } from "@living-atlas/contracts";
 import { FileLocalControlStore } from "@living-atlas/local-control-store";
 import { FileLocalGraphStore } from "@living-atlas/local-graph-store";
+import { resolveLocalSecret } from "@living-atlas/local-keyring";
 import {
   FileLocalMcpMutationOutboxSink,
   createLocalMcpContextFromControlState,
@@ -75,10 +76,18 @@ async function readRuntimeEnv(): Promise<RuntimeEnv> {
     ? parseRuntimeEnvFile(await readFile(envPath, "utf8"))
     : {};
   const controlStorePath = envValue("LIVING_ATLAS_LOCAL_CONTROL_STORE") ?? fileValues.LIVING_ATLAS_LOCAL_CONTROL_STORE;
-  const controlStorePassphrase = envValue("LIVING_ATLAS_LOCAL_CONTROL_STORE_PASSPHRASE") ?? fileValues.LIVING_ATLAS_LOCAL_CONTROL_STORE_PASSPHRASE;
+  const controlStorePassphrase = envValue("LIVING_ATLAS_LOCAL_CONTROL_STORE_PASSPHRASE")
+    ?? fileValues.LIVING_ATLAS_LOCAL_CONTROL_STORE_PASSPHRASE
+    ?? resolveLocalSecret("LIVING_ATLAS_LOCAL_CONTROL_STORE_PASSPHRASE", {
+      env: { LIVING_ATLAS_LOCAL_CONTROL_STORE_PASSPHRASE_KEYCHAIN_SERVICE: fileValues.LIVING_ATLAS_LOCAL_CONTROL_STORE_PASSPHRASE_KEYCHAIN_SERVICE }
+    })?.value;
   const graphDir = envValue("LIVING_ATLAS_LOCAL_GRAPH_DIR") ?? fileValues.LIVING_ATLAS_LOCAL_GRAPH_DIR;
   const outboxDir = envValue("LIVING_ATLAS_LOCAL_SYNC_OUTBOX_DIR") ?? fileValues.LIVING_ATLAS_LOCAL_SYNC_OUTBOX_DIR;
-  const localMcpToken = envValue("LIVING_ATLAS_LOCAL_MCP_TOKEN") ?? fileValues.LIVING_ATLAS_LOCAL_MCP_TOKEN;
+  const localMcpToken = envValue("LIVING_ATLAS_LOCAL_MCP_TOKEN")
+    ?? fileValues.LIVING_ATLAS_LOCAL_MCP_TOKEN
+    ?? resolveLocalSecret("LIVING_ATLAS_LOCAL_MCP_TOKEN", {
+      env: { LIVING_ATLAS_LOCAL_MCP_TOKEN_KEYCHAIN_SERVICE: fileValues.LIVING_ATLAS_LOCAL_MCP_TOKEN_KEYCHAIN_SERVICE }
+    })?.value;
 
   if (!controlStorePath || !controlStorePassphrase || !graphDir || !outboxDir || !localMcpToken) {
     throw new Error(`local runtime env is incomplete at ${envPath}; run bidirectional sync setup first`);

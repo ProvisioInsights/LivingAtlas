@@ -77,6 +77,8 @@ describe("Logseq semantic inventory report", () => {
       await mkdir(join(root, "pages"), { recursive: true });
       await writeFile(join(root, "pages", "Synthetic Org.md"), "type:: org\n\n- body\n");
       await writeFile(join(root, "pages", "Synthetic Meeting.md"), "type:: meeting\n\n- body\n");
+      await writeFile(join(root, "pages", "Synthetic Product.md"), "type:: product\n\n- body\n");
+      await writeFile(join(root, "pages", "Synthetic Device.md"), "type:: device\n\n- body\n");
 
       const report = await buildSemanticInventoryReport({
         root,
@@ -85,11 +87,13 @@ describe("Logseq semantic inventory report", () => {
         sourceMode: "markdown-only"
       });
 
-      expect(report.totals.accepted_endpoint_type_pages).toBe(2);
+      expect(report.totals.accepted_endpoint_type_pages).toBe(4);
       expect(report.totals.canonical_endpoint_type_pages).toBe(0);
-      expect(report.totals.safe_alias_endpoint_type_pages).toBe(2);
+      expect(report.totals.safe_alias_endpoint_type_pages).toBe(4);
       expect(report.endpoint_type_counts.organization).toBe(1);
       expect(report.endpoint_type_counts.occurrence).toBe(1);
+      expect(report.endpoint_type_counts.offering).toBe(1);
+      expect(report.endpoint_type_counts.item).toBe(1);
       expect(report.totals.rejected_endpoint_type_pages).toBe(0);
       expect(JSON.stringify(report)).not.toContain("Synthetic Org");
       expect(JSON.stringify(report)).not.toContain("meeting");

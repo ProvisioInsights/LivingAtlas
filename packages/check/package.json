@@ -9,6 +9,7 @@
   "dependencies": {
     "@living-atlas/contracts": "workspace:*",
     "@living-atlas/atlas-client": "workspace:*",
+    "@living-atlas/backup": "workspace:*",
     "@living-atlas/cloudflare-worker": "workspace:*",
     "@living-atlas/fixtures": "workspace:*",
     "@living-atlas/importer": "workspace:*",

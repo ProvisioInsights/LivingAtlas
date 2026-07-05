@@ -236,6 +236,8 @@ describe("file local graph store", () => {
       visible_metadata: expect.objectContaining({ tombstone: true })
     }));
     expect(reopened.listObjects().map((object) => object.object_id)).not.toContain("la_object_storecreate0001");
+    expect(reopened.listObjects({ include_tombstones: false }).map((object) => object.object_id)).not.toContain("la_object_storecreate0001");
+    expect(reopened.listObjects({ include_tombstones: false })).toHaveLength(syntheticGraphObjects.length);
     expect(reopened.listObjects({ include_tombstones: true }).map((object) => object.object_id)).toContain("la_object_storecreate0001");
 
     const files = await readStoreFiles(directory);

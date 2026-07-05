@@ -9,6 +9,10 @@ import { BootstrapClaimBodySchema, verifyClaimToken, type BootstrapRuntimeConfig
 import type { BootstrapClaimLockCore } from "./bootstrap-lock";
 import { decryptCloudUnlockObject } from "./cloud-unlock";
 import {
+  CloudUnlockEscalatedObjectAlgorithm,
+  decryptEscalatedCloudUnlockObject
+} from "./cloud-unlock-escalated";
+import {
   applyWorkerTraceHeaders,
   createWorkerErrorEvent,
   createWorkerObservabilityContext,
@@ -106,6 +110,7 @@ const syncClientHeader = "x-living-atlas-sync-client-id";
 const syncCapabilityHeader = "x-living-atlas-sync-capability-id";
 const syncTokenIdHeader = "x-living-atlas-sync-token-id";
 const cloudUnlockKeyHeader = "x-living-atlas-cloud-unlock-key";
+const escalationKeyHeader = "x-living-atlas-escalation-key";
 const remoteWriteIdempotencyHeader = "x-living-atlas-idempotency-key";
 const forbiddenQueryTokenParams = ["token", "claim_token", "bootstrap_claim_token", "sync_token", "cloud_unlock_key", "decrypt_key", "encryption_key"];
 const forbiddenQueryTokenPattern = /(^|[_-])(authorization|bearer|token|secret|password|api[_-]?key|access[_-]?key|cloud[_-]?unlock[_-]?key|decrypt[_-]?key|encryption[_-]?key|key)($|[_-])/i;
@@ -294,6 +299,11 @@ function cloudUnlockKeyPresented(request: Request): boolean {
 
 function cloudUnlockKey(request: Request): string | undefined {
   const value = request.headers.get(cloudUnlockKeyHeader);
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
+}
+
+function escalationKey(request: Request): string | undefined {
+  const value = request.headers.get(escalationKeyHeader);
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
 }
 
@@ -1301,6 +1311,102 @@ async function executeRemoteMcpTool(name: string, args: unknown, request: Reques
       };
     }
 
+    // TWO-KEY ESCALATION BRANCH. The object's payload algorithm class decides
+    // what it takes to decrypt in the cloud:
+    //   - normal          → "AES-GCM-256+cloud-unlock-v1", primary session key.
+    //   - super-sensitive → "AES-GCM-256+cloud-unlock-escalated-v1", requires an
+    //     ADDITIONAL escalation key (second header). Without it, we return
+    //     "escalation-required" and DO NOT decrypt (the "your SSN is
+    //     super-sensitive, approve escalation?" UX).
+    const isEscalated =
+      object.payload.kind === "ciphertext-inline" &&
+      object.payload.algorithm === CloudUnlockEscalatedObjectAlgorithm;
+    const tier = isEscalated ? "super-sensitive" : "normal";
+
+    if (isEscalated) {
+      const escalationSecret = escalationKey(request);
+      if (!escalationSecret) {
+        await appendRemoteMcpAudit({
+          request,
+          env,
+          authority_id: authorityId,
+          operation: "decrypt",
+          event_type: "object.denied",
+          outcome: "denied",
+          reason_code: "escalation-required",
+          object_id: object.object_id,
+          access_class: object.access_class,
+          summary: "Remote cloud unlock escalation required"
+        });
+        return {
+          ok: false,
+          reason: "escalation-required",
+          tier: "super-sensitive",
+          current_mode: "cloud-unlock-session",
+          authority_id: authorityId,
+          object_id: objectId,
+          object_type: object.object_type,
+          escalation_required_header: escalationKeyHeader,
+          key_persisted_by_cloudflare: false,
+          host_blind_sensitive_plaintext: true
+        };
+      }
+
+      const escalatedResult = await decryptEscalatedCloudUnlockObject(object, escalationSecret);
+      if (!escalatedResult.ok) {
+        await appendRemoteMcpAudit({
+          request,
+          env,
+          authority_id: authorityId,
+          operation: "decrypt",
+          event_type: "object.denied",
+          outcome: "denied",
+          reason_code: escalatedResult.reason,
+          object_id: object.object_id,
+          access_class: object.access_class,
+          summary: "Remote cloud unlock escalation denied"
+        });
+        return {
+          ok: false,
+          reason: escalatedResult.reason,
+          tier: "super-sensitive",
+          current_mode: "cloud-unlock-session",
+          authority_id: authorityId,
+          object_id: objectId,
+          key_persisted_by_cloudflare: false,
+          host_blind_sensitive_plaintext: true
+        };
+      }
+
+      await appendRemoteMcpAudit({
+        request,
+        env,
+        authority_id: authorityId,
+        operation: "decrypt",
+        event_type: "object.decrypt",
+        outcome: "allowed",
+        object_id: object.object_id,
+        access_class: object.access_class,
+        summary: "Remote cloud unlock escalation allowed"
+      });
+
+      return {
+        ok: true,
+        current_mode: "cloud-unlock-session",
+        tier: "super-sensitive",
+        escalated: true,
+        authority_id: authorityId,
+        object_id: object.object_id,
+        object_type: object.object_type,
+        version: object.version,
+        access_class: object.access_class,
+        visible_metadata: object.visible_metadata,
+        payload: escalatedResult.plaintext,
+        key_persisted_by_cloudflare: false,
+        host_blind_sensitive_plaintext: false
+      };
+    }
+
     const decryptResult = await decryptCloudUnlockObject(object, unlockKey);
     if (!decryptResult.ok) {
       await appendRemoteMcpAudit({
@@ -1318,6 +1424,7 @@ async function executeRemoteMcpTool(name: string, args: unknown, request: Reques
       return {
         ok: false,
         reason: decryptResult.reason,
+        tier,
         current_mode: "cloud-unlock-session",
         authority_id: authorityId,
         object_id: objectId,
@@ -1341,6 +1448,7 @@ async function executeRemoteMcpTool(name: string, args: unknown, request: Reques
     return {
       ok: true,
       current_mode: "cloud-unlock-session",
+      tier,
       authority_id: authorityId,
       object_id: object.object_id,
       object_type: object.object_type,

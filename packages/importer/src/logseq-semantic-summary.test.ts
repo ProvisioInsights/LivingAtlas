@@ -37,6 +37,16 @@ describe("Logseq semantic knowledge summary", () => {
         source_path: "/tmp/living-atlas-fixtures/Synthetic Org.md",
         markdown: "type:: org\ntags:: [[Synthetic Weak Tie]]-adjacent\n\n- body text\n",
         source_kind: "logseq" as const
+      },
+      {
+        source_path: "/tmp/living-atlas-fixtures/Synthetic Product.md",
+        markdown: "type:: product\nprovider:: [[Synthetic Org]]\n\n- body text\n",
+        source_kind: "logseq" as const
+      },
+      {
+        source_path: "/tmp/living-atlas-fixtures/Synthetic Device.md",
+        markdown: "type:: device\nproduct:: [[Synthetic Product]]\n\n- body text\n",
+        source_kind: "logseq" as const
       }
     ];
 
@@ -49,7 +59,7 @@ describe("Logseq semantic knowledge summary", () => {
     expect(report).toMatchObject({
       report_schema: "living-atlas-logseq-semantic-knowledge-summary:v1",
       plaintext_policy: "counts-only",
-      source_file_count: 4,
+      source_file_count: 6,
       occurrence_count: 1,
       occurrence_with_recurrence_count: 1,
       occurrence_with_timezone_count: 1,
@@ -61,7 +71,9 @@ describe("Logseq semantic knowledge summary", () => {
     expect(report.endpoint_type_counts).toMatchObject({
       occurrence: 1,
       topic: 1,
-      organization: 1
+      organization: 1,
+      offering: 1,
+      item: 1
     });
     expect(report.edge_predicate_counts).toEqual({
       "discussed-at": 1
@@ -69,7 +81,7 @@ describe("Logseq semantic knowledge summary", () => {
     expect(report.quarantine_reason_counts).toEqual({
       "suffix-tag-weak-tie-needs-note": 1
     });
-    expect(report.semantic_kind_counts["typed-endpoint"]).toBe(3);
+    expect(report.semantic_kind_counts["typed-endpoint"]).toBe(5);
     expect(JSON.stringify(report)).not.toContain("Synthetic Weekly Meeting");
     expect(JSON.stringify(report)).not.toContain("Synthetic Topic");
     expect(JSON.stringify(report)).not.toContain("Synthetic Weak Tie");

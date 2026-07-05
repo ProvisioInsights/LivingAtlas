@@ -83,6 +83,41 @@ describe("Logseq semantic review packet", () => {
     expect(JSON.stringify(packet)).not.toContain("/tmp/");
   });
 
+  it("allows weak and comparable organization tags to resolve to project or topic endpoints", () => {
+    const files = [
+      {
+        source_path: "pages/Synthetic Cyber Company.md",
+        markdown: "type:: organization\ntags:: [[Synthetic Product]]-adjacent [[Synthetic Market]]-comparable [[Synthetic Vendor]]-vendor\n\n- body text\n",
+        source_kind: "logseq" as const
+      }
+    ];
+
+    const packet = buildSemanticReviewPacket({
+      files,
+      records: [batchRecord(files.map((file) => file.source_path))],
+      pathRedactionSecret,
+      generatedAt: "2026-06-24T00:00:00.000Z"
+    });
+
+    expect(packet.groups).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        target_value: "Synthetic Product",
+        reason_code: "suffix-tag-weak-tie-needs-note",
+        suggested_endpoint_types: ["person", "organization", "project", "topic", "offering", "item"]
+      }),
+      expect.objectContaining({
+        target_value: "Synthetic Market",
+        reason_code: "suffix-tag-comparable-attribute-review",
+        suggested_endpoint_types: ["person", "organization", "project", "topic", "offering", "item"]
+      }),
+      expect.objectContaining({
+        target_value: "Synthetic Vendor",
+        reason_code: "suffix-tag-direction-review",
+        suggested_endpoint_types: ["organization"]
+      })
+    ]));
+  });
+
   it("groups repeated unresolved values by reason and target hash", () => {
     const files = [
       {

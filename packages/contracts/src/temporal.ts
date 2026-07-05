@@ -5,7 +5,7 @@ import { EventIdSchema, IsoTimestampSchema, ObjectIdSchema } from "./ids";
 
 const { rrulestr } = rrule;
 
-export const EndpointTypeValues = ["person", "organization", "project", "location", "occurrence", "topic"] as const;
+export const EndpointTypeValues = ["person", "organization", "project", "location", "occurrence", "topic", "offering", "item"] as const;
 export const EndpointTypeSchema = z.enum(EndpointTypeValues);
 export type EndpointType = z.infer<typeof EndpointTypeSchema>;
 
@@ -24,12 +24,44 @@ export const OrganizationSubtypeSchema = z.enum([
 ]);
 export const ProjectSubtypeSchema = z.enum([
   "initiative",
-  "product",
   "deal",
   "research",
   "campaign",
   "engagement",
   "case",
+  "other"
+]);
+export const OfferingSubtypeSchema = z.enum([
+  "product",
+  "software-product",
+  "hardware-product",
+  "service",
+  "subscription",
+  "membership",
+  "hotel-room-type",
+  "travel-class",
+  "fare-class",
+  "ticket-class",
+  "menu-item",
+  "media",
+  "experience",
+  "package",
+  "other"
+]);
+export const ItemSubtypeSchema = z.enum([
+  "device",
+  "document",
+  "ticket",
+  "reservation",
+  "receipt",
+  "file",
+  "photo",
+  "physical-item",
+  "vehicle",
+  "seat",
+  "room",
+  "deliverable",
+  "created-work",
   "other"
 ]);
 export const LocationSubtypeSchema = z.enum([
@@ -69,7 +101,9 @@ export const EndpointSubtypeSchema = z.union([
   ProjectSubtypeSchema,
   LocationSubtypeSchema,
   OccurrenceSubtypeSchema,
-  TopicSubtypeSchema
+  TopicSubtypeSchema,
+  OfferingSubtypeSchema,
+  ItemSubtypeSchema
 ]);
 export type EndpointSubtype = z.infer<typeof EndpointSubtypeSchema>;
 
@@ -87,16 +121,18 @@ export const EdgeCategorySchema = z.enum([
   "geography",
   "occurrence",
   "taxonomy",
+  "commerce",
+  "creation",
   "personal"
 ]);
 
 export const PredicateRegistry = {
   "employed-by": { category: "employment", direction: "directed", domain: ["person"], range: ["organization"], required: ["valid_from"] },
   "reports-to": { category: "employment", direction: "directed", domain: ["person"], range: ["person"], required: ["valid_from"] },
-  "founder-of": { category: "employment", direction: "directed", domain: ["person"], range: ["organization", "project"], required: ["valid_from"] },
+  "founder-of": { category: "employment", direction: "directed", domain: ["person"], range: ["organization", "project", "offering"], required: ["valid_from"] },
   "board-member-of": { category: "governance", direction: "directed", domain: ["person"], range: ["organization"], required: ["valid_from"] },
-  advises: { category: "advisory", direction: "directed", domain: ["person"], range: ["organization", "project"], required: ["valid_from"] },
-  "invests-in": { category: "capital", direction: "directed", domain: ["person", "organization"], range: ["organization", "project"], required: ["amount", "investment_status"] },
+  advises: { category: "advisory", direction: "directed", domain: ["person"], range: ["organization", "project", "offering"], required: ["valid_from"] },
+  "invests-in": { category: "capital", direction: "directed", domain: ["person", "organization"], range: ["organization", "project", "offering"], required: ["amount", "investment_status"] },
   "customer-of": { category: "customer", direction: "directed", domain: ["organization"], range: ["organization"], required: [] },
   engaged: { category: "customer", direction: "directed", domain: ["person"], range: ["organization"], required: ["valid_from"] },
   "acquired-by": { category: "structural", direction: "directed", domain: ["organization"], range: ["organization"], required: ["valid_from"] },
@@ -110,8 +146,15 @@ export const PredicateRegistry = {
   "participant-in": { category: "occurrence", direction: "directed", domain: ["person", "organization"], range: ["occurrence"], required: [] },
   "occurred-at": { category: "occurrence", direction: "directed", domain: ["occurrence"], range: ["location"], required: [] },
   hosted: { category: "occurrence", direction: "directed", domain: ["person", "organization"], range: ["occurrence"], required: [] },
-  "discussed-at": { category: "occurrence", direction: "directed", domain: ["organization", "project", "topic"], range: ["occurrence"], required: [] },
-  about: { category: "taxonomy", direction: "directed", domain: ["person", "organization", "project", "occurrence"], range: ["topic"], required: [] },
+  "discussed-at": { category: "occurrence", direction: "directed", domain: ["organization", "project", "offering", "item", "topic"], range: ["occurrence"], required: [] },
+  about: { category: "taxonomy", direction: "directed", domain: ["person", "organization", "project", "offering", "item", "occurrence"], range: ["topic"], required: [] },
+  "offered-by": { category: "commerce", direction: "directed", domain: ["offering"], range: ["organization"], required: [] },
+  "instance-of": { category: "commerce", direction: "directed", domain: ["item"], range: ["offering"], required: [] },
+  "purchased-from": { category: "commerce", direction: "directed", domain: ["person", "organization"], range: ["organization"], required: [] },
+  purchased: { category: "commerce", direction: "directed", domain: ["person", "organization"], range: ["offering", "item"], required: [] },
+  owns: { category: "commerce", direction: "directed", domain: ["person", "organization"], range: ["item"], required: [] },
+  created: { category: "creation", direction: "directed", domain: ["person", "organization"], range: ["item", "offering"], required: [] },
+  "created-for": { category: "creation", direction: "directed", domain: ["item", "offering"], range: ["person", "organization", "project", "offering"], required: [] },
   "related-topic": { category: "taxonomy", direction: "symmetric", domain: ["topic"], range: ["topic"], required: [] },
   "part-of-topic": { category: "taxonomy", direction: "directed", domain: ["topic"], range: ["topic"], required: [] },
   "spouse-of": { category: "personal", direction: "symmetric", domain: ["person"], range: ["person"], required: [] },
@@ -135,6 +178,14 @@ const SafeAliasMap: Record<string, Predicate> = {
   "investor-in": "invests-in",
   backs: "invests-in",
   "client-of": "customer-of",
+  "sold-by": "offered-by",
+  "provided-by": "offered-by",
+  "model-of": "instance-of",
+  "bought-from": "purchased-from",
+  "purchased-item": "purchased",
+  made: "created",
+  "made-by": "created",
+  "made-for": "created-for",
   "co-founded": "founder-of",
   "married-to": "spouse-of",
   "sits-on-board-of": "board-member-of",
@@ -452,13 +503,33 @@ export const TopicEndpointSchema = EndpointBaseSchema.extend({
   tags: z.array(z.string().min(1)).default([])
 });
 
+export const OfferingEndpointSchema = EndpointBaseSchema.extend({
+  type: z.literal("offering"),
+  subtype: OfferingSubtypeSchema.default("other"),
+  provider_ref: ObjectIdSchema.optional(),
+  homepage_ref: z.string().min(1).optional(),
+  status: z.string().min(1).optional()
+});
+
+export const ItemEndpointSchema = EndpointBaseSchema.extend({
+  type: z.literal("item"),
+  subtype: ItemSubtypeSchema.default("other"),
+  offering_ref: ObjectIdSchema.optional(),
+  owner_ref: ObjectIdSchema.optional(),
+  location_ref: ObjectIdSchema.optional(),
+  acquired_on: MixedPrecisionDateSchema.optional(),
+  status: z.string().min(1).optional()
+});
+
 export const EndpointRecordSchema = z.discriminatedUnion("type", [
   PersonEndpointSchema,
   OrganizationEndpointSchema,
   ProjectEndpointSchema,
   LocationEndpointSchema,
   OccurrenceEndpointSchema,
-  TopicEndpointSchema
+  TopicEndpointSchema,
+  OfferingEndpointSchema,
+  ItemEndpointSchema
 ]);
 export type EndpointRecord = z.infer<typeof EndpointRecordSchema>;
 

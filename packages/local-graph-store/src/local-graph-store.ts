@@ -545,8 +545,9 @@ export class FileLocalGraphStore {
   }
 
   listObjects(options: { include_tombstones?: boolean } = {}): GraphObjectEnvelope[] {
+    const includeTombstones = options.include_tombstones ?? false;
     return Array.from(this.state.objects.values())
-      .filter((object) => options.include_tombstones ?? !object.visible_metadata.tombstone)
+      .filter((object) => includeTombstones || !object.visible_metadata.tombstone)
       .map(cloneGraphObject);
   }
 

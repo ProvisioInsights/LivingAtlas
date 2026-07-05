@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
-import { readdir, readFile, rename } from "node:fs/promises";
-import { join } from "node:path";
+import { appendFile, mkdir, readdir, readFile, rename } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import {
   canonicalSyncBatchHashPayload,
   GraphObjectEnvelopeSchema,
@@ -121,10 +121,73 @@ export type FetchSyncEnvelopesResult =
       error: unknown;
     };
 
+export type SyncConflictLedgerEntry = {
+  authority_id: string;
+  object_id: string;
+  remote_generation: number;
+  remote_version: number;
+  local_version?: number;
+  reason: ApplyPulledEnvelopeConflict["reason"];
+  store_reason?: LocalGraphMutationConflictReason;
+  batch_id?: string;
+  submitted_at?: string;
+  recorded_at: string;
+  /** Full remote envelope (ciphertext payload only) preserved for later resolution. */
+  envelope: unknown;
+};
+
+export type SyncConflictSink = {
+  record(entry: SyncConflictLedgerEntry): Promise<"recorded" | "duplicate">;
+};
+
+/**
+ * Append-only JSONL ledger for pulled-envelope conflicts.
+ *
+ * Conflicted remote envelopes were previously only surfaced in the transient
+ * sync report and then dropped; a daemon would re-pull and re-conflict forever
+ * with no durable trail. This ledger preserves the conflicting remote envelope
+ * beside the replica so a keyholding client can resolve it later, and
+ * deduplicates on (object_id, remote_generation, remote_version, reason) so
+ * retry loops do not grow the file.
+ */
+export class FileSyncConflictLedger implements SyncConflictSink {
+  constructor(private readonly path: string) {}
+
+  private entryKey(entry: Pick<SyncConflictLedgerEntry, "object_id" | "remote_generation" | "remote_version" | "reason">): string {
+    return `${entry.object_id}:${entry.remote_generation}:${entry.remote_version}:${entry.reason}`;
+  }
+
+  async list(): Promise<SyncConflictLedgerEntry[]> {
+    const text = await readFile(this.path, "utf8").catch((error: unknown) => {
+      if (isNodeError(error) && error.code === "ENOENT") {
+        return "";
+      }
+      throw error;
+    });
+    return text
+      .split("\n")
+      .filter((line) => line.trim().length > 0)
+      .map((line) => JSON.parse(line) as SyncConflictLedgerEntry);
+  }
+
+  async record(entry: SyncConflictLedgerEntry): Promise<"recorded" | "duplicate"> {
+    const existing = await this.list();
+    const key = this.entryKey(entry);
+    if (existing.some((candidate) => this.entryKey(candidate) === key)) {
+      return "duplicate";
+    }
+    await mkdir(dirname(this.path), { recursive: true });
+    await appendFile(this.path, `${JSON.stringify(entry)}\n`, { mode: 0o600 });
+    return "recorded";
+  }
+}
+
 export type ApplyPulledEnvelopesOptions = {
   store: FileLocalGraphStore;
   response: SyncEnvelopePullResponse;
   actorId: string;
+  conflictLedger?: SyncConflictSink;
+  now?: string;
 };
 
 export type ApplyPulledEnvelopeConflict = {
@@ -289,6 +352,7 @@ export type FileOutboxPushHandshakeOptions = {
   tokenId?: string;
   fetchImpl?: typeof fetch;
   now?: string;
+  conflictLedger?: SyncConflictSink;
 };
 
 export type FileOutboxPushHandshakeResult =
@@ -781,6 +845,19 @@ function comparePulledObjects(left: SyncEnvelopePullObject, right: SyncEnvelopeP
 
 export async function applyPulledEnvelopes(options: ApplyPulledEnvelopesOptions): Promise<ApplyPulledEnvelopesResult> {
   const conflicts: ApplyPulledEnvelopeConflict[] = [];
+  const recordConflict = async (conflict: ApplyPulledEnvelopeConflict, pulled: SyncEnvelopePullObject): Promise<void> => {
+    conflicts.push(conflict);
+    if (options.conflictLedger) {
+      await options.conflictLedger.record({
+        authority_id: options.response.authority_id,
+        ...conflict,
+        batch_id: pulled.batch_id,
+        submitted_at: pulled.submitted_at,
+        recorded_at: options.now ?? new Date().toISOString(),
+        envelope: pulled.object
+      });
+    }
+  };
   let appliedCount = 0;
   let skippedCount = 0;
   let cursor: SyncPullCursor = {
@@ -803,13 +880,13 @@ export async function applyPulledEnvelopes(options: ApplyPulledEnvelopesOptions)
       generationBatchId = pulled.batch_id;
       const existing = options.store.readObject(pulled.object.object_id);
       if (existing && existing.version === pulled.object.version && existing.content_hash !== pulled.object.content_hash) {
-        conflicts.push({
+        await recordConflict({
           object_id: pulled.object.object_id,
           remote_generation: pulled.generation,
           remote_version: pulled.object.version,
           local_version: existing.version,
           reason: "version-conflict"
-        });
+        }, pulled);
         generationOk = false;
         break;
       }
@@ -820,24 +897,24 @@ export async function applyPulledEnvelopes(options: ApplyPulledEnvelopesOptions)
       }
 
       if (!existing && pulled.object.version > 1 && options.response.from_generation > 0) {
-        conflicts.push({
+        await recordConflict({
           object_id: pulled.object.object_id,
           remote_generation: pulled.generation,
           remote_version: pulled.object.version,
           reason: "version-gap"
-        });
+        }, pulled);
         generationOk = false;
         break;
       }
 
       if (existing && pulled.object.version !== existing.version + 1) {
-        conflicts.push({
+        await recordConflict({
           object_id: pulled.object.object_id,
           remote_generation: pulled.generation,
           remote_version: pulled.object.version,
           local_version: existing.version,
           reason: "version-gap"
-        });
+        }, pulled);
         generationOk = false;
         break;
       }
@@ -858,14 +935,14 @@ export async function applyPulledEnvelopes(options: ApplyPulledEnvelopesOptions)
           });
 
       if (!mutation.ok) {
-        conflicts.push({
+        await recordConflict({
           object_id: pulled.object.object_id,
           remote_generation: pulled.generation,
           remote_version: pulled.object.version,
           local_version: existing?.version,
           reason: "store-conflict",
           store_reason: mutation.reason
-        });
+        }, pulled);
         generationOk = false;
         break;
       }
@@ -946,7 +1023,8 @@ export async function runFileOutboxPushHandshake(options: FileOutboxPushHandshak
       const appliedResult = await applyPulledEnvelopes({
         store: options.store,
         response: pulled.response,
-        actorId: syncClient.client_id
+        actorId: syncClient.client_id,
+        conflictLedger: options.conflictLedger
       });
       applied += appliedResult.applied_count;
       skipped += appliedResult.skipped_count;

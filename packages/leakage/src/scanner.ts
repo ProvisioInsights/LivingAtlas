@@ -87,7 +87,7 @@ export type RepoSafetyResult = {
   findings: RepoSafetyFinding[];
 };
 
-const SkippedDirectories = new Set([".git", "node_modules", ".pnpm", "dist", "coverage", ".turbo"]);
+const SkippedDirectories = new Set([".git", "node_modules", ".pnpm", "dist", "coverage", ".turbo", ".claude"]);
 const ForbiddenFileRules: Array<{ rule: string; test: (path: string) => boolean; detail: string }> = [
   { rule: "terraform-state", test: (path) => /\.tfstate(?:\.backup)?$/.test(path), detail: "Terraform/OpenTofu state must not be committed" },
   { rule: "terraform-vars", test: (path) => /\.tfvars(?:\.json)?$/.test(path), detail: "Personal tfvars belong outside public git" },

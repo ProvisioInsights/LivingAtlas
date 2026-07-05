@@ -10,6 +10,7 @@ import {
   createMarkdownWatcherPlan,
   createLogseqSemanticGraphObjects,
   createLogseqSemanticParityLedger,
+  createLogseqSemanticPlaintextGraphObjects,
   createLogseqSemanticReviewTargetHash,
   planWatcherFileEvent,
   summarizeMarkdownFile
@@ -341,6 +342,41 @@ describe("markdown importer planning", () => {
     expect(JSON.stringify(encrypted.objects)).not.toContain("Project Glass Lantern");
   });
 
+  it("builds local-only plaintext semantic drafts for keyring-backed local persistence", () => {
+    const file = {
+      source_path: "/tmp/living-atlas-fixtures/Typed Edge.md",
+      markdown: "## Edges\n\n- [[Avery North]] (person) advises [[Project Glass Lantern]] (project) from 2026-06\n",
+      source_kind: "logseq" as const
+    };
+
+    const built = createLogseqSemanticPlaintextGraphObjects([file], {
+      authority_id: fixtureAuthorityId,
+      created_at: "2026-06-22T12:00:00.000Z",
+      path_redaction_secret: "fixture-path-redaction-secret-0001"
+    });
+
+    const edgeObject = built.objects.find((object) => object.object_type === "edge");
+    expect(edgeObject).toEqual(expect.objectContaining({
+      object_type: "edge",
+      access_class: "local-private",
+      encryption_class: "plaintext",
+      visible_metadata: expect.objectContaining({
+        schema_namespace: "import/logseq-semantic/typed-edge",
+        remote_indexable: false,
+        tombstone: false
+      }),
+      payload: expect.objectContaining({
+        kind: "plaintext-json",
+        data: expect.objectContaining({
+          kind: "logseq-temporal-edge"
+        })
+      })
+    }));
+    expect((edgeObject?.payload.data.edge as { predicate?: string } | undefined)?.predicate).toBe("advises");
+    expect(JSON.stringify(built.ledger)).not.toContain("Avery North");
+    expect(JSON.stringify(built.ledger)).not.toContain("Project Glass Lantern");
+  });
+
   it("promotes explicit typed Logseq pages into encrypted endpoint objects", async () => {
     const file = {
       source_path: "/tmp/living-atlas-fixtures/Synthetic Topic.md",
@@ -395,6 +431,73 @@ describe("markdown importer planning", () => {
     expect(JSON.stringify(encrypted.ledger)).not.toContain("Synthetic Alias");
     expect(JSON.stringify(encrypted.objects)).not.toContain("Synthetic Topic");
     expect(JSON.stringify(encrypted.objects)).not.toContain("Synthetic Alias");
+  });
+
+  it("promotes offering and item Logseq pages into encrypted endpoint objects", async () => {
+    const files = [
+      {
+        source_path: "/tmp/living-atlas-fixtures/Synthetic Product.md",
+        markdown: "type:: offering\nsubtype:: software-product\nprovider:: [[Synthetic Vendor]]\nwebsite:: https://example.invalid/product\nstatus:: active\n\n- body text\n",
+        source_kind: "logseq" as const
+      },
+      {
+        source_path: "/tmp/living-atlas-fixtures/Synthetic Device.md",
+        markdown: "type:: device\nproduct:: [[Synthetic Product]]\nowner:: [[Synthetic Owner]]\nlocation:: [[Synthetic Room]]\nacquired-on:: 2026-06\nstatus:: owned\n\n- body text\n",
+        source_kind: "logseq" as const
+      }
+    ];
+    const plaintextPayloads: string[] = [];
+
+    const encrypted = await createLogseqSemanticGraphObjects(files, {
+      authority_id: fixtureAuthorityId,
+      created_at: "2026-06-22T12:00:00.000Z",
+      path_redaction_secret: "fixture-path-redaction-secret-0001",
+      encrypt: async ({ plaintext, aad }) => {
+        plaintextPayloads.push(plaintext);
+        return {
+          ciphertext: Buffer.from(`sealed:${aad}:${plaintext.length}`).toString("base64"),
+          nonce: "fixture-semantic-nonce",
+          hash: sha256(`sealed:${aad}:${plaintext.length}`),
+          algorithm: "fixture-aes-gcm"
+        };
+      }
+    });
+    const endpointPayloads = plaintextPayloads
+      .map((payload) => JSON.parse(payload) as {
+        kind?: string;
+        endpoint?: {
+          type?: string;
+          subtype?: string;
+          provider_ref?: string;
+          offering_ref?: string;
+          owner_ref?: string;
+          location_ref?: string;
+          acquired_on?: string;
+          status?: string;
+        };
+      })
+      .filter((payload) => payload.kind === "logseq-endpoint");
+
+    expect(encrypted.ledger.decisions["typed-endpoint-promoted"]).toBe(2);
+    expect(endpointPayloads.map((payload) => payload.endpoint)).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: "offering",
+        subtype: "software-product",
+        status: "active",
+        provider_ref: expect.stringMatching(/^la_object_[a-f0-9]{24}$/)
+      }),
+      expect.objectContaining({
+        type: "item",
+        subtype: "device",
+        status: "owned",
+        acquired_on: "2026-06",
+        offering_ref: expect.stringMatching(/^la_object_[a-f0-9]{24}$/),
+        owner_ref: expect.stringMatching(/^la_object_[a-f0-9]{24}$/),
+        location_ref: expect.stringMatching(/^la_object_[a-f0-9]{24}$/)
+      })
+    ]));
+    expect(JSON.stringify(encrypted.ledger)).not.toContain("Synthetic Product");
+    expect(JSON.stringify(encrypted.objects)).not.toContain("Synthetic Device");
   });
 
   it("maps occurrence endpoint timing, references, and RFC 5545 recurrence into encrypted payloads", async () => {

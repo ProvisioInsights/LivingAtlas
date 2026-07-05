@@ -550,6 +550,47 @@ Existing topic review objects are left unchanged by default; set
 `LIVING_ATLAS_LOGSEQ_TOPIC_REVIEW_UPDATE_EXISTING_ACK=update-existing-encrypted-topic-review-objects`
 only for an intentional local repair pass.
 
+Use `logseq:offering-item-review-packet` to prepare local review of
+offering/item candidates from private markdown before importing travel,
+commerce, reservation, product/service, or created-work facts. It requires
+`LIVING_ATLAS_LOGSEQ_OFFERING_ITEM_REVIEW_PACKET_ACK=write-local-private-offering-item-review-packet`,
+`LIVING_ATLAS_LOGSEQ_OFFERING_ITEM_REVIEW_PACKET_PATH`, and
+`LIVING_ATLAS_REAL_DATA_PATH_REDACTION_SECRET`. The output path must be outside
+the repository because the packet contains plaintext snippets. Stdout remains
+counts-only, and the command does not import or sync anything. Treat prose
+candidates as review work; only explicit schema-valid structured fields should
+be promoted without further evidence.
+
+Use `logseq:offering-item-review-groups` after packet generation to reduce
+review noise. It requires
+`LIVING_ATLAS_LOGSEQ_OFFERING_ITEM_REVIEW_GROUPED_PACKET_ACK=write-local-private-offering-item-review-grouped-packet`,
+`LIVING_ATLAS_LOGSEQ_OFFERING_ITEM_REVIEW_PACKET_PATH`, and
+`LIVING_ATLAS_LOGSEQ_OFFERING_ITEM_REVIEW_GROUPED_PACKET_PATH`. The grouped
+packet also contains representative plaintext snippets and must stay outside
+the repository. Stdout emits only counts, hashes, review-hint buckets, and
+largest group sizes.
+
+Use `logseq:offering-item-review-report` to validate grouped offering/item
+review coverage and any private resolution map. Set
+`LIVING_ATLAS_LOGSEQ_OFFERING_ITEM_REVIEW_REQUIRE_COMPLETE=1` when every group
+must have a terminal decision. Use
+`logseq:offering-item-review-resolution-draft` when no human-reviewed map exists
+and the safe action is to defer every grouped candidate. It requires
+`LIVING_ATLAS_LOGSEQ_OFFERING_ITEM_REVIEW_RESOLUTION_DRAFT_ACK=write-local-private-offering-item-review-resolution-draft`,
+`LIVING_ATLAS_LOGSEQ_OFFERING_ITEM_REVIEW_GROUPED_PACKET_PATH`, and
+`LIVING_ATLAS_LOGSEQ_OFFERING_ITEM_REVIEW_RESOLUTION_PATH`. Use
+`logseq:offering-item-review-local` only after the resolution report is clean.
+It requires
+`LIVING_ATLAS_LOGSEQ_OFFERING_ITEM_REVIEW_IMPORT_ACK=write-encrypted-local-offering-item-review-objects`,
+`LIVING_ATLAS_LOGSEQ_OFFERING_ITEM_REVIEW_GROUPED_PACKET_PATH`,
+`LIVING_ATLAS_LOGSEQ_OFFERING_ITEM_REVIEW_RESOLUTION_PATH`,
+`LIVING_ATLAS_LIVE_AUTHORITY_ID`, `LIVING_ATLAS_LOCAL_GRAPH_DIR`,
+`LIVING_ATLAS_LOCAL_KEYRING`, and
+`LIVING_ATLAS_LOCAL_KEYRING_PASSPHRASE`. Optional promoted resolutions may carry
+schema-valid endpoint and edge payloads; defer/reject resolutions become
+encrypted quarantine records. The import emits a hash/count-only ledger and
+never attempts Cloudflare sync.
+
 Use `connector:enrichment-report` before importing any connector-derived facts
 from mail, calendar, meeting, chat, document, or manual-file workflows. Set
 `LIVING_ATLAS_CONNECTOR_ENRICHMENT_PACKET_PATH` to a local-private JSON packet

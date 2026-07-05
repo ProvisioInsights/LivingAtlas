@@ -34,22 +34,48 @@ This is the host-blind remote mode.
 - The key must not be persisted, echoed, logged, stored in D1/KV/R2, or placed in
   telemetry.
 - Decrypt happens inside the Cloudflare runtime for that request/session.
-- V1 cloud-unlock decrypt supports synced `ciphertext-inline` object envelopes
-  using `AES-GCM-256+cloud-unlock-v1`.
+- Cloud-unlock decrypt supports synced `ciphertext-inline` object envelopes in
+  two tiers:
+  - **normal** — `AES-GCM-256+cloud-unlock-v1`, opened with the primary key.
+  - **super-sensitive** — `AES-GCM-256+cloud-unlock-escalated-v1`, opened only
+    after an **escalation** with a second key (see below).
 - The encrypted payload is authenticated to the object authority, object id,
   type, version, access class, encryption class, key ref, timestamps, and
   visible metadata so ciphertext cannot be silently swapped onto another object.
+
+### Two-key escalation
+
+Within a cloud-unlock session the object's payload algorithm class decides what
+it takes to decrypt:
+
+- A **normal** object decrypts with the primary key
+  (`x-living-atlas-cloud-unlock-key`) as before.
+- A **super-sensitive** object is host-blind to the primary key alone. Requested
+  with only the primary key, the tool returns
+  `{ ok: false, reason: "escalation-required", tier: "super-sensitive",
+  escalation_required_header: "x-living-atlas-escalation-key", … }` and does
+  **not** decrypt. Re-requested with a valid escalation key in
+  `x-living-atlas-escalation-key`, it decrypts and returns
+  `tier: "super-sensitive"`, `escalated: true`, and the payload.
+
+Neither the primary key nor the escalation key may be persisted, echoed, logged,
+stored in D1/KV/R2, or placed in telemetry — both are subject to the same
+key-custody invariant, proven adversarially across success, escalation-required,
+wrong-key, and malformed paths.
 
 This is not host-blind while the request is active. It reduces stored-key and
 subpoena-at-rest exposure, but the cloud runtime can theoretically observe key
 material and plaintext during unlock.
 
-Current implementation status: implemented for the v1 inline envelope format.
-The remote MCP rejects unlock keys in query strings, requires the transient key
-in `x-living-atlas-cloud-unlock-key`, refuses quarantine objects, rejects
-unsupported ciphertext formats, and does not return or persist the supplied key.
-`ciphertext-ref` blob decrypt is intentionally outside this v1 tool until the
-external blob payload format is finalized.
+Current implementation status: implemented for the inline envelope format, both
+tiers. The remote MCP rejects unlock keys in query strings, requires the
+transient primary key in `x-living-atlas-cloud-unlock-key` and (for
+super-sensitive objects) the escalation key in `x-living-atlas-escalation-key`,
+refuses quarantine objects, rejects unsupported ciphertext formats, and does not
+return or persist either supplied key. **The escalation branch only takes effect
+on Cloudflare after the worker is redeployed.** `ciphertext-ref` blob decrypt is
+intentionally outside this tool until the external blob payload format is
+finalized.
 
 ## Mode C: Local-Keyholding Only
 
@@ -81,4 +107,6 @@ This remains the default for truly sensitive graph work.
 - Remote MCP query strings reject unlock keys and tokens.
 - Remote MCP mode discovery uses `access_modes`.
 - Remote MCP sensitive decrypt uses `sensitive_decrypt` with
-  `authority_id` and `object_id`.
+  `authority_id` and `object_id`; the primary key rides in
+  `x-living-atlas-cloud-unlock-key` and the escalation key (for super-sensitive
+  objects) in `x-living-atlas-escalation-key`.

@@ -208,8 +208,9 @@ every noun phrase or model-generated keyword.
 
 Deferred/non-endpoint concepts:
 
-- `artifact`: stored/encrypted evidence or content first; graph endpoint later
-  after artifact predicates and leakage rules are designed.
+- `item`: concrete things such as devices, documents, tickets, reservations,
+  receipts, seats, rooms, deliverables, and created works. Source/provenance
+  objects remain encrypted storage metadata unless intentionally promoted.
 - broad `concept`: tag/index/attribute unless explicitly promoted to controlled `topic`.
 - `source`: provenance metadata (`source`, `source_ref`, `source_path_ref`),
   not a relationship endpoint.

@@ -1,0 +1,19 @@
+{
+  "name": "@living-atlas/local-decryption-oracle",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./grant-verify": "./src/grant-verify.ts"
+  },
+  "scripts": {
+    "test": "vitest run --root ../.. packages/local-decryption-oracle/src",
+    "typecheck": "tsc --ignoreConfig --noEmit --target ES2022 --module ESNext --moduleResolution Bundler --strict --noUncheckedIndexedAccess --isolatedModules --skipLibCheck --types node,vitest,@cloudflare/workers-types src/index.ts src/grant-verify.ts src/grant-verify.test.ts src/oracle.ts src/oracle.test.ts"
+  },
+  "dependencies": {
+    "@living-atlas/contracts": "workspace:*",
+    "@living-atlas/remote-crypto": "workspace:*",
+    "@living-atlas/remote-mcp-gateway": "workspace:*"
+  }
+}

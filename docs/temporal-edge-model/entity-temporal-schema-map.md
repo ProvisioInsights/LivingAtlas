@@ -28,6 +28,8 @@ Implemented temporal edge endpoints:
 | `location` | A physical or geographic place. | Implemented |
 | `occurrence` | A thing that happened, is happening, or is scheduled to happen. | Implemented in the updated schema contract. |
 | `topic` | A controlled theme, subject, question, risk, skill, or domain. | Implemented in the updated schema contract. |
+| `offering` | Something offered, sold, booked, licensed, subscribed to, or otherwise available from a provider. | Implemented in the updated schema contract. |
+| `item` | A specific thing owned, bought, received, reserved, created, or handled. | Implemented in the updated schema contract. |
 
 Endpoint summary:
 
@@ -39,12 +41,13 @@ Endpoint summary:
 | `location` | A physical or geographic place. | Keep as a core endpoint. |
 | `occurrence` | A thing that happened, is happening, or is scheduled to happen. | Use `occurrence` instead of `event` to avoid confusing knowledge happenings with audit/sync/runtime events. |
 | `topic` | A controlled subject or theme. | Use `topic` instead of broad `concept`; do not auto-create topics from every noun phrase. |
+| `offering` | A provider-facing product, service, subscription, travel class, hotel room type, ticket class, package, or experience. | Use for reusable options available from a provider. |
+| `item` | A specific device, document, ticket, reservation, receipt, seat, room, deliverable, or created work. | Use for concrete instances, ownership, purchases, bookings, and produced things. |
 
 Not temporal edge endpoints yet:
 
 | Type | Reason | Current representation |
 |---|---|---|
-| `artifact` | Stored evidence and content need their own document/file graph layer before becoming relationship endpoints. | Encrypted runtime object, attachment, page, block, transcript, or source target. |
 | `concept` | Uncontrolled concepts can explode into vague AI-generated nodes. | Tags, metadata, reference indexes, or explicit promotion to controlled `topic`. |
 | `source` | Provenance is usually metadata, not a graph entity. | `source`, `source_ref`, `source_path_ref`, hashes, and audit/provenance fields. |
 | `cluster` | A cluster is a computed view over graph topology, not an authored fact. | Derived graph view/query output. Manual groups become `organization` or `project`. |
@@ -58,14 +61,14 @@ flowchart TD
   Entity --> Location["location"]
   Entity --> Occurrence["occurrence"]
   Entity --> Topic["topic"]
+  Entity --> Offering["offering"]
+  Entity --> Item["item"]
 
   NonEndpoint["Not endpoint yet"]
-  NonEndpoint --> Artifact["artifact"]
   NonEndpoint --> Concept["concept"]
   NonEndpoint --> Source["source"]
   NonEndpoint --> Cluster["cluster"]
 
-  Artifact --> Storage["encrypted stored object"]
   Concept --> Index["tag/index/taxonomy later"]
   Source --> Provenance["source_ref / provenance metadata"]
   Cluster --> View["derived view from edges"]
@@ -144,7 +147,6 @@ Durable human-authored groups and cohorts use `organization` or `project`, not
 Subtypes:
 
 - `initiative`
-- `product`
 - `deal`
 - `research`
 - `campaign`
@@ -161,6 +163,77 @@ Fields:
 | `status` | Project status when useful; relationship status still lives on edges. |
 | `start_date` / `end_date` | Project-level date bounds when known. |
 | `primary_location_ref` | Optional link when the project is place-bound. |
+
+Use `project` for bounded efforts and workstreams. Use `offering` for products
+or services such as Kai, a hotel suite type, an airline class, or a subscription.
+
+### `offering`
+
+Subtypes:
+
+- `product`
+- `software-product`
+- `hardware-product`
+- `service`
+- `subscription`
+- `membership`
+- `hotel-room-type`
+- `travel-class`
+- `fare-class`
+- `ticket-class`
+- `menu-item`
+- `media`
+- `experience`
+- `package`
+- `other`
+
+Fields:
+
+| Field | Meaning |
+|---|---|
+| `name` | Primary offering label. |
+| `aliases` | Alternate product, service, or package names. |
+| `provider_ref` | Optional organization that offers, sells, books, or licenses it. |
+| `homepage_ref` | Optional opaque external reference. |
+| `status` | Offering status when useful. |
+
+Use `offering` for reusable things available from a provider: software
+products, hotel suite types, airline classes, service packages, subscriptions,
+ticket classes, menu items, and experiences.
+
+### `item`
+
+Subtypes:
+
+- `device`
+- `document`
+- `ticket`
+- `reservation`
+- `receipt`
+- `file`
+- `photo`
+- `physical-item`
+- `vehicle`
+- `seat`
+- `room`
+- `deliverable`
+- `created-work`
+- `other`
+
+Fields:
+
+| Field | Meaning |
+|---|---|
+| `name` | Primary item label. |
+| `aliases` | Alternate item labels. |
+| `offering_ref` | Optional link to the offering/model/class this item is an instance of. |
+| `owner_ref` | Optional owner when known. |
+| `location_ref` | Optional place where the item is or was used. |
+| `acquired_on` | Optional date when bought, received, booked, or acquired. |
+| `status` | Item state when useful. |
+
+Use `item` for concrete instances: a specific device, ticket, reservation,
+receipt, seat, room, document, deliverable, or thing created for someone.
 
 ### `location`
 
@@ -312,13 +385,19 @@ flowchart LR
   Location["location"]
   Occurrence["occurrence"]
   Topic["topic"]
+  Offering["offering"]
+  Item["item"]
 
   Source["source_ref"]
-  Artifact["encrypted artifact/object"]
   View["derived cluster/view"]
 
   Person -->|"employed-by; valid_from/valid_to; optional schedule"| Org
   Person -->|"advises; valid_from/valid_to"| Project
+  Org -->|"offered-by (inverse modeled as offering -> org)"| Offering
+  Item -->|"instance-of"| Offering
+  Person -->|"owns / purchased"| Item
+  Person -->|"created"| Item
+  Item -->|"created-for"| Project
   Org -->|"based-in"| Location
 
   Person -->|"participant-in"| Occurrence
@@ -413,10 +492,9 @@ recurrence:
       note: Synthetic exception
 ```
 
-## Artifact Sequencing
+## Source And Storage Sequencing
 
-Artifacts are important, but they should not become temporal edge endpoints
-until the artifact graph is intentionally designed.
+Stored evidence remains separate from item endpoints.
 
 V1 behavior:
 
@@ -424,9 +502,12 @@ V1 behavior:
   runtime objects.
 - Reference them from edges and occurrences through `source_ref` or equivalent
   provenance fields.
-- Do not add rich artifact predicates such as `artifact -> mentions -> person`
-  or `artifact -> evidence-for -> edge` until artifact-specific predicates,
-  access rules, and leakage tests are defined.
+- Promote a document, ticket, receipt, reservation, or file to `item` only when
+  it should be a first-class thing in the knowledge graph. Otherwise keep it as
+  encrypted source/provenance.
+- Do not add source-provenance predicates such as `source -> mentions -> person`
+  or `source -> evidence-for -> edge` until source-specific predicates, access
+  rules, and leakage tests are defined.
 
 ## Implementation Notes
 

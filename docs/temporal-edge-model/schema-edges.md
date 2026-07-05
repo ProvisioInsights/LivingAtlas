@@ -11,22 +11,24 @@ created:: 2026-06-17
 	- **System time (`recorded-at`/`superseded-at`) is LAZY and lives in the event log, NOT on the page** — written only when a correction occurs.
 	- Open attrs: any other non-reserved `key:: value` (amount, investment-status, role, condition, scope, relationship [prose], note...). Nuance never becomes a predicate.
 - ## Endpoint types (valid `src`/`dst`)
-	- Implemented endpoints: `person`, `organization`, `project`, `location`, `occurrence`, `topic`.
+	- Implemented endpoints: `person`, `organization`, `project`, `location`, `occurrence`, `topic`, `offering`, `item`.
 	- Use `occurrence` for knowledge happenings. Prefer `occurrence` over `event` to avoid confusing graph happenings with runtime audit/sync/change events.
 	- Use `topic` for controlled subjects/themes. Broad `concept` remains non-endpoint metadata until explicitly promoted to a controlled topic.
-	- Not endpoints: `artifact`, broad `concept`, `source`, `cluster`. Artifacts and sources are provenance/storage concepts, concepts are tags/indexes unless promoted, and clusters are derived views from edges.
+	- Use `offering` for reusable provider-facing products, services, subscriptions, packages, travel classes, hotel room types, and ticket classes.
+	- Use `item` for concrete devices, documents, tickets, reservations, receipts, seats, rooms, deliverables, and created works.
+	- Not endpoints: broad `concept`, `source`, `cluster`. Sources remain provenance/storage metadata, concepts are tags/indexes unless promoted, and clusters are derived views from edges.
 - ## Value enums (closed)
-	- `status::` = active | pending | ended | dormant (two-tier derivation, see `implementation-guide.md` §5.8) · `confidence::` = high | medium | low · `category` = employment | governance | advisory | capital | structural | customer | network | affiliation | geography | occurrence | taxonomy | personal.
+	- `status::` = active | pending | ended | dormant (two-tier derivation, see `implementation-guide.md` §5.8) · `confidence::` = high | medium | low · `category` = employment | governance | advisory | capital | structural | customer | network | affiliation | geography | occurrence | taxonomy | commerce | creation | personal.
 - ## Predicate registry v4-draft (empirically grounded — evidence column)
 
 	| predicate | category | direction | domain -> range | required | evidence |
 	|---|---|---|---|---|---|
 	| employed-by | employment | dir (inv: employs) | person -> organization | valid-from | org-style affiliation, employer-* |
 	| reports-to | employment | dir (inv: manages) | person -> person | valid-from | concept |
-	| founder-of | employment | dir (inv: founded-by) | person -> organization, project | valid-from | renamed off `founded::` (which is a YEAR -> `founded-year::`) |
+	| founder-of | employment | dir (inv: founded-by) | person -> organization, project, offering | valid-from | renamed off `founded::` (which is a YEAR -> `founded-year::`) |
 	| board-member-of | governance | dir (inv: board-includes) | person -> organization | valid-from | chair:: |
-	| advises | advisory | dir (inv: advised-by) | person -> organization, project | valid-from | -advisory-past (use `scope::` attr, not `advises-on`) |
-	| invests-in | capital | dir (inv: funded-by) | person, organization -> organization, project | amount, investment-status | -fundraise-channel, -portfolio |
+	| advises | advisory | dir (inv: advised-by) | person -> organization, project, offering | valid-from | -advisory-past (use `scope::` attr, not `advises-on`) |
+	| invests-in | capital | dir (inv: funded-by) | person, organization -> organization, project, offering | amount, investment-status | -fundraise-channel, -portfolio |
 	| customer-of | customer | dir (inv: vendor-to) | organization -> organization | — | -revenue, -vendor, customer-of:: |
 	| engaged | customer | dir | person -> organization | valid-from | customer roster (era engagements) |
 	| acquired-by | structural | dir (inv: acquired) | organization -> organization | valid-from | acquired-by |
@@ -59,6 +61,13 @@ created:: 2026-06-17
 	| about | dir | person, organization, project, occurrence -> topic | entity/happening is about a controlled topic |
 	| related-topic | sym | topic -> topic | controlled topic association |
 	| part-of-topic | dir | topic -> topic | controlled topic hierarchy |
+	| offered-by | commerce | dir | offering -> organization | provider relationship |
+	| instance-of | commerce | dir | item -> offering | concrete item to model/class/offering |
+	| purchased-from | commerce | dir | person, organization -> organization | purchase source |
+	| purchased | commerce | dir | person, organization -> offering, item | purchased thing |
+	| owns | commerce | dir | person, organization -> item | ownership |
+	| created | creation | dir | person, organization -> item, offering | made thing |
+	| created-for | creation | dir | item, offering -> person, organization, project, offering | beneficiary/client/context |
 
 	These rows are active in the updated schema contract. Writers must still
 	enforce the same access, policy, and leakage checks used by every other
@@ -70,6 +79,7 @@ created:: 2026-06-17
 - ## Enforcement
 	- Hard reject at `write_edge`; edge-scoped audit gate in `graph_audit_v2.py` (separate from the global `hard_violations` sum) with `LOGSEQ_EDGE_AUDIT=warn` escape; quarantine on batch.
 - ## Changelog
+	- 2026-06-24: added `offering` and `item` endpoints plus commerce/creation predicates for products/services, tickets/reservations/devices, purchases, ownership, and created works.
 	- 2026-06-23: added controlled `topic` endpoint and taxonomy predicates (`about`, `related-topic`, `part-of-topic`); expanded `discussed-at` to topic -> occurrence.
 	- 2026-06-23: documented the endpoint/fact split, the `occurrence` endpoint target, recurrence attributes, and artifact/source/concept deferral.
 	- 2026-06-23: removed `cluster` as a first-class node type, updated `member-of` range to `organization` only, and made clusters derived query/view output instead of persisted endpoints.

@@ -1,0 +1,243 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Living Atlas Graph Workbench</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">Living Atlas</p>
+          <h1>Graph Workbench</h1>
+        </div>
+        <div class="topbar-actions">
+          <span class="server-status" id="serverStatus">synthetic local</span>
+          <button class="quiet-button" id="resetGraph" type="button">Reset fixture</button>
+          <button class="strong-button" id="exportGraph" type="button">Export JSON</button>
+        </div>
+      </header>
+
+      <main class="workspace">
+        <aside class="left-panel" aria-label="Graph controls">
+          <section class="panel-section">
+            <h2>Access Lens</h2>
+            <div class="segmented" role="radiogroup" aria-label="Access lens">
+              <button class="segment" type="button" data-mode="remote" aria-pressed="false">Remote</button>
+              <button class="segment" type="button" data-mode="cloud-unlock" aria-pressed="false">Cloud unlock</button>
+              <button class="segment" type="button" data-mode="local" aria-pressed="true">Local</button>
+            </div>
+          </section>
+
+          <section class="panel-section">
+            <label class="field-label" for="searchGraph">Search</label>
+            <input id="searchGraph" class="text-input" type="search" autocomplete="off" placeholder="Name, type, predicate, source">
+          </section>
+
+          <section class="panel-section">
+            <h2>Neighborhood</h2>
+            <div class="segmented compact" role="radiogroup" aria-label="Neighborhood depth">
+              <button class="segment" type="button" data-focus-depth="0" aria-pressed="false">Only</button>
+              <button class="segment" type="button" data-focus-depth="1" aria-pressed="true">1 hop</button>
+              <button class="segment" type="button" data-focus-depth="2" aria-pressed="false">2 hops</button>
+              <button class="segment" type="button" data-focus-depth="3" aria-pressed="false">3 hops</button>
+            </div>
+            <div class="button-row">
+              <button class="quiet-button" id="clearFocus" type="button">Clear focus</button>
+              <button class="quiet-button" id="fitGraph" type="button">Fit</button>
+            </div>
+          </section>
+
+          <section class="panel-section metrics">
+            <div>
+              <span class="metric-value" id="nodeCount">0</span>
+              <span class="metric-label">nodes</span>
+            </div>
+            <div>
+              <span class="metric-value" id="edgeCount">0</span>
+              <span class="metric-label">edges</span>
+            </div>
+            <div>
+              <span class="metric-value" id="withheldCount">0</span>
+              <span class="metric-label">withheld</span>
+            </div>
+            <div>
+              <span class="metric-value" id="issueCount">0</span>
+              <span class="metric-label">issues</span>
+            </div>
+          </section>
+
+          <section class="panel-section">
+            <h2>Review Queue</h2>
+            <div class="button-row">
+              <button class="quiet-button" id="previousIssue" type="button">Previous issue</button>
+              <button class="quiet-button" id="nextIssue" type="button">Next issue</button>
+            </div>
+            <div class="tab-row" role="tablist" aria-label="Review queue">
+              <button class="tab-button" type="button" data-queue-tab="issues" aria-pressed="true">Issues</button>
+              <button class="tab-button" type="button" data-queue-tab="supernodes" aria-pressed="false">Hubs</button>
+              <button class="tab-button" type="button" data-queue-tab="recent" aria-pressed="false">Recent</button>
+              <button class="tab-button" type="button" data-queue-tab="predicates" aria-pressed="false">Edges</button>
+            </div>
+            <div id="queueList" class="queue-list"></div>
+          </section>
+
+          <section class="panel-section">
+            <h2>Node Types</h2>
+            <div id="typeFilters" class="type-grid"></div>
+          </section>
+
+          <section class="panel-section">
+            <h2>Predicate Filters</h2>
+            <div id="predicateFilters" class="predicate-list"></div>
+          </section>
+        </aside>
+
+        <section class="map-panel" aria-label="Graph map">
+          <div class="map-header">
+            <div>
+              <p class="eyebrow">Current View</p>
+              <h2 id="mapTitle">Focused graph</h2>
+            </div>
+            <div class="legend" aria-label="Graph legend">
+              <span><i class="legend-dot person"></i>person</span>
+              <span><i class="legend-dot organization"></i>organization</span>
+              <span><i class="legend-dot occurrence"></i>occurrence</span>
+              <span><i class="legend-line"></i>edge</span>
+              <span><i class="legend-ring"></i>issue</span>
+            </div>
+          </div>
+
+          <div class="graph-frame">
+            <div id="graphStage" class="graph-stage" role="img" aria-label="Interactive knowledge graph"></div>
+            <div class="graph-overlay">
+              <span id="focusSummary">No focus</span>
+            </div>
+          </div>
+
+          <div class="table-panel">
+            <div class="table-header">
+              <div class="tab-row" role="tablist" aria-label="Visible records">
+                <button class="tab-button" type="button" data-table-tab="nodes" aria-pressed="true">Nodes</button>
+                <button class="tab-button" type="button" data-table-tab="edges" aria-pressed="false">Edges</button>
+              </div>
+              <span id="tableSummary" class="table-summary">0 records</span>
+            </div>
+            <div id="graphTable" class="graph-table"></div>
+          </div>
+
+          <div class="timeline-strip" id="timelineStrip" aria-label="Timeline"></div>
+        </section>
+
+        <aside class="right-panel" aria-label="Inspector">
+          <section class="panel-section selected-card">
+            <p class="eyebrow">Selected</p>
+            <div id="selectedDetail"></div>
+          </section>
+
+          <section class="panel-section">
+            <h2>Node</h2>
+            <form id="nodeForm" class="form-grid">
+              <label>
+                <span>Name</span>
+                <input class="text-input" name="name" required>
+              </label>
+              <label>
+                <span>Type</span>
+                <select class="text-input" name="type"></select>
+              </label>
+              <label>
+                <span>Subtype</span>
+                <input class="text-input" name="subtype" value="other" required>
+              </label>
+              <label>
+                <span>Access</span>
+                <select class="text-input" name="access_class">
+                  <option value="remote-safe">remote-safe</option>
+                  <option value="shareable">shareable</option>
+                  <option value="release">release</option>
+                  <option value="local-private">local-private</option>
+                  <option value="quarantine">quarantine</option>
+                </select>
+              </label>
+              <label>
+                <span>Encryption</span>
+                <select class="text-input" name="encryption_class">
+                  <option value="plaintext">plaintext</option>
+                  <option value="remote-readable">remote-readable</option>
+                  <option value="client-encrypted">client-encrypted</option>
+                  <option value="local-only-index">local-only-index</option>
+                </select>
+              </label>
+              <label>
+                <span>Confidence</span>
+                <select class="text-input" name="confidence">
+                  <option value="high">high</option>
+                  <option value="medium" selected>medium</option>
+                  <option value="low">low</option>
+                </select>
+              </label>
+              <div class="button-row">
+                <button class="strong-button" type="submit">Create node</button>
+                <button class="quiet-button" id="updateNode" type="button">Update selected</button>
+                <button class="danger-button" id="deleteNode" type="button">Tombstone</button>
+              </div>
+            </form>
+          </section>
+
+          <section class="panel-section">
+            <h2>Edge</h2>
+            <form id="edgeForm" class="form-grid">
+              <label>
+                <span>Source</span>
+                <select class="text-input" name="source"></select>
+              </label>
+              <label>
+                <span>Predicate</span>
+                <input class="text-input" list="predicateOptions" name="predicate" required>
+                <datalist id="predicateOptions"></datalist>
+              </label>
+              <label>
+                <span>Target</span>
+                <select class="text-input" name="target"></select>
+              </label>
+              <label>
+                <span>Valid from</span>
+                <input class="text-input" name="valid_from" value="2026">
+              </label>
+              <div class="button-row">
+                <button class="strong-button" type="submit">Create edge</button>
+                <button class="quiet-button" id="endEdge" type="button">End selected</button>
+                <button class="danger-button" id="deleteEdge" type="button">Delete edge</button>
+              </div>
+            </form>
+          </section>
+
+          <section class="panel-section">
+            <h2>Validation</h2>
+            <div id="validationList" class="validation-list"></div>
+          </section>
+
+          <section class="panel-section">
+            <h2>MCP Draft</h2>
+            <pre id="operationDraft" class="code-block"></pre>
+          </section>
+
+          <section class="panel-section">
+            <h2>Import</h2>
+            <textarea id="importBuffer" class="import-buffer" spellcheck="false" placeholder="Paste workbench JSON"></textarea>
+            <button class="quiet-button full-width" id="importGraph" type="button">Load JSON</button>
+          </section>
+
+          <section class="panel-section">
+            <h2>Audit</h2>
+            <div id="auditList" class="audit-list"></div>
+          </section>
+        </aside>
+      </main>
+    </div>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

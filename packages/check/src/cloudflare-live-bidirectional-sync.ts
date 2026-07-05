@@ -22,6 +22,7 @@ import {
 } from "@living-atlas/local-keyring";
 import {
   applyPulledEnvelopes,
+  FileSyncConflictLedger,
   buildCiphertextSyncBatch,
   fetchSyncEnvelopes,
   fetchSyncStatus,
@@ -38,6 +39,7 @@ import {
   printCloudflareLiveUsageGateResult,
   runCloudflareLiveUsageGate
 } from "./cloudflare-live-usage-gate";
+import { resolveRuntimeSecrets, serializeRuntimeEnvFile } from "./local-runtime-secrets";
 
 const ackEnv = "LIVING_ATLAS_LIVE_BIDIRECTIONAL_SYNC_ACK";
 const ackValue = "mutates-deployed-sync-state";
@@ -147,62 +149,20 @@ function runtimePaths(): LocalRuntimePaths {
   };
 }
 
-function parseRuntimeEnvFile(value: string): Partial<RuntimeSecrets> {
-  const output: Partial<RuntimeSecrets> = {};
-  for (const line of value.split(/\r?\n/)) {
-    const match = /^([A-Z0-9_]+)=(.*)$/.exec(line.trim());
-    if (!match) {
-      continue;
-    }
-    const raw = match[2] ?? "";
-    const parsed = raw.startsWith("\"") && raw.endsWith("\"")
-      ? JSON.parse(raw)
-      : raw;
-    if (match[1] === "LIVING_ATLAS_LOCAL_CONTROL_STORE_PASSPHRASE") {
-      output.controlPassphrase = parsed;
-    }
-    if (match[1] === "LIVING_ATLAS_LOCAL_KEYRING_PASSPHRASE") {
-      output.keyringPassphrase = parsed;
-    }
-    if (match[1] === "LIVING_ATLAS_LOCAL_MCP_TOKEN") {
-      output.localMcpToken = parsed;
-    }
-  }
-  return output;
-}
-
 async function readOrCreateRuntimeSecrets(paths: LocalRuntimePaths): Promise<RuntimeSecrets> {
-  const fromEnv = {
-    controlPassphrase: envValue("LIVING_ATLAS_LOCAL_CONTROL_STORE_PASSPHRASE"),
-    keyringPassphrase: envValue("LIVING_ATLAS_LOCAL_KEYRING_PASSPHRASE"),
-    localMcpToken: envValue("LIVING_ATLAS_LOCAL_MCP_TOKEN")
-  };
-  const existing = existsSync(paths.envPath)
-    ? parseRuntimeEnvFile(await readFile(paths.envPath, "utf8"))
-    : {};
-  const secrets = {
-    controlPassphrase: fromEnv.controlPassphrase ?? existing.controlPassphrase ?? randomSecret("control"),
-    keyringPassphrase: fromEnv.keyringPassphrase ?? existing.keyringPassphrase ?? randomSecret("keyring"),
-    localMcpToken: fromEnv.localMcpToken ?? existing.localMcpToken ?? randomSecret("mcp")
-  };
+  const resolved = resolveRuntimeSecrets({
+    envFileText: existsSync(paths.envPath) ? await readFile(paths.envPath, "utf8") : undefined,
+    generate: randomSecret
+  });
 
   await mkdir(paths.rootDir, { recursive: true });
-  const lines = [
-    "# Local LivingAtlas runtime secrets. Do not commit.",
-    `LIVING_ATLAS_LOCAL_REPLICA_DIR=${JSON.stringify(paths.rootDir)}`,
-    `LIVING_ATLAS_LOCAL_CONTROL_STORE=${JSON.stringify(paths.controlStorePath)}`,
-    `LIVING_ATLAS_LOCAL_CONTROL_STORE_PASSPHRASE=${JSON.stringify(secrets.controlPassphrase)}`,
-    `LIVING_ATLAS_LOCAL_KEYRING=${JSON.stringify(paths.keyringPath)}`,
-    `LIVING_ATLAS_LOCAL_KEYRING_PASSPHRASE=${JSON.stringify(secrets.keyringPassphrase)}`,
-    `LIVING_ATLAS_LOCAL_GRAPH_DIR=${JSON.stringify(paths.graphDir)}`,
-    `LIVING_ATLAS_LOCAL_SYNC_OUTBOX_DIR=${JSON.stringify(paths.outboxDir)}`,
-    `LIVING_ATLAS_LOCAL_MCP_TOKEN=${JSON.stringify(secrets.localMcpToken)}`,
-    `LIVING_ATLAS_ACTIVITY_LOG=${JSON.stringify(paths.activityLogPath)}`,
-    ""
-  ];
-  await writeFile(paths.envPath, lines.join("\n"), { mode: ownerOnlyMode });
+  await writeFile(paths.envPath, serializeRuntimeEnvFile({ paths, secrets: resolved }), { mode: ownerOnlyMode });
   await chmod(paths.envPath, ownerOnlyMode);
-  return secrets;
+  return {
+    controlPassphrase: resolved.controlPassphrase.value,
+    keyringPassphrase: resolved.keyringPassphrase.value,
+    localMcpToken: resolved.localMcpToken.value
+  };
 }
 
 function remapControlState(input: LocalControlState, options: {
@@ -356,7 +316,8 @@ async function pullAndApplyAll(input: {
     const result = await applyPulledEnvelopes({
       store: input.store,
       response: pulled.response,
-      actorId: input.syncClientId
+      actorId: input.syncClientId,
+      conflictLedger: new FileSyncConflictLedger(join(input.paths.rootDir, "sync-conflicts.jsonl"))
     });
     applied += result.applied_count;
     skipped += result.skipped_count;

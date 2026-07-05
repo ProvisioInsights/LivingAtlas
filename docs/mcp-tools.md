@@ -88,6 +88,8 @@ Supported endpoint types:
 - `location`
 - `occurrence`
 - `topic`
+- `offering`
+- `item`
 
 Use `attrs.schedule.recurrence_set` for RFC 5545 recurrence lines. Do not use
 legacy split recurrence field names at the top level of `attrs`.

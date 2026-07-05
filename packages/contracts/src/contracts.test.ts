@@ -769,6 +769,8 @@ describe("temporal contracts", () => {
     expect(EndpointTypeSchema.safeParse("concept").success).toBe(false);
     expect(EndpointTypeSchema.safeParse("occurrence").success).toBe(true);
     expect(EndpointTypeSchema.safeParse("topic").success).toBe(true);
+    expect(EndpointTypeSchema.safeParse("offering").success).toBe(true);
+    expect(EndpointTypeSchema.safeParse("item").success).toBe(true);
 
     const parsed = TemporalEdgeSchema.safeParse({
       edge_id: "la_edge_contract0001",
@@ -843,6 +845,36 @@ describe("temporal contracts", () => {
       created_at: timestamp,
       updated_at: timestamp
     }).success).toBe(false);
+  });
+
+  it("accepts offering and item endpoint records", () => {
+    expect(EndpointRecordSchema.safeParse({
+      object_id: "la_object_contract0001",
+      type: "offering",
+      subtype: "software-product",
+      name: "Synthetic Security Product",
+      provider_ref: "la_object_contract0002",
+      homepage_ref: "https://example.invalid/product",
+      status: "active",
+      access_class: "local-private",
+      created_at: timestamp,
+      updated_at: timestamp
+    }).success).toBe(true);
+
+    expect(EndpointRecordSchema.safeParse({
+      object_id: "la_object_contract0003",
+      type: "item",
+      subtype: "device",
+      name: "Synthetic Device",
+      offering_ref: "la_object_contract0001",
+      owner_ref: "la_object_contract0004",
+      location_ref: "la_object_contract0005",
+      acquired_on: "2026-06",
+      status: "owned",
+      access_class: "local-private",
+      created_at: timestamp,
+      updated_at: timestamp
+    }).success).toBe(true);
   });
 
   it("accepts recurring occurrence endpoint records with recurrence timezone", () => {
@@ -1036,6 +1068,52 @@ describe("temporal contracts", () => {
       valid_from: "2026-06-21",
       source: "test"
     }).success).toBe(false);
+  });
+
+  it("accepts offering and item predicates", () => {
+    expect(TemporalEdgeSchema.safeParse({
+      edge_id: "la_edge_contract0001",
+      source_object_id: "la_object_contract0001",
+      source_type: "offering",
+      target_object_id: "la_object_contract0002",
+      target_type: "organization",
+      predicate: "offered-by",
+      valid_from: "2026",
+      source: "test"
+    }).success).toBe(true);
+
+    expect(TemporalEdgeSchema.safeParse({
+      edge_id: "la_edge_contract0002",
+      source_object_id: "la_object_contract0003",
+      source_type: "item",
+      target_object_id: "la_object_contract0001",
+      target_type: "offering",
+      predicate: "instance-of",
+      valid_from: "2026",
+      source: "test"
+    }).success).toBe(true);
+
+    expect(TemporalEdgeSchema.safeParse({
+      edge_id: "la_edge_contract0003",
+      source_object_id: "la_object_contract0004",
+      source_type: "person",
+      target_object_id: "la_object_contract0003",
+      target_type: "item",
+      predicate: "owns",
+      valid_from: "2026",
+      source: "test"
+    }).success).toBe(true);
+
+    expect(TemporalEdgeSchema.safeParse({
+      edge_id: "la_edge_contract0004",
+      source_object_id: "la_object_contract0003",
+      source_type: "item",
+      target_object_id: "la_object_contract0004",
+      target_type: "person",
+      predicate: "created-for",
+      valid_from: "2026",
+      source: "test"
+    }).success).toBe(true);
   });
 
   it("validates recurrence schedules on temporal edge attributes", () => {

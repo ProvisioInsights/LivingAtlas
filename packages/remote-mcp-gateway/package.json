@@ -1,0 +1,24 @@
+{
+  "name": "@living-atlas/remote-mcp-gateway",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./grant": "./src/grant.ts"
+  },
+  "scripts": {
+    "test": "vitest run --root ../.. packages/remote-mcp-gateway/src",
+    "typecheck": "tsc --ignoreConfig --noEmit --target ES2022 --module ESNext --moduleResolution Bundler --strict --noUncheckedIndexedAccess --isolatedModules --skipLibCheck --types node,vitest,@cloudflare/workers-types src/index.ts src/index.test.ts src/policy.ts src/policy.test.ts src/webauthn.ts src/webauthn.test.ts src/test-doubles.ts src/grant.ts src/grant.test.ts src/guardrails.ts src/guardrails.test.ts src/rate-limit.ts src/rate-limit.test.ts src/redaction.ts src/redaction.test.ts src/rotation.ts src/rotation.test.ts src/oracle-client.ts src/oracle-client.test.ts src/decrypt-resolver.ts src/decrypt-resolver.test.ts src/agent-catalog.ts src/agent.ts src/agent.test.ts src/auth-handler.ts src/auth-handler.test.ts src/streaming.ts src/streaming.test.ts src/isolation.test.ts"
+  },
+  "dependencies": {
+    "@cloudflare/workers-oauth-provider": "0.8.1",
+    "@living-atlas/contracts": "workspace:*",
+    "@living-atlas/mcp-contract": "workspace:*",
+    "@living-atlas/remote-crypto": "workspace:*",
+    "@modelcontextprotocol/sdk": "1.29.0",
+    "@simplewebauthn/server": "13.3.2",
+    "agents": "0.17.3",
+    "zod": "4.4.3"
+  }
+}

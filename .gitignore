@@ -31,6 +31,10 @@ override.tf.json
 *_override.tf
 *_override.tf.json
 
+# private tiering overlay (personal specifics; loaded at runtime from OUTSIDE
+# the repo — belt-and-suspenders so it can never be accidentally tracked)
+tiering-private-ruleset.json
+
 # graph-derived or private data
 fixtures/private/
 generated/
@@ -41,3 +45,5 @@ data/
 *.sqlite3
 *.duckdb
 *.parquet
+.mcp.json
+.living-atlas.deploy.wrangler.jsonc

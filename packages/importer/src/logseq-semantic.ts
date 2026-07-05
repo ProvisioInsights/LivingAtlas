@@ -210,6 +210,34 @@ export type LogseqSemanticGraphObjectsResult = {
   objects: GraphObjectEnvelope[];
 };
 
+export type LogseqSemanticPlaintextGraphObject = {
+  schema_version: 1;
+  authority_id: string;
+  object_id: string;
+  object_type: ObjectType;
+  version: number;
+  access_class: AccessClass;
+  encryption_class: "plaintext";
+  created_at: string;
+  updated_at: string;
+  content_hash: `sha256:${string}`;
+  visible_metadata: {
+    schema_namespace: string;
+    tombstone: false;
+    remote_indexable: false;
+    size_class?: "tiny" | "small" | "medium" | "large" | "huge";
+  };
+  payload: {
+    kind: "plaintext-json";
+    data: Record<string, unknown>;
+  };
+};
+
+export type LogseqSemanticPlaintextGraphObjectsResult = {
+  ledger: LogseqSemanticParityLedger;
+  objects: LogseqSemanticPlaintextGraphObject[];
+};
+
 export type LogseqSemanticKnowledgeSummary = {
   report_schema: "living-atlas-logseq-semantic-knowledge-summary:v1";
   plaintext_policy: "counts-only";
@@ -691,6 +719,58 @@ function canonicalizeEndpointType(value: string | undefined): EndpointTypeCanoni
       return { ok: true, type: "occurrence", subtype: "observation", source: "safe-alias" };
     case "transaction":
       return { ok: true, type: "occurrence", subtype: "transaction", source: "safe-alias" };
+    case "product":
+      return { ok: true, type: "offering", subtype: "product", source: "safe-alias" };
+    case "software-product":
+    case "software_product":
+    case "software":
+    case "saas":
+      return { ok: true, type: "offering", subtype: "software-product", source: "safe-alias" };
+    case "hardware-product":
+    case "hardware_product":
+      return { ok: true, type: "offering", subtype: "hardware-product", source: "safe-alias" };
+    case "service":
+    case "services":
+      return { ok: true, type: "offering", subtype: "service", source: "safe-alias" };
+    case "subscription":
+      return { ok: true, type: "offering", subtype: "subscription", source: "safe-alias" };
+    case "membership":
+      return { ok: true, type: "offering", subtype: "membership", source: "safe-alias" };
+    case "hotel-room-type":
+    case "hotel_room_type":
+    case "suite":
+      return { ok: true, type: "offering", subtype: "hotel-room-type", source: "safe-alias" };
+    case "travel-class":
+    case "travel_class":
+    case "fare-class":
+    case "fare_class":
+      return { ok: true, type: "offering", subtype: normalized.replace(/_/g, "-") as "travel-class" | "fare-class", source: "safe-alias" };
+    case "ticket-class":
+    case "ticket_class":
+      return { ok: true, type: "offering", subtype: "ticket-class", source: "safe-alias" };
+    case "podcast":
+    case "media":
+      return { ok: true, type: "offering", subtype: "media", source: "safe-alias" };
+    case "offering-package":
+      return { ok: true, type: "offering", subtype: "package", source: "safe-alias" };
+    case "device":
+    case "document":
+    case "ticket":
+    case "reservation":
+    case "receipt":
+    case "file":
+    case "photo":
+    case "vehicle":
+    case "seat":
+    case "room":
+    case "deliverable":
+      return { ok: true, type: "item", subtype: normalized as "device" | "document" | "ticket" | "reservation" | "receipt" | "file" | "photo" | "vehicle" | "seat" | "room" | "deliverable", source: "safe-alias" };
+    case "physical-item":
+    case "physical_item":
+      return { ok: true, type: "item", subtype: "physical-item", source: "safe-alias" };
+    case "created-work":
+    case "created_work":
+      return { ok: true, type: "item", subtype: "created-work", source: "safe-alias" };
     default:
       return { ok: false, reason: "unknown-endpoint-type" };
   }
@@ -822,6 +902,34 @@ function parseTypedPageEndpoint(parsed: ParsedLogseqFile, options: {
         objectIdOptions
       ),
       tags: parseListValue(propertyValue(parsed.page_properties, "tags")).map((tag) => tag.replace(/^#/, ""))
+    });
+  } else if (type.type === "offering") {
+    addDefinedFields(endpoint, {
+      provider_ref: parseWikilinkObjectId(
+        propertyValue(parsed.page_properties, "provider")
+          ?? propertyValue(parsed.page_properties, "vendor")
+          ?? propertyValue(parsed.page_properties, "organization")
+          ?? propertyValue(parsed.page_properties, "org"),
+        objectIdOptions
+      ),
+      homepage_ref: propertyValue(parsed.page_properties, "homepage") ?? propertyValue(parsed.page_properties, "website"),
+      status: propertyValue(parsed.page_properties, "status")
+    });
+  } else if (type.type === "item") {
+    addDefinedFields(endpoint, {
+      offering_ref: parseWikilinkObjectId(
+        propertyValue(parsed.page_properties, "offering")
+          ?? propertyValue(parsed.page_properties, "product")
+          ?? propertyValue(parsed.page_properties, "model"),
+        objectIdOptions
+      ),
+      owner_ref: parseWikilinkObjectId(propertyValue(parsed.page_properties, "owner"), objectIdOptions),
+      location_ref: parseWikilinkObjectId(propertyValue(parsed.page_properties, "location"), objectIdOptions),
+      acquired_on: propertyValue(parsed.page_properties, "acquired-on")
+        ?? propertyValue(parsed.page_properties, "acquired_on")
+        ?? propertyValue(parsed.page_properties, "purchased-on")
+        ?? propertyValue(parsed.page_properties, "purchased_on"),
+      status: propertyValue(parsed.page_properties, "status")
     });
   }
 
@@ -1569,7 +1677,9 @@ function emptyEndpointTypeRecord(): Record<EndpointType, number> {
     project: 0,
     location: 0,
     occurrence: 0,
-    topic: 0
+    topic: 0,
+    offering: 0,
+    item: 0
   };
 }
 
@@ -2232,6 +2342,58 @@ export function createLogseqSemanticParityLedger(
   options: CreateLogseqSemanticImportOptions
 ): LogseqSemanticParityLedger {
   return buildSemanticDrafts(files, options).ledger;
+}
+
+function plaintextPayloadData(value: unknown): Record<string, unknown> {
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    return value as Record<string, unknown>;
+  }
+  return { value };
+}
+
+function plaintextObjectFromDraft(input: {
+  authorityId: string;
+  createdAt: string;
+  draft: DraftObject;
+}): LogseqSemanticPlaintextGraphObject {
+  const plaintext = JSON.stringify(input.draft.plaintext_payload);
+  return {
+    schema_version: 1,
+    authority_id: input.authorityId,
+    object_id: input.draft.plan.object_id,
+    object_type: input.draft.object_type,
+    version: 1,
+    access_class: input.draft.plan.access_class,
+    encryption_class: "plaintext",
+    created_at: input.createdAt,
+    updated_at: input.createdAt,
+    content_hash: sha256(plaintext),
+    visible_metadata: {
+      schema_namespace: `import/logseq-semantic/${input.draft.semantic_kind}`,
+      tombstone: false,
+      remote_indexable: false,
+      size_class: sizeClass(Buffer.byteLength(plaintext, "utf8"))
+    },
+    payload: {
+      kind: "plaintext-json",
+      data: plaintextPayloadData(input.draft.plaintext_payload)
+    }
+  };
+}
+
+export function createLogseqSemanticPlaintextGraphObjects(
+  files: MarkdownFileInput[],
+  options: CreateLogseqSemanticImportOptions
+): LogseqSemanticPlaintextGraphObjectsResult {
+  const built = buildSemanticDrafts(files, options);
+  return {
+    ledger: built.ledger,
+    objects: built.drafts.map((draft) => plaintextObjectFromDraft({
+      authorityId: built.authorityId,
+      createdAt: built.createdAt,
+      draft
+    }))
+  };
 }
 
 export function createLogseqSemanticKnowledgeSummary(

@@ -8,6 +8,7 @@
     "./bootstrap": "./src/bootstrap.ts",
     "./bootstrap-lock": "./src/bootstrap-lock.ts",
     "./cloud-unlock": "./src/cloud-unlock.ts",
+    "./cloud-unlock-escalated": "./src/cloud-unlock-escalated.ts",
     "./observability": "./src/observability.ts",
     "./remote-graph": "./src/remote-graph.ts",
     "./sync": "./src/sync.ts",
@@ -17,6 +18,7 @@
     "@living-atlas/contracts": "workspace:*",
     "@living-atlas/graph-service": "workspace:*",
     "@living-atlas/mcp-contract": "workspace:*",
+    "@living-atlas/remote-crypto": "workspace:*",
     "zod": "4.4.3"
   }
 }

@@ -23,6 +23,8 @@ const knownSchemaPropertyKeys = new Set([
   "duration",
   "end",
   "end-date",
+  "acquired-on",
+  "acquired_on",
   "acquired-by",
   "customer-of",
   "employer-current",
@@ -37,16 +39,22 @@ const knownSchemaPropertyKeys = new Set([
   "location",
   "occurred-on",
   "occurred-until",
+  "offering",
   "org",
   "organization",
   "organizer",
   "organizers",
+  "owner",
   "parent-location",
   "parent-topic",
   "participant",
   "participants",
   "part-of-topic",
   "primary-location",
+  "product",
+  "provider",
+  "purchased-on",
+  "purchased_on",
   "project",
   "projects",
   "recurrence-set",
@@ -194,7 +202,9 @@ function emptyEndpointTypeCounts(): Record<EndpointType, number> {
     project: 0,
     location: 0,
     occurrence: 0,
-    topic: 0
+    topic: 0,
+    offering: 0,
+    item: 0
   };
 }
 
@@ -223,6 +233,46 @@ function canonicalizeEndpointType(value: string): EndpointTypeCanonicalization {
     case "observation":
     case "transaction":
       return { ok: true, type: "occurrence", source: "safe-alias" };
+    case "product":
+    case "software-product":
+    case "software_product":
+    case "software":
+    case "saas":
+    case "hardware-product":
+    case "hardware_product":
+    case "service":
+    case "services":
+    case "subscription":
+    case "membership":
+    case "hotel-room-type":
+    case "hotel_room_type":
+    case "suite":
+    case "travel-class":
+    case "travel_class":
+    case "fare-class":
+    case "fare_class":
+    case "ticket-class":
+    case "ticket_class":
+    case "podcast":
+    case "media":
+    case "offering-package":
+      return { ok: true, type: "offering", source: "safe-alias" };
+    case "device":
+    case "document":
+    case "ticket":
+    case "reservation":
+    case "receipt":
+    case "file":
+    case "photo":
+    case "vehicle":
+    case "seat":
+    case "room":
+    case "deliverable":
+    case "physical-item":
+    case "physical_item":
+    case "created-work":
+    case "created_work":
+      return { ok: true, type: "item", source: "safe-alias" };
     default:
       return { ok: false };
   }

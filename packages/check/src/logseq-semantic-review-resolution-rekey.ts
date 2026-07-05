@@ -6,7 +6,7 @@ import { z } from "zod";
 
 const packetAckValue = "write-local-private-review-resolution-map";
 
-const EndpointTypeSchema = z.enum(["person", "organization", "project", "location", "occurrence", "topic"]);
+const EndpointTypeSchema = z.enum(["person", "organization", "project", "location", "occurrence", "topic", "offering", "item"]);
 
 const SemanticReviewPacketSchema = z.object({
   packet_schema: z.literal("living-atlas-logseq-semantic-review-packet:v1"),
