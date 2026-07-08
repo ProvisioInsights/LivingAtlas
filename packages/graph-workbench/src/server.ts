@@ -2,8 +2,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { readFile } from "node:fs/promises";
 import { extname } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { build } from "esbuild";
-import ts from "typescript";
+import { build, transform } from "esbuild";
 import {
   loadLocalGraphWorkbenchFromEnv,
   localGraphWorkbenchEnabled,
@@ -295,19 +294,18 @@ function syntheticCapabilities(): WorkbenchSourceCapabilities {
 
 async function serveTranspiled(fileUrl: URL, response: ServerResponse): Promise<void> {
   const source = await readFile(fileUrl, "utf8");
-  const output = ts.transpileModule(source, {
-    compilerOptions: {
-      module: ts.ModuleKind.ES2022,
-      target: ts.ScriptTarget.ES2022,
-      sourceMap: false
-    },
-    fileName: fileURLToPath(fileUrl)
+  const output = await transform(source, {
+    sourcefile: fileURLToPath(fileUrl),
+    format: "esm",
+    loader: "ts",
+    sourcemap: false,
+    target: "es2022"
   });
   response.writeHead(200, {
     "cache-control": "no-store",
     "content-type": "text/javascript; charset=utf-8"
   });
-  response.end(output.outputText);
+  response.end(output.code);
 }
 
 async function serveBundled(fileUrl: URL, response: ServerResponse): Promise<void> {

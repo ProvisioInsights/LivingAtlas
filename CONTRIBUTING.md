@@ -90,6 +90,14 @@ Follow the existing TypeScript workspace patterns before adding new
 abstractions. Keep public APIs and schemas explicit, validate structured data at
 boundaries, and keep comments focused on non-obvious decisions.
 
+TypeScript 7 is the workspace compiler. Treat the `typescript` package as the
+CLI/compiler dependency for `tsc`, not as a stable in-process API in active
+source. Runtime TypeScript execution should go through `tsx`, and simple
+browser/workbench transforms should use `esbuild`. If a future codemod or code
+generation tool needs compiler APIs, isolate that behind a deliberate dev-only
+adapter and document whether it uses TypeScript 7 unstable APIs or a pinned
+compatibility package.
+
 If a contribution changes how data is classified, encrypted, synced, indexed,
 logged, or exposed through MCP, treat it as security-sensitive and update tests
 or documentation in the same pull request.

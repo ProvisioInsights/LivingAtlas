@@ -1,6 +1,6 @@
 import { pathToFileURL } from "node:url";
-import { existsSync, readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { dirname, extname, join, relative } from "node:path";
 import {
   ControlPlaneSnapshotSchema,
   DurableAuditEventSchema,
@@ -41,6 +41,22 @@ export type CheckCommand = "local" | "cloudflare-deploy-readiness" | "first-run-
 export type NamedCheckResult = LocalCheckResult & {
   name: CheckCommand;
 };
+
+const TypeScriptApiScanSkippedDirectories = new Set([
+  ".claude",
+  ".codex",
+  ".git",
+  ".wrangler",
+  "coverage",
+  "dist",
+  "node_modules"
+]);
+const TypeScriptApiScanExtensions = new Set([".cjs", ".cts", ".js", ".mjs", ".mts", ".ts", ".tsx"]);
+const TypeScriptApiImportPatterns = [
+  /\bfrom\s+["']typescript["']/,
+  /\bimport\s*\(\s*["']typescript["']\s*\)/,
+  /\brequire\s*\(\s*["']typescript["']\s*\)/
+];
 
 function collectParseError(label: string, error: unknown): string {
   return `${label}: ${error instanceof Error ? error.message : String(error)}`;
@@ -105,6 +121,46 @@ function stripJsonComments(input: string): string {
 
 function readJsonFile(path: string): unknown {
   return JSON.parse(stripJsonComments(readFileSync(path, "utf8"))) as unknown;
+}
+
+function walkSourceFiles(repoRoot: string, current = repoRoot): string[] {
+  const files: string[] = [];
+  for (const entry of readdirSync(current, { withFileTypes: true })) {
+    if (entry.isSymbolicLink()) {
+      continue;
+    }
+
+    const fullPath = join(current, entry.name);
+    if (entry.isDirectory()) {
+      if (!TypeScriptApiScanSkippedDirectories.has(entry.name)) {
+        files.push(...walkSourceFiles(repoRoot, fullPath));
+      }
+      continue;
+    }
+
+    if (entry.isFile() && TypeScriptApiScanExtensions.has(extname(entry.name))) {
+      files.push(relative(repoRoot, fullPath));
+    }
+  }
+  return files;
+}
+
+export function collectTypeScriptCompilerApiImportFindings(repoRoot = process.cwd()): string[] {
+  const findings: string[] = [];
+
+  for (const relPath of walkSourceFiles(repoRoot)) {
+    const fullPath = join(repoRoot, relPath);
+    if (statSync(fullPath).size > 2_000_000) {
+      continue;
+    }
+
+    const content = readFileSync(fullPath, "utf8");
+    if (TypeScriptApiImportPatterns.some((pattern) => pattern.test(content))) {
+      findings.push(`${relPath}: import the TypeScript compiler through a deliberate dev-only adapter, or use tsc/tsx/esbuild instead`);
+    }
+  }
+
+  return findings;
 }
 
 function getArray(value: unknown): unknown[] {
@@ -222,6 +278,11 @@ export function runLocalCheck(repoRoot = process.cwd()): LocalCheckResult {
   const repoSafety = scanRepoSafety(repoRoot);
   if (!repoSafety.ok) {
     errors.push(`repo safety scan failed: ${JSON.stringify(repoSafety.findings)}`);
+  }
+
+  const compilerApiImports = collectTypeScriptCompilerApiImportFindings(repoRoot);
+  if (compilerApiImports.length > 0) {
+    errors.push(`TypeScript compiler API imports are not allowed in active source: ${JSON.stringify(compilerApiImports)}`);
   }
 
   return {

@@ -72,7 +72,7 @@ Expected: FAIL — package/module not found.
   "type": "module",
   "main": "src/index.ts",
   "scripts": { "test": "vitest run", "typecheck": "tsc --noEmit" },
-  "devDependencies": { "vitest": "4.1.9", "typescript": "6.0.3" }
+  "devDependencies": { "vitest": "4.1.9", "typescript": "7.0.2" }
 }
 ```
 

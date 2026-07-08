@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
+  collectTypeScriptCompilerApiImportFindings,
   runAllChecks,
   runFirstRunGuardrailCheck,
   runLocalCheck,
@@ -13,6 +14,25 @@ import {
 describe("local check command", () => {
   it("passes against the current public-safe synthetic scaffold", () => {
     expect(runLocalCheck(process.cwd())).toEqual({ ok: true, errors: [] });
+  });
+
+  it("flags direct TypeScript compiler API imports in active source", () => {
+    const root = mkdtempSync(join(tmpdir(), "living-atlas-ts-api-"));
+    try {
+      mkdirSync(join(root, "packages/example/src"), { recursive: true });
+      writeFileSync(join(root, "packages/example/src/bad.ts"), "import ts from \"typescript\";\n");
+      writeFileSync(join(root, "package.json"), JSON.stringify({
+        devDependencies: {
+          typescript: "7.0.2"
+        }
+      }, null, 2));
+
+      expect(collectTypeScriptCompilerApiImportFindings(root)).toEqual([
+        "packages/example/src/bad.ts: import the TypeScript compiler through a deliberate dev-only adapter, or use tsc/tsx/esbuild instead"
+      ]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 
