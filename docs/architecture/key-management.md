@@ -97,8 +97,15 @@ Every encrypted object needs an authenticated envelope:
 }
 ```
 
-The authenticated associated data binds ciphertext to object id, authority,
-version, and access class. This reduces ciphertext substitution risk.
+For cloud-unlock inline payloads, the stable v2 authenticated associated data
+binds ciphertext to `authority_id`, `object_id`, and the payload algorithm/tier.
+Normal and escalated tiers use separate AAD domains, so substitution resistance
+remains across authority id, object id, algorithm/tier, and key domain. Mutable
+envelope and sync fields (`version`, generation/cursor state, timestamps,
+`key_ref`, and `visible_metadata`) are intentionally excluded from v2 AAD.
+Legacy v1 decrypt fallback is compatibility-only and still uses the original
+broader AAD over object type, version, access/encryption class, key ref,
+timestamps, and visible metadata.
 
 ## Object vs Segment Encryption
 

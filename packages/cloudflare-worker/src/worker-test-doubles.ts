@@ -223,6 +223,36 @@ export class FakePreparedStatement {
       } as T;
     }
 
+    if (this.query.includes("FROM sync_objects") && this.query.includes("INNER JOIN sync_batches") && this.query.includes("sync_objects.object_ref = ?")) {
+      const batchAuthorityRef = String(this.bindings[0]);
+      const objectAuthorityRef = String(this.bindings[1]);
+      const objectRef = String(this.bindings[2]);
+      const batches = new Map(
+        this.committedBatches(batchAuthorityRef)
+          .map((batch) => [batch.batch_id, batch])
+      );
+      const row = this.records
+        .filter((record) => record.query.includes("INTO sync_objects"))
+        .filter((record) => String(record.bindings[0]) === objectRef)
+        .filter((record) => String(record.bindings[2]) === objectAuthorityRef)
+        .map((record) => {
+          const batch = batches.get(String(record.bindings[1]));
+          return batch
+            ? {
+                batch_id: batch.batch_id,
+                target_generation: batch.target_generation,
+                submitted_at: batch.submitted_at,
+                version: Number(record.bindings[3]),
+                envelope_r2_key: String(record.bindings[6])
+              }
+            : undefined;
+        })
+        .filter((candidate): candidate is NonNullable<typeof candidate> => candidate !== undefined)
+        .sort((left, right) => right.target_generation - left.target_generation || right.version - left.version)
+        .at(0);
+      return (row ?? null) as T | null;
+    }
+
     if (this.query.includes("FROM sync_batches")) {
       const batches = this.committedBatches(this.query.includes("authority_ref = ?") ? String(this.bindings[0]) : undefined)
         .sort((left, right) => right.target_generation - left.target_generation || right.submitted_at.localeCompare(left.submitted_at));

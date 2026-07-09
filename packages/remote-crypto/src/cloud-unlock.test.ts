@@ -85,7 +85,7 @@ describe("encryptCloudUnlockObject", () => {
     expect(result.reason).toBe("decrypt-failed");
   });
 
-  it("binds the AAD to envelope identity: tampering with the envelope breaks decrypt", async () => {
+  it("binds the AAD to stable envelope identity: tampering with authority or object id breaks decrypt", async () => {
     const key = sessionKey(7);
     const object = await encryptCloudUnlockObject({
       envelope: baseEnvelope(),
@@ -94,11 +94,43 @@ describe("encryptCloudUnlockObject", () => {
     });
 
     // Same ciphertext, but a different object_id in the AAD must fail authentication.
-    const tampered: GraphObjectEnvelope = { ...object, object_id: "la_object_cloudunlock9999" };
-    const result = await decryptCloudUnlockObject(tampered, key);
-    expect(result.ok).toBe(false);
-    if (result.ok) throw new Error("AAD tampering must not decrypt");
-    expect(result.reason).toBe("decrypt-failed");
+    const objectTampered: GraphObjectEnvelope = { ...object, object_id: "la_object_cloudunlock9999" };
+    const objectResult = await decryptCloudUnlockObject(objectTampered, key);
+    expect(objectResult.ok).toBe(false);
+    if (objectResult.ok) throw new Error("object_id tampering must not decrypt");
+    expect(objectResult.reason).toBe("decrypt-failed");
+
+    const authorityTampered: GraphObjectEnvelope = { ...object, authority_id: "la_authority_worker9999" };
+    const authorityResult = await decryptCloudUnlockObject(authorityTampered, key);
+    expect(authorityResult.ok).toBe(false);
+    if (authorityResult.ok) throw new Error("authority_id tampering must not decrypt");
+    expect(authorityResult.reason).toBe("decrypt-failed");
+  });
+
+  it("does not bind cloud-unlock AAD to mutable envelope bookkeeping", async () => {
+    const key = sessionKey(8);
+    const object = await encryptCloudUnlockObject({
+      envelope: baseEnvelope(),
+      plaintext: { secret: "value" },
+      encodedUnlockKey: key
+    });
+
+    const drifted: GraphObjectEnvelope = {
+      ...object,
+      version: object.version + 3,
+      created_at: "2026-07-04T01:23:45.000Z",
+      updated_at: "2026-07-05T05:20:16.692Z",
+      key_ref: "la_key_rematerialized0001",
+      visible_metadata: {
+        tombstone: false,
+        size_class: "small",
+        remote_indexable: false
+      }
+    };
+    const result = await decryptCloudUnlockObject(drifted, key);
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.reason);
+    expect(result.plaintext).toEqual({ kind: "plaintext-json", data: { secret: "value" } });
   });
 
   it("rejects malformed / wrong-length session keys without touching crypto", async () => {

@@ -39,9 +39,14 @@ This is the host-blind remote mode.
   - **normal** — `AES-GCM-256+cloud-unlock-v1`, opened with the primary key.
   - **super-sensitive** — `AES-GCM-256+cloud-unlock-escalated-v1`, opened only
     after an **escalation** with a second key (see below).
-- The encrypted payload is authenticated to the object authority, object id,
-  type, version, access class, encryption class, key ref, timestamps, and
-  visible metadata so ciphertext cannot be silently swapped onto another object.
+- The v2 encrypted payload is authenticated to `authority_id`, `object_id`, and
+  the payload algorithm/tier. Normal and escalated objects use separate AAD
+  domains, so ciphertext cannot be silently swapped across authority, object,
+  algorithm/tier, or key domain.
+- Mutable envelope and sync fields (`version`, generation/cursor state,
+  timestamps, `key_ref`, and `visible_metadata`) are intentionally excluded from
+  cloud-unlock v2 AAD. Legacy v1 decrypt fallback is compatibility-only and
+  still uses the original broader AAD.
 
 ### Two-key escalation
 

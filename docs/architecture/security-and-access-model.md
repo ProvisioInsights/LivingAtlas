@@ -184,6 +184,9 @@ Minimum fixture tests:
 - Local full profile can access the same content.
 - Cloud object names do not reveal fixture private titles.
 - Remote MCP cannot semantically edit local-private plaintext.
-- Sensitive ciphertext envelopes fail validation when object id, version,
-  authority, or access class are tampered.
+- Cloud-unlock sensitive ciphertext envelopes fail validation when authority id,
+  object id, payload algorithm/tier, or normal/escalated AAD domain are
+  tampered. V2 intentionally does not bind mutable version/generation/timestamps,
+  `key_ref`, or `visible_metadata` fields; legacy v1 fallback remains
+  compatibility-only for older envelopes.
 - Release expiry removes serving/index access, not only UI visibility.

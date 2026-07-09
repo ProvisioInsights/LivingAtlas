@@ -227,6 +227,11 @@ secrets into git:
 11. Record the public LivingAtlas ref, plan/apply summary, Worker version, and
     smoke result in the private repo's deployment log.
 
+See [Deploy Provenance Contract](deploy-provenance-contract.md) for the
+public-safe provenance fields that every production deployment should satisfy.
+The private overlay should hold the exact Worker version, runtime verification
+evidence, rollback pointer, and any emergency/dirty-deploy override record.
+
 If the public repo includes a new D1 migration, run the migration preflight from
 `docs/deployment/security-remediation-deploy-runbook.md` before deploying the
 new Worker code.
