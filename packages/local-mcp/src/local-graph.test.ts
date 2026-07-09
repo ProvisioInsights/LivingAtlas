@@ -13,6 +13,11 @@ import {
 } from "@living-atlas/fixtures";
 import { createFixtureLocalControlState } from "@living-atlas/local-control-store";
 import { FileLocalGraphStore } from "@living-atlas/local-graph-store";
+import {
+  createDefaultLocalKeyring,
+  decryptGraphObjectPayload,
+  type LocalKeyringState
+} from "@living-atlas/local-keyring";
 import { InMemoryLocalMcpActivitySink } from "./activity";
 import { InMemoryLocalMcpAuditSink } from "./audit";
 import { hashLocalMcpToken, InMemoryLocalMcpCredentialStore } from "./auth";
@@ -99,6 +104,46 @@ function sensitivePlaintextDraft(objectId: string) {
       }
     }
   };
+}
+
+function temporalEdgeObject(objectId: string): GraphObjectEnvelope {
+  return {
+    schema_version: 1,
+    authority_id: fixtureAuthorityId,
+    object_id: objectId,
+    object_type: "edge",
+    version: 1,
+    access_class: "local-private",
+    encryption_class: "plaintext",
+    created_at: now,
+    updated_at: now,
+    content_hash: fixedHash("f"),
+    visible_metadata: {
+      schema_namespace: "test/encrypted-temporal-edge",
+      tombstone: false,
+      size_class: "tiny",
+      remote_indexable: false
+    },
+    payload: {
+      kind: "plaintext-json",
+      data: {
+        edge_id: "la_edge_encryptedquery0001",
+        source_object_id: "la_object_sourceendpoint0001",
+        source_type: "person",
+        target_object_id: "la_object_targetendpoint0001",
+        target_type: "project",
+        predicate: "advises",
+        valid_from: "2026-06",
+        status: "active",
+        confidence: "high",
+        source: "synthetic encrypted local MCP query fixture"
+      }
+    }
+  };
+}
+
+function decryptWithKeyring(keyring: LocalKeyringState) {
+  return async (object: GraphObjectEnvelope) => decryptGraphObjectPayload(object, keyring);
 }
 
 function readonlyControlPlane(): ControlPlaneSnapshot {
@@ -859,6 +904,27 @@ describe("local fixture graph tools", () => {
     }
   });
 
+  it("does not fall back to fixture objects when the durable replica is empty", async () => {
+    const token = "local-token-graph-authoritative-store-0001";
+    const directory = await mkdtemp(join(tmpdir(), "living-atlas-local-mcp-authoritative-"));
+    try {
+      const controlState = await createFixtureLocalControlState(token);
+      const graphStore = await FileLocalGraphStore.open({
+        directory,
+        authorityId: controlState.authority_id,
+        plaintextPersistence: "redact"
+      });
+      const context = createLocalMcpContextFromControlState({ controlState, graphStore, now });
+
+      await expect(localReadObject(context, {
+        authorization: `Bearer ${token}`,
+        object_id: "la_object_privatepage0001"
+      })).resolves.toEqual({ ok: false, reason: "object-missing" });
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
   it("persists local MCP CRUD through the durable local graph store with redacted plaintext", async () => {
     const token = "local-token-graph-durable-0001";
     const directory = await mkdtemp(join(tmpdir(), "living-atlas-local-mcp-"));
@@ -917,6 +983,66 @@ describe("local fixture graph tools", () => {
       for (const bait of sensitiveBaitRegistry) {
         expect(persisted).not.toContain(bait.value);
       }
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("uses the authenticated local keyring to query encrypted imported graph content", async () => {
+    const token = "local-token-graph-encrypted-query-0001";
+    const directory = await mkdtemp(join(tmpdir(), "living-atlas-local-mcp-encrypted-query-"));
+    try {
+      const controlState = await createFixtureLocalControlState(token);
+      const keyring = createDefaultLocalKeyring({ authorityId: controlState.authority_id, createdAt: now });
+      const graphStore = await FileLocalGraphStore.open({
+        directory,
+        authorityId: controlState.authority_id,
+        plaintextPersistence: "encrypt",
+        keyring
+      });
+      await graphStore.createObject({
+        object: temporalEdgeObject("la_object_encryptedquery0001"),
+        expected_generation: 0,
+        actor_id: fixtureLocalClientId,
+        recorded_at: now
+      });
+      const context = createLocalMcpContextFromControlState({
+        controlState,
+        graphStore,
+        decryptPayload: decryptWithKeyring(keyring),
+        now
+      });
+
+      await expect(localReadObject(context, {
+        authorization: `Bearer ${token}`,
+        object_id: "la_object_encryptedquery0001"
+      })).resolves.toEqual(expect.objectContaining({
+        ok: true,
+        result: expect.objectContaining({
+          object: expect.objectContaining({ payload: expect.objectContaining({ kind: "plaintext-json" }) })
+        })
+      }));
+      await expect(localSearchObjects(context, {
+        authorization: `Bearer ${token}`,
+        query: "encrypted local MCP query"
+      })).resolves.toEqual(expect.objectContaining({
+        ok: true,
+        result: expect.objectContaining({ results: [expect.anything()] })
+      }));
+      await expect(localTraverseGraph(context, {
+        authorization: `Bearer ${token}`,
+        start_object_id: "la_object_sourceendpoint0001"
+      })).resolves.toEqual(expect.objectContaining({
+        ok: true,
+        result: expect.objectContaining({ visited_object_ids: expect.arrayContaining(["la_object_targetendpoint0001"]) })
+      }));
+      await expect(localTimelineQuery(context, {
+        authorization: `Bearer ${token}`,
+        predicate: "advises"
+      })).resolves.toEqual(expect.objectContaining({
+        ok: true,
+        result: expect.objectContaining({ results: expect.arrayContaining([expect.objectContaining({ field: "edge.valid_from" })]) })
+      }));
     } finally {
       await rm(directory, { recursive: true, force: true });
     }

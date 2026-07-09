@@ -544,6 +544,14 @@ export class FileLocalGraphStore {
     return statusFromState(this.state, this.plaintextPersistence);
   }
 
+  /**
+   * Return the complete replayed state in the exact snapshot schema without
+   * compacting the journal or writing to the source replica.
+   */
+  materializedSnapshot(): LocalGraphSnapshot {
+    return snapshotFromState(this.state, this.plaintextPersistence);
+  }
+
   listObjects(options: { include_tombstones?: boolean } = {}): GraphObjectEnvelope[] {
     const includeTombstones = options.include_tombstones ?? false;
     return Array.from(this.state.objects.values())

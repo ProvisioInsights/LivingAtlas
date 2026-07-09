@@ -46,6 +46,8 @@ export type LocalMcpContext = {
   controlPlane: ControlPlaneSnapshot;
   graphObjects: GraphObjectEnvelope[];
   graphStore?: FileLocalGraphStore;
+  /** Decrypts a durable local object only inside the authenticated local MCP process. */
+  decryptPayload?: (object: GraphObjectEnvelope) => Promise<GraphObjectEnvelope["payload"] | undefined>;
   credentialStore: LocalMcpCredentialStore;
   auditSink?: LocalMcpAuditSink;
   activitySink?: LocalMcpActivitySink;
@@ -117,6 +119,11 @@ export type AuthorizedLocalObject = {
   visible_metadata: GraphObjectEnvelope["visible_metadata"];
   payload: GraphObjectEnvelope["payload"];
   plaintext_available: boolean;
+};
+
+/** A local-only read view may hold decrypted payload bytes without claiming the on-disk envelope is plaintext. */
+type LocalGraphReadableObject = Omit<GraphObjectEnvelope, "payload"> & {
+  payload: GraphObjectEnvelope["payload"];
 };
 
 export type LocalGraphStatusResult = {
@@ -273,6 +280,7 @@ export function createLocalMcpContextFromControlState(options: {
   controlState: LocalControlState;
   graphObjects?: GraphObjectEnvelope[];
   graphStore?: FileLocalGraphStore;
+  decryptPayload?: (object: GraphObjectEnvelope) => Promise<GraphObjectEnvelope["payload"] | undefined>;
   auditSink?: LocalMcpAuditSink;
   activitySink?: LocalMcpActivitySink;
   outboxSink?: LocalMcpMutationOutboxSink;
@@ -283,6 +291,7 @@ export function createLocalMcpContextFromControlState(options: {
     controlPlane: options.controlState.control_plane,
     graphObjects: cloneGraphObjects(options.graphObjects ?? syntheticGraphObjects),
     graphStore: options.graphStore,
+    decryptPayload: options.decryptPayload,
     credentialStore: new InMemoryLocalMcpCredentialStore(options.controlState.local_credentials),
     auditSink: options.auditSink,
     activitySink: options.activitySink,
@@ -381,7 +390,21 @@ function contextActiveObjectCount(context: LocalMcpContext): number {
 }
 
 function readContextObject(context: LocalMcpContext, objectId: ObjectId): GraphObjectEnvelope | undefined {
-  return context.graphStore?.readObject(objectId) ?? context.graphObjects.find((candidate) => candidate.object_id === objectId);
+  return context.graphStore
+    ? context.graphStore.readObject(objectId)
+    : context.graphObjects.find((candidate) => candidate.object_id === objectId);
+}
+
+async function materializeAuthorizedObject(
+  context: LocalMcpContext,
+  object: GraphObjectEnvelope,
+  plaintextAllowed: boolean
+): Promise<LocalGraphReadableObject> {
+  if (!plaintextAllowed || object.payload.kind === "plaintext-json" || !context.decryptPayload) {
+    return object;
+  }
+  const payload = await context.decryptPayload(object);
+  return payload ? { ...object, payload } : object;
 }
 
 function objectWithinSyntheticLimit(context: LocalMcpContext, object: unknown): boolean {
@@ -414,11 +437,11 @@ function textFromValue(value: unknown): string {
   return "";
 }
 
-function plaintextData(object: GraphObjectEnvelope): Record<string, unknown> | undefined {
+function plaintextData(object: LocalGraphReadableObject): Record<string, unknown> | undefined {
   return object.payload.kind === "plaintext-json" ? object.payload.data : undefined;
 }
 
-function searchText(object: GraphObjectEnvelope): string {
+function searchText(object: LocalGraphReadableObject): string {
   return [
     object.object_id,
     object.object_type,
@@ -429,7 +452,7 @@ function searchText(object: GraphObjectEnvelope): string {
   ].filter(Boolean).join(" ").toLowerCase();
 }
 
-function edgeData(object: GraphObjectEnvelope): TemporalEdge | undefined {
+function edgeData(object: LocalGraphReadableObject): TemporalEdge | undefined {
   if (object.object_type !== "edge") {
     return undefined;
   }
@@ -442,7 +465,7 @@ function edgeData(object: GraphObjectEnvelope): TemporalEdge | undefined {
   return parsed.success ? parsed.data : undefined;
 }
 
-function timelineCandidates(object: GraphObjectEnvelope): Array<{ field: string; value: string }> {
+function timelineCandidates(object: LocalGraphReadableObject): Array<{ field: string; value: string }> {
   const data = plaintextData(object);
   const candidates: Array<{ field: string; value: string }> = [
     { field: "created_at", value: object.created_at },
@@ -573,7 +596,7 @@ function parseLocalGraphObjectInput(input: unknown, allowPlaintextDraft: boolean
   };
 }
 
-function sanitizeAuthorizedObject(object: GraphObjectEnvelope, plaintextAllowed: boolean): AuthorizedLocalObject {
+function sanitizeAuthorizedObject(object: LocalGraphReadableObject, plaintextAllowed: boolean): AuthorizedLocalObject {
   return {
     object_id: object.object_id,
     object_type: object.object_type,
@@ -739,7 +762,10 @@ export async function localReadObject(
   return {
     ok: true,
     result: {
-      object: sanitizeAuthorizedObject(object, decision.plaintext_allowed)
+      object: sanitizeAuthorizedObject(
+        await materializeAuthorizedObject(context, object, decision.plaintext_allowed),
+        decision.plaintext_allowed
+      )
     }
   };
 }
@@ -1021,6 +1047,26 @@ export async function localUpdateObject(
     return { ok: false, reason: existingDecision.reason_code };
   }
 
+  const encryptedDurableStore = context.graphStore?.status().plaintext_persistence === "encrypted";
+  const decryptedExistingPayload = encryptedDurableStore
+    && !patch.payload
+    && existingObject.payload.kind !== "plaintext-json"
+    && context.decryptPayload
+    ? await context.decryptPayload(existingObject)
+    : undefined;
+  if (encryptedDurableStore && !patch.payload && existingObject.payload.kind !== "plaintext-json" && !decryptedExistingPayload) {
+    recordToolDecision({
+      context,
+      authenticated: auth.authenticated,
+      toolName: "object_update",
+      operation: "update",
+      object: existingObject,
+      allowed: false,
+      reason: "plaintext-not-available-through-local-mcp"
+    });
+    return { ok: false, reason: "plaintext-not-available-through-local-mcp" };
+  }
+  const nextPayload = patch.payload ?? decryptedExistingPayload ?? existingObject.payload;
   const candidateInput = {
     ...existingObject,
     ...patch,
@@ -1029,7 +1075,8 @@ export async function localUpdateObject(
     created_at: existingObject.created_at,
     updated_at: patch.updated_at ?? nowForMutation(context),
     version: existingObject.version + 1,
-    encryption_class: patch.encryption_class ?? (patch.payload?.kind === "plaintext-json" ? "plaintext" : existingObject.encryption_class),
+    payload: nextPayload,
+    encryption_class: patch.encryption_class ?? (nextPayload.kind === "plaintext-json" ? "plaintext" : existingObject.encryption_class),
     visible_metadata: patch.visible_metadata
       ? {
           ...existingObject.visible_metadata,
@@ -1452,12 +1499,13 @@ export async function localSearchObjects(
     if (!decision.allowed) {
       continue;
     }
-    const text = searchText(object);
+    const visibleObject = await materializeAuthorizedObject(context, object, decision.plaintext_allowed);
+    const text = searchText(visibleObject);
     const matched = terms.filter((term) => text.includes(term));
     const score = matched.reduce((sum, term) => sum + (text.split(term).length - 1), 0);
     if (score > 0) {
       results.push({
-        object: sanitizeAuthorizedObject(object, decision.plaintext_allowed),
+        object: sanitizeAuthorizedObject(visibleObject, decision.plaintext_allowed),
         score,
         matched_fields: matched,
         snippet: text.slice(0, 240)
@@ -1497,11 +1545,31 @@ export async function localTraverseGraph(
   const maxDepth = Math.min(Math.max(input.max_depth ?? 1, 1), 5);
   const limit = boundedLimit(input.limit);
   const allowedPredicates = input.predicates ? new Set(input.predicates.map(canonicalPredicate)) : undefined;
-  const edges = contextObjects(context)
-    .map((object) => ({ object, edge: edgeData(object) }))
-    .filter((entry): entry is { object: GraphObjectEnvelope; edge: TemporalEdge } => !!entry.edge)
-    .filter((entry) => !entry.object.visible_metadata.tombstone)
-    .filter((entry) => !allowedPredicates || allowedPredicates.has(entry.edge.predicate));
+  const edges: Array<{ object: LocalGraphReadableObject; edge: TemporalEdge; plaintextAllowed: boolean }> = [];
+  for (const object of contextObjects(context)) {
+    if (object.visible_metadata.tombstone) {
+      continue;
+    }
+    const decision = operationDecision({ context, authenticated: auth.authenticated, operation: "traverse", object });
+    recordToolDecision({
+      context,
+      authenticated: auth.authenticated,
+      toolName: "traverse",
+      operation: "traverse",
+      object,
+      decision,
+      allowed: decision.allowed,
+      reason: decision.reason_code
+    });
+    if (!decision.allowed) {
+      continue;
+    }
+    const visibleObject = await materializeAuthorizedObject(context, object, decision.plaintext_allowed);
+    const edge = edgeData(visibleObject);
+    if (edge && (!allowedPredicates || allowedPredicates.has(edge.predicate))) {
+      edges.push({ object: visibleObject, edge, plaintextAllowed: decision.plaintext_allowed });
+    }
+  }
   const visited = new Set<string>([startObjectId]);
   const frontier = new Set<string>([startObjectId]);
   const traversed: AuthorizedLocalObject[] = [];
@@ -1509,29 +1577,15 @@ export async function localTraverseGraph(
   for (let depth = 0; depth < maxDepth && frontier.size > 0 && traversed.length < limit; depth += 1) {
     const next = new Set<string>();
     for (const entry of edges) {
-      const decision = operationDecision({ context, authenticated: auth.authenticated, operation: "traverse", object: entry.object });
-      recordToolDecision({
-        context,
-        authenticated: auth.authenticated,
-        toolName: "traverse",
-        operation: "traverse",
-        object: entry.object,
-        decision,
-        allowed: decision.allowed,
-        reason: decision.reason_code
-      });
-      if (!decision.allowed) {
-        continue;
-      }
       const outbound = frontier.has(entry.edge.source_object_id);
       const inbound = frontier.has(entry.edge.target_object_id);
       if ((direction === "outbound" || direction === "both") && outbound) {
         next.add(entry.edge.target_object_id);
-        traversed.push(sanitizeAuthorizedObject(entry.object, decision.plaintext_allowed));
+        traversed.push(sanitizeAuthorizedObject(entry.object, entry.plaintextAllowed));
       }
       if ((direction === "inbound" || direction === "both") && inbound) {
         next.add(entry.edge.source_object_id);
-        traversed.push(sanitizeAuthorizedObject(entry.object, decision.plaintext_allowed));
+        traversed.push(sanitizeAuthorizedObject(entry.object, entry.plaintextAllowed));
       }
       if (traversed.length >= limit) {
         break;
@@ -1579,10 +1633,6 @@ export async function localTimelineQuery(
     if (input.object_id && object.object_id !== input.object_id) {
       continue;
     }
-    const edge = edgeData(object);
-    if (input.predicate && edge?.predicate !== canonicalPredicate(input.predicate)) {
-      continue;
-    }
     const decision = operationDecision({ context, authenticated: auth.authenticated, operation: "read", object });
     recordToolDecision({
       context,
@@ -1597,7 +1647,12 @@ export async function localTimelineQuery(
     if (!decision.allowed) {
       continue;
     }
-    for (const candidate of timelineCandidates(object)) {
+    const visibleObject = await materializeAuthorizedObject(context, object, decision.plaintext_allowed);
+    const edge = edgeData(visibleObject);
+    if (input.predicate && edge?.predicate !== canonicalPredicate(input.predicate)) {
+      continue;
+    }
+    for (const candidate of timelineCandidates(visibleObject)) {
       const key = normalizedDateKey(candidate.value);
       if (from && key < from) {
         continue;
@@ -1606,7 +1661,7 @@ export async function localTimelineQuery(
         continue;
       }
       results.push({
-        object: sanitizeAuthorizedObject(object, decision.plaintext_allowed),
+        object: sanitizeAuthorizedObject(visibleObject, decision.plaintext_allowed),
         timeline_at: candidate.value,
         field: candidate.field
       });
@@ -1816,9 +1871,9 @@ export async function localActivityRead(
   if (!validateAuthority(context, input.authority_id)) {
     return { ok: false, reason: "authority-mismatch" };
   }
-  const events = context.activitySink && "events" in context.activitySink && Array.isArray(context.activitySink.events)
-    ? context.activitySink.events.slice(-boundedLimit(input.limit, 100))
-    : [];
+  const limit = boundedLimit(input.limit, 100);
+  const events = context.activitySink?.read?.(limit) ?? [];
+  const auditEvents = context.auditSink?.read?.(limit) ?? [];
   recordToolDecision({
     context,
     authenticated: auth.authenticated,
@@ -1833,7 +1888,8 @@ export async function localActivityRead(
       ok: true,
       stream_schema: "living-atlas-praxis-activity-audit-stream:v1",
       plane: "local",
-      events
+      events,
+      audit_events: auditEvents
     }
   };
 }

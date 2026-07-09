@@ -103,4 +103,61 @@ describe("Logseq semantic local import", () => {
       await rm(root, { recursive: true, force: true });
     }
   });
+
+  it("imports every supplied source file and records one redacted terminal outcome for ambiguous relationships", async () => {
+    const root = await mkdtemp(join(tmpdir(), "living-atlas-semantic-local-import-ledger-"));
+    try {
+      const keyringPath = join(root, "keyring.json");
+      const graphDir = join(root, "graph");
+      const keyring = createDefaultLocalKeyring({
+        authorityId,
+        createdAt: "2026-06-24T00:00:00.000Z"
+      });
+      await new FileLocalKeyringStore(keyringPath).write(keyring, "fixture-passphrase");
+
+      const ledger = await importLogseqSemanticLocalObjects({
+        files: [
+          {
+            source_path: "pages/Synthetic Ambiguous Relationship.md",
+            source_kind: "logseq",
+            markdown: "## Edges\n\n- [[Synthetic Acquirer]] acquired [[Synthetic Target]]\n"
+          }
+        ],
+        sourceRootRef: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        sourceKind: "logseq",
+        sourceMode: "logseq-notes",
+        pathRedactionSecret: "fixture-path-redaction-secret-0001",
+        localGraphDir: graphDir,
+        keyringPath,
+        keyringPassphrase: "fixture-passphrase",
+        authorityId,
+        recordedAt: "2026-06-24T00:01:00.000Z"
+      });
+
+      expect(ledger.object_totals.selected_objects).toBe(ledger.object_totals.planned_objects);
+      expect(ledger.source_outcomes).toEqual([
+        expect.objectContaining({
+          outcome: "quarantined",
+          reason_codes: expect.arrayContaining(["direction-unsafe-alias"])
+        })
+      ]);
+      expect(ledger.source_outcomes).toHaveLength(ledger.file_count);
+      expect(JSON.stringify(ledger)).not.toContain("Synthetic Acquirer");
+      expect(JSON.stringify(ledger)).not.toContain("Synthetic Target");
+
+      const store = await FileLocalGraphStore.open({
+        directory: graphDir,
+        authorityId,
+        plaintextPersistence: "encrypt",
+        keyring
+      });
+      expect(store.status().object_count).toBe(ledger.object_totals.planned_objects);
+      expect(store.listObjects({ include_tombstones: true })).toContainEqual(expect.objectContaining({
+        access_class: "quarantine",
+        visible_metadata: expect.objectContaining({ schema_namespace: "import/logseq-semantic/edge-candidate" })
+      }));
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 });

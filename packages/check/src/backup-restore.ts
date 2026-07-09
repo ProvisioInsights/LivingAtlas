@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { pathToFileURL } from "node:url";
@@ -56,13 +56,20 @@ async function promptRecoveryMaster(): Promise<Buffer> {
 }
 
 export async function restoreRunner(args: Args, master: Buffer): Promise<void> {
+  await mkdir(args.outDir, { recursive: true, mode: 0o700 });
+  if ((await readdir(args.outDir)).length > 0) {
+    throw new Error("restore output directory must be empty");
+  }
   const store = new LocalWormStore(args.storeDir);
   const restored = await restoreBackup(store, args.backupId, master);
 
-  await mkdir(args.outDir, { recursive: true });
-  const artifactPath = join(args.outDir, `${args.backupId}.snapshot.enc`);
-  const keyringPath = join(args.outDir, `${args.backupId}.keyring.json`);
+  const graphDir = join(args.outDir, "graph");
+  await mkdir(graphDir, { recursive: true, mode: 0o700 });
+  const artifactPath = join(graphDir, "snapshot.json");
+  const journalPath = join(graphDir, "journal.jsonl");
+  const keyringPath = join(args.outDir, "keyring.json");
   await writeFile(artifactPath, restored.artifactBytes, { mode: 0o600 });
+  await writeFile(journalPath, "", { mode: 0o600 });
   await writeFile(keyringPath, restored.keyringJson, { mode: 0o600 });
 
   const artifactSha = createHash("sha256").update(restored.artifactBytes).digest("hex");

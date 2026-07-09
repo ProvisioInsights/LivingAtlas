@@ -1,4 +1,4 @@
-import { appendFileSync, mkdirSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname } from "node:path";
 import {
   type AccessClass,
@@ -11,6 +11,7 @@ import {
 
 export type LocalMcpActivitySink = {
   record(event: LiveActivityEvent): void;
+  read?(limit: number): LiveActivityEvent[];
 };
 
 export class InMemoryLocalMcpActivitySink implements LocalMcpActivitySink {
@@ -18,6 +19,10 @@ export class InMemoryLocalMcpActivitySink implements LocalMcpActivitySink {
 
   record(event: LiveActivityEvent): void {
     this.events.push(LiveActivityEventSchema.parse(event));
+  }
+
+  read(limit: number): LiveActivityEvent[] {
+    return this.events.slice(-limit);
   }
 }
 
@@ -28,6 +33,17 @@ export class FileLocalMcpActivitySink implements LocalMcpActivitySink {
     const parsed = LiveActivityEventSchema.parse(event);
     mkdirSync(dirname(this.path), { recursive: true });
     appendFileSync(this.path, `${JSON.stringify(parsed)}\n`, { encoding: "utf8" });
+  }
+
+  read(limit: number): LiveActivityEvent[] {
+    if (!existsSync(this.path)) {
+      return [];
+    }
+    return readFileSync(this.path, "utf8")
+      .split("\n")
+      .filter((line) => line.trim().length > 0)
+      .map((line) => LiveActivityEventSchema.parse(JSON.parse(line)))
+      .slice(-limit);
   }
 }
 

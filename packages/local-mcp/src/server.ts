@@ -53,7 +53,7 @@ export type LocalMcpServerAuthOptions = {
 
 const EmptyInputSchema = {};
 const AuthorityInputSchema = {
-  authority_id: AuthorityIdSchema.describe("Living Atlas authority id.")
+  authority_id: AuthorityIdSchema.describe("Living Atlas authority id.").optional()
 };
 const ReadObjectInputSchema = {
   authority_id: AuthorityIdSchema.describe("Living Atlas authority id.").optional(),

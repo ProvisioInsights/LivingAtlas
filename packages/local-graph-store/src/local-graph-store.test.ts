@@ -448,4 +448,36 @@ describe("file local graph store", () => {
       object_count: syntheticGraphObjects.length + 1
     }));
   });
+
+  it("materializes the replayed encrypted state without changing source snapshot or journal files", async () => {
+    const directory = await tempStoreDir();
+    const keyring = createDefaultLocalKeyring({ authorityId: fixtureAuthorityId, createdAt: now });
+    const store = await FileLocalGraphStore.open({
+      directory,
+      authorityId: fixtureAuthorityId,
+      plaintextPersistence: "encrypt",
+      keyring,
+      now: () => now
+    });
+    await store.initializeFromObjects(syntheticGraphObjects, { created_at: now });
+    await store.createObject({
+      object: sensitivePlaintextDraft("la_object_materialized0001"),
+      expected_generation: 0,
+      actor_id: fixtureLocalClientId,
+      recorded_at: "2026-06-22T12:07:00.000Z"
+    });
+    const sourceBefore = await readStoreFiles(directory);
+
+    const materialized = store.materializedSnapshot();
+
+    expect(materialized).toEqual(expect.objectContaining({
+      generation: 1,
+      journal_sequence: 1,
+      plaintext_persistence: "encrypted"
+    }));
+    expect(materialized.objects.map((object) => object.object_id)).toContain("la_object_materialized0001");
+    expect(JSON.stringify(materialized)).toContain("AES-GCM-256+local-keyring-v1");
+    expect(JSON.stringify(materialized)).not.toContain("Local keyring encrypted graph fixture");
+    expect(await readStoreFiles(directory)).toBe(sourceBefore);
+  });
 });
