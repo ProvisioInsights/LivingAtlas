@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
+import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname } from "node:path";
 import {
   AccessClassSchema,
@@ -48,8 +48,11 @@ export class FileLocalMcpAuditSink implements LocalMcpAuditSink {
 
   record(event: LocalMcpAuditEvent): void {
     const parsed = LocalMcpAuditEventSchema.parse(event);
-    mkdirSync(dirname(this.path), { recursive: true });
-    appendFileSync(this.path, `${JSON.stringify(parsed)}\n`, { encoding: "utf8" });
+    const directory = dirname(this.path);
+    mkdirSync(directory, { recursive: true, mode: 0o700 });
+    chmodSync(directory, 0o700);
+    appendFileSync(this.path, `${JSON.stringify(parsed)}\n`, { encoding: "utf8", mode: 0o600 });
+    chmodSync(this.path, 0o600);
   }
 
   read(limit: number): LocalMcpAuditEvent[] {

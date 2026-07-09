@@ -62,6 +62,9 @@ export async function restoreRunner(args: Args, master: Buffer): Promise<void> {
   }
   const store = new LocalWormStore(args.storeDir);
   const restored = await restoreBackup(store, args.backupId, master);
+  if (restored.kind !== "full") {
+    throw new Error("cannot restore a differential backup without its full backup chain");
+  }
 
   const graphDir = join(args.outDir, "graph");
   await mkdir(graphDir, { recursive: true, mode: 0o700 });

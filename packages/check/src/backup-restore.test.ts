@@ -45,4 +45,30 @@ describe("backup restore runner", () => {
       await rm(root, { recursive: true, force: true });
     }
   });
+
+  it("rejects a differential backup because it cannot reconstruct a standalone replica", async () => {
+    const root = await mkdtemp(join(tmpdir(), "living-atlas-backup-restore-differential-"));
+    const storeDir = join(root, "store");
+    const outDir = join(root, "restored");
+    const master = randomBytes(32);
+    try {
+      await writeBackup([new LocalWormStore(storeDir)], {
+        authority_id: "la_authority_test0001",
+        kind: "differential",
+        base_generation: 3,
+        target_generation: 4,
+        artifactBytes: Buffer.from("differential-only-bytes"),
+        escrowEnvelopeJson: JSON.stringify(wrapKeyringForEscrow("{}", master)),
+        createdAtIso: "2026-07-09T00:00:00.000Z",
+        backupId: "la_backup_000002",
+        retainUntilMs: 0,
+        parentBackupId: "la_backup_000001"
+      });
+
+      await expect(restoreRunner({ backupId: "la_backup_000002", storeDir, outDir }, master))
+        .rejects.toThrow(/full|differential/i);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 });

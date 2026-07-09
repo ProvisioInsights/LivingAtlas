@@ -1048,6 +1048,18 @@ export async function localUpdateObject(
   }
 
   const encryptedDurableStore = context.graphStore?.status().plaintext_persistence === "encrypted";
+  if (encryptedDurableStore && patch.payload && patch.payload.kind !== "plaintext-json") {
+    recordToolDecision({
+      context,
+      authenticated: auth.authenticated,
+      toolName: "object_update",
+      operation: "update",
+      object: existingObject,
+      allowed: false,
+      reason: "encrypted-payload-update-requires-plaintext"
+    });
+    return { ok: false, reason: "encrypted-payload-update-requires-plaintext" };
+  }
   const decryptedExistingPayload = encryptedDurableStore
     && !patch.payload
     && existingObject.payload.kind !== "plaintext-json"

@@ -1048,6 +1048,43 @@ describe("local fixture graph tools", () => {
     }
   });
 
+  it("rejects opaque ciphertext patches that cannot be re-encrypted with updated authenticated metadata", async () => {
+    const token = "local-token-graph-opaque-patch-0001";
+    const directory = await mkdtemp(join(tmpdir(), "living-atlas-local-mcp-opaque-patch-"));
+    try {
+      const controlState = await createFixtureLocalControlState(token);
+      const keyring = createDefaultLocalKeyring({ authorityId: controlState.authority_id, createdAt: now });
+      const graphStore = await FileLocalGraphStore.open({
+        directory,
+        authorityId: controlState.authority_id,
+        plaintextPersistence: "encrypt",
+        keyring
+      });
+      await graphStore.createObject({
+        object: temporalEdgeObject("la_object_opaquepatch0001"),
+        expected_generation: 0,
+        actor_id: fixtureLocalClientId,
+        recorded_at: now
+      });
+      const encrypted = graphStore.readObject("la_object_opaquepatch0001")!;
+      const context = createLocalMcpContextFromControlState({
+        controlState,
+        graphStore,
+        decryptPayload: decryptWithKeyring(keyring),
+        now
+      });
+
+      await expect(localUpdateObject(context, {
+        authorization: `Bearer ${token}`,
+        object_id: encrypted.object_id,
+        expected_version: 1,
+        patch: { payload: encrypted.payload, visible_metadata: { size_class: "small" } }
+      })).resolves.toEqual({ ok: false, reason: "encrypted-payload-update-requires-plaintext" });
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
   it("queues successful durable local MCP mutations for bidirectional sync", async () => {
     const token = "local-token-graph-outbox-0001";
     const directory = await mkdtemp(join(tmpdir(), "living-atlas-local-mcp-outbox-"));

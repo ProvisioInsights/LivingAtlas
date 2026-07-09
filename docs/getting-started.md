@@ -177,7 +177,9 @@ approval for that operation.
 For recovery, `npm run backup:restore -- --backup-id <id> --store <local-worm-store> --out <empty-dir>`
 prompts for the recovery master and reconstructs `<empty-dir>/graph/snapshot.json`,
 an empty journal, and `<empty-dir>/keyring.json`. It refuses a non-empty output
-directory and never alters the source replica.
+directory and never alters the source replica. Restore currently accepts only a
+full backup; it deliberately rejects a differential backup until chain restore
+is implemented.
 
 ## 7. Verify
 

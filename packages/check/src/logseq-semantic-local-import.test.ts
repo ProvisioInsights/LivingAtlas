@@ -8,7 +8,7 @@ import {
   FileLocalKeyringStore
 } from "@living-atlas/local-keyring";
 import { FileLocalGraphStore } from "@living-atlas/local-graph-store";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { importLogseqSemanticLocalObjects } from "./logseq-semantic-local-import";
 
 const authorityId = "la_authority_fixture0001";
@@ -156,6 +156,38 @@ describe("Logseq semantic local import", () => {
         access_class: "quarantine",
         visible_metadata: expect.objectContaining({ schema_namespace: "import/logseq-semantic/edge-candidate" })
       }));
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("fails the import instead of reporting a source imported after a graph write failure", async () => {
+    const root = await mkdtemp(join(tmpdir(), "living-atlas-semantic-local-import-failure-"));
+    try {
+      const keyringPath = join(root, "keyring.json");
+      const graphDir = join(root, "graph");
+      const keyring = createDefaultLocalKeyring({ authorityId, createdAt: "2026-06-24T00:00:00.000Z" });
+      await new FileLocalKeyringStore(keyringPath).write(keyring, "fixture-passphrase");
+      const create = vi.spyOn(FileLocalGraphStore.prototype, "createObject")
+        .mockResolvedValueOnce({ ok: false, reason: "generation-conflict", current_generation: 0 });
+
+      await expect(importLogseqSemanticLocalObjects({
+        files: [{
+          source_path: "pages/Synthetic Write Failure.md",
+          source_kind: "logseq",
+          markdown: "# Synthetic write failure\n"
+        }],
+        sourceRootRef: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        sourceKind: "logseq",
+        sourceMode: "logseq-notes",
+        pathRedactionSecret: "fixture-path-redaction-secret-0001",
+        localGraphDir: graphDir,
+        keyringPath,
+        keyringPassphrase: "fixture-passphrase",
+        authorityId,
+        recordedAt: "2026-06-24T00:01:00.000Z"
+      })).rejects.toThrow(/failed/i);
+      create.mockRestore();
     } finally {
       await rm(root, { recursive: true, force: true });
     }

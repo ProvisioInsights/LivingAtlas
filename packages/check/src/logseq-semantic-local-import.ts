@@ -236,6 +236,10 @@ export async function importLogseqSemanticLocalObjects(input: {
     });
   }
 
+  if (failedObjects > 0) {
+    throw new Error(`semantic local import failed for ${failedObjects} graph object(s)`);
+  }
+
   const graphStatus = store.status();
   await store.compact();
   const compactedStatus = store.status();
