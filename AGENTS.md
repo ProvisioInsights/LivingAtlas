@@ -5,6 +5,32 @@
 Treat this checkout as the active Living Atlas repository for code, docs,
 tests, infrastructure templates, and synthetic fixtures.
 
+## GitHub Work Tracking
+
+Use GitHub as the durable work ledger for this repository. Track Living Atlas
+work in GitHub Issues and the org project:
+
+- Project: `ProvisioInsights` project `#3`, `Living Atlas Roadmap`
+- URL: `https://github.com/orgs/ProvisioInsights/projects/3`
+- Repository: `ProvisioInsights/LivingAtlas`
+
+When creating or updating work items:
+
+- Prefer GitHub Issues for durable tasks, bugs, gates, and follow-up work.
+- Use GitHub sub-issues when a larger issue needs child tasks or acceptance
+  gates.
+- Add every Living Atlas issue and sub-issue to the `Living Atlas Roadmap`
+  project unless there is a specific reason not to.
+- Keep project status aligned with issue/PR state; do not leave completed merge
+  work as untracked side context.
+- Reference issue numbers in branches, commits, PRs, and handoffs when the work
+  maps to a tracked item.
+- Use public-safe summaries in issue bodies and comments. Do not paste secrets,
+  private deployment evidence, recovery material, personal graph contents,
+  private source paths, or local profile data into GitHub.
+- Private deployment evidence belongs in the approved private overlay or local
+  evidence paths, with only public-safe status and issue links in this repo.
+
 ## System Layers
 
 Architecture docs govern runtime/storage/access:
