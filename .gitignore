@@ -46,4 +46,5 @@ data/
 *.duckdb
 *.parquet
 .mcp.json
+.codex/
 .living-atlas.deploy.wrangler.jsonc

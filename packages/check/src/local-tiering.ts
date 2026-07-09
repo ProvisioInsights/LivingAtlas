@@ -290,10 +290,10 @@ export async function reencryptToTier(
   }
 
   const { content_hash: _contentHash, payload: _payload, ...identity } = object;
-  // The AAD binds to the object's identity INCLUDING version/updated_at, so any
-  // version bump (needed when writing back to the store as an update) must be
-  // reflected in the sealed identity. Default to the object's own values so the
-  // pure re-encrypt (no bump) is unchanged.
+  // The stable cloud-unlock AAD binds only authority_id + object_id + algorithm.
+  // Version and timestamp updates are still reflected in the envelope so the
+  // store sees the re-tier as the intended object update, but they are not part
+  // of AES-GCM authentication data.
   const envelope = {
     ...identity,
     key_ref: object.key_ref,

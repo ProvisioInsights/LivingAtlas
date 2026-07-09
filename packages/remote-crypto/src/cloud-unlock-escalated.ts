@@ -103,12 +103,24 @@ function stableJson(value: unknown): string {
 }
 
 /**
- * Escalated AAD binding. Identical field set to the primary cloud-unlock AAD but
- * with a DISTINCT domain-separation prefix ("...escalated-object-payload:v1"),
+ * Escalated stable AAD binding. It binds only authority_id + object_id +
+ * algorithm, with a DISTINCT domain-separation prefix,
  * so the two tiers are cryptographically isolated even under identical key
  * material.
  */
-function escalatedObjectAdditionalData(object: GraphObjectEnvelope): Uint8Array {
+function stableEscalatedObjectAdditionalData(object: GraphObjectEnvelope): Uint8Array {
+  const algorithm = object.payload.kind === "ciphertext-inline"
+    ? object.payload.algorithm
+    : CloudUnlockEscalatedObjectAlgorithm;
+  return textEncoder.encode([
+    "living-atlas-cloud-unlock-escalated-object-payload:v2",
+    object.authority_id,
+    object.object_id,
+    algorithm
+  ].join(":"));
+}
+
+function legacyEscalatedObjectAdditionalData(object: GraphObjectEnvelope): Uint8Array {
   return textEncoder.encode([
     "living-atlas-cloud-unlock-escalated-object-payload:v1",
     object.authority_id,
@@ -137,8 +149,8 @@ async function importAesKey(rawKey: Uint8Array, usages: KeyUsage[]): Promise<Cry
 export type EscalatedCloudUnlockEncryptInput = {
   /**
    * The graph object identity without a content_hash or payload. The AAD binds
-   * to this identity, so it must be the final identity the object will carry
-   * once persisted.
+   * only to authority_id + object_id + algorithm so sync/version bookkeeping
+   * cannot make a valid ciphertext undecryptable after staging.
    */
   envelope: Omit<GraphObjectEnvelope, "content_hash" | "payload">;
   /** The cleartext record to seal. Wrapped as a plaintext-json payload. */
@@ -150,7 +162,7 @@ export type EscalatedCloudUnlockEncryptInput = {
 /**
  * Escalated cloud-unlock ENCRYPT primitive — the inverse of
  * {@link decryptEscalatedCloudUnlockObject}. Seals `plaintext` under the
- * escalation key with AES-GCM-256, a fresh 12-byte nonce, and the escalated AAD
+ * escalation key with AES-GCM-256, a fresh 12-byte nonce, and the stable escalated AAD
  * binding. The escalation key is used only to derive a non-extractable CryptoKey
  * and is never written into the returned object (leak-custody invariant).
  *
@@ -184,7 +196,7 @@ export async function encryptEscalatedCloudUnlockObject(
     {
       name: "AES-GCM",
       iv: bufferSource(nonce),
-      additionalData: bufferSource(escalatedObjectAdditionalData(draftForAad))
+      additionalData: bufferSource(stableEscalatedObjectAdditionalData(draftForAad))
     },
     cryptoKey,
     bufferSource(textEncoder.encode(JSON.stringify({
@@ -226,15 +238,29 @@ export async function decryptEscalatedCloudUnlockObject(
   }
 
   try {
-    const plaintext = await crypto.subtle.decrypt(
-      {
-        name: "AES-GCM",
-        iv: bufferSource(nonce),
-        additionalData: bufferSource(escalatedObjectAdditionalData(object))
-      },
-      await importAesKey(rawKey, ["decrypt"]),
-      bufferSource(ciphertext)
-    );
+    const cryptoKey = await importAesKey(rawKey, ["decrypt"]);
+    let plaintext: ArrayBuffer;
+    try {
+      plaintext = await crypto.subtle.decrypt(
+        {
+          name: "AES-GCM",
+          iv: bufferSource(nonce),
+          additionalData: bufferSource(stableEscalatedObjectAdditionalData(object))
+        },
+        cryptoKey,
+        bufferSource(ciphertext)
+      );
+    } catch {
+      plaintext = await crypto.subtle.decrypt(
+        {
+          name: "AES-GCM",
+          iv: bufferSource(nonce),
+          additionalData: bufferSource(legacyEscalatedObjectAdditionalData(object))
+        },
+        cryptoKey,
+        bufferSource(ciphertext)
+      );
+    }
 
     return {
       ok: true,

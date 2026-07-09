@@ -21,10 +21,13 @@ import {
  * (escalation key), and proves the full escalation flow:
  *
  *   - NORMAL decrypts under the PRIMARY key.
+ *   - NORMAL still decrypts if mutable envelope bookkeeping is rematerialized
+ *     after sealing.
  *   - ESCALATED, offered ONLY the primary key, returns "escalation-required"
  *     (models the worker refusal — the primary path cannot open it).
  *   - ESCALATED decrypts under the ESCALATION key.
- *   - WRONG keys fail for both; an AAD-tampered envelope is denied.
+ *   - ESCALATED also survives mutable envelope rematerialization after sealing.
+ *   - WRONG keys fail for both; a stable-identity AAD-tampered envelope is denied.
  *   - Leak-custody: neither key nor plaintext survives in the produced objects.
  *
  * The LIVE half — push these objects to Cloudflare and unlock them via the
@@ -40,8 +43,8 @@ function toBase64(bytes: Uint8Array): string {
   return Buffer.from(bytes).toString("base64");
 }
 
-function nowIso(): string {
-  return new Date().toISOString();
+function nowIso(offsetMs = 0): string {
+  return new Date(Date.now() + offsetMs).toISOString();
 }
 
 export type CloudUnlockE2eProof = {
@@ -53,10 +56,12 @@ export type CloudUnlockE2eProof = {
   samples: number;
   // NORMAL tier
   decrypted_ok: number;
+  rematerialized_decrypted_ok: number;
   wrong_key_denied: number;
   aad_tamper_denied: number;
   // ESCALATED tier
   escalated_decrypted_ok: number;
+  escalated_rematerialized_decrypted_ok: number;
   escalation_required_without_key: number;
   escalated_wrong_key_denied: number;
   escalated_aad_tamper_denied: number;
@@ -91,9 +96,11 @@ export async function runCloudUnlockE2eProof(options: { sampleCount?: number } =
   const wrongKey = toBase64(randomBytes(32));
 
   let decryptedOk = 0;
+  let rematerializedDecryptedOk = 0;
   let wrongKeyDenied = 0;
   let aadTamperDenied = 0;
   let escalatedDecryptedOk = 0;
+  let escalatedRematerializedDecryptedOk = 0;
   let escalationRequiredWithoutKey = 0;
   let escalatedWrongKeyDenied = 0;
   let escalatedAadTamperDenied = 0;
@@ -134,9 +141,20 @@ export async function runCloudUnlockE2eProof(options: { sampleCount?: number } =
     if (normalDecrypted.ok && JSON.stringify(normalDecrypted.plaintext).includes(plaintextBait)) {
       decryptedOk += 1;
     }
+    const normalRematerialized: GraphObjectEnvelope = {
+      ...normal,
+      version: normal.version + 10,
+      updated_at: nowIso(1000),
+      key_ref: `la_key_e2erematerialized${suffix}`,
+      visible_metadata: { tombstone: false, remote_indexable: false, size_class: "small" }
+    };
+    const normalRematerializedDecrypted = await decryptCloudUnlockObject(normalRematerialized, sessionKey);
+    if (normalRematerializedDecrypted.ok && JSON.stringify(normalRematerializedDecrypted.plaintext).includes(plaintextBait)) {
+      rematerializedDecryptedOk += 1;
+    }
     const normalWrong = await decryptCloudUnlockObject(normal, wrongKey);
     if (!normalWrong.ok) wrongKeyDenied += 1;
-    const normalTampered: GraphObjectEnvelope = { ...normal, version: normal.version + 1 };
+    const normalTampered: GraphObjectEnvelope = { ...normal, object_id: `la_object_e2etampered${suffix}` };
     if (!(await decryptCloudUnlockObject(normalTampered, sessionKey)).ok) aadTamperDenied += 1;
 
     // ESCALATED offered ONLY the primary key → escalation-required (the primary
@@ -152,11 +170,22 @@ export async function runCloudUnlockE2eProof(options: { sampleCount?: number } =
     if (escDecrypted.ok && JSON.stringify(escDecrypted.plaintext).includes(escalatedBait)) {
       escalatedDecryptedOk += 1;
     }
+    const escRematerialized: GraphObjectEnvelope = {
+      ...escalated,
+      version: escalated.version + 10,
+      updated_at: nowIso(2000),
+      key_ref: `la_key_e2erematerializedesc${suffix}`,
+      visible_metadata: { tombstone: false, remote_indexable: false, size_class: "small" }
+    };
+    const escRematerializedDecrypted = await decryptEscalatedCloudUnlockObject(escRematerialized, escalationKey);
+    if (escRematerializedDecrypted.ok && JSON.stringify(escRematerializedDecrypted.plaintext).includes(escalatedBait)) {
+      escalatedRematerializedDecryptedOk += 1;
+    }
     // Wrong escalation key fails.
     const escWrong = await decryptEscalatedCloudUnlockObject(escalated, wrongKey);
     if (!escWrong.ok) escalatedWrongKeyDenied += 1;
-    // AAD-tampered escalated envelope denied.
-    const escTampered: GraphObjectEnvelope = { ...escalated, version: escalated.version + 1 };
+    // Stable-identity AAD-tampered escalated envelope denied.
+    const escTampered: GraphObjectEnvelope = { ...escalated, object_id: `la_object_e2etamperedesc${suffix}` };
     if (!(await decryptEscalatedCloudUnlockObject(escTampered, escalationKey)).ok) escalatedAadTamperDenied += 1;
   }
 
@@ -168,9 +197,11 @@ export async function runCloudUnlockE2eProof(options: { sampleCount?: number } =
     nonce_bytes: nonceBytes,
     samples: sampleCount,
     decrypted_ok: decryptedOk,
+    rematerialized_decrypted_ok: rematerializedDecryptedOk,
     wrong_key_denied: wrongKeyDenied,
     aad_tamper_denied: aadTamperDenied,
     escalated_decrypted_ok: escalatedDecryptedOk,
+    escalated_rematerialized_decrypted_ok: escalatedRematerializedDecryptedOk,
     escalation_required_without_key: escalationRequiredWithoutKey,
     escalated_wrong_key_denied: escalatedWrongKeyDenied,
     escalated_aad_tamper_denied: escalatedAadTamperDenied,
@@ -179,9 +210,11 @@ export async function runCloudUnlockE2eProof(options: { sampleCount?: number } =
     plaintext_leaked: plaintextLeaked,
     complete:
       decryptedOk === sampleCount &&
+      rematerializedDecryptedOk === sampleCount &&
       wrongKeyDenied === sampleCount &&
       aadTamperDenied === sampleCount &&
       escalatedDecryptedOk === sampleCount &&
+      escalatedRematerializedDecryptedOk === sampleCount &&
       escalationRequiredWithoutKey === sampleCount &&
       escalatedWrongKeyDenied === sampleCount &&
       escalatedAadTamperDenied === sampleCount &&

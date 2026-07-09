@@ -94,7 +94,7 @@ describe("encryptEscalatedCloudUnlockObject", () => {
     expect(result.reason).toBe("decrypt-failed");
   });
 
-  it("binds the AAD to envelope identity: tampering with the envelope breaks decrypt", async () => {
+  it("binds the AAD to stable envelope identity: tampering with authority or object id breaks decrypt", async () => {
     const escalationKey = keyMaterial(7);
     const object = await encryptEscalatedCloudUnlockObject({
       envelope: baseEnvelope(),
@@ -102,11 +102,43 @@ describe("encryptEscalatedCloudUnlockObject", () => {
       encodedEscalationKey: escalationKey
     });
 
-    const tampered: GraphObjectEnvelope = { ...object, object_id: "la_object_escalated9999" };
-    const result = await decryptEscalatedCloudUnlockObject(tampered, escalationKey);
-    expect(result.ok).toBe(false);
-    if (result.ok) throw new Error("AAD tampering must not decrypt");
-    expect(result.reason).toBe("decrypt-failed");
+    const objectTampered: GraphObjectEnvelope = { ...object, object_id: "la_object_escalated9999" };
+    const objectResult = await decryptEscalatedCloudUnlockObject(objectTampered, escalationKey);
+    expect(objectResult.ok).toBe(false);
+    if (objectResult.ok) throw new Error("object_id tampering must not decrypt");
+    expect(objectResult.reason).toBe("decrypt-failed");
+
+    const authorityTampered: GraphObjectEnvelope = { ...object, authority_id: "la_authority_worker9999" };
+    const authorityResult = await decryptEscalatedCloudUnlockObject(authorityTampered, escalationKey);
+    expect(authorityResult.ok).toBe(false);
+    if (authorityResult.ok) throw new Error("authority_id tampering must not decrypt");
+    expect(authorityResult.reason).toBe("decrypt-failed");
+  });
+
+  it("does not bind escalated AAD to mutable envelope bookkeeping", async () => {
+    const escalationKey = keyMaterial(8);
+    const object = await encryptEscalatedCloudUnlockObject({
+      envelope: baseEnvelope(),
+      plaintext: { secret: "value" },
+      encodedEscalationKey: escalationKey
+    });
+
+    const drifted: GraphObjectEnvelope = {
+      ...object,
+      version: object.version + 4,
+      created_at: "2026-07-04T01:23:45.000Z",
+      updated_at: "2026-07-05T05:20:16.692Z",
+      key_ref: "la_key_rematerializedesc0001",
+      visible_metadata: {
+        tombstone: false,
+        size_class: "small",
+        remote_indexable: false
+      }
+    };
+    const result = await decryptEscalatedCloudUnlockObject(drifted, escalationKey);
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.reason);
+    expect(result.plaintext).toEqual({ kind: "plaintext-json", data: { secret: "value" } });
   });
 
   it("rejects malformed / wrong-length escalation keys without touching crypto", async () => {
@@ -187,6 +219,47 @@ describe("cloud-unlock tier isolation (primary vs escalated)", () => {
     expect(viaEscalated.ok).toBe(false);
     if (viaEscalated.ok) throw new Error("escalated path must refuse primary payload");
     expect(viaEscalated.reason).toBe("unsupported-algorithm");
+  });
+
+  it("rejects payload algorithm substitution even with identical key material", async () => {
+    const sharedKey = keyMaterial(6);
+    const normal = await encryptCloudUnlockObject({
+      envelope: baseEnvelope({ object_id: "la_object_algorithm_substitution0001" }),
+      plaintext: { secret: "normal-body" },
+      encodedUnlockKey: sharedKey
+    });
+    if (normal.payload.kind !== "ciphertext-inline") throw new Error("expected ciphertext-inline");
+
+    const normalAsEscalated: GraphObjectEnvelope = {
+      ...normal,
+      payload: {
+        ...normal.payload,
+        algorithm: CloudUnlockEscalatedObjectAlgorithm
+      }
+    };
+    const viaEscalated = await decryptEscalatedCloudUnlockObject(normalAsEscalated, sharedKey);
+    expect(viaEscalated.ok).toBe(false);
+    if (viaEscalated.ok) throw new Error("algorithm-substituted normal object must not decrypt");
+    expect(viaEscalated.reason).toBe("decrypt-failed");
+
+    const escalated = await encryptEscalatedCloudUnlockObject({
+      envelope: baseEnvelope({ object_id: "la_object_algorithm_substitution0002" }),
+      plaintext: { secret: "escalated-body" },
+      encodedEscalationKey: sharedKey
+    });
+    if (escalated.payload.kind !== "ciphertext-inline") throw new Error("expected ciphertext-inline");
+
+    const escalatedAsNormal: GraphObjectEnvelope = {
+      ...escalated,
+      payload: {
+        ...escalated.payload,
+        algorithm: CloudUnlockObjectAlgorithm
+      }
+    };
+    const viaPrimary = await decryptCloudUnlockObject(escalatedAsNormal, sharedKey);
+    expect(viaPrimary.ok).toBe(false);
+    if (viaPrimary.ok) throw new Error("algorithm-substituted escalated object must not decrypt");
+    expect(viaPrimary.reason).toBe("decrypt-failed");
   });
 
   it("the PRIMARY session key does NOT decrypt an escalated object encrypted under the escalation key", async () => {

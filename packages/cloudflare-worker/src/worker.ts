@@ -1,6 +1,6 @@
 import { AuthorityIdSchema, PraxisActivityAuditStreamRequestSchema } from "@living-atlas/contracts";
 import { SyncBatchSchema } from "@living-atlas/contracts";
-import type { AccessMode, GraphObjectEnvelope, SyncBatch, SyncEnvelopePullResponse } from "@living-atlas/contracts";
+import type { AccessMode, GraphObjectEnvelope, SyncBatch } from "@living-atlas/contracts";
 import type { DurableAuditEvent, Operation } from "@living-atlas/contracts";
 import { createLivingAtlasGraphService } from "@living-atlas/graph-service";
 import { LivingAtlasMcpToolDefinitions } from "@living-atlas/mcp-contract";
@@ -30,7 +30,7 @@ import {
   type SyncRuntimeConfig,
   type SyncTokenBinding
 } from "./sync";
-import { readSyncStatus } from "./sync-storage";
+import { readLatestSyncEnvelopeObject, readSyncStatus } from "./sync-storage";
 import { authoritySequencerName } from "./sync-sequencer";
 import {
   getUsageGate,
@@ -151,16 +151,6 @@ function syncRuntimeConfig(env: BootstrapWorkerEnv): SyncRuntimeConfig {
     sync_client_id: env.LA_SYNC_CLIENT_ID,
     sync_capability_id: env.LA_SYNC_CAPABILITY_ID,
     sync_token_id: env.LA_SYNC_TOKEN_ID,
-    authority_id: configuredAuthorityId(env)
-  };
-}
-
-function cloudUnlockRuntimeConfig(env: BootstrapWorkerEnv): SyncRuntimeConfig {
-  return {
-    sync_token_hash: env.LA_SYNC_TOKEN_HASH,
-    sync_client_id: env.LA_CLOUD_UNLOCK_CLIENT_ID,
-    sync_capability_id: env.LA_CLOUD_UNLOCK_CAPABILITY_ID,
-    sync_token_id: env.LA_CLOUD_UNLOCK_TOKEN_ID,
     authority_id: configuredAuthorityId(env)
   };
 }
@@ -1151,13 +1141,6 @@ function requestTraceId(request: Request): string {
   return value && /^la_trace_[A-Za-z0-9_-]{8,}$/.test(value) ? value : `la_trace_${crypto.randomUUID().replaceAll("-", "")}`;
 }
 
-function latestEnvelopeForObject(response: SyncEnvelopePullResponse, objectId: string): GraphObjectEnvelope | undefined {
-  return response.objects
-    .filter((entry) => entry.object.object_id === objectId)
-    .sort((left, right) => right.generation - left.generation || right.object.version - left.object.version)
-    .at(0)?.object;
-}
-
 async function executeRemoteMcpTool(name: string, args: unknown, request: Request, env: BootstrapWorkerEnv): Promise<unknown> {
   if (name === "access_modes") {
     const currentMode = remoteRequestAccessMode(request);
@@ -1249,23 +1232,10 @@ async function executeRemoteMcpTool(name: string, args: unknown, request: Reques
       };
     }
 
-    const pullResult = await getSyncEnvelopePull(
-      request.headers.get(syncTokenHeader) ?? undefined,
-      cloudUnlockRuntimeConfig(env),
-      {
-        graphBucket: env.LA_GRAPH_BUCKET,
-        controlDb: env.LA_CONTROL_DB
-      },
-      authorityId,
-      0,
-      undefined,
-      syncTokenBinding(request)
-    );
-    if (!pullResult.ok) {
-      throw new Error(pullResult.reason);
-    }
-
-    const object = latestEnvelopeForObject(pullResult.response, objectId);
+    const object = (await readLatestSyncEnvelopeObject({
+      graphBucket: env.LA_GRAPH_BUCKET,
+      controlDb: env.LA_CONTROL_DB
+    }, authorityId, objectId))?.object;
     if (!object) {
       await appendRemoteMcpAudit({
         request,
@@ -1519,7 +1489,7 @@ async function executeRemoteMcpTool(name: string, args: unknown, request: Reques
       env,
       authority_id: authorityId,
       operation: "read",
-      event_type: "object.read",
+      event_type: "sync.read",
       summary: "Remote graph list read allowed"
     });
     return {

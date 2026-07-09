@@ -118,6 +118,12 @@ the primary key, then decrypts under the escalation key; wrong keys and
 AAD-tamper are denied; and neither key nor plaintext leaks into the produced
 objects.
 
+For cloud-unlock v2, AAD-tamper means tampering with `authority_id`,
+`object_id`, payload algorithm/tier, or the normal/escalated domain. Mutable
+version/generation/timestamps, `key_ref`, and `visible_metadata` changes are
+intentionally outside v2 AAD. Legacy v1 decrypt fallback is compatibility-only
+and still uses the original broader AAD.
+
 ## Step 5 — Live e2e (later, after worker redeploy)
 
 ```sh

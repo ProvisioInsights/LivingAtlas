@@ -5,6 +5,7 @@ import {
   SyncStatusSchema,
   type GraphObjectEnvelope,
   type SyncBatch,
+  type SyncEnvelopePullObject,
   type SyncEnvelopePullResponse,
   type SyncPullResponse,
   type SyncStatus
@@ -672,4 +673,45 @@ ORDER BY sync_batches.target_generation ASC, sync_objects.object_ref ASC, sync_o
     },
     has_more: batchRows.length > boundedBatches.length
   });
+}
+
+export async function readLatestSyncEnvelopeObject(
+  storage: SyncStorageBindings,
+  authorityId: string,
+  objectId: string
+): Promise<SyncEnvelopePullObject | undefined> {
+  await ensureSyncTables(storage.controlDb);
+
+  const authorityRef = await scopedOpaqueRef("authority", authorityId);
+  const objectRef = await scopedOpaqueRef("object", objectId);
+  const row = await storage.controlDb.prepare(`
+SELECT
+  sync_objects.batch_id AS batch_id,
+  sync_batches.target_generation AS target_generation,
+  sync_batches.submitted_at AS submitted_at,
+  sync_objects.envelope_r2_key AS envelope_r2_key
+FROM sync_objects
+INNER JOIN sync_batches ON sync_batches.batch_id = sync_objects.batch_id
+WHERE sync_batches.status = 'committed'
+  AND sync_batches.authority_ref = ?
+  AND sync_objects.authority_ref = ?
+  AND sync_objects.object_ref = ?
+ORDER BY sync_batches.target_generation DESC, sync_objects.version DESC
+LIMIT 1
+`).bind(authorityRef, authorityRef, objectRef).first<PullObjectRow>();
+  if (!row) {
+    return undefined;
+  }
+
+  const body = await storage.graphBucket.get(row.envelope_r2_key);
+  if (!body) {
+    throw new Error(`Missing sync envelope R2 object: ${row.envelope_r2_key}`);
+  }
+
+  return {
+    batch_id: row.batch_id,
+    generation: row.target_generation,
+    submitted_at: row.submitted_at,
+    object: GraphObjectEnvelopeSchema.parse(JSON.parse(await body.text()))
+  };
 }

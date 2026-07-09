@@ -79,7 +79,19 @@ function stableJson(value: unknown): string {
   return JSON.stringify(value);
 }
 
-function objectAdditionalData(object: GraphObjectEnvelope): Uint8Array {
+function stableObjectAdditionalData(object: GraphObjectEnvelope): Uint8Array {
+  const algorithm = object.payload.kind === "ciphertext-inline"
+    ? object.payload.algorithm
+    : CloudUnlockObjectAlgorithm;
+  return textEncoder.encode([
+    "living-atlas-cloud-unlock-object-payload:v2",
+    object.authority_id,
+    object.object_id,
+    algorithm
+  ].join(":"));
+}
+
+function legacyObjectAdditionalData(object: GraphObjectEnvelope): Uint8Array {
   return textEncoder.encode([
     "living-atlas-cloud-unlock-object-payload:v1",
     object.authority_id,
@@ -108,9 +120,8 @@ async function importAesKey(rawKey: Uint8Array, usages: KeyUsage[]): Promise<Cry
 export type CloudUnlockEncryptInput = {
   /**
    * The graph object identity without a content_hash or payload. The AAD binds
-   * to this identity, so it must be the final identity the object will carry
-   * once persisted (authority/object id/type/version/classes/key_ref/timestamps
-   * /visible_metadata).
+   * only to authority_id + object_id + algorithm so sync/version bookkeeping
+   * cannot make a valid ciphertext undecryptable after staging.
    */
   envelope: Omit<GraphObjectEnvelope, "content_hash" | "payload">;
   /** The cleartext record to seal. Wrapped as a plaintext-json payload. */
@@ -123,8 +134,8 @@ export type CloudUnlockEncryptInput = {
  * Cloud-unlock ENCRYPT primitive — the inverse of {@link decryptCloudUnlockObject}.
  *
  * Seals `plaintext` under the transient per-request cloud-unlock session key
- * with AES-GCM-256, a fresh 12-byte nonce, and the same authenticated-data
- * binding the decrypt path verifies. The session key is used only to derive a
+ * with AES-GCM-256, a fresh 12-byte nonce, and a stable authenticated-data
+ * binding. The session key is used only to derive a
  * non-extractable CryptoKey and is never written into the returned object
  * (leak-custody invariant), and no plaintext survives in cleartext form.
  *
@@ -157,7 +168,7 @@ export async function encryptCloudUnlockObject(
     {
       name: "AES-GCM",
       iv: bufferSource(nonce),
-      additionalData: bufferSource(objectAdditionalData(draftForAad))
+      additionalData: bufferSource(stableObjectAdditionalData(draftForAad))
     },
     cryptoKey,
     bufferSource(textEncoder.encode(JSON.stringify({
@@ -199,15 +210,29 @@ export async function decryptCloudUnlockObject(
   }
 
   try {
-    const plaintext = await crypto.subtle.decrypt(
-      {
-        name: "AES-GCM",
-        iv: bufferSource(nonce),
-        additionalData: bufferSource(objectAdditionalData(object))
-      },
-      await importAesKey(rawKey, ["decrypt"]),
-      bufferSource(ciphertext)
-    );
+    const cryptoKey = await importAesKey(rawKey, ["decrypt"]);
+    let plaintext: ArrayBuffer;
+    try {
+      plaintext = await crypto.subtle.decrypt(
+        {
+          name: "AES-GCM",
+          iv: bufferSource(nonce),
+          additionalData: bufferSource(stableObjectAdditionalData(object))
+        },
+        cryptoKey,
+        bufferSource(ciphertext)
+      );
+    } catch {
+      plaintext = await crypto.subtle.decrypt(
+        {
+          name: "AES-GCM",
+          iv: bufferSource(nonce),
+          additionalData: bufferSource(legacyObjectAdditionalData(object))
+        },
+        cryptoKey,
+        bufferSource(ciphertext)
+      );
+    }
 
     return {
       ok: true,

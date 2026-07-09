@@ -74,9 +74,14 @@ algorithm `AES-GCM-256+cloud-unlock-escalated-v1`). It mirrors the normal
 primitive exactly:
 
 - Fresh 12-byte random nonce per call (no nonce reuse).
-- AES-GCM authenticated-data binding to the object's identity (authority, object
-  id, type, version, access/encryption class, key ref, timestamps, visible
-  metadata).
+- AES-GCM v2 authenticated-data binding to the stable cloud-unlock identity:
+  `authority_id`, `object_id`, and the payload algorithm/tier.
+- Mutable envelope and sync fields (`version`, generation/cursor state,
+  timestamps, `key_ref`, and `visible_metadata`) are intentionally excluded from
+  v2 AAD so bookkeeping updates do not make valid ciphertext undecryptable.
+- Legacy v1 decrypt fallback is compatibility-only and still uses the original
+  broader AAD over object type, version, access/encryption class, key ref,
+  timestamps, and visible metadata.
 - **Leak custody**: the escalation key derives only a non-extractable
   `CryptoKey` and is never written into the produced object; no plaintext
   survives in cleartext.
@@ -86,9 +91,9 @@ primitive exactly:
 1. **By algorithm class** — the normal decrypt path returns
    `unsupported-algorithm` for an escalated object and vice-versa, so neither
    path ever attempts to open the other tier's payload.
-2. **By AAD domain separation** — the escalated AAD carries a distinct
-   domain-separation prefix, so even under identical key material an escalated
-   ciphertext cannot be authenticated by the normal primitive.
+2. **By AAD domain separation** — normal and escalated v2 AAD carry distinct
+   domain-separation prefixes, so even under identical key material an
+   escalated ciphertext cannot be authenticated by the normal primitive.
 3. **By distinct keys** — the primary session key does not open an escalated
    object, and the escalation key does not open a normal object.
 

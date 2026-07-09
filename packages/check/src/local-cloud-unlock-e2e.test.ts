@@ -7,10 +7,12 @@ describe("runCloudUnlockE2eProof (synthetic two-key escalation e2e)", () => {
     expect(proof.samples).toBe(3);
     // Normal tier.
     expect(proof.decrypted_ok).toBe(3);
+    expect(proof.rematerialized_decrypted_ok).toBe(3);
     expect(proof.wrong_key_denied).toBe(3);
     expect(proof.aad_tamper_denied).toBe(3);
     // Escalated tier.
     expect(proof.escalated_decrypted_ok).toBe(3);
+    expect(proof.escalated_rematerialized_decrypted_ok).toBe(3);
     expect(proof.escalation_required_without_key).toBe(3);
     expect(proof.escalated_wrong_key_denied).toBe(3);
     expect(proof.escalated_aad_tamper_denied).toBe(3);

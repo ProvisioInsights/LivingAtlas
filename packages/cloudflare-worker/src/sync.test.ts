@@ -91,34 +91,15 @@ function testToBase64(bytes: Uint8Array): string {
   return btoa(binary);
 }
 
-function testStableJson(value: unknown): string {
-  if (Array.isArray(value)) {
-    return `[${value.map(testStableJson).join(",")}]`;
-  }
-
-  if (value && typeof value === "object") {
-    return `{${Object.entries(value)
-      .sort(([left], [right]) => left.localeCompare(right))
-      .map(([key, entry]) => `${JSON.stringify(key)}:${testStableJson(entry)}`)
-      .join(",")}}`;
-  }
-
-  return JSON.stringify(value);
-}
-
 function testObjectAdditionalData(object: GraphObjectEnvelope): Uint8Array {
+  const algorithm = object.payload.kind === "ciphertext-inline"
+    ? object.payload.algorithm
+    : CloudUnlockObjectAlgorithm;
   return new TextEncoder().encode([
-    "living-atlas-cloud-unlock-object-payload:v1",
+    "living-atlas-cloud-unlock-object-payload:v2",
     object.authority_id,
     object.object_id,
-    object.object_type,
-    String(object.version),
-    object.access_class,
-    object.encryption_class,
-    object.key_ref ?? "",
-    object.created_at,
-    object.updated_at,
-    testStableJson(object.visible_metadata)
+    algorithm
   ].join(":"));
 }
 
@@ -230,6 +211,131 @@ async function cloudUnlockBatch(rawKey: Uint8Array): Promise<SyncBatch> {
         content_hash: object.content_hash,
         access_class: object.access_class,
         generation: 1,
+        actor_id: "la_client_worker0001"
+      }
+    ],
+    withheld_plaintext_count: 0
+  });
+}
+
+function remoteBackfillObject(index: number): GraphObjectEnvelope {
+  const suffix = String(index).padStart(4, "0");
+  return {
+    schema_version: 1,
+    authority_id: "la_authority_worker0001",
+    object_id: `la_object_backfill${suffix}`,
+    object_type: "block",
+    version: 1,
+    access_class: "local-private",
+    encryption_class: "client-encrypted",
+    created_at: timestamp,
+    updated_at: timestamp,
+    content_hash: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    key_ref: `la_key_backfill${suffix}`,
+    visible_metadata: {
+      tombstone: false,
+      size_class: "tiny",
+      remote_indexable: false
+    },
+    payload: {
+      kind: "ciphertext-inline",
+      ciphertext: testToBase64(new Uint8Array([index])),
+      nonce: testToBase64(new Uint8Array([1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, index])),
+      algorithm: "AES-GCM-256+local-keyring-v1"
+    }
+  };
+}
+
+function backfillBatch(index: number, baseGeneration: number): SyncBatch {
+  const suffix = String(index).padStart(4, "0");
+  const object = remoteBackfillObject(index);
+  return SyncBatchSchema.parse({
+    batch_id: `la_sync_batch_backfill${suffix}`,
+    authority_id: "la_authority_worker0001",
+    device_id: "la_device_worker0001",
+    client_id: "la_client_worker0001",
+    capability_id: "la_cap_worker0001",
+    operation_id: `la_operation_backfill${suffix}`,
+    trace_id: `la_trace_backfill${suffix}`,
+    idempotency_key: `la_idem_backfill${suffix}`,
+    submitted_at: timestamp,
+    base_generation: baseGeneration,
+    target_generation: baseGeneration + 1,
+    objects: [object],
+    changes: [
+      {
+        change_id: `la_change_backfill${suffix}`,
+        authority_id: "la_authority_worker0001",
+        operation_id: `la_operation_backfill${suffix}`,
+        trace_id: `la_trace_backfill${suffix}`,
+        recorded_at: timestamp,
+        object_id: object.object_id,
+        operation: "update",
+        base_version: 0,
+        new_version: object.version,
+        content_hash: object.content_hash,
+        access_class: object.access_class,
+        generation: baseGeneration + 1,
+        actor_id: "la_client_worker0001"
+      }
+    ],
+    withheld_plaintext_count: 0
+  });
+}
+
+function lowerVersionQuarantineBatch(baseGeneration: number): SyncBatch {
+  const object: GraphObjectEnvelope = {
+    schema_version: 1,
+    authority_id: "la_authority_worker0001",
+    object_id: "la_object_cloudunlock0001",
+    object_type: "page",
+    version: 2,
+    access_class: "quarantine",
+    encryption_class: "client-encrypted",
+    created_at: timestamp,
+    updated_at: "2026-07-05T06:20:16.692Z",
+    content_hash: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    key_ref: "la_key_cloudunlock_quarantine0001",
+    visible_metadata: {
+      tombstone: true,
+      size_class: "tiny",
+      remote_indexable: false
+    },
+    payload: {
+      kind: "ciphertext-inline",
+      ciphertext: testToBase64(new Uint8Array([9, 9, 9])),
+      nonce: testToBase64(new Uint8Array([2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2])),
+      algorithm: "AES-GCM-256+local-keyring-v1"
+    }
+  };
+
+  return SyncBatchSchema.parse({
+    batch_id: "la_sync_batch_cloudunlock_quarantine0001",
+    authority_id: "la_authority_worker0001",
+    device_id: "la_device_worker0001",
+    client_id: "la_client_worker0001",
+    capability_id: "la_cap_worker0001",
+    operation_id: "la_operation_cloudunlock_quarantine0001",
+    trace_id: "la_trace_cloudunlock_quarantine0001",
+    idempotency_key: "la_idem_cloudunlock_quarantine0001",
+    submitted_at: timestamp,
+    base_generation: baseGeneration,
+    target_generation: baseGeneration + 1,
+    objects: [object],
+    changes: [
+      {
+        change_id: "la_change_cloudunlock_quarantine0001",
+        authority_id: "la_authority_worker0001",
+        operation_id: "la_operation_cloudunlock_quarantine0001",
+        trace_id: "la_trace_cloudunlock_quarantine0001",
+        recorded_at: timestamp,
+        object_id: object.object_id,
+        operation: "update",
+        base_version: 7,
+        new_version: object.version,
+        content_hash: object.content_hash,
+        access_class: object.access_class,
+        generation: baseGeneration + 1,
         actor_id: "la_client_worker0001"
       }
     ],
@@ -1673,6 +1779,196 @@ describe("Worker sync batch acceptance", () => {
     expect(JSON.stringify(auditBody)).not.toContain("Synthetic sensitive note");
   });
 
+  it("decrypts a cloud-unlock object even when earlier envelope pages do not include it", async () => {
+    const { env } = await createEnv();
+    let generation = 0;
+    for (let index = 1; index <= 10; index += 1) {
+      const response = await handleBootstrapRequest(new Request("https://living-atlas.example/api/sync/batch", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-living-atlas-sync-token": syncToken
+        },
+        body: JSON.stringify(backfillBatch(index, generation))
+      }), env);
+      expect(response.status).toBe(202);
+      generation += 1;
+    }
+
+    const rawKey = new Uint8Array(Array.from({ length: 32 }, (_, index) => index + 31));
+    const unlockKey = testToBase64(rawKey);
+    const targetBatchFixture = await cloudUnlockBatch(rawKey);
+    const rematerializedObject: GraphObjectEnvelope = {
+      ...targetBatchFixture.objects[0]!,
+      version: 7,
+      updated_at: "2026-07-05T05:20:16.692Z",
+      key_ref: "la_key_cloudunlock_rematerialized0001",
+      visible_metadata: {
+        tombstone: false,
+        size_class: "small",
+        remote_indexable: false
+      }
+    };
+    const {
+      batch_hash: _batchHash,
+      object_payloads: _objectPayloads,
+      estimated_batch_bytes: _estimatedBatchBytes,
+      ...targetBatchBase
+    } = targetBatchFixture;
+    const targetBatch = SyncBatchSchema.parse({
+      ...targetBatchBase,
+      batch_id: "la_sync_batch_cloudunlock_late0001",
+      idempotency_key: "la_idem_cloudunlock_late0001",
+      base_generation: generation,
+      target_generation: generation + 1,
+      objects: [rematerializedObject],
+      changes: targetBatchFixture.changes.map((change) => ({
+        ...change,
+        change_id: "la_change_cloudunlock_late0001",
+        new_version: rematerializedObject.version,
+        content_hash: rematerializedObject.content_hash,
+        generation: generation + 1
+      }))
+    });
+    const syncResponse = await handleBootstrapRequest(new Request("https://living-atlas.example/api/sync/batch", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-living-atlas-sync-token": syncToken
+      },
+      body: JSON.stringify(targetBatch)
+    }), env);
+    expect(syncResponse.status).toBe(202);
+
+    const decryptResponse = await handleBootstrapRequest(new Request("https://living-atlas.example/mcp", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-living-atlas-sync-token": syncToken,
+        "x-living-atlas-sync-capability-id": cloudUnlockCapabilityId,
+        "x-living-atlas-cloud-unlock-key": unlockKey
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 91,
+        method: "tools/call",
+        params: {
+          name: "sensitive_decrypt",
+          arguments: {
+            authority_id: "la_authority_worker0001",
+            object_id: "la_object_cloudunlock0001"
+          }
+        }
+      })
+    }), env);
+
+    await expect(decryptResponse.json()).resolves.toMatchObject({
+      jsonrpc: "2.0",
+      id: 91,
+      result: {
+        structuredContent: {
+          ok: true,
+          current_mode: "cloud-unlock-session",
+          object_id: "la_object_cloudunlock0001",
+          version: 7,
+          payload: {
+            kind: "plaintext-json",
+            data: {
+              title: "Synthetic sensitive note"
+            }
+          }
+        }
+      }
+    });
+  });
+
+  it("does not decrypt a stale higher-version object when a later generation quarantines it", async () => {
+    const { env } = await createEnv();
+    const rawKey = new Uint8Array(Array.from({ length: 32 }, (_, index) => index + 37));
+    const unlockKey = testToBase64(rawKey);
+    const targetBatchFixture = await cloudUnlockBatch(rawKey);
+    const highVersionObject: GraphObjectEnvelope = {
+      ...targetBatchFixture.objects[0]!,
+      version: 7,
+      updated_at: "2026-07-05T05:20:16.692Z"
+    };
+    const {
+      batch_hash: _batchHash,
+      object_payloads: _objectPayloads,
+      estimated_batch_bytes: _estimatedBatchBytes,
+      ...targetBatchBase
+    } = targetBatchFixture;
+    const highVersionBatch = SyncBatchSchema.parse({
+      ...targetBatchBase,
+      batch_id: "la_sync_batch_cloudunlock_highversion0001",
+      idempotency_key: "la_idem_cloudunlock_highversion0001",
+      objects: [highVersionObject],
+      changes: targetBatchFixture.changes.map((change) => ({
+        ...change,
+        change_id: "la_change_cloudunlock_highversion0001",
+        new_version: highVersionObject.version,
+        content_hash: highVersionObject.content_hash
+      }))
+    });
+
+    const initialResponse = await handleBootstrapRequest(new Request("https://living-atlas.example/api/sync/batch", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-living-atlas-sync-token": syncToken
+      },
+      body: JSON.stringify(highVersionBatch)
+    }), env);
+    expect(initialResponse.status).toBe(202);
+
+    const quarantineResponse = await handleBootstrapRequest(new Request("https://living-atlas.example/api/sync/batch", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-living-atlas-sync-token": syncToken
+      },
+      body: JSON.stringify(lowerVersionQuarantineBatch(1))
+    }), env);
+    expect(quarantineResponse.status).toBe(202);
+
+    const decryptResponse = await handleBootstrapRequest(new Request("https://living-atlas.example/mcp", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-living-atlas-sync-token": syncToken,
+        "x-living-atlas-sync-capability-id": cloudUnlockCapabilityId,
+        "x-living-atlas-cloud-unlock-key": unlockKey
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 92,
+        method: "tools/call",
+        params: {
+          name: "sensitive_decrypt",
+          arguments: {
+            authority_id: "la_authority_worker0001",
+            object_id: "la_object_cloudunlock0001"
+          }
+        }
+      })
+    }), env);
+
+    const body = await decryptResponse.json();
+    expect(body).toMatchObject({
+      jsonrpc: "2.0",
+      id: 92,
+      result: {
+        structuredContent: {
+          ok: false,
+          reason: "quarantine-denied",
+          current_mode: "cloud-unlock-session",
+          object_id: "la_object_cloudunlock0001"
+        }
+      }
+    });
+    expect(JSON.stringify(body)).not.toContain("Synthetic sensitive note");
+  });
+
   it("allows cloud-unlock MCP credentials through stealth ingress", async () => {
     const { env } = await createEnv();
     const rawKey = new Uint8Array(Array.from({ length: 32 }, (_, index) => index + 31));
@@ -1912,7 +2208,15 @@ describe("Worker sync batch acceptance", () => {
         }
       }
     });
-    await expect(mcpCall(132, "object_list", { authority_id: authorityId, limit: 20 })).resolves.not.toMatchObject({
+    const listResponse = await mcpCall(132, "object_list", { authority_id: authorityId, limit: 20 });
+    expect(listResponse).toMatchObject({
+      result: {
+        structuredContent: {
+          ok: true
+        }
+      }
+    });
+    expect(listResponse).not.toMatchObject({
       result: {
         structuredContent: {
           objects: expect.arrayContaining([
