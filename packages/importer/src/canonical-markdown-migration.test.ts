@@ -32,4 +32,15 @@ describe("canonical markdown migration", () => {
     expect(JSON.stringify(migration)).not.toContain(sourcePath);
     expect(JSON.stringify(migration)).not.toMatch(/"object_type"\s*:\s*"(?:page|block|attachment|index)"/);
   });
+
+  it("adds only explicitly typed Logseq endpoints as canonical entities", () => {
+    const migration = createCanonicalMarkdownMigration([{
+      source_path: "pages/Synthetic Topic.md",
+      markdown: "type:: topic\nsubtype:: theme\n\n- canonical entity\n",
+      source_kind: "logseq"
+    }], { authority_id: "la_authority_fixture0001", created_at: "2026-07-10T12:00:00.000Z", path_redaction_secret: "synthetic-migration-path-secret" });
+    expect(migration.payloads.filter((payload) => payload.schema === "atlas.entity:v1")).toEqual([
+      expect.objectContaining({ type: "topic", subtype: "theme" })
+    ]);
+  });
 });

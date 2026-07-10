@@ -16,6 +16,8 @@ import {
   type MarkdownFileInput,
   type MarkdownPathRedactionOptions
 } from "./markdown";
+import { canonicalEntityPayloadFromEndpoint } from "./canonical";
+import { extractLogseqTypedSemantics } from "./logseq-semantic";
 
 const maxEvidenceExcerptLength = 4_096;
 
@@ -92,6 +94,21 @@ export function createCanonicalMarkdownMigration(
       recorded_at: createdAt
     });
     payloads.push(...evidence, observation, review, parity);
+  }
+
+  const typed = extractLogseqTypedSemantics(files, {
+    authority_id: authorityId,
+    created_at: createdAt,
+    path_redaction_secret: options.path_redaction_secret,
+    default_access_class: "local-private"
+  });
+  const existingIds = new Set(payloads.map((payload) => canonicalPayloadObjectId(payload)));
+  for (const endpoint of typed.endpoints) {
+    const entity = canonicalEntityPayloadFromEndpoint(endpoint);
+    if (!existingIds.has(entity.entity_id)) {
+      payloads.push(entity);
+      existingIds.add(entity.entity_id);
+    }
   }
 
   return {
