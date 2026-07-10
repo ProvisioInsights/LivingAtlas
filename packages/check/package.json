@@ -12,6 +12,7 @@
     "@living-atlas/backup": "workspace:*",
     "@living-atlas/cloudflare-worker": "workspace:*",
     "@living-atlas/fixtures": "workspace:*",
+    "@living-atlas/graph-service": "workspace:*",
     "@living-atlas/importer": "workspace:*",
     "@living-atlas/leakage": "workspace:*",
     "@living-atlas/local-control-store": "workspace:*",

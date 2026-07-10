@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createLocalCanonicalAtlasClient } from "@living-atlas/atlas-client";
 import { createCanonicalMarkdownMigration, createCanonicalMarkdownMigrationExport } from "@living-atlas/importer";
+import { loadCanonicalParityInputsFromObjects, projectCanonicalParity } from "@living-atlas/graph-service";
 import { createDefaultLocalKeyring, decryptGraphObjectPayload } from "@living-atlas/local-keyring";
 import { fixtureAuthorityId, fixtureLocalClientId } from "@living-atlas/fixtures";
 import { randomBytes } from "node:crypto";
@@ -85,9 +86,24 @@ describe("canonical local MVP proof", () => {
       };
       const client = createLocalCanonicalAtlasClient({ graphStore: target, decryptPayload: decrypt, now: "2026-07-10T12:00:00.000Z" });
       await expect(client.importCanonical({ exported, expected_generation: 0, actor_id: fixtureLocalClientId, operation_id: "la_operation_canonicalsource0001", idempotency_key: "la_idem_canonicalsource0001" })).resolves.toMatchObject({ ok: true });
+      await expect(client.importCanonical({ exported, expected_generation: 0, actor_id: fixtureLocalClientId, operation_id: "la_operation_canonicalsource0001", idempotency_key: "la_idem_canonicalsource0001" })).resolves.toMatchObject({ ok: true, idempotent: true, generation: 1 });
       expect(target.listObjects().every((object) => object.access_class === "local-private" && object.payload.kind === "ciphertext-inline")).toBe(true);
       expect(target.listObjects().map((object) => object.object_type)).not.toEqual(expect.arrayContaining(["page", "block", "attachment", "index"]));
       await expect(client.exportCanonical()).resolves.toEqual(exported);
+      const parity = projectCanonicalParity({
+        ...await loadCanonicalParityInputsFromObjects(target.listObjects(), decrypt),
+        operational_gates: {
+          resolution_transactions_verified: true,
+          canonical_integrity_verified: true,
+          no_legacy_dependencies_verified: true,
+          idempotency_verified: true,
+          restart_verified: true,
+          backup_restore_verified: true,
+          manifest_comparison_verified: true,
+          owner_accepted: false
+        }
+      });
+      expect(parity).toMatchObject({ semantic_parity_ready: true, cutover_ready: false, blockers: [], cutover_blockers: ["owner-acceptance-required"] });
     } finally {
       await rm(targetDir, { recursive: true, force: true });
     }
