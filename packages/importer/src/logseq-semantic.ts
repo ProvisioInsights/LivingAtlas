@@ -2400,6 +2400,36 @@ export function createLogseqSemanticPlaintextGraphObjects(
   };
 }
 
+/**
+ * Exposes only high-confidence typed semantics for canonical-first callers.
+ * Legacy envelopes are an internal parser implementation detail and are never
+ * returned or persisted by this API.
+ */
+export function extractLogseqTypedSemantics(
+  files: MarkdownFileInput[],
+  options: CreateLogseqSemanticImportOptions
+): { endpoints: EndpointRecord[]; edges: TemporalEdge[] } {
+  const parsed = createLogseqSemanticPlaintextGraphObjects(files, options);
+  const endpoints = new Map<string, EndpointRecord>();
+  const edges = new Map<string, TemporalEdge>();
+  for (const object of parsed.objects) {
+    const data = object.payload.data;
+    if (data.kind === "logseq-endpoint") {
+      const endpoint = EndpointRecordSchema.safeParse(data.endpoint);
+      if (endpoint.success) endpoints.set(endpoint.data.object_id, endpoint.data);
+      continue;
+    }
+    if (data.kind === "logseq-temporal-edge") {
+      const edge = TemporalEdgeSchema.safeParse(data.edge);
+      if (edge.success) edges.set(edge.data.edge_id, edge.data);
+    }
+  }
+  return {
+    endpoints: [...endpoints.values()].sort((left, right) => left.object_id.localeCompare(right.object_id)),
+    edges: [...edges.values()].sort((left, right) => left.edge_id.localeCompare(right.edge_id))
+  };
+}
+
 export function createLogseqSemanticKnowledgeSummary(
   files: MarkdownFileInput[],
   options: CreateLogseqSemanticImportOptions
