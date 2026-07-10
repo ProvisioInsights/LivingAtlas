@@ -1,5 +1,18 @@
+import { mkdtemp, readFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import type { CanonicalFactPayload, GraphObjectEnvelope } from "@living-atlas/contracts";
+import type {
+  CanonicalFactPayload,
+  GraphObjectEnvelope
+} from "@living-atlas/contracts";
+import { fixtureAuthorityId, fixtureLocalClientId } from "@living-atlas/fixtures";
+import { FileLocalGraphStore } from "@living-atlas/local-graph-store";
+import {
+  createDefaultLocalKeyring,
+  decryptGraphObjectPayload,
+  type PlaintextGraphObjectDraft
+} from "@living-atlas/local-keyring";
 import {
   loadCanonicalAssertionsFromObjects,
   projectCanonicalAssertions
@@ -111,6 +124,75 @@ describe("canonical assertion projection", () => {
       return payloads.get(object.object_id);
     })).resolves.toEqual([first, second]);
   });
+
+  it("preserves a local-private assertion view through encrypted reopen and compaction", async () => {
+    const original = fact({
+      assertion_id: "la_object_assertion0008",
+      recorded_at: "2026-07-06T00:00:00.000Z"
+    });
+    const correction = fact({
+      assertion_id: "la_object_assertion0009",
+      recorded_at: "2026-07-07T00:00:00.000Z",
+      lineage_action: "correct",
+      supersedes: [original.assertion_id],
+      value: { kind: "text", value: "Corrected local-private synthetic fact" }
+    });
+    const directory = await mkdtemp(join(tmpdir(), "living-atlas-assertion-projection-"));
+    const keyring = createDefaultLocalKeyring({
+      authorityId: fixtureAuthorityId,
+      createdAt: "2026-07-06T00:00:00.000Z"
+    });
+    const store = await FileLocalGraphStore.open({
+      directory,
+      authorityId: fixtureAuthorityId,
+      plaintextPersistence: "encrypt",
+      keyring,
+      now: () => "2026-07-07T00:00:00.000Z"
+    });
+
+    await expect(store.createObject({
+      object: canonicalAssertionDraft(original),
+      expected_generation: 0,
+      actor_id: fixtureLocalClientId,
+      recorded_at: original.recorded_at
+    })).resolves.toMatchObject({ ok: true });
+    await expect(store.createObject({
+      object: canonicalAssertionDraft(correction),
+      expected_generation: 1,
+      actor_id: fixtureLocalClientId,
+      recorded_at: correction.recorded_at
+    })).resolves.toMatchObject({ ok: true });
+
+    const beforeCompact = projectCanonicalAssertions(await loadCanonicalAssertionsFromObjects(
+      store.listObjects(),
+      decryptCanonicalPayload(keyring)
+    ));
+    await store.compact();
+    const reopened = await FileLocalGraphStore.open({
+      directory,
+      authorityId: fixtureAuthorityId,
+      plaintextPersistence: "encrypt",
+      keyring,
+      now: () => "2026-07-08T00:00:00.000Z"
+    });
+    const afterCompact = projectCanonicalAssertions(await loadCanonicalAssertionsFromObjects(
+      reopened.listObjects(),
+      decryptCanonicalPayload(keyring)
+    ));
+
+    expect(afterCompact.assertions.map((item) => item.assertion_id)).toEqual(
+      beforeCompact.assertions.map((item) => item.assertion_id)
+    );
+    expect(afterCompact.superseded_assertion_ids).toEqual(beforeCompact.superseded_assertion_ids);
+
+    const persisted = [
+      await readFile(join(directory, "snapshot.json"), "utf8"),
+      await readFile(join(directory, "journal.jsonl"), "utf8")
+    ].join("\n");
+    expect(persisted).toContain("AES-GCM-256+local-keyring-v1");
+    expect(persisted).not.toContain("Synthetic status");
+    expect(persisted).not.toContain("Corrected local-private synthetic fact");
+  });
 });
 
 function encryptedEnvelope(objectId: string, objectType: GraphObjectEnvelope["object_type"], updatedAt: string): GraphObjectEnvelope {
@@ -136,5 +218,35 @@ function encryptedEnvelope(objectId: string, objectType: GraphObjectEnvelope["ob
       nonce: "synthetic-nonce",
       algorithm: "xchacha20-poly1305"
     }
+  };
+}
+
+function canonicalAssertionDraft(payload: CanonicalFactPayload): PlaintextGraphObjectDraft {
+  return {
+    schema_version: 1,
+    authority_id: fixtureAuthorityId,
+    object_id: payload.assertion_id,
+    object_type: "assertion",
+    version: 1,
+    access_class: "local-private",
+    encryption_class: "plaintext",
+    created_at: payload.recorded_at,
+    updated_at: payload.recorded_at,
+    content_hash: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    visible_metadata: {
+      tombstone: false,
+      remote_indexable: false
+    },
+    payload: {
+      kind: "plaintext-json",
+      data: payload
+    }
+  };
+}
+
+function decryptCanonicalPayload(keyring: ReturnType<typeof createDefaultLocalKeyring>) {
+  return async (object: GraphObjectEnvelope): Promise<Record<string, unknown> | undefined> => {
+    const payload = await decryptGraphObjectPayload(object, keyring);
+    return payload?.kind === "plaintext-json" ? payload.data : undefined;
   };
 }

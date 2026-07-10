@@ -219,7 +219,7 @@ Run: `pnpm vitest run packages/graph-service/src/canonical-assertions.test.ts pa
 Expected: PASS; the current view respects both time axes and contradictory
 assertions remain independent.
 
-### Task 3: Preserve Assertion Projections Through Local Durability
+### Task 3: Verify Assertion Projections Through Local Durability
 
 **Files:**
 
@@ -229,22 +229,15 @@ assertions remain independent.
 
 **Interfaces:**
 
-- Produces `loadCanonicalAssertionsFromObjects(objects, decryptPayload)`.
 - Consumes `FileLocalGraphStore.materializedSnapshot()` and
   `projectCanonicalAssertions`.
 - Proves an append-only assertion sequence returns the same projection after
   reopen and `compact()`.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the encrypted local-durability integration test**
 
-Add a failing test in `packages/graph-service/src/canonical-assertions.test.ts`
-for `loadCanonicalAssertionsFromObjects`. It must supply encrypted synthetic
-assertion envelopes and a fixture decrypt callback, then assert the helper
-returns the original and correction payloads in deterministic envelope order.
-The test must also prove a noncanonical `page` envelope is ignored.
-
-Then add a synthetic encrypted-local fixture to
-`packages/local-graph-store/src/local-graph-store.test.ts` that persists two
+Add a synthetic encrypted-local fixture to
+`packages/graph-service/src/canonical-assertions.test.ts` that persists two
 canonical assertion envelopes with an original assertion and correction. Reopen
 the store, pass the reopened envelopes through the new helper and fixture
 decryption callback, call the projection with those payloads, compact, reopen
@@ -260,37 +253,23 @@ expect(afterCompact.assertions.map((item) => item.assertion_id)).toEqual(
 expect(afterCompact.superseded_assertion_ids).toEqual(beforeCompact.superseded_assertion_ids);
 ```
 
-- [ ] **Step 2: Run the test to verify it fails**
+- [x] **Step 2: Run the integration test**
 
-Run: `pnpm vitest run packages/graph-service/src/canonical-assertions.test.ts packages/local-graph-store/src/local-graph-store.test.ts`
+Run: `pnpm vitest run packages/graph-service/src/canonical-assertions.test.ts`
 
-Expected: FAIL because `loadCanonicalAssertionsFromObjects` is not exported.
+Expected: PASS. This test composes the new assertion loader with the existing
+encrypted store and compact/reopen behavior; it does not require a new
+production method.
 
-- [ ] **Step 3: Write the minimal implementation**
+- [x] **Step 3: Verify encrypted persistence stays opaque**
 
-Add this public interface to `packages/graph-service/src/canonical-assertions.ts`:
+Assert the serialized local-store files contain the local-keyring encryption
+algorithm but do not contain either synthetic assertion value. Do not add a
+second store, plaintext persistence mode, generic query index, or mutation
+command. The store continues to own durable encrypted envelopes and journal
+replay.
 
-```ts
-import type { GraphObjectEnvelope } from "@living-atlas/contracts";
-
-export type CanonicalPayloadDecryptor = (
-  object: GraphObjectEnvelope
-) => Promise<Record<string, unknown> | undefined>;
-
-export async function loadCanonicalAssertionsFromObjects(
-  objects: GraphObjectEnvelope[],
-  decryptPayload: CanonicalPayloadDecryptor
-): Promise<CanonicalAssertion[]>;
-```
-
-Sort input envelopes by `updated_at`, then `object_id`; call `decryptPayload`
-only for `assertion` and `edge` objects; parse each result with
-`CanonicalFactPayloadSchema` and `CanonicalRelationshipPayloadSchema`; ignore
-all other payload kinds. Do not add a second store, plaintext persistence mode,
-generic query index, or mutation command. The store continues to own durable
-encrypted envelopes and journal replay.
-
-- [ ] **Step 4: Run the tests to verify they pass**
+- [x] **Step 4: Run the focused durability verification**
 
 Run: `pnpm vitest run packages/local-graph-store/src/local-graph-store.test.ts packages/graph-service/src/canonical-assertions.test.ts`
 
@@ -302,7 +281,7 @@ Expected: PASS and no decrypted fixture text is written to disk.
 
 - Modify only the files listed in Tasks 1–3 and this plan if verification finds a real defect.
 
-- [ ] **Step 1: Run focused tests**
+- [x] **Step 1: Run focused tests**
 
 Run:
 
@@ -312,13 +291,13 @@ pnpm vitest run packages/contracts/src/knowledge.test.ts packages/graph-service/
 
 Expected: PASS.
 
-- [ ] **Step 2: Run full verification**
+- [x] **Step 2: Run full verification**
 
 Run: `pnpm check`
 
 Expected: repository safety, typecheck, and the complete Vitest suite pass.
 
-- [ ] **Step 3: Audit the canonical boundary**
+- [x] **Step 3: Audit the canonical boundary**
 
 Run:
 

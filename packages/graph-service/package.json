@@ -9,5 +9,10 @@
   "dependencies": {
     "@living-atlas/contracts": "workspace:*",
     "@living-atlas/mcp-contract": "workspace:*"
+  },
+  "devDependencies": {
+    "@living-atlas/fixtures": "workspace:*",
+    "@living-atlas/local-graph-store": "workspace:*",
+    "@living-atlas/local-keyring": "workspace:*"
   }
 }
