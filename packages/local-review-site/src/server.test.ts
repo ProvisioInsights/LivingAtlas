@@ -32,13 +32,20 @@ describe("local review site server", () => {
     ]);
     expect(html).toContain('id="search"');
     expect(html).toContain('id="queue-summary"');
-    expect(app).toContain("Keep in Atlas");
-    expect(app).toContain("Edit & keep");
-    expect(app).toContain("Needs research");
+    expect(app).toContain("Keep all meaningful data");
+    expect(app).toContain("Meaningful data");
+    expect(app).toContain("Not Atlas knowledge");
+    expect(app).toContain("Full source retained as encrypted evidence");
+    expect(app).toContain("Source mini graph");
+    expect(app).toContain("Request research");
+    expect(app).toContain("data-source-index");
+    expect(app).toContain("mapping-lines");
+    expect(app).toContain("Review / edit extraction");
+    expect(app).toContain("Request research");
     expect(app).toContain("Decide later");
     expect(app).toContain("/api/review/bulk/decision");
     expect(app).toContain("const pageSize = 24");
-    expect(app).toContain('record.statement.startsWith("Imported source coverage ")');
+    expect(app).not.toContain("Source coverage is represented.");
     expect(app).not.toContain("promptJson");
     expect(app).not.toContain("Paste the complete precomputed");
   });
@@ -101,7 +108,12 @@ describe("local review site server", () => {
           content_hash: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
           retrieved_at: now,
           independence_key: "synthetic-review-decision",
-          excerpt: "Synthetic source statement requiring review."
+          extraction_method: "canonical-markdown-lossless-v1",
+          excerpt: [
+            "type:: person",
+            "- **Phone:** +1 (555) 010-2040",
+            "- **Relationship to [[Synthetic Person]]:** longtime collaborator (much richer than initial stub captured)"
+          ].join("\n")
         }),
         draft(reviewId, "review", {
           schema: "atlas.review-item:v1",
@@ -181,7 +193,14 @@ describe("local review site server", () => {
       const decision = await fetch(`${origin}/api/review/${candidateId}/decision`, {
         method: "POST",
         headers: { cookie, "content-type": "application/json" },
-        body: JSON.stringify({ action: "keep" })
+        body: JSON.stringify({
+          action: "keep",
+          statements: [
+            "Type: individual",
+            "Phone: +1 (555) 010-2040",
+            "Relationship to Synthetic Person: longtime collaborator"
+          ]
+        })
       });
       expect(decision.status).toBe(200);
       await expect(decision.json()).resolves.toMatchObject({
@@ -190,7 +209,42 @@ describe("local review site server", () => {
       });
       await expect(fetch(`${origin}/api/review-queue`, { headers: { cookie } }).then((response) => response.json())).resolves.toMatchObject({
         research: [{ candidate_id: candidateId2 }],
-        automatic: [{ candidate_id: candidateId, resolution_state: "resolved" }]
+        automatic: [{
+          candidate_id: candidateId,
+          resolution_state: "resolved",
+          source_accounting: {
+            exact_source_preserved: true,
+            meaningful_units: [
+              { kind: "attribute", atlas_text: "Type: person" },
+              { kind: "fact", atlas_text: "Phone: +1 (555) 010-2040" },
+              { kind: "relationship", atlas_text: "Relationship to Synthetic Person: longtime collaborator" }
+            ],
+            excluded_units: [{ source_text: "much richer than initial stub captured" }]
+          },
+          proposed_records: [
+            { schema: "atlas.observation:v1", statement: "Type: individual" },
+            { schema: "atlas.observation:v1", statement: "Phone: +1 (555) 010-2040" },
+            { schema: "atlas.observation:v1", statement: "Relationship to Synthetic Person: longtime collaborator" }
+          ]
+        }]
+      });
+
+      const researchQueueBefore = await fetch(`${origin}/api/review-queue`, { headers: { cookie } }).then((response) => response.json()) as {
+        research: Array<{ candidate_id: string; source_accounting: { meaningful_units: Array<{ unit_id: string }> } }>;
+      };
+      const researchUnitId = researchQueueBefore.research.find((item) => item.candidate_id === candidateId2)!.source_accounting.meaningful_units[0]!.unit_id;
+      const researchRequest = await fetch(`${origin}/api/review/${candidateId2}/decision`, {
+        method: "POST",
+        headers: { cookie, "content-type": "application/json" },
+        body: JSON.stringify({ action: "research", unit_ids: [researchUnitId] })
+      });
+      expect(researchRequest.status).toBe(200);
+      await expect(fetch(`${origin}/api/review-queue`, { headers: { cookie } }).then((response) => response.json())).resolves.toMatchObject({
+        research: [{
+          candidate_id: candidateId2,
+          research_requested: true,
+          research_requested_units: [{ unit_id: researchUnitId }]
+        }]
       });
 
       const bulkDecision = await fetch(`${origin}/api/review/bulk/decision`, {

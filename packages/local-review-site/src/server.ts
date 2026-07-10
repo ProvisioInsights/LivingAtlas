@@ -2,6 +2,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { createHash, randomBytes } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import {
+  canonicalObjectTypeForPayload,
   canonicalPayloadObjectId,
   type CanonicalPayload,
   type CanonicalReviewItemPayload
@@ -94,7 +95,15 @@ async function handleRequest(
     const body = await readJson(request);
     const action = (body as { action?: unknown }).action;
     const statement = (body as { statement?: unknown }).statement;
-    if (!isReviewDecisionAction(action) || (statement !== undefined && (typeof statement !== "string" || statement.trim().length === 0 || statement.length > 4_096))) {
+    const statements = (body as { statements?: unknown }).statements;
+    const unitIds = (body as { unit_ids?: unknown }).unit_ids;
+    if (!isReviewDecisionAction(action)
+      || (statement !== undefined && (typeof statement !== "string" || statement.trim().length === 0 || statement.length > 4_096))
+      || (statements !== undefined && (!Array.isArray(statements) || statements.length === 0 || statements.length > 512
+        || statements.some((value) => typeof value !== "string" || value.trim().length === 0 || value.length > 8_192)))
+      || (unitIds !== undefined && (!Array.isArray(unitIds) || unitIds.length === 0 || unitIds.length > 512
+        || unitIds.some((value) => typeof value !== "string" || !/^sha256:[a-f0-9]{64}$/.test(value))
+        || new Set(unitIds).size !== unitIds.length || action !== "research"))) {
       sendJson(response, 400, { ok: false, reason: "invalid-review-decision" });
       return;
     }
@@ -104,17 +113,33 @@ async function handleRequest(
       sendJson(response, 409, { ok: false, reason: item ? "resolution-requires-durable-local-store" : "candidate-not-actionable" });
       return;
     }
+    if (Array.isArray(statements) && statements.length !== item.source_accounting.meaningful_units.length) {
+      sendJson(response, 400, { ok: false, reason: "invalid-review-decision" });
+      return;
+    }
+    const sourceUnitIds = new Set(item.source_accounting.meaningful_units.map((unit) => unit.unit_id));
+    if (Array.isArray(unitIds) && unitIds.some((unitId) => !sourceUnitIds.has(unitId as `sha256:${string}`))) {
+      sendJson(response, 400, { ok: false, reason: "invalid-review-decision" });
+      return;
+    }
     const expectedReviewVersion = context.graphStore.readObject(item.review_id)?.version;
     if (expectedReviewVersion === undefined) {
       sendJson(response, 409, { ok: false, reason: "candidate-review-missing" });
       return;
     }
-    const decision = buildReviewDecision(context, item, action, typeof statement === "string" ? statement.trim() : undefined);
+    const decision = buildReviewDecision(
+      context,
+      item,
+      action,
+      Array.isArray(statements) ? statements.map((value) => String(value).trim())
+        : typeof statement === "string" ? [statement.trim()] : undefined,
+      Array.isArray(unitIds) ? unitIds.map(String) : undefined
+    );
     if (!decision) {
       sendJson(response, 409, { ok: false, reason: "candidate-records-incomplete" });
       return;
     }
-    const seed = `${candidateId}:${action}:${expectedReviewVersion}:${statement ?? ""}`;
+    const seed = `${candidateId}:${action}:${expectedReviewVersion}:${JSON.stringify(statements ?? statement ?? "")}:${JSON.stringify(unitIds ?? [])}`;
     const result = await localResolutionApply(context, {
       authorization: authorization ?? "",
       operation_id: `la_operation_${digest(seed)}`,
@@ -206,35 +231,88 @@ function buildReviewDecision(
   context: LocalMcpContext,
   item: LocalReviewQueueItem,
   action: ReviewDecisionAction,
-  statement: string | undefined
+  statements: string[] | undefined,
+  researchUnitIds: string[] | undefined = undefined
 ): unknown[] | undefined {
   if (!context.graphStore) return undefined;
   const recordedAt = context.now ?? new Date().toISOString();
+  if (action === "keep" && !item.source_accounting.exact_source_preserved) return undefined;
+  const extractedObservations: CanonicalPayload[] = action === "keep"
+    ? item.source_accounting.meaningful_units.map((unit, index) => ({
+      schema: "atlas.observation:v1" as const,
+      assertion_id: `la_object_${digest(`source-unit:${item.candidate_id}:${index}:${unit.atlas_text}`)}`,
+      statement: statements?.[index] ?? unit.atlas_text,
+      candidate_entity_ids: [],
+      resolution_state: "owner-review" as const,
+      recorded_at: recordedAt,
+      evidence_refs: item.evidence_ids
+    }))
+    : [];
+  const keptPayloads = extractedObservations.length > 0 ? extractedObservations : item.proposed_records;
+  const keptIds = keptPayloads.map(canonicalPayloadObjectId);
+  const requestedUnitHashes = [...new Set([
+    ...(item.review_record.research_requested_unit_hashes ?? []),
+    ...(researchUnitIds ?? [])
+  ])];
   const review: CanonicalReviewItemPayload = {
     ...item.review_record,
     recommendation: action === "research" ? "research" : "owner-review",
     resolution_state: action === "keep" ? "resolved" : action === "research" ? "research" : "deferred-unknown",
+    proposed_object_ids: action === "keep" ? keptIds : item.review_record.proposed_object_ids,
+    ...(action === "research" ? {
+      research_requested_at: recordedAt,
+      research_requested_all: researchUnitIds === undefined ? true : Boolean(item.review_record.research_requested_all),
+      research_requested_unit_hashes: requestedUnitHashes as Array<`sha256:${string}`>
+    } : {}),
     recorded_at: recordedAt
   };
-  const proposed = item.proposed_records.map((payload): CanonicalPayload => {
+  const proposed = keptPayloads.map((payload): CanonicalPayload => {
     if (payload.schema !== "atlas.observation:v1") return payload;
     return {
       ...payload,
-      ...(statement ? { statement } : {}),
+      ...(statements?.[0] && action !== "keep" ? { statement: statements[0] } : {}),
       resolution_state: action === "research" ? "research" : action === "defer" ? "deferred-unknown" : payload.resolution_state,
       recorded_at: recordedAt
     };
   });
-  const payloads: CanonicalPayload[] = [...proposed, review, ...item.parity_records];
+  const parityRecords: CanonicalPayload[] = item.parity_records.map((parity) => action === "keep" ? {
+    ...parity,
+    coverage_state: "represented",
+    representation_kind: "observation",
+    canonical_object_ids: keptIds,
+    recorded_at: recordedAt
+  } : parity);
+  const payloads: CanonicalPayload[] = [...proposed, review, ...parityRecords];
   const drafts = payloads.map((payload) => {
     const object = context.graphStore!.readObject(canonicalPayloadObjectId(payload));
-    if (!object) return undefined;
+    const contentHash = `sha256:${createHash("sha256").update(JSON.stringify(payload)).digest("hex")}` as const;
+    if (!object) {
+      return {
+        schema_version: 1,
+        authority_id: context.controlPlane.authority.authority_id,
+        object_id: canonicalPayloadObjectId(payload),
+        object_type: canonicalObjectTypeForPayload(payload),
+        version: 1,
+        access_class: "local-private",
+        encryption_class: "plaintext",
+        created_at: recordedAt,
+        updated_at: recordedAt,
+        content_hash: contentHash,
+        visible_metadata: {
+          schema_namespace: "atlas/review-resolution",
+          tombstone: false,
+          size_class: "small",
+          remote_indexable: false
+        },
+        payload: { kind: "plaintext-json", data: payload }
+      };
+    }
     return {
       ...object,
       version: object.version + 1,
       encryption_class: "plaintext",
       updated_at: recordedAt,
-      content_hash: `sha256:${createHash("sha256").update(JSON.stringify(payload)).digest("hex")}`,
+      content_hash: contentHash,
       payload: { kind: "plaintext-json", data: payload }
     };
   });

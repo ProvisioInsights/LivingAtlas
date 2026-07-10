@@ -353,6 +353,9 @@ export const CanonicalReviewItemPayloadSchema = z.object({
   recommendation: ReviewRecommendationSchema,
   resolution_state: ReviewResolutionStateSchema,
   proposed_object_ids: z.array(ObjectIdSchema).default([]),
+  research_requested_at: IsoTimestampSchema.optional(),
+  research_requested_all: z.boolean().optional(),
+  research_requested_unit_hashes: z.array(Sha256HashSchema).optional(),
   recorded_at: IsoTimestampSchema
 }).strict();
 export type CanonicalReviewItemPayload = z.infer<typeof CanonicalReviewItemPayloadSchema>;

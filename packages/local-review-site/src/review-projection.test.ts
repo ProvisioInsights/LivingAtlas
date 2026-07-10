@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { GraphObjectEnvelope } from "@living-atlas/contracts";
-import { projectLocalReviewQueue } from "./review-projection";
+import { accountSourceMeaning, projectLocalReviewQueue } from "./review-projection";
 
 const now = "2026-07-10T12:00:00.000Z";
 const reviewId = "la_object_reviewsite0001";
@@ -13,6 +13,60 @@ function envelope(id: string, type: GraphObjectEnvelope["object_type"]): GraphOb
 }
 
 describe("local review projection", () => {
+  it("accounts for every meaningful source unit and separates editorial migration commentary", () => {
+    const accounting = accountSourceMeaning([
+      {
+        schema: "atlas.evidence:v1",
+        evidence_id: evidenceId,
+        source_kind: "migration",
+        locator: "synthetic://meaning-accounting",
+        content_hash: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        retrieved_at: now,
+        independence_key: "synthetic-meaning-accounting",
+        extraction_method: "canonical-markdown-lossless-v1",
+        excerpt: [
+          "type:: person",
+          "status:: active",
+          "privacy:: family-adjacent · no web enrichment performed · presence-only",
+          "org:: [[Synthetic Company]]",
+          "email:: person@example.com",
+          "source:: owner correction and message review",
+          "- **Phone:** +1 (555) 010-2040 (regional number)",
+          "- **Address:** 100 Example Avenue",
+          "- **Relationship to [[Synthetic Person]]:** longtime collaborator (much richer than initial stub captured)",
+          "- **Contact**",
+          "- **Relationship to [[Synthetic Person]]**",
+          "- 2025-11-05 8:30 CT · video call",
+          "- **How to render (Logseq):** `{{query (todo TODO)}}`",
+          "- Met through a shared project in 2021."
+        ].join("\n")
+      }
+    ]);
+
+    expect(accounting.exact_source_preserved).toBe(true);
+    expect(accounting.meaningful_units.map((unit) => [unit.kind, unit.atlas_text])).toEqual([
+      ["attribute", "Type: person"],
+      ["attribute", "Status: active"],
+      ["attribute", "Privacy: family-adjacent · presence-only"],
+      ["relationship", "Org: Synthetic Company"],
+      ["fact", "Email: person@example.com"],
+      ["provenance", "Source: owner correction and message review"],
+      ["fact", "Phone: +1 (555) 010-2040 (regional number)"],
+      ["fact", "Address: 100 Example Avenue"],
+      ["relationship", "Relationship to Synthetic Person: longtime collaborator"],
+      ["context", "2025-11-05 8:30 CT · video call"],
+      ["context", "Met through a shared project in 2021."]
+    ]);
+    expect(accounting.meaningful_units.every((unit) => /^sha256:[a-f0-9]{64}$/.test(unit.unit_id))).toBe(true);
+    expect(accounting.excluded_units).toEqual([
+      { source_text: "no web enrichment performed", reason: "editorial migration commentary" },
+      { source_text: "much richer than initial stub captured", reason: "editorial migration commentary" },
+      { source_text: "- **Contact**", reason: "source organization" },
+      { source_text: "- **Relationship to [[Synthetic Person]]**", reason: "source organization" },
+      { source_text: "- **How to render (Logseq):** `{{query (todo TODO)}}`", reason: "source-system instruction" }
+    ]);
+  });
+
   it("uses meaningful migration context instead of a generic coverage placeholder", async () => {
     const placeholderObservationId = "la_object_reviewplaceholderobs0001";
     const placeholderEvidenceId = "la_object_reviewplaceholderevidence0001";
@@ -101,6 +155,11 @@ describe("local review projection", () => {
       source_context: [evidence],
       parity_ids: [parityId],
       parity_records: [parity],
+      source_accounting: {
+        exact_source_preserved: false,
+        meaningful_units: [{ kind: "context", atlas_text: "Synthetic supporting evidence." }],
+        excluded_units: []
+      },
       context_unavailable: false
     });
     expect(queue.research.map((item) => item.review_id)).toEqual([research.review_id]);
