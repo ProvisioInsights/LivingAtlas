@@ -101,7 +101,7 @@ export function createCanonicalMarkdownMigration(
     const sourceEndpoints = endpointsBySourceRef.get(sourceRef) ?? [];
     const sourceEdges = typed.edges.filter((item) => item.source_path_ref === sourceRef);
     const primaryEntityId = sourceEndpoints.length === 1 ? sourceEndpoints[0]!.endpoint.object_id : undefined;
-    const resolutionState = sourceEndpoints.length > 0 || sourceEdges.length > 0 ? "owner-review" : "research";
+    const resolutionState = typed.typedSourceRefs.has(sourceRef) ? "owner-review" : "research";
     const evidence: CanonicalEvidencePayload[] = evidenceChunks(file.markdown).map((excerpt, index) => CanonicalEvidencePayloadSchema.parse({
       schema: "atlas.evidence:v1",
       evidence_id: stableIdentifier("la_object", `${stableBase}:evidence:${index}`),
@@ -285,6 +285,7 @@ function extractCollisionSafeTypedSemantics(
 ): {
   endpoints: Array<{ endpoint: EndpointRecord; source_path_ref: string }>;
   edges: Array<{ edge: TemporalEdge; source_path_ref: string }>;
+  typedSourceRefs: Set<string>;
 } {
   const parsed = createLogseqSemanticPlaintextGraphObjects(files, options);
   const endpointCandidates: Array<{ endpoint: EndpointRecord; source_path_ref: string }> = [];
@@ -318,6 +319,10 @@ function extractCollisionSafeTypedSemantics(
       endpointById.set(candidate.endpoint.object_id, candidate);
     }
   }
+  const typedSourceRefs = new Set<string>([
+    ...endpointCandidates.map((candidate) => candidate.source_path_ref),
+    ...edgeCandidates.map((candidate) => candidate.source_path_ref)
+  ]);
   const edgeById = new Map<string, { edge: TemporalEdge; source_path_ref: string }>();
   for (const candidate of edgeCandidates) {
     const source = endpointById.get(candidate.edge.source_object_id)?.endpoint;
@@ -328,7 +333,8 @@ function extractCollisionSafeTypedSemantics(
   }
   return {
     endpoints: [...endpointById.values()].sort((left, right) => left.endpoint.object_id.localeCompare(right.endpoint.object_id)),
-    edges: [...edgeById.values()].sort((left, right) => left.edge.edge_id.localeCompare(right.edge.edge_id))
+    edges: [...edgeById.values()].sort((left, right) => left.edge.edge_id.localeCompare(right.edge.edge_id)),
+    typedSourceRefs
   };
 }
 

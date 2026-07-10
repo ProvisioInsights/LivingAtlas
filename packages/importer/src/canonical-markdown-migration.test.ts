@@ -259,13 +259,27 @@ describe("canonical markdown migration", () => {
     const collisionObservations = migration.payloads
       .filter((payload) => payload.schema === "atlas.observation:v1")
       .filter((payload) => ["Type: person", "Phone: +1 555 0199", "Type: project", "See Synthetic Collision."].includes(payload.statement));
+    const payloadById = new Map(migration.payloads.map((payload) => [canonicalPayloadObjectId(payload), payload]));
+    const reviews = migration.payloads.filter((payload) => payload.schema === "atlas.review-item:v1");
+    const reviewForStatement = (statement: string) => {
+      const observation = collisionObservations.find((payload) => payload.statement === statement);
+      return reviews.find((review) => observation && review.proposed_object_ids.includes(observation.assertion_id));
+    };
+    const rawTypedSourceReviews = [
+      reviewForStatement("Type: person"),
+      reviewForStatement("Type: project"),
+      reviewForStatement("See Synthetic Collision.")
+    ];
 
     expect(collisionEntities).toEqual([]);
     expect(collisionFacts).toEqual([]);
     expect(collisionRelationships).toEqual([]);
     expect(collisionObservations).toHaveLength(4);
-    expect(collisionObservations.every((payload) => payload.resolution_state === "research"
+    expect(collisionObservations.every((payload) => payload.resolution_state === "owner-review"
       && payload.candidate_entity_ids.length === 0)).toBe(true);
+    expect(rawTypedSourceReviews.every((review) => review?.recommendation === "owner-review"
+      && review.resolution_state === "owner-review"
+      && review.proposed_object_ids.every((id) => payloadById.get(id)?.schema === "atlas.observation:v1"))).toBe(true);
   });
 
   it("emits only parseable measured direct fields as typed facts backed by unit evidence", () => {
