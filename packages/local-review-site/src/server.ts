@@ -96,11 +96,16 @@ async function handleRequest(
     const action = (body as { action?: unknown }).action;
     const statement = (body as { statement?: unknown }).statement;
     const statements = (body as { statements?: unknown }).statements;
+    const observationEdits = (body as { observation_edits?: unknown }).observation_edits;
     const unitIds = (body as { unit_ids?: unknown }).unit_ids;
     if (!isReviewDecisionAction(action)
       || (statement !== undefined && (typeof statement !== "string" || statement.trim().length === 0 || statement.length > 4_096))
       || (statements !== undefined && (!Array.isArray(statements) || statements.length === 0 || statements.length > 512
         || statements.some((value) => typeof value !== "string" || value.trim().length === 0 || value.length > 8_192)))
+      || (observationEdits !== undefined && (!Array.isArray(observationEdits) || observationEdits.length === 0 || observationEdits.length > 512
+        || observationEdits.some((value) => !isObservationEdit(value))
+        || new Set(observationEdits.map((value) => (value as ObservationEdit).observation_id)).size !== observationEdits.length
+        || action !== "keep"))
       || (unitIds !== undefined && (!Array.isArray(unitIds) || unitIds.length === 0 || unitIds.length > 512
         || unitIds.some((value) => typeof value !== "string" || !/^sha256:[a-f0-9]{64}$/.test(value))
         || new Set(unitIds).size !== unitIds.length || action !== "research"))) {
@@ -114,6 +119,13 @@ async function handleRequest(
       return;
     }
     if (Array.isArray(statements) && statements.length !== item.source_accounting.meaningful_units.length) {
+      sendJson(response, 400, { ok: false, reason: "invalid-review-decision" });
+      return;
+    }
+    const richObservationIds = mappedObservationIds(item);
+    if ((observationEdits !== undefined && (!isRichReviewCandidate(item)
+      || (observationEdits as ObservationEdit[]).some((edit) => !richObservationIds.has(edit.observation_id))))
+      || ((statement !== undefined || statements !== undefined) && isRichReviewCandidate(item))) {
       sendJson(response, 400, { ok: false, reason: "invalid-review-decision" });
       return;
     }
@@ -133,13 +145,17 @@ async function handleRequest(
       action,
       Array.isArray(statements) ? statements.map((value) => String(value).trim())
         : typeof statement === "string" ? [statement.trim()] : undefined,
+      Array.isArray(observationEdits) ? observationEdits.map((value) => ({
+        observation_id: (value as ObservationEdit).observation_id,
+        statement: (value as ObservationEdit).statement.trim()
+      })) : undefined,
       Array.isArray(unitIds) ? unitIds.map(String) : undefined
     );
     if (!decision) {
       sendJson(response, 409, { ok: false, reason: "candidate-records-incomplete" });
       return;
     }
-    const seed = `${candidateId}:${action}:${expectedReviewVersion}:${JSON.stringify(statements ?? statement ?? "")}:${JSON.stringify(unitIds ?? [])}`;
+    const seed = `${candidateId}:${action}:${expectedReviewVersion}:${JSON.stringify(observationEdits ?? statements ?? statement ?? "")}:${JSON.stringify(unitIds ?? [])}`;
     const result = await localResolutionApply(context, {
       authorization: authorization ?? "",
       operation_id: `la_operation_${digest(seed)}`,
@@ -166,28 +182,57 @@ async function handleRequest(
       sendJson(response, 400, { ok: false, reason: "invalid-bulk-review-decision" });
       return;
     }
-    const actionable = [...queue.owner_review, ...queue.research];
-    const resolutions = (candidateIds as string[]).map((candidateId) => {
-      const item = actionable.find((candidate) => candidate.candidate_id === candidateId);
-      const expectedReviewVersion = item ? context.graphStore!.readObject(item.review_id)?.version : undefined;
-      const objects = item ? buildReviewDecision(context, item, action, undefined) : undefined;
-      return item && expectedReviewVersion !== undefined && objects
-        ? { candidate_id: candidateId, expected_review_version: expectedReviewVersion, objects }
-        : undefined;
-    });
-    if (resolutions.some((resolution) => resolution === undefined)) {
-      sendJson(response, 409, { ok: false, reason: "bulk-candidate-not-actionable" });
+    const actionable = new Map([...queue.owner_review, ...queue.research].map((item) => [item.candidate_id, item]));
+    const orderedCandidateIds = [...(candidateIds as string[])].sort((left, right) => left.localeCompare(right));
+    const results: Array<{
+      candidate_id: string;
+      ok: boolean;
+      result?: unknown;
+      reason?: string;
+    }> = [];
+    for (const candidateId of orderedCandidateIds) {
+      const item = actionable.get(candidateId);
+      const expectedReviewVersion = item ? context.graphStore.readObject(item.review_id)?.version : undefined;
+      const objects = item ? buildReviewDecision(context, item, action, undefined, undefined) : undefined;
+      if (!item || expectedReviewVersion === undefined || !objects) {
+        results.push({
+          candidate_id: candidateId,
+          ok: false,
+          reason: !item ? "candidate-not-actionable"
+            : expectedReviewVersion === undefined ? "candidate-review-missing"
+              : "candidate-records-incomplete"
+        });
+        continue;
+      }
+      const seed = `${candidateId}:${action}:${expectedReviewVersion}`;
+      const result = await localResolutionApply(context, {
+        authorization: authorization ?? "",
+        operation_id: `la_operation_${digest(`bulk-item:${seed}`)}`,
+        idempotency_key: `la_idem_${digest(`bulk-item-decision:${seed}`)}`,
+        candidate_id: candidateId,
+        expected_generation: context.graphStore.status().generation,
+        expected_review_version: expectedReviewVersion,
+        objects
+      });
+      results.push({ candidate_id: candidateId, ...result });
+    }
+    const committedCandidateIds = results.filter((result) => result.ok).map((result) => result.candidate_id);
+    const failedCandidateIds = results.filter((result) => !result.ok).map((result) => result.candidate_id);
+    if (failedCandidateIds.length > 0) {
+      sendJson(response, 409, {
+        ok: false,
+        reason: committedCandidateIds.length > 0 ? "bulk-decision-partial-failure" : "bulk-decision-failed",
+        committed_candidate_ids: committedCandidateIds,
+        failed_candidate_ids: failedCandidateIds,
+        results
+      });
       return;
     }
-    const seed = `${action}:${resolutions.map((resolution) => `${resolution!.candidate_id}:${resolution!.expected_review_version}`).sort().join("|")}`;
-    const result = await localResolutionApplyBatch(context, {
-      authorization: authorization ?? "",
-      operation_id: `la_operation_${digest(`bulk:${seed}`)}`,
-      idempotency_key: `la_idem_${digest(`bulk-decision:${seed}`)}`,
-      expected_generation: context.graphStore.status().generation,
-      resolutions: resolutions as NonNullable<(typeof resolutions)[number]>[]
+    sendJson(response, 200, {
+      ok: true,
+      result: { local_commit: "committed", resolved_candidate_ids: committedCandidateIds },
+      results
     });
-    sendJson(response, result.ok ? 200 : 409, result);
     return;
   }
   if (request.method === "POST" && pathname === "/api/review/bulk/apply") {
@@ -218,9 +263,37 @@ async function handleRequest(
 }
 
 type ReviewDecisionAction = "keep" | "research" | "defer";
+type ObservationEdit = { observation_id: string; statement: string };
 
 function isReviewDecisionAction(value: unknown): value is ReviewDecisionAction {
   return value === "keep" || value === "research" || value === "defer";
+}
+
+function isObservationEdit(value: unknown): value is ObservationEdit {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const edit = value as Record<string, unknown>;
+  return typeof edit.observation_id === "string"
+    && /^la_object_[A-Za-z0-9_-]{8,}$/.test(edit.observation_id)
+    && typeof edit.statement === "string"
+    && edit.statement.trim().length > 0
+    && edit.statement.length <= 8_192;
+}
+
+function mappedObservationIds(item: LocalReviewQueueItem): Set<string> {
+  return new Set(item.unit_mappings.flatMap((mapping) => mapping.observation_ids));
+}
+
+function isRichReviewCandidate(item: LocalReviewQueueItem): boolean {
+  const observations = item.proposed_records.filter((payload) => payload.schema === "atlas.observation:v1");
+  const mappedIds = mappedObservationIds(item);
+  const parityIds = new Set(item.parity_records.flatMap((parity) => (
+    parity.representation_kind === "observation" ? parity.canonical_object_ids : []
+  )));
+  return item.unit_mappings.length > 0
+    && item.unit_mappings.every((mapping) => mapping.unit_evidence_ids.length > 0 && mapping.observation_ids.length > 0)
+    && observations.length > 0
+    && observations.every((observation) => mappedIds.has(observation.assertion_id) && parityIds.has(observation.assertion_id))
+    && item.proposed_records.length === item.proposed_object_ids.length;
 }
 
 function digest(value: string): string {
@@ -232,12 +305,17 @@ function buildReviewDecision(
   item: LocalReviewQueueItem,
   action: ReviewDecisionAction,
   statements: string[] | undefined,
+  observationEdits: ObservationEdit[] | undefined,
   researchUnitIds: string[] | undefined = undefined
 ): unknown[] | undefined {
   if (!context.graphStore) return undefined;
   const recordedAt = context.now ?? new Date().toISOString();
   if (action === "keep" && !item.source_accounting.exact_source_preserved) return undefined;
-  const extractedObservations: CanonicalPayload[] = action === "keep"
+  const richCandidate = isRichReviewCandidate(item);
+  const legacyPlaceholder = item.proposed_records.length === 1
+    && item.proposed_records[0]?.schema === "atlas.observation:v1";
+  if (action === "keep" && !richCandidate && !legacyPlaceholder) return undefined;
+  const extractedObservations: CanonicalPayload[] = action === "keep" && legacyPlaceholder
     ? item.source_accounting.meaningful_units.map((unit, index) => ({
       schema: "atlas.observation:v1" as const,
       assertion_id: `la_object_${digest(`source-unit:${item.candidate_id}:${index}:${unit.atlas_text}`)}`,
@@ -250,6 +328,7 @@ function buildReviewDecision(
     : [];
   const keptPayloads = extractedObservations.length > 0 ? extractedObservations : item.proposed_records;
   const keptIds = keptPayloads.map(canonicalPayloadObjectId);
+  const observationEditById = new Map((observationEdits ?? []).map((edit) => [edit.observation_id, edit.statement]));
   const requestedUnitHashes = [...new Set([
     ...(item.review_record.research_requested_unit_hashes ?? []),
     ...(researchUnitIds ?? [])
@@ -268,21 +347,32 @@ function buildReviewDecision(
   };
   const proposed = keptPayloads.map((payload): CanonicalPayload => {
     if (payload.schema !== "atlas.observation:v1") return payload;
+    const editedStatement = observationEditById.get(payload.assertion_id);
     return {
       ...payload,
+      ...(editedStatement ? { statement: editedStatement } : {}),
       ...(statements?.[0] && action !== "keep" ? { statement: statements[0] } : {}),
       resolution_state: action === "research" ? "research" : action === "defer" ? "deferred-unknown" : payload.resolution_state,
       recorded_at: recordedAt
     };
   });
+  const keptObservationIds = new Set(proposed.flatMap((payload) => (
+    payload.schema === "atlas.observation:v1" ? [payload.assertion_id] : []
+  )));
   const parityRecords: CanonicalPayload[] = item.parity_records.map((parity) => action === "keep" ? {
     ...parity,
     coverage_state: "represented",
     representation_kind: "observation",
-    canonical_object_ids: keptIds,
+    canonical_object_ids: richCandidate
+      ? parity.canonical_object_ids.filter((id) => keptObservationIds.has(id))
+      : [...keptObservationIds],
     recorded_at: recordedAt
   } : parity);
-  const payloads: CanonicalPayload[] = [...proposed, review, ...parityRecords];
+  const payloads: CanonicalPayload[] = [
+    ...proposed.filter((payload) => payload.schema === "atlas.observation:v1"),
+    review,
+    ...parityRecords
+  ];
   const drafts = payloads.map((payload) => {
     const object = context.graphStore!.readObject(canonicalPayloadObjectId(payload));
     const contentHash = `sha256:${createHash("sha256").update(JSON.stringify(payload)).digest("hex")}` as const;

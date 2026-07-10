@@ -74,6 +74,26 @@ function recordText(record, fallback) {
   return record.schema.replace("atlas.", "").replace(/:v\d+$/, "").replaceAll("-", " ");
 }
 
+function recordTypeLabel(recordType) {
+  return {
+    entity: "Entity",
+    observation: "Unresolved observation",
+    fact: "Fact",
+    relationship: "Relationship"
+  }[recordType] || recordType;
+}
+
+function destinationRecordNode(destination, fallback) {
+  const entry = node("article", `destination-record record-${destination.record_type}`);
+  const header = node("header", "destination-record-header");
+  const type = node("span", "destination-record-type", recordTypeLabel(destination.record_type));
+  const id = node("code", "destination-record-id", destination.object_id);
+  id.title = destination.object_id;
+  header.append(type, id);
+  entry.append(header, node("p", "destination-record-copy", recordText(destination.record, fallback)));
+  return entry;
+}
+
 function searchableText(item) {
   return [
     item.headline,
@@ -144,6 +164,7 @@ function sourceBrowser(items, selected) {
 }
 
 function mappingRow(item, unit, index) {
+  const mapping = item.unit_mappings[index];
   const row = node("article", `mapping-row kind-${unit.kind}`);
   row.dataset.unitIndex = String(index);
   const source = node("div", "mapping-source");
@@ -157,9 +178,12 @@ function mappingRow(item, unit, index) {
 
   const destination = node("div", "mapping-destination");
   destination.tabIndex = 0;
-  destination.title = unit.atlas_text;
+  destination.title = mapping?.destination_records.map((record) => record.object_id).join(", ") || unit.atlas_text;
   const destinationHeader = node("header", "mapping-destination-header");
-  destinationHeader.append(node("span", `meaning-kind kind-${unit.kind}`, kindLabel(unit.kind)));
+  const destinationCount = mapping?.destination_records.length || 0;
+  destinationHeader.append(node("span", `meaning-kind kind-${unit.kind}`, destinationCount
+    ? `${destinationCount} canonical record${destinationCount === 1 ? "" : "s"}`
+    : kindLabel(unit.kind)));
   if (state.tab === "owner_review" || state.tab === "research") {
     const queued = item.research_requested_all || item.research_requested_units.some((requested) => requested.unit_id === unit.unit_id);
     const research = node("button", "unit-research", queued ? "Queued" : "Research");
@@ -169,7 +193,17 @@ function mappingRow(item, unit, index) {
     research.title = queued ? "Queued for Codex research." : "Queue only this extracted item for Codex research.";
     destinationHeader.append(research);
   }
-  destination.append(destinationHeader, node("p", "mapping-copy", unit.atlas_text), node("small", "storage-kind", "Stored as an observation until typing is accepted"));
+  destination.append(destinationHeader);
+  if (mapping?.destination_records.length) {
+    const records = node("div", "destination-records");
+    mapping.destination_records.forEach((destination) => records.append(destinationRecordNode(destination, unit.atlas_text)));
+    destination.append(records);
+  } else {
+    destination.append(
+      node("p", "mapping-copy", unit.atlas_text),
+      node("small", "storage-kind", "Legacy source fragment; preserving expands it to a provenance-linked observation")
+    );
+  }
   row.append(source, connector, destination);
   return row;
 }
@@ -218,17 +252,31 @@ function mappingPanel(item) {
 }
 
 function miniGraph(item) {
+  const recordCount = item.destination_graph.entities.length
+    + item.destination_graph.facts.length
+    + item.destination_graph.relationships.length
+    + item.destination_graph.observations.length;
   const graph = node("details", "mini-graph");
-  graph.append(node("summary", "", `Proposed mini graph (${item.source_accounting.meaningful_units.length})`));
-  graph.append(node("p", "graph-note", "This is an extraction projection, not a claim that every candidate is already a typed node or edge."));
+  graph.append(node("summary", "", `Proposed mini graph (${recordCount})`));
+  graph.append(node("p", "graph-note", "Actual canonical records are shown below. Dashed observations remain unresolved; endpoint entities may be owned by another source review."));
   const canvas = node("div", "graph-scroll");
   const origin = node("div", "graph-origin", "Encrypted source evidence");
   canvas.append(origin);
-  item.source_accounting.meaningful_units.forEach((unit) => {
-    const branch = node("div", `graph-branch kind-${unit.kind}`);
-    branch.append(node("span", "graph-edge", "supports"), node("div", "graph-node", `${kindLabel(unit.kind)} · ${unit.atlas_text}`));
+  const appendRecord = (destination, edgeLabel) => {
+    const branch = node("div", `graph-branch record-${destination.record_type}`);
+    const graphNode = node("div", `graph-node record-${destination.record_type}`);
+    graphNode.append(
+      node("strong", "", `${recordTypeLabel(destination.record_type)} · ${recordText(destination.record, item.headline)}`),
+      node("code", "", destination.object_id)
+    );
+    branch.append(node("span", "graph-edge", edgeLabel), graphNode);
     canvas.append(branch);
-  });
+  };
+  item.destination_graph.entities.forEach((destination) => appendRecord(destination, "contains"));
+  item.destination_graph.facts.forEach((destination) => appendRecord(destination, "asserts"));
+  item.destination_graph.relationships.forEach((destination) => appendRecord(destination, "links"));
+  item.destination_graph.observations.forEach((destination) => appendRecord(destination, "supports"));
+  if (recordCount === 0) canvas.append(node("p", "empty-copy", "No canonical destination records are available."));
   graph.append(canvas);
   return graph;
 }
@@ -244,7 +292,16 @@ function decisionPanel(item) {
   const panel = node("aside", "decision-panel");
   panel.append(node("p", "lane-label", "Your decision"), node("p", "recommendation", recommendationText(item)));
   const truth = node("section", "storage-truth");
-  truth.append(node("strong", "", "What Preserve does"), node("p", "", "Writes one provenance-linked observation per extracted item. Typed entities, facts, and relationship edges remain separate follow-up work until their identity and schema are accepted."));
+  const typedCount = item.proposed_records.filter((record) => (
+    record.schema === "atlas.entity:v1" || record.schema === "atlas.fact:v1" || record.schema === "atlas.relationship:v2"
+  )).length;
+  const observationCount = item.destination_graph.observations.length;
+  truth.append(
+    node("strong", "", "What Preserve does"),
+    node("p", "", typedCount
+      ? `Keeps ${typedCount} typed canonical record${typedCount === 1 ? "" : "s"} and ${observationCount} parity observation${observationCount === 1 ? "" : "s"}. Editing changes only the addressed observations.`
+      : "Keeps the mapped observations. Legacy one-placeholder sources expand into one provenance-linked observation per extracted item.")
+  );
   panel.append(truth);
 
   if (state.tab === "automatic" || state.tab === "deferred") {
@@ -293,17 +350,41 @@ function technicalDetails(item) {
 
 function editForm(item) {
   const form = node("form", "editor");
-  form.append(node("p", "editor-intro", "Edit the normalized meaning. The encrypted source remains unchanged."));
-  const fields = item.source_accounting.meaningful_units.map((unit, index) => {
-    const label = node("label", "", `${index + 1}. ${kindLabel(unit.kind)}`);
+  const mappedObservations = [];
+  const seenObservationIds = new Set();
+  item.unit_mappings.forEach((mapping, unitIndex) => {
+    mapping.destination_records
+      .filter((destination) => destination.record_type === "observation")
+      .forEach((destination, chunkIndex) => {
+        if (seenObservationIds.has(destination.object_id)) return;
+        seenObservationIds.add(destination.object_id);
+        mappedObservations.push({ destination, unitIndex, chunkIndex, chunkCount: mapping.observation_ids.length });
+      });
+  });
+  const richEditor = mappedObservations.length > 0;
+  form.append(node("p", "editor-intro", richEditor
+    ? "Edit individual observation records. Typed entities, facts, relationships, other chunks, and encrypted source evidence remain unchanged."
+    : "Edit the normalized meaning. The encrypted source remains unchanged."));
+  const editableItems = richEditor
+    ? mappedObservations
+    : item.source_accounting.meaningful_units.map((unit, unitIndex) => ({ unit, unitIndex }));
+  const fields = editableItems.map((editable, index) => {
+    const isChunked = richEditor && editable.chunkCount > 1;
+    const labelText = richEditor
+      ? `${editable.unitIndex + 1}. Observation${isChunked ? ` chunk ${editable.chunkIndex + 1} of ${editable.chunkCount}` : ""}`
+      : `${index + 1}. ${kindLabel(editable.unit.kind)}`;
+    const label = node("label", "", labelText);
     const textarea = node("textarea", "");
     textarea.name = `statement-${index}`;
     textarea.maxLength = 8192;
     textarea.required = true;
-    textarea.value = unit.atlas_text;
+    textarea.value = richEditor ? editable.destination.record.statement : editable.unit.atlas_text;
     label.append(textarea);
     form.append(label);
-    return textarea;
+    return {
+      textarea,
+      observation_id: richEditor ? editable.destination.object_id : undefined
+    };
   });
   const actions = node("div", "editor-actions");
   const save = node("button", "primary", "Save all and preserve");
@@ -315,7 +396,14 @@ function editForm(item) {
   form.append(actions);
   form.onsubmit = (event) => {
     event.preventDefault();
-    decide(item.candidate_id, "keep", fields.map((field) => field.value));
+    if (richEditor) {
+      decide(item.candidate_id, "keep", undefined, undefined, fields.map((field) => ({
+        observation_id: field.observation_id,
+        statement: field.textarea.value
+      })));
+    } else {
+      decide(item.candidate_id, "keep", fields.map((field) => field.textarea.value));
+    }
   };
   return form;
 }
@@ -344,7 +432,7 @@ function card(item) {
     };
   });
   article.querySelectorAll("[data-research-unit]").forEach((button) => {
-    button.onclick = () => decide(item.candidate_id, "research", undefined, [button.dataset.researchUnit]);
+    button.onclick = () => decide(item.candidate_id, "research", undefined, [button.dataset.researchUnit], undefined);
   });
   article.querySelector("[data-cancel-edit]")?.addEventListener("click", () => {
     state.editing = null;
@@ -437,7 +525,7 @@ async function load(message) {
   render();
 }
 
-async function decide(candidate, action, statements, unitIds) {
+async function decide(candidate, action, statements, unitIds, observationEdits) {
   if (state.busy) return;
   state.busy = true;
   status.textContent = "Saving your decision…";
@@ -447,7 +535,12 @@ async function decide(candidate, action, statements, unitIds) {
       method: "POST",
       credentials: "same-origin",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ action, ...(statements ? { statements } : {}), ...(unitIds ? { unit_ids: unitIds } : {}) })
+      body: JSON.stringify({
+        action,
+        ...(statements ? { statements } : {}),
+        ...(unitIds ? { unit_ids: unitIds } : {}),
+        ...(observationEdits ? { observation_edits: observationEdits } : {})
+      })
     });
     const result = await response.json();
     if (!response.ok) throw new Error(result.reason || "decision-not-saved");
@@ -472,7 +565,7 @@ async function decideBulk(action) {
   const consequence = action === "keep" && excludedCount ? ` ${excludedCount} source-only item${excludedCount === 1 ? "" : "s"} will remain only in encrypted evidence.` : "";
   if (!confirm(`${verb}?${consequence}`)) return;
   state.busy = true;
-  status.textContent = `Saving ${candidates.length} decisions atomically…`;
+  status.textContent = `Saving ${candidates.length} independent decisions…`;
   renderBulk();
   try {
     const response = await fetch("/api/review/bulk/decision", {
@@ -482,9 +575,14 @@ async function decideBulk(action) {
       body: JSON.stringify({ candidate_ids: candidates, action })
     });
     const result = await response.json();
-    if (!response.ok) throw new Error(result.reason || "bulk-decision-not-saved");
-    state.selected.clear();
-    await load(`Saved ${candidates.length} decisions.`);
+    const committed = result.committed_candidate_ids || result.result?.resolved_candidate_ids || [];
+    committed.forEach((candidate) => state.selected.delete(candidate));
+    if (!response.ok) {
+      const failed = result.failed_candidate_ids || candidates.filter((candidate) => !committed.includes(candidate));
+      await load(`Saved ${committed.length} of ${candidates.length} decisions. ${failed.length} failed and remain selected.`);
+      return;
+    }
+    await load(`Saved ${committed.length} independent decision${committed.length === 1 ? "" : "s"}.`);
   } catch (error) {
     status.textContent = `Nothing changed: ${String(error.message || error).replaceAll("-", " ")}.`;
   } finally {

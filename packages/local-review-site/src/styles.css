@@ -209,6 +209,16 @@ h1 {
 .mapping-connector::after { position: absolute; right: -1px; border-width: 4px 0 4px 6px; border-style: solid; border-color: transparent transparent transparent var(--copper); content: ""; }
 .mapping-connector span { z-index: 1; padding: 2px 3px; background: linear-gradient(90deg, var(--source), var(--proposal)); }
 .mapping-destination-header { display: flex; align-items: center; justify-content: space-between; gap: 7px; margin-bottom: 5px; }
+.destination-records { display: grid; gap: 5px; }
+.destination-record { min-width: 0; padding: 6px 7px; border: 1px solid var(--line); border-left-width: 3px; border-radius: 6px; background: white; }
+.destination-record-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.destination-record-type { color: var(--blue); font: 700 0.58rem var(--utility); letter-spacing: 0.04em; text-transform: uppercase; }
+.destination-record-id { overflow: hidden; color: var(--muted); font: 0.52rem var(--utility); text-overflow: ellipsis; white-space: nowrap; }
+.destination-record-copy { margin: 4px 0 0; font-size: 0.7rem; line-height: 1.35; overflow-wrap: anywhere; }
+.record-entity { border-color: rgba(49, 95, 120, 0.44); }
+.record-fact { border-color: rgba(48, 111, 78, 0.52); }
+.record-relationship { border-color: rgba(169, 85, 47, 0.58); }
+.record-observation { border-style: dashed; border-color: rgba(99, 103, 108, 0.52); }
 .meaning-kind { width: fit-content; padding: 3px 5px; border-radius: 4px; background: rgba(49, 95, 120, 0.1); color: var(--blue); font: 700 0.56rem var(--utility); text-transform: uppercase; }
 .kind-relationship .meaning-kind,
 .meaning-kind.kind-relationship { background: rgba(169, 85, 47, 0.12); color: var(--copper); }
@@ -251,7 +261,9 @@ h1 {
 .graph-branch + .graph-branch { margin-top: 4px; }
 .graph-edge { position: relative; color: var(--muted); font: 0.48rem var(--utility); }
 .graph-edge::after { position: absolute; top: 50%; right: 0; left: 0; z-index: -1; border-top: 1px solid var(--line-strong); content: ""; }
-.graph-node { overflow: hidden; padding: 6px 8px; border: 1px solid var(--line); border-radius: 7px; background: white; font-size: 0.64rem; line-height: 1.3; text-overflow: ellipsis; white-space: nowrap; }
+.graph-node { overflow: hidden; padding: 6px 8px; border: 1px solid var(--line); border-radius: 7px; background: white; font-size: 0.64rem; line-height: 1.3; }
+.graph-node strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.graph-node code { display: block; overflow: hidden; margin-top: 3px; color: var(--muted); font: 0.5rem var(--utility); text-overflow: ellipsis; white-space: nowrap; }
 .graph-branch.kind-relationship .graph-node { border-style: dashed; border-color: var(--copper); }
 .graph-branch.kind-observation .graph-node { border-style: dashed; color: var(--muted); }
 
