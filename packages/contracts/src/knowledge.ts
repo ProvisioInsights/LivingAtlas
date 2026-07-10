@@ -60,6 +60,11 @@ export const FactPredicateRegistry = {
   homepage: ["uri"],
   "founded-on": ["date"],
   "acquired-on": ["date"],
+  phone: ["text"],
+  email: ["text"],
+  address: ["text"],
+  "birth-date": ["date"],
+  "last-contacted": ["date", "timestamp"],
   identifier: ["text"]
 } as const;
 

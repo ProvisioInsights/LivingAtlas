@@ -106,6 +106,31 @@ describe("canonical knowledge payload contracts", () => {
     }).success).toBe(false);
   });
 
+  it("constrains measured direct-contact fact predicates to their declared value kinds", () => {
+    const fact = (predicate: string, value: unknown, suffix: string) => ({
+      schema: "atlas.fact:v1",
+      assertion_id: `la_object_measuredfact${suffix}`,
+      subject_entity_id: "la_object_entity0001",
+      predicate,
+      value,
+      recorded_at: timestamp,
+      lineage_action: "assert",
+      evidence_links: evidenceLinks,
+      confidence
+    });
+
+    expect(CanonicalFactPayloadSchema.parse(fact("phone", { kind: "text", value: "+1 555 0100" }, "phone0001")).predicate).toBe("phone");
+    expect(CanonicalFactPayloadSchema.parse(fact("email", { kind: "text", value: "synthetic@example.invalid" }, "email0001")).predicate).toBe("email");
+    expect(CanonicalFactPayloadSchema.parse(fact("address", { kind: "text", value: "1 Synthetic Way" }, "address001")).predicate).toBe("address");
+    expect(CanonicalFactPayloadSchema.parse(fact("birth-date", { kind: "date", value: "2000-01-02" }, "birth0001")).predicate).toBe("birth-date");
+    expect(CanonicalFactPayloadSchema.parse(fact("last-contacted", { kind: "timestamp", value: timestamp }, "contact001")).predicate).toBe("last-contacted");
+    expect(CanonicalFactPayloadSchema.parse(fact("last-contacted", { kind: "date", value: "2026-07-09" }, "contact002")).value).toEqual({ kind: "date", value: "2026-07-09" });
+
+    expect(CanonicalFactPayloadSchema.safeParse(fact("phone", { kind: "number", value: 15550100 }, "badphone1")).success).toBe(false);
+    expect(CanonicalFactPayloadSchema.safeParse(fact("birth-date", { kind: "timestamp", value: timestamp }, "badbirth1")).success).toBe(false);
+    expect(CanonicalFactPayloadSchema.safeParse(fact("last-contacted", { kind: "text", value: "yesterday" }, "badcontact1")).success).toBe(false);
+  });
+
   it("preserves ambiguous source meaning as a bounded observation without inventing a subject", () => {
     const observation = CanonicalObservationPayloadSchema.parse({
       schema: "atlas.observation:v1",
