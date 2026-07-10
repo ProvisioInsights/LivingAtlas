@@ -103,11 +103,39 @@ export function createCanonicalMarkdownMigration(
     default_access_class: "local-private"
   });
   const existingIds = new Set(payloads.map((payload) => canonicalPayloadObjectId(payload)));
-  for (const endpoint of typed.endpoints) {
-    const entity = canonicalEntityPayloadFromEndpoint(endpoint);
+  for (const typedEndpoint of typed.endpoints) {
+    const entity = canonicalEntityPayloadFromEndpoint(typedEndpoint.endpoint);
     if (!existingIds.has(entity.entity_id)) {
       payloads.push(entity);
       existingIds.add(entity.entity_id);
+    }
+  }
+  const entityIds = new Set(typed.endpoints.map((item) => item.endpoint.object_id));
+  for (const typedEdge of typed.edges) {
+    const edge = typedEdge.edge;
+    if (!entityIds.has(edge.source_object_id) || !entityIds.has(edge.target_object_id)) continue;
+    const evidenceId = stableIdentifier("la_object", `${authorityId}:typed-edge-evidence:${typedEdge.source_path_ref}:${edge.edge_id}`);
+    const assertionId = stableIdentifier("la_object", `${authorityId}:typed-edge-assertion:${edge.edge_id}`);
+    if (!existingIds.has(evidenceId)) {
+      payloads.push(CanonicalPayloadSchema.parse({
+        schema: "atlas.evidence:v1", evidence_id: evidenceId, source_kind: "migration",
+        locator: `migration:${typedEdge.source_path_ref}:explicit-typed-edge`, content_hash: sha256(JSON.stringify(edge)),
+        retrieved_at: createdAt, independence_key: `migration:${typedEdge.source_path_ref}`,
+        excerpt: "Explicit typed relationship extracted from the local Logseq source.", extraction_method: "logseq-explicit-typed-v1"
+      }));
+      existingIds.add(evidenceId);
+    }
+    if (!existingIds.has(assertionId)) {
+      payloads.push(CanonicalPayloadSchema.parse({
+        schema: "atlas.relationship:v2", assertion_id: assertionId, edge_id: edge.edge_id,
+        source_entity_id: edge.source_object_id, source_type: edge.source_type,
+        target_entity_id: edge.target_object_id, target_type: edge.target_type,
+        predicate: edge.predicate, valid_from: edge.valid_from, ...(edge.valid_to ? { valid_to: edge.valid_to } : {}),
+        status: edge.status, attrs: edge.attrs, recorded_at: createdAt, lineage_action: "assert", supersedes: [],
+        evidence_links: [{ evidence_id: evidenceId, stance: "supports" }],
+        confidence: { band: "high", assessment_kind: "assertion", method: "logseq-explicit-typed-v1", assessed_at: createdAt, evidence_refs: [evidenceId] }
+      }));
+      existingIds.add(assertionId);
     }
   }
 

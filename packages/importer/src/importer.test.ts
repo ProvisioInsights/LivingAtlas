@@ -440,7 +440,7 @@ describe("markdown importer planning", () => {
       markdown: "type:: topic\nsubtype:: theme\n\n- canonical-first extraction\n",
       source_kind: "logseq"
     }], { authority_id: fixtureAuthorityId, created_at: "2026-06-22T12:00:00.000Z", path_redaction_secret: "fixture-path-redaction-secret-0001" });
-    expect(typed).toEqual({ endpoints: [expect.objectContaining({ type: "topic", subtype: "theme" })], edges: [] });
+    expect(typed).toEqual({ endpoints: [expect.objectContaining({ endpoint: expect.objectContaining({ type: "topic", subtype: "theme" }), source_path_ref: expect.any(String) })], edges: [] });
     expect(JSON.stringify(typed)).not.toContain("logseq-endpoint");
     expect(JSON.stringify(typed)).not.toContain("object_type");
   });
