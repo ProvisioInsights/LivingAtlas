@@ -54,8 +54,8 @@ describe("local review projection", () => {
       ["fact", "Phone: +1 (555) 010-2040 (regional number)"],
       ["fact", "Address: 100 Example Avenue"],
       ["relationship", "Relationship to Synthetic Person: longtime collaborator"],
-      ["context", "2025-11-05 8:30 CT · video call"],
-      ["context", "Met through a shared project in 2021."]
+      ["observation", "2025-11-05 8:30 CT · video call"],
+      ["observation", "Met through a shared project in 2021."]
     ]);
     expect(accounting.meaningful_units.every((unit) => /^sha256:[a-f0-9]{64}$/.test(unit.unit_id))).toBe(true);
     expect(accounting.excluded_units).toEqual([
@@ -157,7 +157,7 @@ describe("local review projection", () => {
       parity_records: [parity],
       source_accounting: {
         exact_source_preserved: false,
-        meaningful_units: [{ kind: "context", atlas_text: "Synthetic supporting evidence." }],
+        meaningful_units: [{ kind: "observation", atlas_text: "Synthetic supporting evidence." }],
         excluded_units: []
       },
       context_unavailable: false

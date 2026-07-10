@@ -5,6 +5,7 @@ const state = {
   query: "",
   page: 1,
   selected: new Set(),
+  activeCandidate: null,
   editing: null,
   busy: false
 };
@@ -33,20 +34,31 @@ function humanState(value) {
     "owner-review": "Your review",
     research: "Research suggested",
     "deferred-unknown": "Decide later",
-    resolved: "Kept in Atlas",
+    resolved: "Meaning preserved",
     "auto-applied": "Applied automatically"
   }[value] || value;
+}
+
+function kindLabel(kind) {
+  return {
+    entity: "Entity candidate",
+    attribute: "Attribute candidate",
+    fact: "Fact candidate",
+    relationship: "Relationship candidate",
+    observation: "Unresolved observation",
+    provenance: "Provenance"
+  }[kind] || kind;
 }
 
 function recommendationText(item) {
   const count = item.source_accounting.meaningful_units.length;
   if (item.recommendation === "research") {
-    return `Research may improve identity or structure. Keeping this now preserves all ${count} meaningful item${count === 1 ? "" : "s"} as sourced observations without inventing certainty.`;
+    return `Research may improve identity or typing. Preserving now keeps all ${count} extracted item${count === 1 ? "" : "s"} as source-backed observations without inventing nodes or edges.`;
   }
   if (item.recommendation === "owner-review") {
-    return `The source is preserved. Review the ${count} extracted item${count === 1 ? "" : "s"} below before keeping them.`;
+    return `Review the ${count} extracted item${count === 1 ? "" : "s"}. Anything not safely typed remains an unresolved observation.`;
   }
-  return `Atlas has accounted for all ${count} meaningful item${count === 1 ? "" : "s"}.`;
+  return `All ${count} extracted item${count === 1 ? "" : "s"} are accounted for.`;
 }
 
 function recordText(record, fallback) {
@@ -65,7 +77,6 @@ function recordText(record, fallback) {
 function searchableText(item) {
   return [
     item.headline,
-    item.proposal_label,
     ...item.source_context.flatMap((evidence) => [evidence.excerpt, evidence.locator, evidence.publisher]),
     ...item.source_accounting.meaningful_units.flatMap((unit) => [unit.atlas_text, unit.kind]),
     ...item.source_accounting.excluded_units.map((unit) => unit.source_text),
@@ -85,102 +96,138 @@ function visibleItems() {
   return items.slice(start, start + pageSize);
 }
 
-function sourcePanel(item) {
-  const panel = node("section", "lane source-lane");
-  panel.append(node("p", "lane-label", "Original source item"));
-  if (item.source_context.length === 0) {
-    panel.append(node("p", "empty-copy", "No surrounding source excerpt is linked."));
-    return panel;
-  }
-  const sourceText = item.source_context.map((evidence) => evidence.excerpt || "").join("");
-  const sourceUnits = node("ol", "source-unit-list");
-  item.source_accounting.meaningful_units.forEach((unit, index) => {
-    const entry = node("li", "source-unit", unit.source_text);
-    entry.dataset.sourceIndex = String(index);
-    entry.tabIndex = 0;
-    sourceUnits.append(entry);
-  });
-  panel.append(sourceUnits);
-  const original = node("details", "original-source");
-  original.append(node("summary", "", "View untouched source"), node("pre", "source-quote", sourceText || "Encrypted source snapshot available locally."));
-  panel.append(original);
-  const source = node("p", "source-meta");
-  source.append(node("span", "", "migration source"));
-  panel.append(source);
-  panel.append(node(
-    "p",
-    item.source_accounting.exact_source_preserved ? "source-preserved" : "warning",
-    item.source_accounting.exact_source_preserved
-      ? "Full source retained as encrypted evidence"
-      : "Only bounded context is linked; keeping is blocked until the full source is verified."
-  ));
-  return panel;
+function selectedItem(items) {
+  const selected = items.find((item) => item.candidate_id === state.activeCandidate) || items[0];
+  state.activeCandidate = selected?.candidate_id ?? null;
+  return selected;
 }
 
-function proposalPanel(item) {
-  const panel = node("section", "lane proposal-lane");
-  panel.append(node("p", "lane-label", "Atlas proposal"));
-  const units = item.source_accounting.meaningful_units;
-  const summary = node("div", "meaning-summary");
-  summary.append(node("strong", "", String(units.length)), node("span", "", "Meaningful data"));
-  panel.append(summary);
-  panel.append(node("p", "accounting-copy", "Each item below will be kept as a provenance-linked Atlas observation. The kind describes its meaning; unresolved identities are not asserted as fact."));
-  const list = node("ol", "meaning-list");
-  units.forEach((unit, index) => {
-    const entry = node("li", "meaning-item");
-    entry.dataset.destinationIndex = String(index);
-    entry.tabIndex = 0;
-    entry.append(node("span", `meaning-kind kind-${unit.kind}`, unit.kind), node("span", "meaning-text", unit.atlas_text));
-    if (state.tab === "owner_review" || state.tab === "research") {
-      const queued = item.research_requested_all || item.research_requested_units.some((requested) => requested.unit_id === unit.unit_id);
-      const research = node("button", "unit-research", queued ? "Queued" : "Research");
-      research.type = "button";
-      research.dataset.researchUnit = unit.unit_id;
-      research.disabled = queued;
-      research.title = queued ? "This extracted item is queued for Codex research." : "Queue only this extracted item for Codex research.";
-      entry.append(research);
-    }
+function sourceRow(item, active) {
+  const row = node("div", `source-row${active ? " active" : ""}`);
+  if (state.tab === "owner_review" || state.tab === "research") {
+    const select = node("input", "source-select");
+    select.type = "checkbox";
+    select.checked = state.selected.has(item.candidate_id);
+    select.ariaLabel = `Select ${item.headline}`;
+    select.onchange = () => {
+      if (select.checked && state.selected.size < 100) state.selected.add(item.candidate_id);
+      else state.selected.delete(item.candidate_id);
+      renderBulk();
+    };
+    row.append(select);
+  }
+  const open = node("button", "source-open");
+  open.type = "button";
+  open.ariaCurrent = active ? "true" : "false";
+  open.append(
+    node("span", "source-row-title", item.headline),
+    node("span", "source-row-meta", `${item.source_accounting.meaningful_units.length} extracted · ${item.source_accounting.excluded_units.length} omitted`)
+  );
+  open.onclick = () => {
+    state.activeCandidate = item.candidate_id;
+    state.editing = null;
+    render();
+  };
+  row.append(open);
+  return row;
+}
+
+function sourceBrowser(items, selected) {
+  const aside = node("aside", "source-browser");
+  const header = node("header", "source-browser-header");
+  header.append(node("p", "lane-label", "Sources on this page"), node("span", "", String(items.length)));
+  aside.append(header);
+  const list = node("div", "source-browser-list");
+  items.forEach((item) => list.append(sourceRow(item, item.candidate_id === selected?.candidate_id)));
+  aside.append(list);
+  return aside;
+}
+
+function mappingRow(item, unit, index) {
+  const row = node("article", `mapping-row kind-${unit.kind}`);
+  row.dataset.unitIndex = String(index);
+  const source = node("div", "mapping-source");
+  source.tabIndex = 0;
+  source.title = unit.source_text;
+  source.append(node("span", "mapping-cell-label", "Original"), node("p", "mapping-copy", unit.source_text));
+
+  const connector = node("div", "mapping-connector");
+  connector.ariaHidden = "true";
+  connector.append(node("span", "", "maps to"));
+
+  const destination = node("div", "mapping-destination");
+  destination.tabIndex = 0;
+  destination.title = unit.atlas_text;
+  const destinationHeader = node("header", "mapping-destination-header");
+  destinationHeader.append(node("span", `meaning-kind kind-${unit.kind}`, kindLabel(unit.kind)));
+  if (state.tab === "owner_review" || state.tab === "research") {
+    const queued = item.research_requested_all || item.research_requested_units.some((requested) => requested.unit_id === unit.unit_id);
+    const research = node("button", "unit-research", queued ? "Queued" : "Research");
+    research.type = "button";
+    research.dataset.researchUnit = unit.unit_id;
+    research.disabled = queued;
+    research.title = queued ? "Queued for Codex research." : "Queue only this extracted item for Codex research.";
+    destinationHeader.append(research);
+  }
+  destination.append(destinationHeader, node("p", "mapping-copy", unit.atlas_text), node("small", "storage-kind", "Stored as an observation until typing is accepted"));
+  row.append(source, connector, destination);
+  return row;
+}
+
+function excludedDetails(item) {
+  const excluded = item.source_accounting.excluded_units;
+  if (!excluded.length) return undefined;
+  const details = node("details", "excluded-details");
+  details.append(node("summary", "", `Not Atlas knowledge (${excluded.length})`));
+  const list = node("ul", "excluded-list");
+  excluded.forEach((unit) => {
+    const entry = node("li", "");
+    entry.append(node("span", "", unit.source_text), node("small", "", unit.reason));
     list.append(entry);
   });
-  panel.append(list);
-  if (!units.length) panel.append(node("p", "warning", "No meaningful source units were extracted; keeping is blocked."));
+  details.append(list, node("p", "excluded-note", "Removed from the knowledge output, but retained in encrypted source evidence."));
+  return details;
+}
 
-  const excluded = item.source_accounting.excluded_units;
-  if (excluded.length) {
-    const details = node("details", "excluded-details");
-    details.append(node("summary", "", `Not Atlas knowledge (${excluded.length})`));
-    const excludedList = node("ul", "excluded-list");
-    excluded.forEach((unit) => {
-      const entry = node("li", "");
-      entry.append(node("span", "", unit.source_text), node("small", "", unit.reason));
-      excludedList.append(entry);
-    });
-    details.append(excludedList, node("p", "excluded-note", "These words stay in the encrypted source evidence but are not promoted as knowledge."));
-    panel.append(details);
+function mappingPanel(item) {
+  const panel = node("section", "mapping-panel");
+  const toolbar = node("header", "mapping-toolbar");
+  const tally = node("div", "meaning-summary");
+  tally.append(node("strong", "", String(item.source_accounting.meaningful_units.length)), node("span", "", "Extracted meaning"));
+  toolbar.append(tally, node("p", item.source_accounting.exact_source_preserved ? "source-preserved" : "warning", item.source_accounting.exact_source_preserved ? "Full source retained as encrypted evidence" : "Full source is not verified; preserving is blocked."));
+  panel.append(toolbar);
+
+  const untouched = node("details", "original-source");
+  const sourceText = item.source_context.map((evidence) => evidence.excerpt || "").join("");
+  untouched.append(node("summary", "", "View untouched source"), node("pre", "source-quote", sourceText || "No source excerpt is linked."));
+  panel.append(untouched);
+
+  const labels = node("div", "mapping-labels");
+  labels.append(node("span", "", "Original source fragment"), node("span", "", "Atlas output"));
+  panel.append(labels);
+
+  const scroll = node("div", "mapping-scroll");
+  item.source_accounting.meaningful_units.forEach((unit, index) => scroll.append(mappingRow(item, unit, index)));
+  if (!item.source_accounting.meaningful_units.length) {
+    scroll.append(node("p", "empty-copy", "No meaningful source units were extracted."));
   }
-  if (item.missing_references.length) panel.append(node("p", "warning", `${item.missing_references.length} linked record(s) are unavailable.`));
-  else if (item.source_accounting.exact_source_preserved && units.length) panel.append(node("p", "complete", `${units.length} of ${units.length} meaningful items accounted for.`));
-  panel.append(miniGraph(item));
+  panel.append(scroll);
+  const excluded = excludedDetails(item);
+  if (excluded) panel.append(excluded);
   return panel;
 }
 
 function miniGraph(item) {
-  const graph = node("section", "mini-graph");
-  graph.append(node("p", "proposal-kind", "Source mini graph"));
-  graph.append(node("p", "graph-note", "This is the graph created now: encrypted evidence supports one observation per extracted item. Relationship candidates become semantic edges only after identity is resolved."));
-  const canvas = node("div", "graph-canvas");
-  const origin = node("div", "graph-origin", "Source evidence");
-  origin.style.gridRow = `1 / span ${Math.max(1, item.source_accounting.meaningful_units.length)}`;
+  const graph = node("details", "mini-graph");
+  graph.append(node("summary", "", `Proposed mini graph (${item.source_accounting.meaningful_units.length})`));
+  graph.append(node("p", "graph-note", "This is an extraction projection, not a claim that every candidate is already a typed node or edge."));
+  const canvas = node("div", "graph-scroll");
+  const origin = node("div", "graph-origin", "Encrypted source evidence");
   canvas.append(origin);
-  item.source_accounting.meaningful_units.forEach((unit, index) => {
-    const edge = node("span", "graph-edge", "supports");
-    edge.style.gridRow = String(index + 1);
-    const destination = node("div", `graph-node kind-${unit.kind}`);
-    destination.style.gridRow = String(index + 1);
-    destination.dataset.graphIndex = String(index);
-    destination.tabIndex = 0;
-    destination.append(node("small", "", `${unit.kind} observation`), node("span", "", unit.atlas_text));
-    canvas.append(edge, destination);
+  item.source_accounting.meaningful_units.forEach((unit) => {
+    const branch = node("div", `graph-branch kind-${unit.kind}`);
+    branch.append(node("span", "graph-edge", "supports"), node("div", "graph-node", `${kindLabel(unit.kind)} · ${unit.atlas_text}`));
+    canvas.append(branch);
   });
   graph.append(canvas);
   return graph;
@@ -194,30 +241,33 @@ function actionButton(label, action, className = "") {
 }
 
 function decisionPanel(item) {
-  const panel = node("section", "lane decision-lane");
-  panel.append(node("p", "lane-label", "Your decision"));
-  panel.append(node("p", "recommendation", recommendationText(item)));
+  const panel = node("aside", "decision-panel");
+  panel.append(node("p", "lane-label", "Your decision"), node("p", "recommendation", recommendationText(item)));
+  const truth = node("section", "storage-truth");
+  truth.append(node("strong", "", "What Preserve does"), node("p", "", "Writes one provenance-linked observation per extracted item. Typed entities, facts, and relationship edges remain separate follow-up work until their identity and schema are accepted."));
+  panel.append(truth);
+
   if (state.tab === "automatic" || state.tab === "deferred") {
-    panel.append(node("p", "resolved-copy", state.tab === "automatic" ? "All meaningful data shown here has been kept in Atlas." : "This item is set aside and remains fully preserved."));
+    panel.append(node("p", "resolved-copy", state.tab === "automatic" ? "The meaning is preserved; typing may still remain open." : "This source is set aside and remains fully preserved."), miniGraph(item));
     return panel;
   }
-  const actions = node("div", "decision-actions");
-  const keep = actionButton("Keep all meaningful data", "keep", "primary");
-  keep.disabled = !item.source_accounting.exact_source_preserved || item.source_accounting.meaningful_units.length === 0;
-  actions.append(keep);
-  if (item.source_accounting.meaningful_units.length) actions.append(actionButton("Review / edit extraction", "edit"));
-  if (state.tab === "owner_review" || (state.tab === "research" && !item.research_requested_all)) actions.append(actionButton("Request research for all", "research"));
-  if (state.tab === "research") panel.append(node(
-    "p",
-    "research-state",
-    item.research_requested_all
-      ? "Whole source queued for Codex research · not running until a Codex task processes it"
+
+  if (state.tab === "research") {
+    const queued = item.research_requested_all
+      ? "Whole source queued."
       : item.research_requested_units.length
-        ? `${item.research_requested_units.length} extracted item${item.research_requested_units.length === 1 ? "" : "s"} queued for Codex research · not running yet`
-      : "Research suggested · not yet queued or running"
-  ));
+        ? `${item.research_requested_units.length} extracted item${item.research_requested_units.length === 1 ? "" : "s"} queued.`
+        : "Research suggested, but nothing is queued.";
+    panel.append(node("p", "research-state", `${queued} Research is not running; Codex processes the queue only during an active task.`));
+  }
+
+  const actions = node("div", "decision-actions");
+  const preserve = actionButton("Preserve all now", "keep", "primary");
+  preserve.disabled = !item.source_accounting.exact_source_preserved || item.source_accounting.meaningful_units.length === 0;
+  actions.append(preserve, actionButton("Review / edit extraction", "edit"));
+  if (state.tab === "owner_review" || !item.research_requested_all) actions.append(actionButton("Request research for all", "research"));
   actions.append(actionButton("Decide later", "defer", "quiet"));
-  panel.append(actions);
+  panel.append(actions, miniGraph(item));
   return panel;
 }
 
@@ -243,9 +293,9 @@ function technicalDetails(item) {
 
 function editForm(item) {
   const form = node("form", "editor");
-  form.append(node("p", "editor-intro", "Edit the extracted meaning—not the original evidence. Every row will be kept."));
+  form.append(node("p", "editor-intro", "Edit the normalized meaning. The encrypted source remains unchanged."));
   const fields = item.source_accounting.meaningful_units.map((unit, index) => {
-    const label = node("label", "", `${index + 1}. ${unit.kind}`);
+    const label = node("label", "", `${index + 1}. ${kindLabel(unit.kind)}`);
     const textarea = node("textarea", "");
     textarea.name = `statement-${index}`;
     textarea.maxLength = 8192;
@@ -256,7 +306,7 @@ function editForm(item) {
     return textarea;
   });
   const actions = node("div", "editor-actions");
-  const save = node("button", "primary", "Save all and keep");
+  const save = node("button", "primary", "Save all and preserve");
   save.type = "submit";
   const cancel = node("button", "", "Cancel");
   cancel.type = "button";
@@ -271,32 +321,16 @@ function editForm(item) {
 }
 
 function card(item) {
-  const article = node("article", "review-card");
+  const article = node("article", "review-card compact-card");
   article.dataset.candidate = item.candidate_id;
   const header = node("header", "card-header");
-  if (state.tab === "owner_review" || state.tab === "research") {
-    const select = node("input", "card-select");
-    select.type = "checkbox";
-    select.checked = state.selected.has(item.candidate_id);
-    select.ariaLabel = `Select ${item.headline}`;
-    select.onchange = () => {
-      if (select.checked && state.selected.size < 100) state.selected.add(item.candidate_id);
-      else state.selected.delete(item.candidate_id);
-      renderBulk();
-    };
-    header.append(select);
-  }
   const title = node("div", "card-title");
   title.append(node("p", "state-label", humanState(item.resolution_state)), node("h2", "", item.headline));
   header.append(title);
   article.append(header);
-  const lanes = node("div", "lanes");
-  const mappingLines = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-  mappingLines.classList.add("mapping-lines");
-  mappingLines.setAttribute("aria-hidden", "true");
-  lanes.append(sourcePanel(item), proposalPanel(item), decisionPanel(item));
-  lanes.append(mappingLines);
-  article.append(lanes);
+  const body = node("div", "compact-body");
+  body.append(mappingPanel(item), decisionPanel(item));
+  article.append(body);
   if (state.editing === item.candidate_id) article.append(editForm(item));
   article.append(technicalDetails(item));
   article.querySelectorAll("[data-action]").forEach((button) => {
@@ -316,52 +350,16 @@ function card(item) {
     state.editing = null;
     render();
   });
-  bindMappingHighlights(article);
-  requestAnimationFrame(() => drawMappingLines(article));
   return article;
 }
 
-function bindMappingHighlights(article) {
-  article.querySelectorAll("[data-source-index], [data-destination-index], [data-graph-index]").forEach((element) => {
-    const index = element.dataset.sourceIndex ?? element.dataset.destinationIndex ?? element.dataset.graphIndex;
-    const activate = () => setMappingActive(article, index, true);
-    const deactivate = () => setMappingActive(article, index, false);
-    element.addEventListener("mouseenter", activate);
-    element.addEventListener("mouseleave", deactivate);
-    element.addEventListener("focus", activate);
-    element.addEventListener("blur", deactivate);
-  });
-}
-
-function setMappingActive(article, index, active) {
-  article.querySelectorAll(`[data-source-index="${index}"], [data-destination-index="${index}"], [data-graph-index="${index}"], [data-mapping-index="${index}"]`)
-    .forEach((element) => element.classList.toggle("mapping-active", active));
-}
-
-function drawMappingLines(article) {
-  if (!article.isConnected) return;
-  const lanes = article.querySelector(".lanes");
-  const svg = article.querySelector(".mapping-lines");
-  if (!lanes || !svg) return;
-  const frame = lanes.getBoundingClientRect();
-  svg.setAttribute("viewBox", `0 0 ${frame.width} ${frame.height}`);
-  svg.replaceChildren();
-  article.querySelectorAll("[data-source-index]").forEach((source) => {
-    const index = source.dataset.sourceIndex;
-    const destination = article.querySelector(`[data-destination-index="${index}"]`);
-    if (!destination) return;
-    const from = source.getBoundingClientRect();
-    const to = destination.getBoundingClientRect();
-    const x1 = from.right - frame.left;
-    const y1 = from.top + from.height / 2 - frame.top;
-    const x2 = to.left - frame.left;
-    const y2 = to.top + to.height / 2 - frame.top;
-    const bend = Math.max(24, (x2 - x1) / 2);
-    const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
-    path.setAttribute("d", `M ${x1} ${y1} C ${x1 + bend} ${y1}, ${x2 - bend} ${y2}, ${x2} ${y2}`);
-    path.dataset.mappingIndex = index;
-    svg.append(path);
-  });
+function workspace(items, selected) {
+  const workspace = node("div", "review-workspace");
+  workspace.append(sourceBrowser(items, selected));
+  const detail = node("section", "selected-source");
+  detail.append(selected ? card(selected) : node("div", "empty-state", "No source is selected."));
+  workspace.append(detail);
+  return workspace;
 }
 
 function renderTabs() {
@@ -374,12 +372,11 @@ function renderTabs() {
 
 function renderSummary(items) {
   const total = state.queue?.[state.tab]?.length || 0;
-  const shown = items.length;
-  const label = { owner_review: "items need your judgment", research: "items may benefit from research", deferred: "items are set aside", automatic: "items are complete" }[state.tab];
+  const label = { owner_review: "sources need your judgment", research: "sources may benefit from research", deferred: "sources are set aside", automatic: "sources are preserved" }[state.tab];
   summary.replaceChildren(
     node("strong", "", total.toLocaleString()),
     node("span", "", label),
-    ...(state.query ? [node("small", "", `${shown.toLocaleString()} match your search`)] : [])
+    ...(state.query ? [node("small", "", `${items.length.toLocaleString()} match your search`)] : [])
   );
 }
 
@@ -390,13 +387,12 @@ function renderBulk() {
   const visible = visibleItems();
   selectPage.checked = visible.length > 0 && visible.every((item) => state.selected.has(item.candidate_id));
   selectPage.indeterminate = visible.some((item) => state.selected.has(item.candidate_id)) && !selectPage.checked;
-  bulk.querySelector('[data-bulk-action="research"]').hidden = false;
   bulk.querySelectorAll("button").forEach((button) => button.disabled = state.busy || state.selected.size === 0);
   const selectedItems = [...state.queue.owner_review, ...state.queue.research].filter((item) => state.selected.has(item.candidate_id));
-  const unsafeKeep = selectedItems.some((item) => !item.source_accounting.exact_source_preserved || item.source_accounting.meaningful_units.length === 0);
-  const keepButton = bulk.querySelector('[data-bulk-action="keep"]');
-  keepButton.disabled = keepButton.disabled || unsafeKeep;
-  keepButton.title = unsafeKeep ? "One or more selected sources do not yet have complete extraction coverage." : "";
+  const unsafePreserve = selectedItems.some((item) => !item.source_accounting.exact_source_preserved || item.source_accounting.meaningful_units.length === 0);
+  const preserveButton = bulk.querySelector('[data-bulk-action="keep"]');
+  preserveButton.disabled = preserveButton.disabled || unsafePreserve;
+  preserveButton.title = unsafePreserve ? "One or more selected sources do not have complete extraction coverage." : "";
 }
 
 function renderPagination(items) {
@@ -415,11 +411,11 @@ function render() {
   renderSummary(items);
   renderPagination(items);
   const visible = visibleItems();
-  root.replaceChildren(...(visible.length
-    ? visible.map(card)
-    : [node("div", "empty-state", state.query ? "No items match this search." : "Nothing needs attention in this queue.")]));
+  const selected = selectedItem(visible);
+  root.replaceChildren(visible.length
+    ? workspace(visible, selected)
+    : node("div", "empty-state", state.query ? "No sources match this search." : "Nothing needs attention in this queue."));
   renderBulk();
-  requestAnimationFrame(() => root.querySelectorAll(".review-card").forEach(drawMappingLines));
 }
 
 async function load(message) {
@@ -437,7 +433,7 @@ async function load(message) {
   }
   const actionable = new Set([...state.queue.owner_review, ...state.queue.research].map((item) => item.candidate_id));
   state.selected = new Set([...state.selected].filter((candidate) => actionable.has(candidate)));
-  status.textContent = message || "Ready. Every decision is written atomically to your local Atlas.";
+  status.textContent = message || "Ready. Decisions write atomically to your local Atlas; research requests wait for an active Codex task.";
   render();
 }
 
@@ -457,7 +453,7 @@ async function decide(candidate, action, statements, unitIds) {
     if (!response.ok) throw new Error(result.reason || "decision-not-saved");
     state.editing = null;
     state.selected.delete(candidate);
-    await load(action === "keep" ? "All meaningful data was kept in Atlas." : action === "research" ? "Research request queued for Codex." : "Set aside for later.");
+    await load(action === "keep" ? "All extracted meaning was preserved in Atlas." : action === "research" ? "Research request queued for a future Codex task." : "Set aside for later.");
   } catch (error) {
     status.textContent = `Nothing changed: ${String(error.message || error).replaceAll("-", " ")}.`;
   } finally {
@@ -472,8 +468,8 @@ async function decideBulk(action) {
   const selectedItems = [...state.queue.owner_review, ...state.queue.research].filter((item) => state.selected.has(item.candidate_id));
   const meaningfulCount = selectedItems.reduce((total, item) => total + item.source_accounting.meaningful_units.length, 0);
   const excludedCount = selectedItems.reduce((total, item) => total + item.source_accounting.excluded_units.length, 0);
-  const verb = action === "keep" ? `Keep ${meaningfulCount} meaningful data items from ${candidates.length} selected sources` : action === "research" ? `Move ${candidates.length} selected items to research` : `Set aside ${candidates.length} selected items`;
-  const consequence = action === "keep" && excludedCount ? ` ${excludedCount} editorial comment${excludedCount === 1 ? "" : "s"} will remain only in encrypted source evidence.` : "";
+  const verb = action === "keep" ? `Preserve ${meaningfulCount} extracted items from ${candidates.length} sources` : action === "research" ? `Queue ${candidates.length} sources for research` : `Set aside ${candidates.length} sources`;
+  const consequence = action === "keep" && excludedCount ? ` ${excludedCount} source-only item${excludedCount === 1 ? "" : "s"} will remain only in encrypted evidence.` : "";
   if (!confirm(`${verb}?${consequence}`)) return;
   state.busy = true;
   status.textContent = `Saving ${candidates.length} decisions atomically…`;
@@ -502,6 +498,7 @@ document.querySelectorAll("[data-tab]").forEach((button) => {
     state.tab = button.dataset.tab;
     state.page = 1;
     state.query = "";
+    state.activeCandidate = null;
     state.selected.clear();
     search.value = "";
     render();
@@ -511,6 +508,7 @@ document.querySelectorAll("[data-tab]").forEach((button) => {
 search.oninput = () => {
   state.query = search.value;
   state.page = 1;
+  state.activeCandidate = null;
   render();
 };
 
@@ -528,16 +526,14 @@ document.querySelectorAll("[data-bulk-action]").forEach((button) => {
 
 previousPage.onclick = () => {
   state.page = Math.max(1, state.page - 1);
+  state.activeCandidate = null;
   render();
-  window.scrollTo({ top: 0, behavior: "smooth" });
 };
 
 nextPage.onclick = () => {
   state.page += 1;
+  state.activeCandidate = null;
   render();
-  window.scrollTo({ top: 0, behavior: "smooth" });
 };
-
-window.addEventListener("resize", () => root.querySelectorAll(".review-card").forEach(drawMappingLines));
 
 load();

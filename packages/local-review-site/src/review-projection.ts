@@ -33,7 +33,7 @@ export type LocalReviewQueueItem = {
   context_unavailable: boolean;
 };
 
-export type SourceMeaningKind = "entity" | "attribute" | "fact" | "relationship" | "context" | "provenance";
+export type SourceMeaningKind = "entity" | "attribute" | "fact" | "relationship" | "observation" | "provenance";
 
 export type SourceMeaningUnit = {
   unit_id: `sha256:${string}`;
@@ -194,11 +194,11 @@ function meaningUnit(sourceText: string): Omit<SourceMeaningUnit, "unit_id"> | u
       kind: /relationship|role|member|friend|family|works? (?:at|with)|reports? to/i.test(label) ? "relationship"
         : /source|evidence|confirmed|verified/i.test(label) ? "provenance"
           : /phone|email|address|birthday|date|website|url|location/i.test(label) ? "fact"
-            : "context"
+            : "observation"
     };
   }
   const value = cleanKnowledgeText(sourceText.replace(/^[-*+]\s+/, ""));
-  return value ? { source_text: sourceText, atlas_text: value, kind: "context" } : undefined;
+  return value ? { source_text: sourceText, atlas_text: value, kind: "observation" } : undefined;
 }
 
 function sourceUnitId(unit: Omit<SourceMeaningUnit, "unit_id">): `sha256:${string}` {
