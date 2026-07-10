@@ -31,6 +31,7 @@ import {
   localListObjects,
   localReadObject,
   localReadEdgeObject,
+  localResolutionApply,
   localSearchObjects,
   localTombstoneObject,
   localTimelineQuery,
@@ -245,6 +246,32 @@ async function createContextForToken(token: string, options?: {
 }
 
 describe("local fixture graph tools", () => {
+  it("requires durable local storage for semantic resolution", async () => {
+    const token = "local-token-resolution-no-store-0001";
+    const context = createFixtureLocalMcpContext({
+      credentialStore: new InMemoryLocalMcpCredentialStore([
+        {
+          credential_id: "la_local_credential_resolution0001",
+          client_id: fixtureLocalClientId,
+          capability_id: "la_cap_localfull0001",
+          token_hash: await hashLocalMcpToken(token),
+          created_at: now
+        }
+      ]),
+      now
+    });
+
+    await expect(localResolutionApply(context, {
+      authorization: `Bearer ${token}`,
+      operation_id: "la_operation_resolution0001",
+      idempotency_key: "la_idem_resolution0001",
+      candidate_id: "la_candidate_resolution0001",
+      expected_generation: 0,
+      expected_review_version: 1,
+      objects: []
+    })).resolves.toEqual({ ok: false, reason: "resolution-requires-durable-local-store" });
+  });
+
   it("returns local status for an authenticated local client", async () => {
     const token = "local-token-graph-status-0001";
     const { context } = await createContextForToken(token);

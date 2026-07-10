@@ -214,6 +214,15 @@ export type LocalGraphEdgeDeleteToolInput = LocalGraphAuthorityToolInput & {
   expected_version?: number;
 };
 
+export type LocalResolutionApplyInput = LocalGraphToolInput & {
+  operation_id: string;
+  idempotency_key: string;
+  candidate_id: string;
+  expected_generation: number;
+  expected_review_version: number;
+  objects: unknown[];
+};
+
 export type LocalGraphMutationResult = {
   object: AuthorizedLocalObject;
   mutation: "created" | "updated" | "tombstoned";
@@ -663,6 +672,28 @@ export async function localGraphStatus(
       operations: auth.authenticated.capability.operations
     }
   };
+}
+
+export async function localResolutionApply(
+  context: LocalMcpContext,
+  input: LocalResolutionApplyInput
+): Promise<LocalGraphToolResult<never>> {
+  const auth = await authenticateToolCall(context, input.authorization);
+  if (!auth.ok) {
+    return { ok: false, reason: auth.reason };
+  }
+  if (!context.graphStore) {
+    recordToolDecision({
+      context,
+      authenticated: auth.authenticated,
+      toolName: "resolution_apply",
+      operation: "create",
+      allowed: false,
+      reason: "resolution-requires-durable-local-store"
+    });
+    return { ok: false, reason: "resolution-requires-durable-local-store" };
+  }
+  return { ok: false, reason: "resolution-invalid-request" };
 }
 
 export async function localListObjects(
