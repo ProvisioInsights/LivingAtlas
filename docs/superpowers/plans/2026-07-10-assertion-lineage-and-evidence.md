@@ -307,7 +307,7 @@ rg -n 'logseq-|object_type: "page"|object_type: "block"' packages/graph-service/
 
 Expected: no canonical writer/read-model legacy payload dependency.
 
-- [ ] **Step 4: Update tracker and commit locally**
+- [x] **Step 4: Update tracker and commit locally**
 
 Post public-safe scope and command evidence to #45 and #43, keep #45 In
 Progress until the downstream persistence/typed-client gates are integrated,
