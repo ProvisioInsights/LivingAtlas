@@ -69,6 +69,11 @@ export function createLocalCanonicalAtlasClient(input: {
       if (exported.authority_id !== input.graphStore.status().authority_id) {
         throw new Error("canonical-import-authority-mismatch");
       }
+      for (const record of exported.records) {
+        if (canonicalPayloadHash(record.payload) !== record.content_hash) {
+          throw new Error("canonical-import-content-hash-mismatch");
+        }
+      }
       const recordedAt = request.recorded_at ?? timestamp();
       const drafts: PlaintextGraphObjectDraft[] = exported.records.map((record) => ({
         schema_version: 1,

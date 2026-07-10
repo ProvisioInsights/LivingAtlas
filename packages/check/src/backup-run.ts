@@ -251,7 +251,11 @@ function formatBackupId(serial: number): string {
  */
 async function materializeSealedSnapshot(graphDir: string): Promise<{ bytes: Buffer; generation: number }> {
   const store = await FileLocalGraphStore.open({ directory: graphDir });
+  const source = JSON.parse(await readFile(join(graphDir, "snapshot.json"), "utf8")) as {
+    plaintext_persistence: "redacted" | "encrypted" | "allowed";
+  };
   const snapshot = store.materializedSnapshot();
+  snapshot.plaintext_persistence = source.plaintext_persistence;
   return {
     bytes: Buffer.from(`${JSON.stringify(snapshot, null, 2)}\n`, "utf8"),
     generation: snapshot.generation

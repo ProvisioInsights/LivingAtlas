@@ -25,6 +25,43 @@ function entityDraft() {
 }
 
 describe("local canonical Atlas client", () => {
+  it("rejects a canonical import whose declared content hash does not match its payload", async () => {
+    const sourceDir = await mkdtemp(join(tmpdir(), "living-atlas-local-forged-source-"));
+    const targetDir = await mkdtemp(join(tmpdir(), "living-atlas-local-forged-target-"));
+    try {
+      const sourceKeyring = createDefaultLocalKeyring({ authorityId: fixtureAuthorityId, createdAt: now });
+      const source = await FileLocalGraphStore.open({ directory: sourceDir, authorityId: fixtureAuthorityId, plaintextPersistence: "encrypt", keyring: sourceKeyring });
+      await source.createObject({ object: entityDraft(), expected_generation: 0, actor_id: fixtureLocalClientId, recorded_at: now });
+      const decrypt = async (object: Parameters<typeof decryptGraphObjectPayload>[0]) => {
+        const payload = await decryptGraphObjectPayload(object, sourceKeyring);
+        return payload?.kind === "plaintext-json" ? payload.data : undefined;
+      };
+      const exported = await createLocalCanonicalAtlasClient({ graphStore: source, decryptPayload: decrypt, now }).exportCanonical();
+      const forgedHashExport = {
+        ...exported,
+        records: exported.records.map((record) => ({
+          ...record,
+          content_hash: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" as const
+        }))
+      };
+
+      const targetKeyring = createDefaultLocalKeyring({ authorityId: fixtureAuthorityId, createdAt: now });
+      const target = await FileLocalGraphStore.open({ directory: targetDir, authorityId: fixtureAuthorityId, plaintextPersistence: "encrypt", keyring: targetKeyring });
+      const client = createLocalCanonicalAtlasClient({ graphStore: target, decryptPayload: async () => undefined, now });
+      const request = {
+        expected_generation: 0,
+        actor_id: fixtureLocalClientId,
+        operation_id: "la_operation_localforged0001",
+        idempotency_key: "la_idem_localforged0001"
+      };
+
+      await expect(client.importCanonical({ ...request, exported: forgedHashExport }))
+        .rejects.toThrow("canonical-import-content-hash-mismatch");
+    } finally {
+      await Promise.all([rm(sourceDir, { recursive: true, force: true }), rm(targetDir, { recursive: true, force: true })]);
+    }
+  });
+
   it("round-trips canonical records atomically between encrypted local stores", async () => {
     const sourceDir = await mkdtemp(join(tmpdir(), "living-atlas-local-export-source-"));
     const targetDir = await mkdtemp(join(tmpdir(), "living-atlas-local-export-target-"));

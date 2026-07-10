@@ -161,14 +161,19 @@ describe("runBackup local encrypted graph capture", () => {
       });
 
       await expect(runBackup(1_000)).resolves.toBe(0);
-      const restored = await restoreBackup(new LocalWormStore(stagingDir, () => 1_000), "la_backup_000001", master);
-      const snapshot = JSON.parse(restored.artifactBytes.toString("utf8")) as {
+      const source = JSON.parse(await readFile(join(graphDir, "snapshot.json"), "utf8")) as {
+        plaintext_persistence: string;
+      };
+      const backup = await restoreBackup(new LocalWormStore(stagingDir, () => 1_000), "la_backup_000001", master);
+      const restored = JSON.parse(backup.artifactBytes.toString("utf8")) as {
         generation: number;
+        plaintext_persistence: string;
         objects: Array<{ object_id: string; payload: { kind: string } }>;
       };
 
-      expect(snapshot.generation).toBe(1);
-      expect(snapshot.objects).toEqual(expect.arrayContaining([
+      expect(restored.plaintext_persistence).toBe(source.plaintext_persistence);
+      expect(restored.generation).toBe(1);
+      expect(restored.objects).toEqual(expect.arrayContaining([
         expect.objectContaining({
           object_id: "la_object_backuprun0001",
           payload: expect.objectContaining({ kind: "ciphertext-inline" })
