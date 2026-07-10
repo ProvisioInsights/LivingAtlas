@@ -28,7 +28,7 @@ describe("local review projection", () => {
     } });
 
     expect(queue.owner_review).toHaveLength(1);
-    expect(queue.owner_review[0]).toMatchObject({ review_id: reviewId, proposed_object_ids: [observationId], evidence_ids: [evidenceId], parity_ids: [parityId], context_unavailable: true });
+    expect(queue.owner_review[0]).toMatchObject({ review_id: reviewId, proposed_object_ids: [observationId], proposed_records: [observation], evidence_ids: [evidenceId], evidence: [evidence], parity_ids: [parityId], parity_records: [parity], context_unavailable: true });
     expect(queue.research.map((item) => item.review_id)).toEqual([research.review_id]);
     expect(queue.automatic).toEqual([]);
   });
