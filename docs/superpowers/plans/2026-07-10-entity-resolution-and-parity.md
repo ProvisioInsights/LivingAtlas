@@ -84,7 +84,7 @@ Commit: `git commit -m "Strengthen reversible entity resolution contracts (#46)"
 - Produces `resolveCanonicalEntityId(entityId, projection)`, returning `{ entity_id, canonical_entity_id, redirect_path }` without cycles.
 - Produces `loadCanonicalEntityResolutionsFromObjects(objects, decryptPayload)` that decrypts only `object_type: "review"` envelopes and parses only `atlas.entity-resolution:v1` bodies.
 
-- [ ] **Step 1: Write failing projection tests**
+- [x] **Step 1: Write failing projection tests**
 
 ```ts
 const merged = resolution({ resolution_id: "la_object_merge0001", decision: "merge", candidate_entity_ids: [a, b], canonical_entity_id: a });
@@ -95,13 +95,13 @@ expect(resolveCanonicalEntityId(b, projectCanonicalEntityResolutions([merged, sp
 
 Add a chained-merge fixture (`c -> b`, then `b -> a`) and assert `c` resolves to `a`; add a malformed cycle fixture and assert it is listed in `invalid_resolution_ids`, never loops. Add a loader fixture containing a legacy `page` envelope whose decryptor throws if called and assert only the encrypted resolution is loaded.
 
-- [ ] **Step 2: Verify the tests fail**
+- [x] **Step 2: Verify the tests fail**
 
 Run: `pnpm vitest run packages/graph-service/src/canonical-entity-resolution.test.ts`
 
 Expected: FAIL because the projection module does not exist.
 
-- [ ] **Step 3: Implement the pure projection and narrow loader**
+- [x] **Step 3: Implement the pure projection and narrow loader**
 
 Sort decisions by `recorded_at`, then `resolution_id`. Maintain direct redirects by active merge resolution id; on a split, remove redirects created by every superseded merge. Resolve chains with a `Set` of visited ids; reject a merge whose direct edge would make its canonical target reach one of its redirected candidates. Do not mutate input records or use the object store.
 
