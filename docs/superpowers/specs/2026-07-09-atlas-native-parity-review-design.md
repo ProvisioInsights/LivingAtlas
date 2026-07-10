@@ -13,6 +13,7 @@ This design is governed by:
 - `docs/architecture/adr-0006-atomic-resolution-commands.md`
 - `docs/architecture/adr-0007-evidence-backed-entity-resolution.md`
 - `docs/architecture/adr-0008-semantic-parity-and-cutover.md`
+- `docs/architecture/adr-0009-complete-local-private-source-custody.md`
 
 ## Goal
 
@@ -57,10 +58,12 @@ Praxis experience.
    text assertion, or unresolved observation preserves its meaning.
 6. The review surface runs locally on this Mac. It is not hosted and it stores no
    authoritative state outside Atlas.
-7. Research may use the owner’s logged-in LinkedIn session and public web pages
-   for queue candidates. Automatic collection is limited to public professional
-   facts and explicit relationships. Contact details, sensitive personal data,
-   and inferred relationships remain held for review.
+7. Migration preserves every meaningful source-corpus statement, including
+   sensitive personal facts and contact details, as encrypted `local-private`
+   Atlas knowledge with provenance and parity coverage. Sensitivity never makes
+   source material ineligible for migration. When its structure or truth is
+   uncertain, Atlas stores a bounded unresolved observation rather than guessing
+   or dropping it.
 8. Entities are stable identity spines. Sourced attributes, confidence,
    provenance, and privacy live on first-class facts or relationships rather
    than accumulating inside one mutable entity object.
@@ -153,8 +156,11 @@ partially resolved.
 
 ### Recommendation Rules
 
-Only a public professional fact or explicit relationship may be applied without
-owner interaction. It requires both:
+Deterministic conversion of owner-source material may create a schema-valid,
+encrypted `local-private` fact, relationship, evidence record, or unresolved
+observation without owner interaction when it preserves source meaning without
+guessing. Third-party research may automatically add a public professional fact
+or explicit relationship only when it requires both:
 
 1. a schema-valid proposed Atlas mutation; and
 2. either two independent public sources, or a LinkedIn profile plus an
@@ -202,7 +208,9 @@ submitted. Bulk delete is not an action.
 Research runs only for an existing review candidate. It may use the owner’s
 signed-in LinkedIn session and public web pages. It stores only the minimum
 facts necessary to support the candidate and their provenance; it does not
-collect whole profiles, scrape a social graph, or import contact details.
+collect whole profiles or scrape a social graph. Contact details already present
+in the owner source migrate with their meaning and provenance, but research does
+not collect additional contact details merely because they are available.
 
 The evidence workspace stores a content hash and bounded encrypted excerpt or
 snapshot sufficient to reproduce the decision if the source later changes.
@@ -284,8 +292,8 @@ it is not modified by the migration process.
 - Hosting the review site or placing private review data in a third-party
   database.
 - Bulk social-profile collection.
-- Auto-applying sensitive personal facts, contact details, or inferred
-  relationships.
+- Omitting, downgrading, or withholding sensitive source-corpus facts or
+  contact details from encrypted local-private canonical custody.
 - Physically deleting the existing personal profile or original Logseq archive
   during implementation.
 - Replacing the current encrypted object store with RDF, OWL, or a new graph
@@ -300,6 +308,9 @@ it is not modified by the migration process.
 - Every migration source unit is represented by a parity record and canonical
   knowledge object before cutover; unresolved truth is preserved explicitly
   rather than guessed or dropped.
+- Sensitive source-corpus facts and contact details are represented as encrypted
+  local-private canonical knowledge with provenance; they are never excluded
+  from parity solely because of their sensitivity.
 - Contradictory assertions can coexist, and correction lineage returns correct
   `valid_at` and `known_at` results after restart, compaction, backup, and
   restore.
