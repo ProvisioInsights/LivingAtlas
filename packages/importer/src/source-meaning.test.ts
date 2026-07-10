@@ -68,6 +68,34 @@ describe("source meaning accounting", () => {
     ]);
   });
 
+  it("does not expose wiki references found only in excluded editorial commentary", () => {
+    const source = "- Met [[Synthetic Person]] (migration note: compare with [[Excluded Draft]])";
+
+    const accounting = accountSourceMeaning([evidence(source)]);
+
+    expect(accounting.meaningful_units[0]).toMatchObject({
+      source_text: source,
+      atlas_text: "Met Synthetic Person",
+      wiki_references: ["Synthetic Person"]
+    });
+    expect(accounting.excluded_units).toContainEqual({
+      source_text: "migration note: compare with [[Excluded Draft]]",
+      reason: "editorial migration commentary"
+    });
+  });
+
+  it("certifies exact source only for a non-empty all-lossless evidence set", () => {
+    const canonical = evidence("- Canonical synthetic source.");
+    const nonLossless: CanonicalEvidencePayload = {
+      ...evidence("- Derived synthetic source.", 1),
+      extraction_method: "synthetic-derived-v1"
+    };
+
+    expect(accountSourceMeaning([]).exact_source_preserved).toBe(false);
+    expect(accountSourceMeaning([canonical]).exact_source_preserved).toBe(true);
+    expect(accountSourceMeaning([canonical, nonLossless]).exact_source_preserved).toBe(false);
+  });
+
   it("keeps stable hashes and complete units across lossless evidence chunks", () => {
     const source = `- ${"x".repeat(6_000)} [[Synthetic Anchor]]`;
     const whole = accountSourceMeaning([evidence(source)]);

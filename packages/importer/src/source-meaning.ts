@@ -59,13 +59,14 @@ export function accountSourceMeaning(sourceContext: CanonicalEvidencePayload[]):
         ...unit,
         unit_id: sourceUnitId(unit),
         source_text: segment,
-        wiki_references: wikiReferences(segment)
+        wiki_references: wikiReferences(withoutEditorial)
       });
     }
   }
 
   return {
-    exact_source_preserved: sourceContext.some((item) => item.extraction_method === "canonical-markdown-lossless-v1"),
+    exact_source_preserved: sourceContext.length > 0
+      && sourceContext.every((item) => item.extraction_method === "canonical-markdown-lossless-v1"),
     meaningful_units: meaningfulUnits,
     excluded_units: excludedUnits
   };
