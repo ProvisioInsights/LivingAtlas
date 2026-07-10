@@ -10,6 +10,8 @@ import type {
 } from "@living-atlas/contracts";
 import {
   AccessClassSchema,
+  CanonicalWriteSchema,
+  type CanonicalReviewItemPayload,
   EncryptionClassSchema,
   GraphObjectEnvelopeSchema,
   GraphPayloadSchema,
@@ -221,6 +223,15 @@ export type LocalResolutionApplyInput = LocalGraphToolInput & {
   expected_generation: number;
   expected_review_version: number;
   objects: unknown[];
+};
+
+export type LocalResolutionReceipt = {
+  local_commit: "committed" | "not-committed";
+  audit: "recorded" | "reconciliation-required";
+  sync_queue: "queued" | "not-configured" | "reconciliation-required";
+  committed_object_ids: string[];
+  generation?: number;
+  journal_sequence?: number;
 };
 
 export type LocalGraphMutationResult = {
@@ -677,7 +688,7 @@ export async function localGraphStatus(
 export async function localResolutionApply(
   context: LocalMcpContext,
   input: LocalResolutionApplyInput
-): Promise<LocalGraphToolResult<never>> {
+): Promise<LocalGraphToolResult<LocalResolutionReceipt>> {
   const auth = await authenticateToolCall(context, input.authorization);
   if (!auth.ok) {
     return { ok: false, reason: auth.reason };
@@ -693,7 +704,104 @@ export async function localResolutionApply(
     });
     return { ok: false, reason: "resolution-requires-durable-local-store" };
   }
-  return { ok: false, reason: "resolution-invalid-request" };
+  if (!/^la_candidate_[A-Za-z0-9_-]{8,}$/.test(input.candidate_id) || input.objects.length === 0) {
+    return { ok: false, reason: "resolution-invalid-request" };
+  }
+
+  const parsedDrafts: PlaintextGraphObjectDraft[] = [];
+  const payloads: Array<z.infer<typeof CanonicalWriteSchema>["payload"]> = [];
+  for (const object of input.objects) {
+    const draft = PlaintextGraphObjectDraftSchema.safeParse(object);
+    if (!draft.success) return { ok: false, reason: "resolution-invalid-object" };
+    if (draft.data.access_class !== "local-private" || draft.data.payload.kind !== "plaintext-json") {
+      return { ok: false, reason: "resolution-invalid-canonical-write" };
+    }
+    const canonicalWrite = CanonicalWriteSchema.safeParse({
+      object_type: draft.data.object_type,
+      payload: draft.data.payload.data
+    });
+    if (!canonicalWrite.success) return { ok: false, reason: "resolution-invalid-canonical-write" };
+    parsedDrafts.push(draft.data);
+    payloads.push(canonicalWrite.data.payload);
+  }
+  const objectIds = new Set(parsedDrafts.map((draft) => draft.object_id));
+  if (objectIds.size !== parsedDrafts.length) {
+    return { ok: false, reason: "resolution-duplicate-object" };
+  }
+  const review = payloads.find((payload): payload is CanonicalReviewItemPayload => (
+    payload.schema === "atlas.review-item:v1" && payload.candidate_id === input.candidate_id
+  ));
+  const parityRecords = payloads.filter((payload) => payload.schema === "atlas.parity-record:v1");
+  if (!review || parityRecords.some((record) => record.coverage_state === "represented" && record.canonical_object_ids.some((id) => !objectIds.has(id)))) {
+    return { ok: false, reason: "resolution-parity-mismatch" };
+  }
+
+  const existingReview = context.graphStore.readObject(review.review_id);
+  if (existingReview && existingReview.version !== input.expected_review_version) {
+    return { ok: false, reason: "resolution-review-version-conflict" };
+  }
+  if (context.graphStore.status().generation !== input.expected_generation) {
+    return { ok: false, reason: "generation-conflict" };
+  }
+  const transaction = await context.graphStore.commitTransaction({
+    expected_generation: input.expected_generation,
+    actor_id: auth.authenticated.client.client_id,
+    operation_id: input.operation_id,
+    idempotency_key: input.idempotency_key,
+    recorded_at: nowForMutation(context),
+    writes: parsedDrafts.map((draft) => {
+      const existing = context.graphStore!.readObject(draft.object_id);
+      return existing
+        ? { kind: "update" as const, object: draft, expected_version: existing.version }
+        : { kind: "create" as const, object: draft };
+    })
+  });
+  if (!transaction.ok) {
+    return { ok: false, reason: transaction.reason };
+  }
+
+  let audit: LocalResolutionReceipt["audit"] = "recorded";
+  try {
+    if (!context.auditSink) throw new Error("audit-not-configured");
+    recordToolDecision({
+      context,
+      authenticated: auth.authenticated,
+      toolName: "resolution_apply",
+      operation: "create",
+      allowed: true,
+      reason: "resolution-committed"
+    });
+  } catch {
+    audit = "reconciliation-required";
+  }
+  let sync_queue: LocalResolutionReceipt["sync_queue"] = context.outboxSink ? "queued" : "not-configured";
+  if (context.outboxSink) {
+    try {
+      for (const object of transaction.objects) {
+        await context.outboxSink.enqueue({
+          mutation: "created",
+          object,
+          actor_id: auth.authenticated.client.client_id,
+          recorded_at: object.updated_at,
+          generation: transaction.generation,
+          journal_sequence: transaction.journal_sequence
+        });
+      }
+    } catch {
+      sync_queue = "reconciliation-required";
+    }
+  }
+  return {
+    ok: true,
+    result: {
+      local_commit: "committed",
+      audit,
+      sync_queue,
+      committed_object_ids: transaction.objects.map((object) => object.object_id),
+      generation: transaction.generation,
+      journal_sequence: transaction.journal_sequence
+    }
+  };
 }
 
 export async function localListObjects(
