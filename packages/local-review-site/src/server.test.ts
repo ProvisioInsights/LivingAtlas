@@ -56,11 +56,26 @@ describe("local review site server", () => {
     expect(app).toContain("item.destination_graph.observations");
     expect(app).toContain("observation_edits");
     expect(app).toContain("observation_id");
+    expect(app).toContain("function changedObservationEdits");
+    expect(app).toContain("field.textarea.value.trim()");
+    expect(app).toContain("field.original_statement");
+    expect(app).toContain("const observationEdits = changedObservationEdits(fields)");
+    expect(app).toContain("observationEdits.length ? observationEdits : undefined");
     expect(app).toContain("Research is not running");
     expect(app).toContain("committed_candidate_ids");
     expect(app).toContain('item.resolution_mode === "rich"');
     expect(app).toContain('item.resolution_mode === "incomplete"');
     expect(app).toContain("item.resolution_mode_explanation");
+    expect(app).toContain("function isActionableReviewItem(item)");
+    expect(app).toContain('item.resolution_mode !== "incomplete"');
+    expect(app).toContain("visibleItems().filter(isActionableReviewItem)");
+    expect(app).toContain("filter(isActionableReviewItem).map");
+    expect(app).toContain("Incomplete parity:");
+    expect(app).toContain("No review action is available until parity is repaired.");
+    const decisionPanelStart = app.indexOf("function decisionPanel");
+    const decisionPanelSource = app.slice(decisionPanelStart, app.indexOf("function technicalDetails", decisionPanelStart));
+    expect(decisionPanelSource.indexOf('if (item.resolution_mode === "incomplete")')).toBeLessThan(decisionPanelSource.indexOf('const actions = node("div", "decision-actions")'));
+    expect(app.match(/&& isActionableReviewItem\(item\)/g)).toHaveLength(2);
     expect(styles).toContain(".destination-record");
     expect(styles).toContain(".record-entity");
     expect(styles).toContain(".record-fact");
@@ -523,34 +538,21 @@ describe("local review site server", () => {
         graphStore.readObject(parityId)!.version
       ]));
       const typedParityEnvelope = graphStore.readObject(typedParity.parity_id)!;
-      const rejectedOrgPreserve = await fetch(`${origin}/api/review/${richOrg!.candidate_id}/decision`, {
-        method: "POST",
-        headers: { cookie, "content-type": "application/json" },
-        body: JSON.stringify({ action: "keep" })
-      });
-      expect(rejectedOrgPreserve.status).toBe(409);
-      await expect(rejectedOrgPreserve.json()).resolves.toMatchObject({ ok: false, reason: "candidate-records-incomplete" });
+      for (const action of ["keep", "research", "defer"]) {
+        const rejectedOrgDecision = await fetch(`${origin}/api/review/${richOrg!.candidate_id}/decision`, {
+          method: "POST",
+          headers: { cookie, "content-type": "application/json" },
+          body: JSON.stringify({ action })
+        });
+        expect(rejectedOrgDecision.status).toBe(409);
+        await expect(rejectedOrgDecision.json()).resolves.toMatchObject({ ok: false, reason: "candidate-records-incomplete" });
+      }
       expect(graphStore.readObject(typedParity.parity_id)).toEqual(typedParityEnvelope);
       expect(graphStore.readObject(orgObservationId)).toEqual(orgObservationEnvelope);
       expect(graphStore.readObject(richOrg!.review_id)?.version).toBe(orgReviewVersion);
-      const deferDecision = await fetch(`${origin}/api/review/${richOrg!.candidate_id}/decision`, {
-        method: "POST",
-        headers: { cookie, "content-type": "application/json" },
-        body: JSON.stringify({ action: "defer" })
-      });
-      expect(deferDecision.status).toBe(200);
-      expect(graphStore.readObject(orgObservationId)).toEqual(orgObservationEnvelope);
-      expect(graphStore.readObject(richOrg!.review_id)?.version).toBe(orgReviewVersion + 1);
       for (const [parityId, version] of orgParityVersions) {
-        expect(graphStore.readObject(parityId)?.version).toBe(version + 1);
+        expect(graphStore.readObject(parityId)?.version).toBe(version);
       }
-      const afterDefer = await fetch(`${origin}/api/review-queue`, { headers: { cookie } }).then((response) => response.json()) as LocalReviewQueue;
-      expect(afterDefer.deferred.find((item) => item.candidate_id === richOrg!.candidate_id)?.parity_records)
-        .toContainEqual(expect.objectContaining({
-          parity_id: typedParity.parity_id,
-          representation_kind: "fact",
-          canonical_object_ids: [personFact.assertion_id]
-        }));
     } finally {
       await rm(directory, { recursive: true, force: true });
     }
@@ -577,7 +579,10 @@ describe("local review site server", () => {
         "la_candidate_bulkdecisiond0001",
         "la_candidate_bulkdecisione0001",
         "la_candidate_bulkdecisionf0001",
-        "la_candidate_bulkdecisiong0001"
+        "la_candidate_bulkdecisiong0001",
+        "la_candidate_bulkdecisionh0001",
+        "la_candidate_bulkdecisioni0001",
+        "la_candidate_bulkdecisionj0001"
       ];
       const drafts: Array<Record<string, unknown>> = [];
       const draft = (objectId: string, objectType: string, data: Record<string, unknown>) => ({
@@ -705,6 +710,20 @@ describe("local review site server", () => {
       expect(queue.owner_review.map((item) => item.candidate_id)).toContain(candidateIds[2]);
       expect(queue.automatic.map((item) => item.candidate_id)).toContain(candidateIds[3]);
 
+      const incompleteDefer = await fetch(`${origin}/api/review/bulk/decision`, {
+        method: "POST",
+        headers: { cookie, "content-type": "application/json" },
+        body: JSON.stringify({ candidate_ids: [candidateIds[2]], action: "defer" })
+      });
+      expect(incompleteDefer.status).toBe(409);
+      await expect(incompleteDefer.json()).resolves.toMatchObject({
+        ok: false,
+        reason: "bulk-decision-failed",
+        committed_candidate_ids: [],
+        failed_candidate_ids: [candidateIds[2]],
+        results: [{ candidate_id: candidateIds[2], ok: false, reason: "candidate-records-incomplete" }]
+      });
+
       const commitTransaction = graphStore.commitTransaction.bind(graphStore);
       let commitAttempts = 0;
       graphStore.commitTransaction = async (input) => {
@@ -735,6 +754,39 @@ describe("local review site server", () => {
         candidateIds[6]
       ]));
       expect(afterException.owner_review.map((item) => item.candidate_id)).toContain(candidateIds[5]);
+
+      graphStore.commitTransaction = commitTransaction;
+      const readObject = graphStore.readObject.bind(graphStore);
+      graphStore.readObject = (objectId) => {
+        if (objectId === "la_object_bulkdecisionreview0009") {
+          throw new Error("synthetic pre-apply read exception that must not escape the candidate boundary");
+        }
+        return readObject(objectId);
+      };
+      const preApplyPartial = await fetch(`${origin}/api/review/bulk/decision`, {
+        method: "POST",
+        headers: { cookie, "content-type": "application/json" },
+        body: JSON.stringify({ candidate_ids: [candidateIds[9], candidateIds[8], candidateIds[7]], action: "defer" })
+      });
+      expect(preApplyPartial.status).toBe(409);
+      await expect(preApplyPartial.json()).resolves.toMatchObject({
+        ok: false,
+        reason: "bulk-decision-partial-failure",
+        committed_candidate_ids: [candidateIds[7], candidateIds[9]],
+        failed_candidate_ids: [candidateIds[8]],
+        results: [
+          { candidate_id: candidateIds[7], ok: true },
+          { candidate_id: candidateIds[8], ok: false, reason: "candidate-transaction-exception" },
+          { candidate_id: candidateIds[9], ok: true }
+        ]
+      });
+      graphStore.readObject = readObject;
+      const afterPreApplyException = await fetch(`${origin}/api/review-queue`, { headers: { cookie } }).then((response) => response.json()) as LocalReviewQueue;
+      expect(afterPreApplyException.deferred.map((item) => item.candidate_id)).toEqual(expect.arrayContaining([
+        candidateIds[7],
+        candidateIds[9]
+      ]));
+      expect(afterPreApplyException.owner_review.map((item) => item.candidate_id)).toContain(candidateIds[8]);
     } finally {
       await rm(directory, { recursive: true, force: true });
     }

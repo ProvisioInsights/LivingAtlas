@@ -119,6 +119,10 @@ async function handleRequest(
       sendJson(response, 409, { ok: false, reason: item ? "resolution-requires-durable-local-store" : "candidate-not-actionable" });
       return;
     }
+    if (item.resolution_mode === "incomplete") {
+      sendJson(response, 409, { ok: false, reason: "candidate-records-incomplete" });
+      return;
+    }
     if (Array.isArray(statements) && statements.length !== item.source_accounting.meaningful_units.length) {
       sendJson(response, 400, { ok: false, reason: "invalid-review-decision" });
       return;
@@ -192,21 +196,21 @@ async function handleRequest(
       reason?: string;
     }> = [];
     for (const candidateId of orderedCandidateIds) {
-      const item = actionable.get(candidateId);
-      const expectedReviewVersion = item ? context.graphStore.readObject(item.review_id)?.version : undefined;
-      const objects = item ? buildReviewDecision(context, item, action, undefined, undefined) : undefined;
-      if (!item || expectedReviewVersion === undefined || !objects) {
-        results.push({
-          candidate_id: candidateId,
-          ok: false,
-          reason: !item ? "candidate-not-actionable"
-            : expectedReviewVersion === undefined ? "candidate-review-missing"
-              : "candidate-records-incomplete"
-        });
-        continue;
-      }
-      const seed = `${candidateId}:${action}:${expectedReviewVersion}`;
       try {
+        const item = actionable.get(candidateId);
+        const expectedReviewVersion = item ? context.graphStore.readObject(item.review_id)?.version : undefined;
+        const objects = item ? buildReviewDecision(context, item, action, undefined, undefined) : undefined;
+        if (!item || expectedReviewVersion === undefined || !objects) {
+          results.push({
+            candidate_id: candidateId,
+            ok: false,
+            reason: !item ? "candidate-not-actionable"
+              : expectedReviewVersion === undefined ? "candidate-review-missing"
+                : "candidate-records-incomplete"
+          });
+          continue;
+        }
+        const seed = `${candidateId}:${action}:${expectedReviewVersion}`;
         const result = await localResolutionApply(context, {
           authorization: authorization ?? "",
           operation_id: `la_operation_${digest(`bulk-item:${seed}`)}`,
@@ -302,10 +306,10 @@ function buildReviewDecision(
 ): unknown[] | undefined {
   if (!context.graphStore) return undefined;
   const recordedAt = context.now ?? new Date().toISOString();
+  if (item.resolution_mode === "incomplete") return undefined;
   if (action === "keep" && !item.source_accounting.exact_source_preserved) return undefined;
   const richCandidate = item.resolution_mode === "rich";
   const legacyPlaceholder = item.resolution_mode === "legacy";
-  if (action === "keep" && item.resolution_mode === "incomplete") return undefined;
   const extractedObservations: CanonicalPayload[] = action === "keep" && legacyPlaceholder
     ? item.source_accounting.meaningful_units.map((unit, index) => ({
       schema: "atlas.observation:v1" as const,

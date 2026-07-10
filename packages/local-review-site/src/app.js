@@ -116,6 +116,10 @@ function visibleItems() {
   return items.slice(start, start + pageSize);
 }
 
+function isActionableReviewItem(item) {
+  return item.resolution_mode !== "incomplete";
+}
+
 function selectedItem(items) {
   const selected = items.find((item) => item.candidate_id === state.activeCandidate) || items[0];
   state.activeCandidate = selected?.candidate_id ?? null;
@@ -124,7 +128,7 @@ function selectedItem(items) {
 
 function sourceRow(item, active) {
   const row = node("div", `source-row${active ? " active" : ""}`);
-  if (state.tab === "owner_review" || state.tab === "research") {
+  if ((state.tab === "owner_review" || state.tab === "research") && isActionableReviewItem(item)) {
     const select = node("input", "source-select");
     select.type = "checkbox";
     select.checked = state.selected.has(item.candidate_id);
@@ -184,7 +188,7 @@ function mappingRow(item, unit, index) {
   destinationHeader.append(node("span", `meaning-kind kind-${unit.kind}`, destinationCount
     ? `${destinationCount} canonical record${destinationCount === 1 ? "" : "s"}`
     : kindLabel(unit.kind)));
-  if (state.tab === "owner_review" || state.tab === "research") {
+  if ((state.tab === "owner_review" || state.tab === "research") && isActionableReviewItem(item)) {
     const queued = item.research_requested_all || item.research_requested_units.some((requested) => requested.unit_id === unit.unit_id);
     const research = node("button", "unit-research", queued ? "Queued" : "Research");
     research.type = "button";
@@ -307,6 +311,14 @@ function decisionPanel(item) {
   );
   panel.append(truth);
 
+  if (item.resolution_mode === "incomplete") {
+    panel.append(
+      node("p", "warning", `Incomplete parity: ${item.resolution_mode_explanation} No review action is available until parity is repaired.`),
+      miniGraph(item)
+    );
+    return panel;
+  }
+
   if (state.tab === "automatic" || state.tab === "deferred") {
     panel.append(node("p", "resolved-copy", state.tab === "automatic" ? "The meaning is preserved; typing may still remain open." : "This source is set aside and remains fully preserved."), miniGraph(item));
     return panel;
@@ -355,6 +367,15 @@ function technicalDetails(item) {
   return details;
 }
 
+function changedObservationEdits(fields) {
+  return fields.flatMap((field) => {
+    const statement = field.textarea.value.trim();
+    return statement === field.original_statement
+      ? []
+      : [{ observation_id: field.observation_id, statement }];
+  });
+}
+
 function editForm(item) {
   const form = node("form", "editor");
   if (item.resolution_mode === "incomplete") {
@@ -394,7 +415,8 @@ function editForm(item) {
     form.append(label);
     return {
       textarea,
-      observation_id: richEditor ? editable.destination.object_id : undefined
+      observation_id: richEditor ? editable.destination.object_id : undefined,
+      original_statement: richEditor ? editable.destination.record.statement : undefined
     };
   });
   const actions = node("div", "editor-actions");
@@ -408,10 +430,9 @@ function editForm(item) {
   form.onsubmit = (event) => {
     event.preventDefault();
     if (richEditor) {
-      decide(item.candidate_id, "keep", undefined, undefined, fields.map((field) => ({
-        observation_id: field.observation_id,
-        statement: field.textarea.value
-      })));
+      const observationEdits = changedObservationEdits(fields);
+      decide(item.candidate_id, "keep", undefined, undefined,
+        observationEdits.length ? observationEdits : undefined);
     } else {
       decide(item.candidate_id, "keep", fields.map((field) => field.textarea.value));
     }
@@ -481,15 +502,16 @@ function renderSummary(items) {
 
 function renderBulk() {
   const actionable = state.tab === "owner_review" || state.tab === "research";
-  bulk.hidden = !actionable;
-  selectionCount.textContent = `${state.selected.size} selected`;
-  const visible = visibleItems();
+  const visible = visibleItems().filter(isActionableReviewItem);
+  const selectedItems = [...state.queue.owner_review, ...state.queue.research]
+    .filter(isActionableReviewItem)
+    .filter((item) => state.selected.has(item.candidate_id));
+  bulk.hidden = !actionable || visible.length === 0;
+  selectionCount.textContent = `${selectedItems.length} selected`;
   selectPage.checked = visible.length > 0 && visible.every((item) => state.selected.has(item.candidate_id));
   selectPage.indeterminate = visible.some((item) => state.selected.has(item.candidate_id)) && !selectPage.checked;
-  bulk.querySelectorAll("button").forEach((button) => button.disabled = state.busy || state.selected.size === 0);
-  const selectedItems = [...state.queue.owner_review, ...state.queue.research].filter((item) => state.selected.has(item.candidate_id));
-  const unsafePreserve = selectedItems.some((item) => item.resolution_mode === "incomplete"
-    || !item.source_accounting.exact_source_preserved
+  bulk.querySelectorAll("button").forEach((button) => button.disabled = state.busy || selectedItems.length === 0);
+  const unsafePreserve = selectedItems.some((item) => !item.source_accounting.exact_source_preserved
     || item.source_accounting.meaningful_units.length === 0);
   const preserveButton = bulk.querySelector('[data-bulk-action="keep"]');
   preserveButton.disabled = preserveButton.disabled || unsafePreserve;
@@ -532,7 +554,8 @@ async function load(message) {
         : state.queue.deferred.length ? "deferred"
           : "automatic";
   }
-  const actionable = new Set([...state.queue.owner_review, ...state.queue.research].map((item) => item.candidate_id));
+  const actionable = new Set([...state.queue.owner_review, ...state.queue.research]
+    .filter(isActionableReviewItem).map((item) => item.candidate_id));
   state.selected = new Set([...state.selected].filter((candidate) => actionable.has(candidate)));
   status.textContent = message || "Ready. Decisions write atomically to your local Atlas; research requests wait for an active Codex task.";
   render();
@@ -570,8 +593,11 @@ async function decide(candidate, action, statements, unitIds, observationEdits) 
 
 async function decideBulk(action) {
   if (state.busy || state.selected.size === 0) return;
-  const candidates = [...state.selected];
-  const selectedItems = [...state.queue.owner_review, ...state.queue.research].filter((item) => state.selected.has(item.candidate_id));
+  const selectedItems = [...state.queue.owner_review, ...state.queue.research]
+    .filter(isActionableReviewItem)
+    .filter((item) => state.selected.has(item.candidate_id));
+  const candidates = selectedItems.map((item) => item.candidate_id);
+  if (candidates.length === 0) return;
   const meaningfulCount = selectedItems.reduce((total, item) => total + item.source_accounting.meaningful_units.length, 0);
   const excludedCount = selectedItems.reduce((total, item) => total + item.source_accounting.excluded_units.length, 0);
   const verb = action === "keep" ? `Preserve ${meaningfulCount} extracted items from ${candidates.length} sources` : action === "research" ? `Queue ${candidates.length} sources for research` : `Set aside ${candidates.length} sources`;
@@ -624,7 +650,7 @@ search.oninput = () => {
 };
 
 selectPage.onchange = () => {
-  visibleItems().forEach((item) => {
+  visibleItems().filter(isActionableReviewItem).forEach((item) => {
     if (selectPage.checked && state.selected.size < 100) state.selected.add(item.candidate_id);
     else state.selected.delete(item.candidate_id);
   });
