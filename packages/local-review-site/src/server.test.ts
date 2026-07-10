@@ -58,6 +58,9 @@ describe("local review site server", () => {
     expect(app).toContain("observation_id");
     expect(app).toContain("Research is not running");
     expect(app).toContain("committed_candidate_ids");
+    expect(app).toContain('item.resolution_mode === "rich"');
+    expect(app).toContain('item.resolution_mode === "incomplete"');
+    expect(app).toContain("item.resolution_mode_explanation");
     expect(styles).toContain(".destination-record");
     expect(styles).toContain(".record-entity");
     expect(styles).toContain(".record-fact");
@@ -74,6 +77,13 @@ describe("local review site server", () => {
     expect(app).not.toContain("Paste the complete precomputed");
     expect(app).not.toContain("Stored as an observation until typing is accepted");
     expect(app).not.toContain("Saving ${candidates.length} decisions atomically");
+    expect(app).not.toContain("const richEditor = mappedObservations.length > 0");
+    const bulkStart = app.indexOf("async function decideBulk");
+    const bulkSource = app.slice(bulkStart, app.indexOf('document.querySelectorAll("[data-tab]")', bulkStart));
+    expect(bulkSource).toContain("committed.forEach((candidate) => state.selected.delete(candidate))");
+    expect(bulkSource).toContain("await load(");
+    expect(bulkSource).toContain("could not confirm every result");
+    expect(bulkSource).not.toContain("Nothing changed");
   });
 
   it("turns a keep decision into an atomic local update without raw object JSON", async () => {
@@ -296,6 +306,7 @@ describe("local review site server", () => {
   it("preserves a rich typed destination graph and edits only the addressed observation chunk", async () => {
     const token = "local-review-site-rich-token-0001";
     const now = "2026-07-10T12:00:00.000Z";
+    const migrationRecordedAt = "2026-07-09T12:00:00.000Z";
     const directory = await mkdtemp(join(tmpdir(), "living-atlas-review-rich-"));
     try {
       const controlState = await createFixtureLocalControlState(token);
@@ -323,13 +334,37 @@ describe("local review site server", () => {
           source_path: "pages/Synthetic Rich Org.md",
           markdown: "type:: organization",
           source_kind: "logseq"
+        },
+        {
+          source_path: "notes/Synthetic Rich Single.md",
+          markdown: "- One synthetic canonical unit.",
+          source_kind: "generic-markdown"
         }
       ], {
         authority_id: controlState.authority_id,
-        created_at: now,
+        created_at: migrationRecordedAt,
         path_redaction_secret: "synthetic-rich-review-path-secret"
       });
-      await graphStore.initializeFromObjects(migration.payloads.map((payload) => ({
+      const orgEntity = migration.payloads.find((payload) => payload.schema === "atlas.entity:v1"
+        && payload.name === "Synthetic Rich Org");
+      if (orgEntity?.schema !== "atlas.entity:v1") throw new Error("expected synthetic rich org entity");
+      const orgReview = migration.payloads.find((payload) => payload.schema === "atlas.review-item:v1"
+        && payload.proposed_object_ids.includes(orgEntity.entity_id));
+      if (orgReview?.schema !== "atlas.review-item:v1") throw new Error("expected synthetic rich org review");
+      const personFact = migration.payloads.find((payload) => payload.schema === "atlas.fact:v1");
+      if (personFact?.schema !== "atlas.fact:v1") throw new Error("expected synthetic rich person fact");
+      const typedParity = {
+        schema: "atlas.parity-record:v1" as const,
+        parity_id: "la_object_servertypedparity0001",
+        source_coverage_key: orgReview.source_coverage_keys[0]!,
+        coverage_state: "represented" as const,
+        representation_kind: "fact" as const,
+        canonical_object_ids: [personFact.assertion_id],
+        idempotency_key: "la_idem_servertypedparity0001",
+        recorded_at: migrationRecordedAt
+      };
+      const migrationPayloads = [...migration.payloads, typedParity];
+      await graphStore.initializeFromObjects(migrationPayloads.map((payload) => ({
         schema_version: 1,
         authority_id: controlState.authority_id,
         object_id: canonicalPayloadObjectId(payload),
@@ -359,7 +394,18 @@ describe("local review site server", () => {
       const cookie = session.headers.get("set-cookie")!.split(";")[0]!;
       const before = await fetch(`${origin}/api/review-queue`, { headers: { cookie } }).then((response) => response.json()) as LocalReviewQueue;
       const rich = before.owner_review.find((item) => item.destination_graph.facts.some((destination) => destination.record.predicate === "phone"));
+      const singleUnitRich = before.research.find((item) => item.resolution_mode === "rich"
+        && item.proposed_records.length === 1
+        && item.destination_graph.observations.length === 1);
+      const richOrg = before.owner_review.find((item) => item.candidate_id !== rich?.candidate_id
+        && item.destination_graph.entities.some((destination) => destination.record.name === "Synthetic Rich Org"));
       expect(rich).toBeDefined();
+      expect(singleUnitRich).toBeDefined();
+      expect(richOrg).toBeDefined();
+      expect(richOrg).toMatchObject({
+        resolution_mode: "incomplete",
+        resolution_mode_explanation: expect.stringContaining("parity")
+      });
       const longMapping = rich!.unit_mappings.find((mapping) => mapping.unit.atlas_text === longMeaning);
       expect(longMapping?.unit_evidence).toHaveLength(3);
       expect(longMapping?.observation_ids).toHaveLength(2);
@@ -372,6 +418,15 @@ describe("local review site server", () => {
         const objectId = canonicalPayloadObjectId(record);
         return [objectId, graphStore.readObject(objectId)?.version];
       }));
+      const observationEnvelopesBefore = new Map(rich!.destination_graph.observations.map((destination) => [
+        destination.object_id,
+        graphStore.readObject(destination.object_id)!
+      ]));
+      const richReviewVersionBefore = graphStore.readObject(rich!.review_id)!.version;
+      const richParityVersionsBefore = new Map(rich!.parity_ids.map((parityId) => [
+        parityId,
+        graphStore.readObject(parityId)!.version
+      ]));
       const editedObservationId = longMapping!.observation_ids[0]!;
       const untouchedObservationId = longMapping!.observation_ids[1]!;
 
@@ -411,9 +466,91 @@ describe("local review site server", () => {
         destination.record
       ]));
       expect(keptObservations.get(editedObservationId)?.statement).toBe("Edited synthetic first chunk.");
+      expect(keptObservations.get(editedObservationId)?.recorded_at).toBe(now);
       expect(keptObservations.get(untouchedObservationId)?.statement).toBe(originalObservations.get(untouchedObservationId)?.statement);
+      expect(keptObservations.get(untouchedObservationId)?.recorded_at).toBe(migrationRecordedAt);
+      for (const [observationId, envelope] of observationEnvelopesBefore) {
+        expect(graphStore.readObject(observationId)).toEqual(observationId === editedObservationId
+          ? expect.objectContaining({ version: envelope.version + 1 })
+          : envelope);
+      }
+      expect(graphStore.readObject(rich!.review_id)?.version).toBe(richReviewVersionBefore + 1);
+      for (const [parityId, version] of richParityVersionsBefore) {
+        expect(graphStore.readObject(parityId)?.version).toBe(version + 1);
+      }
       expect(kept!.parity_records.every((parity) => parity.representation_kind === "observation"
         && parity.canonical_object_ids.every((id) => keptObservations.has(id)))).toBe(true);
+
+      const originalSingleObservation = singleUnitRich!.destination_graph.observations[0]!;
+      const originalSingleEnvelope = graphStore.readObject(originalSingleObservation.object_id)!;
+      const singleReviewVersion = graphStore.readObject(singleUnitRich!.review_id)!.version;
+      const singleParityVersions = new Map(singleUnitRich!.parity_ids.map((parityId) => [
+        parityId,
+        graphStore.readObject(parityId)!.version
+      ]));
+      const researchDecision = await fetch(`${origin}/api/review/${singleUnitRich!.candidate_id}/decision`, {
+        method: "POST",
+        headers: { cookie, "content-type": "application/json" },
+        body: JSON.stringify({ action: "research" })
+      });
+      expect(researchDecision.status).toBe(200);
+      expect(graphStore.readObject(originalSingleObservation.object_id)).toEqual(originalSingleEnvelope);
+      expect(graphStore.readObject(singleUnitRich!.review_id)?.version).toBe(singleReviewVersion + 1);
+      for (const [parityId, version] of singleParityVersions) {
+        expect(graphStore.readObject(parityId)?.version).toBe(version + 1);
+      }
+      const singleDecision = await fetch(`${origin}/api/review/${singleUnitRich!.candidate_id}/decision`, {
+        method: "POST",
+        headers: { cookie, "content-type": "application/json" },
+        body: JSON.stringify({ action: "keep" })
+      });
+      expect(singleDecision.status).toBe(200);
+      const afterSingle = await fetch(`${origin}/api/review-queue`, { headers: { cookie } }).then((response) => response.json()) as LocalReviewQueue;
+      const keptSingle = afterSingle.automatic.find((item) => item.candidate_id === singleUnitRich!.candidate_id)!;
+      expect(keptSingle.proposed_object_ids).toEqual([originalSingleObservation.object_id]);
+      expect(keptSingle.destination_graph.observations[0]).toEqual(originalSingleObservation);
+      expect(graphStore.readObject(originalSingleObservation.object_id)).toEqual(originalSingleEnvelope);
+      expect(graphStore.readObject(singleUnitRich!.review_id)?.version).toBe(singleReviewVersion + 2);
+      for (const [parityId, version] of singleParityVersions) {
+        expect(graphStore.readObject(parityId)?.version).toBe(version + 2);
+      }
+
+      const orgObservationId = richOrg!.destination_graph.observations[0]!.object_id;
+      const orgObservationEnvelope = graphStore.readObject(orgObservationId)!;
+      const orgReviewVersion = graphStore.readObject(richOrg!.review_id)!.version;
+      const orgParityVersions = new Map(richOrg!.parity_ids.map((parityId) => [
+        parityId,
+        graphStore.readObject(parityId)!.version
+      ]));
+      const typedParityEnvelope = graphStore.readObject(typedParity.parity_id)!;
+      const rejectedOrgPreserve = await fetch(`${origin}/api/review/${richOrg!.candidate_id}/decision`, {
+        method: "POST",
+        headers: { cookie, "content-type": "application/json" },
+        body: JSON.stringify({ action: "keep" })
+      });
+      expect(rejectedOrgPreserve.status).toBe(409);
+      await expect(rejectedOrgPreserve.json()).resolves.toMatchObject({ ok: false, reason: "candidate-records-incomplete" });
+      expect(graphStore.readObject(typedParity.parity_id)).toEqual(typedParityEnvelope);
+      expect(graphStore.readObject(orgObservationId)).toEqual(orgObservationEnvelope);
+      expect(graphStore.readObject(richOrg!.review_id)?.version).toBe(orgReviewVersion);
+      const deferDecision = await fetch(`${origin}/api/review/${richOrg!.candidate_id}/decision`, {
+        method: "POST",
+        headers: { cookie, "content-type": "application/json" },
+        body: JSON.stringify({ action: "defer" })
+      });
+      expect(deferDecision.status).toBe(200);
+      expect(graphStore.readObject(orgObservationId)).toEqual(orgObservationEnvelope);
+      expect(graphStore.readObject(richOrg!.review_id)?.version).toBe(orgReviewVersion + 1);
+      for (const [parityId, version] of orgParityVersions) {
+        expect(graphStore.readObject(parityId)?.version).toBe(version + 1);
+      }
+      const afterDefer = await fetch(`${origin}/api/review-queue`, { headers: { cookie } }).then((response) => response.json()) as LocalReviewQueue;
+      expect(afterDefer.deferred.find((item) => item.candidate_id === richOrg!.candidate_id)?.parity_records)
+        .toContainEqual(expect.objectContaining({
+          parity_id: typedParity.parity_id,
+          representation_kind: "fact",
+          canonical_object_ids: [personFact.assertion_id]
+        }));
     } finally {
       await rm(directory, { recursive: true, force: true });
     }
@@ -437,7 +574,10 @@ describe("local review site server", () => {
         "la_candidate_bulkdecisiona0001",
         "la_candidate_bulkdecisionb0001",
         "la_candidate_bulkdecisionc0001",
-        "la_candidate_bulkdecisiond0001"
+        "la_candidate_bulkdecisiond0001",
+        "la_candidate_bulkdecisione0001",
+        "la_candidate_bulkdecisionf0001",
+        "la_candidate_bulkdecisiong0001"
       ];
       const drafts: Array<Record<string, unknown>> = [];
       const draft = (objectId: string, objectType: string, data: Record<string, unknown>) => ({
@@ -564,6 +704,37 @@ describe("local review site server", () => {
       const queue = await fetch(`${origin}/api/review-queue`, { headers: { cookie } }).then((response) => response.json()) as LocalReviewQueue;
       expect(queue.owner_review.map((item) => item.candidate_id)).toContain(candidateIds[2]);
       expect(queue.automatic.map((item) => item.candidate_id)).toContain(candidateIds[3]);
+
+      const commitTransaction = graphStore.commitTransaction.bind(graphStore);
+      let commitAttempts = 0;
+      graphStore.commitTransaction = async (input) => {
+        commitAttempts += 1;
+        if (commitAttempts === 2) throw new Error("synthetic commit exception that must not escape the candidate boundary");
+        return commitTransaction(input);
+      };
+      const thrownPartial = await fetch(`${origin}/api/review/bulk/decision`, {
+        method: "POST",
+        headers: { cookie, "content-type": "application/json" },
+        body: JSON.stringify({ candidate_ids: [candidateIds[6], candidateIds[5], candidateIds[4]], action: "defer" })
+      });
+      expect(thrownPartial.status).toBe(409);
+      await expect(thrownPartial.json()).resolves.toMatchObject({
+        ok: false,
+        reason: "bulk-decision-partial-failure",
+        committed_candidate_ids: [candidateIds[4], candidateIds[6]],
+        failed_candidate_ids: [candidateIds[5]],
+        results: [
+          { candidate_id: candidateIds[4], ok: true },
+          { candidate_id: candidateIds[5], ok: false, reason: "candidate-transaction-exception" },
+          { candidate_id: candidateIds[6], ok: true }
+        ]
+      });
+      const afterException = await fetch(`${origin}/api/review-queue`, { headers: { cookie } }).then((response) => response.json()) as LocalReviewQueue;
+      expect(afterException.deferred.map((item) => item.candidate_id)).toEqual(expect.arrayContaining([
+        candidateIds[4],
+        candidateIds[6]
+      ]));
+      expect(afterException.owner_review.map((item) => item.candidate_id)).toContain(candidateIds[5]);
     } finally {
       await rm(directory, { recursive: true, force: true });
     }

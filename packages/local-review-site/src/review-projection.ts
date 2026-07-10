@@ -52,6 +52,8 @@ export type LocalReviewDestinationGraph = {
   relationships: LocalReviewRelationshipDestination[];
 };
 
+export type LocalReviewResolutionMode = "rich" | "legacy" | "incomplete";
+
 export type LocalReviewQueueItem = {
   review_id: string;
   candidate_id: string;
@@ -70,6 +72,8 @@ export type LocalReviewQueueItem = {
   source_context: CanonicalEvidencePayload[];
   unit_mappings: LocalReviewUnitMapping[];
   destination_graph: LocalReviewDestinationGraph;
+  resolution_mode: LocalReviewResolutionMode;
+  resolution_mode_explanation: string;
   parity_ids: string[];
   parity_records: CanonicalParityRecordPayload[];
   source_accounting: SourceMeaningAccounting;
@@ -120,6 +124,61 @@ function recordEvidenceIds(payload: CanonicalObservation | CanonicalFact | Canon
   return payload.schema === "atlas.observation:v1"
     ? payload.evidence_refs
     : payload.evidence_links.map((link) => link.evidence_id);
+}
+
+function reviewResolutionMode(input: {
+  proposedObjectIds: string[];
+  proposedRecords: CanonicalPayload[];
+  parityRecords: CanonicalParityRecordPayload[];
+  sourceAccounting: SourceMeaningAccounting;
+  unitMappings: LocalReviewUnitMapping[];
+}): { mode: LocalReviewResolutionMode; explanation: string } {
+  const proposedObservations = input.proposedRecords.filter((payload): payload is CanonicalObservation => (
+    payload.schema === "atlas.observation:v1"
+  ));
+  const proposedObservationIds = new Set(proposedObservations.map((payload) => payload.assertion_id));
+  const parityObservationIds = new Set(input.parityRecords.flatMap((parity) => parity.canonical_object_ids));
+  const proposedComplete = input.proposedRecords.length === input.proposedObjectIds.length;
+  const observationParityShapeValid = input.parityRecords.length > 0
+    && input.parityRecords.every((parity) => (
+      parity.coverage_state === "represented"
+      && parity.representation_kind === "observation"
+      && parity.canonical_object_ids.length > 0
+      && parity.canonical_object_ids.every((id) => proposedObservationIds.has(id))
+    ))
+    && proposedObservations.length > 0
+    && proposedObservations.every((observation) => parityObservationIds.has(observation.assertion_id));
+
+  if (!input.sourceAccounting.exact_source_preserved) {
+    return { mode: "incomplete", explanation: "Lossless canonical source evidence is unavailable, so Preserve and Edit are blocked." };
+  }
+  if (!proposedComplete) {
+    return { mode: "incomplete", explanation: "One or more proposed canonical records are unavailable, so Preserve and Edit are blocked." };
+  }
+  if (!observationParityShapeValid) {
+    return { mode: "incomplete", explanation: "Every parity record must be represented observation parity backed only by proposed observations." };
+  }
+
+  const hasCanonicalUnitEvidence = input.unitMappings.some((mapping) => mapping.unit_evidence_ids.length > 0);
+  if (hasCanonicalUnitEvidence) {
+    const unitsComplete = input.sourceAccounting.meaningful_units.length > 0
+      && input.unitMappings.length === input.sourceAccounting.meaningful_units.length
+      && input.unitMappings.every((mapping) => mapping.unit_evidence_ids.length > 0 && mapping.observation_ids.length > 0);
+    if (!unitsComplete) {
+      return { mode: "incomplete", explanation: "Not every source unit has canonical unit evidence and a mapped parity observation." };
+    }
+    const mappedObservationIds = new Set(input.unitMappings.flatMap((mapping) => mapping.observation_ids));
+    if (proposedObservations.some((observation) => !mappedObservationIds.has(observation.assertion_id))
+      || input.parityRecords.some((parity) => parity.canonical_object_ids.some((id) => !mappedObservationIds.has(id)))) {
+      return { mode: "incomplete", explanation: "Observation parity is not wholly covered by mapped proposed source-unit observations." };
+    }
+    return { mode: "rich", explanation: "Every source unit maps to canonical evidence and observation-only parity; observation-ID editing is available." };
+  }
+
+  if (input.proposedRecords.length === 1 && proposedObservations.length === 1) {
+    return { mode: "legacy", explanation: "This legacy one-placeholder candidate will expand into provenance-linked observations when preserved." };
+  }
+  return { mode: "incomplete", explanation: "This candidate is neither a complete canonical mapping nor a supported legacy placeholder." };
 }
 
 function meaningfulHeadline(
@@ -235,6 +294,13 @@ export async function projectLocalReviewQueue(input: {
       facts: graphFacts.map(factDestination),
       relationships: graphRelationships.map(relationshipDestination)
     };
+    const resolutionMode = reviewResolutionMode({
+      proposedObjectIds: proposed,
+      proposedRecords,
+      parityRecords,
+      sourceAccounting,
+      unitMappings
+    });
     const referenced = [
       ...proposed,
       ...evidenceIds,
@@ -262,6 +328,8 @@ export async function projectLocalReviewQueue(input: {
       source_context: sourceContext,
       unit_mappings: unitMappings,
       destination_graph: destinationGraph,
+      resolution_mode: resolutionMode.mode,
+      resolution_mode_explanation: resolutionMode.explanation,
       parity_ids: parityIds.sort(),
       parity_records: parityRecords,
       source_accounting: sourceAccounting,

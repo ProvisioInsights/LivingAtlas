@@ -747,7 +747,16 @@ export async function localResolutionApply(
   if (!review || review.resolution_state === "pending") {
     return { ok: false, reason: "resolution-review-not-resolved" };
   }
-  if (parityRecords.length === 0 || parityRecords.some((record) => record.coverage_state !== "represented" || record.canonical_object_ids.some((id) => !objectIds.has(id)))) {
+  const representedObjectExists = (objectId: string): boolean => {
+    const draft = parsedDrafts.find((candidate) => candidate.object_id === objectId);
+    if (draft) return !draft.visible_metadata.tombstone;
+    const existing = context.graphStore!.readObject(objectId);
+    return Boolean(existing && !existing.visible_metadata.tombstone);
+  };
+  if (parityRecords.length === 0 || parityRecords.some((record) => (
+    record.coverage_state !== "represented"
+    || record.canonical_object_ids.some((id) => !representedObjectExists(id))
+  ))) {
     return { ok: false, reason: "resolution-parity-mismatch" };
   }
 

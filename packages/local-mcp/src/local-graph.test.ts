@@ -500,6 +500,140 @@ describe("local fixture graph tools", () => {
     }
   });
 
+  it("accepts represented parity backed by an existing active canonical object omitted from the drafts", async () => {
+    const token = "local-token-resolution-existing-parity-0001";
+    const directory = await mkdtemp(join(tmpdir(), "living-atlas-local-resolution-existing-parity-"));
+    try {
+      const controlState = await createFixtureLocalControlState(token);
+      const keyring = createDefaultLocalKeyring({ authorityId: controlState.authority_id, createdAt: now });
+      const graphStore = await FileLocalGraphStore.open({
+        directory,
+        authorityId: controlState.authority_id,
+        plaintextPersistence: "encrypt",
+        keyring
+      });
+      const drafts = canonicalResolutionDrafts(2);
+      const observationId = "la_object_resolutionobservation0001";
+      const observation = {
+        ...drafts.fact,
+        object_id: observationId,
+        payload: {
+          ...drafts.fact.payload,
+          data: {
+            schema: "atlas.observation:v1",
+            assertion_id: observationId,
+            statement: "Existing synthetic observation.",
+            candidate_entity_ids: [],
+            resolution_state: "owner-review",
+            recorded_at: now,
+            evidence_refs: [drafts.evidence.object_id]
+          }
+        }
+      };
+      const resolvedReview = {
+        ...drafts.review,
+        payload: {
+          ...drafts.review.payload,
+          data: { ...drafts.review.payload.data, proposed_object_ids: [observationId] }
+        }
+      };
+      const pendingReview = {
+        ...resolvedReview,
+        version: 1,
+        payload: {
+          ...resolvedReview.payload,
+          data: { ...resolvedReview.payload.data, resolution_state: "pending" }
+        }
+      };
+      const parity = {
+        ...drafts.parity,
+        payload: {
+          ...drafts.parity.payload,
+          data: {
+            ...drafts.parity.payload.data,
+            representation_kind: "observation",
+            canonical_object_ids: [observationId]
+          }
+        }
+      };
+      await expect(graphStore.initializeFromObjects([drafts.evidence, observation, pendingReview] as never)).resolves.toMatchObject({ ok: true });
+      const context = createLocalMcpContextFromControlState({
+        controlState,
+        graphStore,
+        decryptPayload: decryptWithKeyring(keyring),
+        now
+      });
+
+      await expect(localResolutionApply(context, {
+        authorization: `Bearer ${token}`,
+        operation_id: "la_operation_resolutionexistingparity0001",
+        idempotency_key: "la_idem_resolutionexistingparity0001",
+        candidate_id: drafts.candidateId,
+        expected_generation: 0,
+        expected_review_version: 1,
+        objects: [resolvedReview, parity]
+      })).resolves.toMatchObject({
+        ok: true,
+        result: {
+          local_commit: "committed",
+          committed_object_ids: [resolvedReview.object_id, parity.object_id]
+        }
+      });
+      expect(graphStore.readObject(observationId)).toMatchObject({ version: 1, updated_at: now });
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it.each(["missing", "tombstoned"] as const)("rejects represented parity backed by a %s existing object", async (mode) => {
+    const token = `local-token-resolution-${mode}-parity-0001`;
+    const directory = await mkdtemp(join(tmpdir(), `living-atlas-local-resolution-${mode}-parity-`));
+    try {
+      const controlState = await createFixtureLocalControlState(token);
+      const keyring = createDefaultLocalKeyring({ authorityId: controlState.authority_id, createdAt: now });
+      const graphStore = await FileLocalGraphStore.open({
+        directory,
+        authorityId: controlState.authority_id,
+        plaintextPersistence: "encrypt",
+        keyring
+      });
+      const drafts = canonicalResolutionDrafts(2);
+      const pendingReview = {
+        ...drafts.review,
+        version: 1,
+        payload: {
+          ...drafts.review.payload,
+          data: { ...drafts.review.payload.data, resolution_state: "pending" }
+        }
+      };
+      const existingObjects = mode === "tombstoned"
+        ? [{ ...drafts.fact, visible_metadata: { ...drafts.fact.visible_metadata, tombstone: true } }, pendingReview]
+        : [pendingReview];
+      await expect(graphStore.initializeFromObjects(existingObjects as never)).resolves.toMatchObject({ ok: true });
+      const context = createLocalMcpContextFromControlState({
+        controlState,
+        graphStore,
+        decryptPayload: decryptWithKeyring(keyring),
+        now
+      });
+
+      await expect(localResolutionApply(context, {
+        authorization: `Bearer ${token}`,
+        operation_id: `la_operation_resolution${mode}parity0001`,
+        idempotency_key: `la_idem_resolution${mode}parity0001`,
+        candidate_id: drafts.candidateId,
+        expected_generation: 0,
+        expected_review_version: 1,
+        objects: [drafts.review, drafts.parity]
+      })).resolves.toEqual({ ok: false, reason: "resolution-parity-mismatch" });
+      expect(graphStore.status()).toMatchObject({ generation: 0 });
+      expect(graphStore.readObject(drafts.parity.object_id)).toBeUndefined();
+      expect(graphStore.readObject(drafts.review.object_id)).toMatchObject({ version: 1 });
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
   it("rejects a pending review as an unresolved semantic resolution", async () => {
     const token = "local-token-resolution-pending-0001";
     const directory = await mkdtemp(join(tmpdir(), "living-atlas-local-resolution-pending-"));

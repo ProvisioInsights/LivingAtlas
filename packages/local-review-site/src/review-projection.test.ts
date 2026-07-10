@@ -53,6 +53,7 @@ describe("local review projection", () => {
     )));
 
     expect(item).toBeDefined();
+    expect(item!.resolution_mode).toBe("rich");
     expect(item!.source_context.every((evidence) => evidence.extraction_method === "canonical-markdown-lossless-v1")).toBe(true);
     expect(item!.source_context.map((evidence) => evidence.excerpt).join("")).toBe([
       "type:: person",
@@ -101,6 +102,68 @@ describe("local review projection", () => {
     expect(item!.destination_graph.relationships[0]?.record.target_entity_id).toBe(
       item!.destination_graph.entities.find((destination) => destination.record.name === "Synthetic Destination Org")?.object_id
     );
+  });
+
+  it("marks a rich candidate with typed parity incomplete instead of coercing its parity", async () => {
+    const migration = createCanonicalMarkdownMigration([{
+      source_path: "pages/Synthetic Typed Parity.md",
+      markdown: "type:: person\nphone:: +1 555 0111",
+      source_kind: "logseq"
+    }], {
+      authority_id: "la_authority_reviewsite0001",
+      created_at: now,
+      path_redaction_secret: "synthetic-typed-parity-secret"
+    });
+    const review = migration.payloads.find((payload) => payload.schema === "atlas.review-item:v1")!;
+    const fact = migration.payloads.find((payload) => payload.schema === "atlas.fact:v1")!;
+    const typedParity = {
+      schema: "atlas.parity-record:v1" as const,
+      parity_id: "la_object_reviewtypedparity0001",
+      source_coverage_key: review.source_coverage_keys[0]!,
+      coverage_state: "represented" as const,
+      representation_kind: "fact" as const,
+      canonical_object_ids: [fact.assertion_id],
+      idempotency_key: "la_idem_reviewtypedparity0001",
+      recorded_at: now
+    };
+    const allPayloads = [...migration.payloads, typedParity];
+    const payloads = new Map(allPayloads.map((payload) => [canonicalPayloadObjectId(payload), payload]));
+    const queue = await projectLocalReviewQueue({
+      objects: allPayloads.map((payload) => envelope(canonicalPayloadObjectId(payload), canonicalObjectTypeForPayload(payload))),
+      decryptPayload: async (object) => payloads.get(object.object_id)
+    });
+
+    expect(queue.owner_review[0]).toMatchObject({
+      resolution_mode: "incomplete",
+      resolution_mode_explanation: expect.stringContaining("parity")
+    });
+  });
+
+  it("marks a partially mapped canonical candidate incomplete with an explanation", async () => {
+    const migration = createCanonicalMarkdownMigration([{
+      source_path: "pages/Synthetic Partial Mapping.md",
+      markdown: "type:: person\nphone:: +1 555 0122",
+      source_kind: "logseq"
+    }], {
+      authority_id: "la_authority_reviewsite0001",
+      created_at: now,
+      path_redaction_secret: "synthetic-partial-mapping-secret"
+    });
+    const partialPayloads = migration.payloads.filter((payload) => !(
+      payload.schema === "atlas.evidence:v1"
+      && payload.extraction_method === "canonical-source-unit-v1"
+      && payload.excerpt?.includes("phone::")
+    ));
+    const payloads = new Map(partialPayloads.map((payload) => [canonicalPayloadObjectId(payload), payload]));
+    const queue = await projectLocalReviewQueue({
+      objects: partialPayloads.map((payload) => envelope(canonicalPayloadObjectId(payload), canonicalObjectTypeForPayload(payload))),
+      decryptPayload: async (object) => payloads.get(object.object_id)
+    });
+
+    expect(queue.owner_review[0]).toMatchObject({
+      resolution_mode: "incomplete",
+      resolution_mode_explanation: expect.stringContaining("unit")
+    });
   });
 
   it("accounts for every meaningful source unit and separates editorial migration commentary", () => {
@@ -236,6 +299,7 @@ describe("local review projection", () => {
     expect(queue.owner_review).toHaveLength(1);
     expect(queue.owner_review[0]).toMatchObject({
       review_id: reviewId,
+      resolution_mode: "legacy",
       recommendation: "owner-review",
       headline: "Synthetic unresolved review context.",
       proposal_label: "Observation",

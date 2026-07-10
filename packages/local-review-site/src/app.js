@@ -296,11 +296,14 @@ function decisionPanel(item) {
     record.schema === "atlas.entity:v1" || record.schema === "atlas.fact:v1" || record.schema === "atlas.relationship:v2"
   )).length;
   const observationCount = item.destination_graph.observations.length;
+  const incomplete = item.resolution_mode === "incomplete";
   truth.append(
     node("strong", "", "What Preserve does"),
-    node("p", "", typedCount
-      ? `Keeps ${typedCount} typed canonical record${typedCount === 1 ? "" : "s"} and ${observationCount} parity observation${observationCount === 1 ? "" : "s"}. Editing changes only the addressed observations.`
-      : "Keeps the mapped observations. Legacy one-placeholder sources expand into one provenance-linked observation per extracted item.")
+    node("p", incomplete ? "warning" : "", incomplete
+      ? item.resolution_mode_explanation
+      : item.resolution_mode === "rich"
+        ? `Keeps ${typedCount} typed canonical record${typedCount === 1 ? "" : "s"} and ${observationCount} parity observation${observationCount === 1 ? "" : "s"}. Editing changes only the addressed observations.`
+        : "Keeps the mapped observations. This legacy one-placeholder source expands into one provenance-linked observation per extracted item.")
   );
   panel.append(truth);
 
@@ -320,8 +323,12 @@ function decisionPanel(item) {
 
   const actions = node("div", "decision-actions");
   const preserve = actionButton("Preserve all now", "keep", "primary");
-  preserve.disabled = !item.source_accounting.exact_source_preserved || item.source_accounting.meaningful_units.length === 0;
-  actions.append(preserve, actionButton("Review / edit extraction", "edit"));
+  const edit = actionButton("Review / edit extraction", "edit");
+  preserve.disabled = incomplete || !item.source_accounting.exact_source_preserved || item.source_accounting.meaningful_units.length === 0;
+  edit.disabled = incomplete;
+  preserve.title = incomplete ? item.resolution_mode_explanation : "";
+  edit.title = incomplete ? item.resolution_mode_explanation : "";
+  actions.append(preserve, edit);
   if (state.tab === "owner_review" || !item.research_requested_all) actions.append(actionButton("Request research for all", "research"));
   actions.append(actionButton("Decide later", "defer", "quiet"));
   panel.append(actions, miniGraph(item));
@@ -350,6 +357,10 @@ function technicalDetails(item) {
 
 function editForm(item) {
   const form = node("form", "editor");
+  if (item.resolution_mode === "incomplete") {
+    form.append(node("p", "editor-intro warning", item.resolution_mode_explanation));
+    return form;
+  }
   const mappedObservations = [];
   const seenObservationIds = new Set();
   item.unit_mappings.forEach((mapping, unitIndex) => {
@@ -361,7 +372,7 @@ function editForm(item) {
         mappedObservations.push({ destination, unitIndex, chunkIndex, chunkCount: mapping.observation_ids.length });
       });
   });
-  const richEditor = mappedObservations.length > 0;
+  const richEditor = item.resolution_mode === "rich";
   form.append(node("p", "editor-intro", richEditor
     ? "Edit individual observation records. Typed entities, facts, relationships, other chunks, and encrypted source evidence remain unchanged."
     : "Edit the normalized meaning. The encrypted source remains unchanged."));
@@ -477,7 +488,9 @@ function renderBulk() {
   selectPage.indeterminate = visible.some((item) => state.selected.has(item.candidate_id)) && !selectPage.checked;
   bulk.querySelectorAll("button").forEach((button) => button.disabled = state.busy || state.selected.size === 0);
   const selectedItems = [...state.queue.owner_review, ...state.queue.research].filter((item) => state.selected.has(item.candidate_id));
-  const unsafePreserve = selectedItems.some((item) => !item.source_accounting.exact_source_preserved || item.source_accounting.meaningful_units.length === 0);
+  const unsafePreserve = selectedItems.some((item) => item.resolution_mode === "incomplete"
+    || !item.source_accounting.exact_source_preserved
+    || item.source_accounting.meaningful_units.length === 0);
   const preserveButton = bulk.querySelector('[data-bulk-action="keep"]');
   preserveButton.disabled = preserveButton.disabled || unsafePreserve;
   preserveButton.title = unsafePreserve ? "One or more selected sources do not have complete extraction coverage." : "";
@@ -584,7 +597,7 @@ async function decideBulk(action) {
     }
     await load(`Saved ${committed.length} independent decision${committed.length === 1 ? "" : "s"}.`);
   } catch (error) {
-    status.textContent = `Nothing changed: ${String(error.message || error).replaceAll("-", " ")}.`;
+    await load(`The bulk request was interrupted; the queue was refreshed because we could not confirm every result. ${String(error.message || error).replaceAll("-", " ")}.`);
   } finally {
     state.busy = false;
     renderBulk();

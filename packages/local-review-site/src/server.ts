@@ -102,6 +102,7 @@ async function handleRequest(
       || (statement !== undefined && (typeof statement !== "string" || statement.trim().length === 0 || statement.length > 4_096))
       || (statements !== undefined && (!Array.isArray(statements) || statements.length === 0 || statements.length > 512
         || statements.some((value) => typeof value !== "string" || value.trim().length === 0 || value.length > 8_192)))
+      || ((statement !== undefined || statements !== undefined) && action !== "keep")
       || (observationEdits !== undefined && (!Array.isArray(observationEdits) || observationEdits.length === 0 || observationEdits.length > 512
         || observationEdits.some((value) => !isObservationEdit(value))
         || new Set(observationEdits.map((value) => (value as ObservationEdit).observation_id)).size !== observationEdits.length
@@ -123,9 +124,9 @@ async function handleRequest(
       return;
     }
     const richObservationIds = mappedObservationIds(item);
-    if ((observationEdits !== undefined && (!isRichReviewCandidate(item)
+    if ((observationEdits !== undefined && (item.resolution_mode !== "rich"
       || (observationEdits as ObservationEdit[]).some((edit) => !richObservationIds.has(edit.observation_id))))
-      || ((statement !== undefined || statements !== undefined) && isRichReviewCandidate(item))) {
+      || ((statement !== undefined || statements !== undefined) && item.resolution_mode !== "legacy")) {
       sendJson(response, 400, { ok: false, reason: "invalid-review-decision" });
       return;
     }
@@ -205,16 +206,20 @@ async function handleRequest(
         continue;
       }
       const seed = `${candidateId}:${action}:${expectedReviewVersion}`;
-      const result = await localResolutionApply(context, {
-        authorization: authorization ?? "",
-        operation_id: `la_operation_${digest(`bulk-item:${seed}`)}`,
-        idempotency_key: `la_idem_${digest(`bulk-item-decision:${seed}`)}`,
-        candidate_id: candidateId,
-        expected_generation: context.graphStore.status().generation,
-        expected_review_version: expectedReviewVersion,
-        objects
-      });
-      results.push({ candidate_id: candidateId, ...result });
+      try {
+        const result = await localResolutionApply(context, {
+          authorization: authorization ?? "",
+          operation_id: `la_operation_${digest(`bulk-item:${seed}`)}`,
+          idempotency_key: `la_idem_${digest(`bulk-item-decision:${seed}`)}`,
+          candidate_id: candidateId,
+          expected_generation: context.graphStore.status().generation,
+          expected_review_version: expectedReviewVersion,
+          objects
+        });
+        results.push({ candidate_id: candidateId, ...result });
+      } catch {
+        results.push({ candidate_id: candidateId, ok: false, reason: "candidate-transaction-exception" });
+      }
     }
     const committedCandidateIds = results.filter((result) => result.ok).map((result) => result.candidate_id);
     const failedCandidateIds = results.filter((result) => !result.ok).map((result) => result.candidate_id);
@@ -283,19 +288,6 @@ function mappedObservationIds(item: LocalReviewQueueItem): Set<string> {
   return new Set(item.unit_mappings.flatMap((mapping) => mapping.observation_ids));
 }
 
-function isRichReviewCandidate(item: LocalReviewQueueItem): boolean {
-  const observations = item.proposed_records.filter((payload) => payload.schema === "atlas.observation:v1");
-  const mappedIds = mappedObservationIds(item);
-  const parityIds = new Set(item.parity_records.flatMap((parity) => (
-    parity.representation_kind === "observation" ? parity.canonical_object_ids : []
-  )));
-  return item.unit_mappings.length > 0
-    && item.unit_mappings.every((mapping) => mapping.unit_evidence_ids.length > 0 && mapping.observation_ids.length > 0)
-    && observations.length > 0
-    && observations.every((observation) => mappedIds.has(observation.assertion_id) && parityIds.has(observation.assertion_id))
-    && item.proposed_records.length === item.proposed_object_ids.length;
-}
-
 function digest(value: string): string {
   return createHash("sha256").update(value).digest("hex").slice(0, 24);
 }
@@ -311,10 +303,9 @@ function buildReviewDecision(
   if (!context.graphStore) return undefined;
   const recordedAt = context.now ?? new Date().toISOString();
   if (action === "keep" && !item.source_accounting.exact_source_preserved) return undefined;
-  const richCandidate = isRichReviewCandidate(item);
-  const legacyPlaceholder = item.proposed_records.length === 1
-    && item.proposed_records[0]?.schema === "atlas.observation:v1";
-  if (action === "keep" && !richCandidate && !legacyPlaceholder) return undefined;
+  const richCandidate = item.resolution_mode === "rich";
+  const legacyPlaceholder = item.resolution_mode === "legacy";
+  if (action === "keep" && item.resolution_mode === "incomplete") return undefined;
   const extractedObservations: CanonicalPayload[] = action === "keep" && legacyPlaceholder
     ? item.source_accounting.meaningful_units.map((unit, index) => ({
       schema: "atlas.observation:v1" as const,
@@ -345,31 +336,31 @@ function buildReviewDecision(
     } : {}),
     recorded_at: recordedAt
   };
-  const proposed = keptPayloads.map((payload): CanonicalPayload => {
-    if (payload.schema !== "atlas.observation:v1") return payload;
-    const editedStatement = observationEditById.get(payload.assertion_id);
-    return {
-      ...payload,
-      ...(editedStatement ? { statement: editedStatement } : {}),
-      ...(statements?.[0] && action !== "keep" ? { statement: statements[0] } : {}),
-      resolution_state: action === "research" ? "research" : action === "defer" ? "deferred-unknown" : payload.resolution_state,
-      recorded_at: recordedAt
-    };
-  });
-  const keptObservationIds = new Set(proposed.flatMap((payload) => (
+  const observationPayloads: CanonicalPayload[] = legacyPlaceholder && action === "keep"
+    ? extractedObservations
+    : richCandidate && action === "keep"
+      ? item.proposed_records.flatMap((payload) => {
+        if (payload.schema !== "atlas.observation:v1") return [];
+        const editedStatement = observationEditById.get(payload.assertion_id);
+        return editedStatement ? [{ ...payload, statement: editedStatement, recorded_at: recordedAt }] : [];
+      })
+      : [];
+  const keptObservationIds = new Set(keptPayloads.flatMap((payload) => (
     payload.schema === "atlas.observation:v1" ? [payload.assertion_id] : []
   )));
-  const parityRecords: CanonicalPayload[] = item.parity_records.map((parity) => action === "keep" ? {
-    ...parity,
-    coverage_state: "represented",
-    representation_kind: "observation",
-    canonical_object_ids: richCandidate
-      ? parity.canonical_object_ids.filter((id) => keptObservationIds.has(id))
-      : [...keptObservationIds],
-    recorded_at: recordedAt
-  } : parity);
+  const parityRecords: CanonicalPayload[] = item.parity_records.map((parity) => (
+    legacyPlaceholder && action === "keep"
+      ? {
+        ...parity,
+        coverage_state: "represented",
+        representation_kind: "observation",
+        canonical_object_ids: [...keptObservationIds],
+        recorded_at: recordedAt
+      }
+      : { ...parity, recorded_at: recordedAt }
+  ));
   const payloads: CanonicalPayload[] = [
-    ...proposed.filter((payload) => payload.schema === "atlas.observation:v1"),
+    ...observationPayloads,
     review,
     ...parityRecords
   ];
