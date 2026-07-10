@@ -314,6 +314,13 @@ importers:
       '@living-atlas/graph-service':
         specifier: workspace:*
         version: link:../graph-service
+      '@living-atlas/local-mcp':
+        specifier: workspace:*
+        version: link:../local-mcp
+    devDependencies:
+      '@living-atlas/fixtures':
+        specifier: workspace:*
+        version: link:../fixtures
 
   packages/mcp-contract: {}
 

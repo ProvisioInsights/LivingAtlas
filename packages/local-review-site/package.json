@@ -5,6 +5,10 @@
   "type": "module",
   "dependencies": {
     "@living-atlas/contracts": "workspace:*",
-    "@living-atlas/graph-service": "workspace:*"
+    "@living-atlas/graph-service": "workspace:*",
+    "@living-atlas/local-mcp": "workspace:*"
+  },
+  "devDependencies": {
+    "@living-atlas/fixtures": "workspace:*"
   }
 }
