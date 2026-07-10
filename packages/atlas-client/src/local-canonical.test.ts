@@ -47,6 +47,8 @@ describe("local canonical Atlas client", () => {
       const targetClient = createLocalCanonicalAtlasClient({ graphStore: target, decryptPayload: targetDecrypt, now });
       await expect(targetClient.importCanonical({ exported, expected_generation: 0, actor_id: fixtureLocalClientId, operation_id: "la_operation_localimport0001", idempotency_key: "la_idem_localimport0001" })).resolves.toMatchObject({ ok: true, generation: 1 });
       await expect(targetClient.exportCanonical()).resolves.toEqual(exported);
+      await expect(targetClient.importCanonical({ exported, expected_generation: 1, actor_id: fixtureLocalClientId, operation_id: "la_operation_localimport0002", idempotency_key: "la_idem_localimport0002" })).resolves.toMatchObject({ ok: false, reason: "object-already-exists", current_generation: 1 });
+      expect(target.status()).toMatchObject({ generation: 1, object_count: 1 });
     } finally {
       await Promise.all([rm(sourceDir, { recursive: true, force: true }), rm(targetDir, { recursive: true, force: true })]);
     }

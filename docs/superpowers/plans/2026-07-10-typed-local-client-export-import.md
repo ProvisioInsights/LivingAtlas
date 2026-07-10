@@ -29,7 +29,7 @@
 - Produces `createLocalCanonicalAtlasClient({ graphStore, decryptPayload, now? })`.
 - The returned client provides `exportCanonical({ exported_at? })` and `importCanonical({ exported, expected_generation, actor_id, operation_id, idempotency_key, recorded_at? })`.
 
-- [ ] **Step 1: Write the failing round-trip test**
+- [x] **Step 1: Write the failing round-trip test**
 
 Create an encrypted source store containing synthetic entity, evidence, fact, review, and parity records. Export it, import into an empty encrypted target store, reopen the target, then export again.
 
@@ -40,19 +40,19 @@ expect(JSON.stringify(await readFile(join(targetDir, "snapshot.json"), "utf8")))
 
 Add a second request with one target object pre-created and assert `object-already-exists`, unchanged generation, and no imported sibling object.
 
-- [ ] **Step 2: Verify the tests fail**
+- [x] **Step 2: Verify the tests fail**
 
 Run: `pnpm vitest run packages/atlas-client/src/local-canonical.test.ts`
 
 Expected: FAIL because the local canonical client module does not exist.
 
-- [ ] **Step 3: Implement the narrow local client**
+- [x] **Step 3: Implement the narrow local client**
 
 For export, enumerate active store objects of canonical runtime types, decrypt each, parse `{ object_type, payload }` through `CanonicalWriteSchema`, require envelope id equals `canonicalPayloadObjectId(payload)`, and produce `parseCanonicalExport({ ... })` records sorted by object id. A canonical runtime envelope whose decrypted body is not canonical must throw `canonical-export-invalid-object`; legacy envelopes are excluded.
 
 For import, call `parseCanonicalExport`, require the export authority equals `graphStore.status().authority_id`, turn each record into a `PlaintextGraphObjectDraft` with the record’s exact id/type/version/access/content hash and local timestamps, and submit all-create writes to `commitTransaction`. Return its atomic result unchanged.
 
-- [ ] **Step 4: Verify and commit**
+- [x] **Step 4: Verify and commit**
 
 Run: `pnpm vitest run packages/atlas-client/src/local-canonical.test.ts packages/contracts/src/knowledge.test.ts`
 
@@ -65,7 +65,7 @@ Commit: `git commit -m "Add typed local canonical export and import (#49)"`
 **Files:**
 - Modify: this plan only if verification finds a real defect.
 
-- [ ] **Step 1: Run the local-only boundary audit and full gate**
+- [x] **Step 1: Run the local-only boundary audit and full gate**
 
 ```bash
 rg -n 'fetch\(|remoteMcp|logseq-|object_type: "page"|object_type: "block"' packages/atlas-client/src/local-canonical.ts
