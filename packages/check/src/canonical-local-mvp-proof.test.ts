@@ -7,6 +7,10 @@ import { join } from "node:path";
 import { createLocalCanonicalAtlasClient } from "@living-atlas/atlas-client";
 import { createDefaultLocalKeyring, decryptGraphObjectPayload } from "@living-atlas/local-keyring";
 import { fixtureAuthorityId, fixtureLocalClientId } from "@living-atlas/fixtures";
+import { randomBytes } from "node:crypto";
+import { LocalWormStore, wrapKeyringForEscrow, writeBackup } from "@living-atlas/backup";
+import { restoreRunner } from "./backup-restore";
+import { FileLocalKeyringStore } from "@living-atlas/local-keyring";
 import { createCanonicalSyntheticMvpFixture } from "./canonical-local-mvp-proof";
 
 describe("canonical local MVP proof", () => {
@@ -56,6 +60,32 @@ describe("canonical local MVP proof", () => {
     } finally {
       await fixture.dispose();
       await rm(targetDir, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves canonical export through a local immutable backup and isolated restore", async () => {
+    const fixture = await createCanonicalSyntheticMvpFixture();
+    const staging = await mkdtemp(join(tmpdir(), "living-atlas-canonical-mvp-backup-"));
+    const restoredDir = join(staging, "restored");
+    const recoveryMaster = randomBytes(32);
+    try {
+      const decrypt = async (object: Parameters<typeof decryptGraphObjectPayload>[0]) => {
+        const payload = await decryptGraphObjectPayload(object, fixture.keyring);
+        return payload?.kind === "plaintext-json" ? payload.data : undefined;
+      };
+      const sourceExport = await createLocalCanonicalAtlasClient({ graphStore: fixture.store, decryptPayload: decrypt, now: "2026-07-10T12:00:00.000Z" }).exportCanonical();
+      await writeBackup([new LocalWormStore(staging)], { authority_id: fixtureAuthorityId, kind: "full", base_generation: 0, target_generation: fixture.store.status().generation, artifactBytes: await readFile(join(fixture.directory, "snapshot.json")), escrowEnvelopeJson: JSON.stringify(wrapKeyringForEscrow(await readFile(fixture.keyringPath, "utf8"), recoveryMaster)), createdAtIso: "2026-07-10T12:00:00.000Z", backupId: "la_backup_canonicalmvp0001", retainUntilMs: 0 });
+      await restoreRunner({ backupId: "la_backup_canonicalmvp0001", storeDir: staging, outDir: restoredDir }, recoveryMaster);
+      const restoredKeyring = await new FileLocalKeyringStore(join(restoredDir, "keyring.json")).read(fixture.keyringPassphrase);
+      const restored = await FileLocalGraphStore.open({ directory: join(restoredDir, "graph"), authorityId: fixtureAuthorityId, plaintextPersistence: "encrypt", keyring: restoredKeyring });
+      const restoredDecrypt = async (object: Parameters<typeof decryptGraphObjectPayload>[0]) => {
+        const payload = await decryptGraphObjectPayload(object, restoredKeyring);
+        return payload?.kind === "plaintext-json" ? payload.data : undefined;
+      };
+      await expect(createLocalCanonicalAtlasClient({ graphStore: restored, decryptPayload: restoredDecrypt, now: "2026-07-10T12:00:00.000Z" }).exportCanonical()).resolves.toEqual(sourceExport);
+    } finally {
+      await fixture.dispose();
+      await rm(staging, { recursive: true, force: true });
     }
   });
 });
