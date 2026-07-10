@@ -48,9 +48,19 @@ importers:
       '@living-atlas/contracts':
         specifier: workspace:*
         version: link:../contracts
+      '@living-atlas/local-graph-store':
+        specifier: workspace:*
+        version: link:../local-graph-store
+      '@living-atlas/local-keyring':
+        specifier: workspace:*
+        version: link:../local-keyring
       '@living-atlas/mcp-contract':
         specifier: workspace:*
         version: link:../mcp-contract
+    devDependencies:
+      '@living-atlas/fixtures':
+        specifier: workspace:*
+        version: link:../fixtures
 
   packages/backup:
     dependencies:

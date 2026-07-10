@@ -7,6 +7,8 @@ import type {
 } from "@living-atlas/contracts";
 import type { RemoteLivingAtlasMcpToolName } from "@living-atlas/mcp-contract";
 
+export * from "./local-canonical";
+
 export type FetchLike = (input: URL | RequestInfo, init?: RequestInit) => Promise<Response>;
 
 export type AtlasClientTokenHeaders = {
