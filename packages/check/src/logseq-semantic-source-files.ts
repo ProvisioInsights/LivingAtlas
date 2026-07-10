@@ -88,6 +88,7 @@ export async function walkImportableSemanticSourceFiles(input: {
   maxFiles: number;
   offset: number;
   maxFileBytes: number;
+  include_empty?: boolean;
 }): Promise<string[]> {
   const selected: string[] = [];
   const paths = await walkAllSemanticSourceFiles(input.root);
@@ -104,7 +105,7 @@ export async function walkImportableSemanticSourceFiles(input: {
       continue;
     }
     const info = await stat(path).catch(() => undefined);
-    if (!info || info.size <= 0 || info.size > input.maxFileBytes) {
+    if (!info || info.size > input.maxFileBytes || (info.size === 0 && !input.include_empty)) {
       continue;
     }
     if (classification.reason_code === "logseq-extensionless-note") {

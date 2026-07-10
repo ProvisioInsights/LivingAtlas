@@ -40,7 +40,7 @@ const canonicalSchemas = [
   "atlas.parity-record:v1"
 ] as const satisfies readonly CanonicalPayload["schema"][];
 
-type CanonicalManifestEntry = Pick<CanonicalExportRecord, "object_id" | "object_type" | "content_hash">;
+export type CanonicalManifestEntry = Pick<CanonicalExportRecord, "object_id" | "object_type" | "content_hash">;
 
 export type CanonicalConversionReport = {
   sources: { files: number; bytes: number };
@@ -67,6 +67,18 @@ export type CanonicalConversionReport = {
     missing_parity_object_references: number;
     missing_lineage_references: number;
     missing_snapshot_references: number;
+    cross_source_parity_observation_references: number;
+    duplicate_expected_coverage_keys: number;
+    missing_expected_parity_records: number;
+    duplicate_expected_parity_records: number;
+    unexpected_parity_coverage_records: number;
+    missing_expected_review_records: number;
+    duplicate_expected_review_records: number;
+    unexpected_review_coverage_references: number;
+    invalid_meaningful_source_parity_records: number;
+    invalid_zero_unit_source_parity_records: number;
+    incomplete_nonzero_source_reviews: number;
+    actionable_zero_unit_source_reviews: number;
     unrepresented_meaningful_units: number;
     unrepresented_source_parity: number;
     reopened_manifest_mismatches: number;
@@ -103,7 +115,15 @@ export async function runCanonicalIsolatedCopy(input: CanonicalIsolatedCopyRun &
   const paths = validateCanonicalIsolatedCopyRun(input);
   await mkdir(paths.copy_dir, { recursive: true, mode: 0o700 });
   if ((await readdir(paths.copy_dir)).length > 0) throw new Error("canonical isolated-copy output must be empty");
-  const sourcePaths = await walkImportableSemanticSourceFiles({ root: paths.source_dir, sourceKind: input.source_kind, mode: input.source_mode, maxFiles: 100_000, offset: 0, maxFileBytes: 16 * 1024 * 1024 });
+  const sourcePaths = await walkImportableSemanticSourceFiles({
+    root: paths.source_dir,
+    sourceKind: input.source_kind,
+    mode: input.source_mode,
+    maxFiles: 100_000,
+    offset: 0,
+    maxFileBytes: 16 * 1024 * 1024,
+    include_empty: true
+  });
   const files = await Promise.all(sourcePaths.map(async (path) => {
     const bytes = await readFile(path);
     return {
@@ -148,13 +168,12 @@ export async function runCanonicalIsolatedCopy(input: CanonicalIsolatedCopyRun &
 
   const report = analyzeCanonicalConversion({
     records: exported.records,
+    authority_id: input.authority_id,
     sources: files.map(({ source_path, markdown, byte_count }) => ({ source_path, markdown, byte_count })),
     path_redaction_secret: input.path_redaction_secret ?? input.keyring_passphrase,
     reopened_manifest_mismatches: reopenedManifestMismatches
   });
-  assertCanonicalConversionIntegrity(report);
-  await writePrivateJson(join(paths.copy_dir, "conversion-report.json"), report);
-  await writePrivateJson(join(paths.copy_dir, "canonical-manifest.json"), manifest);
+  await persistCanonicalConversionArtifacts({ copy_dir: paths.copy_dir, report, manifest });
   return { source_file_count: files.length, canonical_object_count: result.objects.length, generation: result.generation };
 }
 
@@ -166,6 +185,7 @@ function canonicalManifest(records: CanonicalExportRecord[]): CanonicalManifestE
 
 export function analyzeCanonicalConversion(input: {
   records: CanonicalExportRecord[];
+  authority_id: string;
   sources: Array<{ source_path: string; markdown: string; byte_count: number }>;
   path_redaction_secret: string;
   reopened_manifest_mismatches: number;
@@ -182,11 +202,12 @@ export function analyzeCanonicalConversion(input: {
     .filter((payload) => payload.schema === "atlas.observation:v1")
     .map((payload) => payload.assertion_id));
   const parityRecords = payloads.filter((payload) => payload.schema === "atlas.parity-record:v1");
-  const representedParity = parityRecords.filter((payload) => payload.coverage_state === "represented");
-  const parityByCoverage = new Map(parityRecords.map((payload) => [payload.source_coverage_key, payload]));
-  const parityBackedObservationIds = new Set(representedParity
-    .filter((payload) => payload.representation_kind === "observation")
-    .flatMap((payload) => payload.canonical_object_ids.filter((id) => observationIds.has(id))));
+  const parityByCoverage = new Map<string, typeof parityRecords>();
+  for (const parity of parityRecords) {
+    const records = parityByCoverage.get(parity.source_coverage_key) ?? [];
+    records.push(parity);
+    parityByCoverage.set(parity.source_coverage_key, records);
+  }
   const reviews = payloads.filter((payload) => payload.schema === "atlas.review-item:v1");
   const evidenceReferences: string[] = [];
   const entityReferences: string[] = [];
@@ -236,32 +257,118 @@ export function analyzeCanonicalConversion(input: {
     payload.schema === "atlas.evidence:v1" && payload.extraction_method === "canonical-source-unit-v1"
   ));
   const unitEvidenceIdsByOccurrence = new Map<string, Set<string>>();
+  const sourceRefByUnitEvidenceId = new Map<string, string>();
   for (const evidence of unitEvidence) {
-    const occurrenceKey = unitOccurrenceKey(evidence.locator);
-    if (!occurrenceKey) continue;
-    const ids = unitEvidenceIdsByOccurrence.get(occurrenceKey) ?? new Set<string>();
+    const occurrence = unitOccurrence(evidence.locator);
+    if (!occurrence) continue;
+    const ids = unitEvidenceIdsByOccurrence.get(occurrence.key) ?? new Set<string>();
     ids.add(evidence.evidence_id);
-    unitEvidenceIdsByOccurrence.set(occurrenceKey, ids);
+    unitEvidenceIdsByOccurrence.set(occurrence.key, ids);
+    sourceRefByUnitEvidenceId.set(evidence.evidence_id, occurrence.source_ref);
   }
-  const meaningfulUnitOccurrences = expectedMeaningfulUnitOccurrences(input.sources, input.path_redaction_secret);
+  const expectedSources = expectedSourceCoverages(input.sources, input.authority_id, input.path_redaction_secret);
+  const expectedSourcesByCoverage = new Map<string, ExpectedSourceCoverage[]>();
+  for (const source of expectedSources) {
+    const sources = expectedSourcesByCoverage.get(source.coverage_key) ?? [];
+    sources.push(source);
+    expectedSourcesByCoverage.set(source.coverage_key, sources);
+  }
+  const expectedCoverageKeys = new Set(expectedSourcesByCoverage.keys());
+  const reviewsByCoverage = new Map<string, typeof reviews>();
+  for (const review of reviews) {
+    for (const coverageKey of review.source_coverage_keys) {
+      const records = reviewsByCoverage.get(coverageKey) ?? [];
+      records.push(review);
+      reviewsByCoverage.set(coverageKey, records);
+    }
+  }
   const observations = payloads.filter((payload) => payload.schema === "atlas.observation:v1");
-  const unrepresentedMeaningfulUnits = [...meaningfulUnitOccurrences].filter((occurrenceKey) => (
-    !observations.some((observation) => {
+  const observationById = new Map(observations.map((observation) => [observation.assertion_id, observation]));
+  let unrepresentedMeaningfulUnits = 0;
+  let crossSourceParityObservationReferences = 0;
+  for (const source of expectedSources) {
+    const exactParityObservationIds = new Set((parityByCoverage.get(source.coverage_key) ?? [])
+      .filter((parity) => parity.coverage_state === "represented" && parity.representation_kind === "observation")
+      .flatMap((parity) => parity.canonical_object_ids.filter((id) => observationIds.has(id))));
+    for (const occurrenceKey of source.meaningful_unit_occurrences) {
       const unitEvidenceIds = unitEvidenceIdsByOccurrence.get(occurrenceKey);
-      return unitEvidenceIds
-        && parityBackedObservationIds.has(observation.assertion_id)
-        && observation.evidence_refs.some((id) => unitEvidenceIds.has(id));
-    })
-  )).length;
+      if (!unitEvidenceIds || !observations.some((observation) => (
+        exactParityObservationIds.has(observation.assertion_id)
+        && observation.evidence_refs.some((id) => unitEvidenceIds.has(id))
+      ))) unrepresentedMeaningfulUnits += 1;
+    }
+    for (const observationId of exactParityObservationIds) {
+      const observation = observationById.get(observationId);
+      if (observation?.evidence_refs.some((id) => {
+        const evidenceSourceRef = sourceRefByUnitEvidenceId.get(id);
+        return evidenceSourceRef !== undefined && evidenceSourceRef !== source.source_ref;
+      })) crossSourceParityObservationReferences += 1;
+    }
+  }
 
+  const isCompleteNonzeroReview = (coverageKey: string, review: typeof reviews[number]): boolean => {
+    const coverageParity = parityByCoverage.get(coverageKey) ?? [];
+    if (review.source_coverage_keys.length !== 1
+      || review.source_coverage_keys[0] !== coverageKey
+      || coverageParity.length !== 1) return false;
+    const parity = coverageParity[0]!;
+    return parity.coverage_state === "represented"
+      && parity.representation_kind === "observation"
+      && parity.canonical_object_ids.length > 0
+      && parity.canonical_object_ids.every((id) => observationIds.has(id) && review.proposed_object_ids.includes(id))
+      && review.proposed_object_ids.every((id) => objectIds.has(id));
+  };
   const incompleteReviews = reviews.filter((review) => {
-    const coverage = review.source_coverage_keys.map((key) => parityByCoverage.get(key));
-    return coverage.some((parity) => !parity
-      || parity.coverage_state !== "represented"
-      || parity.representation_kind !== "observation")
-      || review.proposed_object_ids.some((id) => !objectIds.has(id))
-      || !review.proposed_object_ids.some((id) => observationIds.has(id));
+    if (review.source_coverage_keys.length !== 1) return true;
+    const coverageKey = review.source_coverage_keys[0]!;
+    const sourceCoverage = expectedSourcesByCoverage.get(coverageKey);
+    if (!sourceCoverage || sourceCoverage.length !== 1) return true;
+    if (sourceCoverage[0]!.meaningful_unit_occurrences.length === 0) return true;
+    return !isCompleteNonzeroReview(coverageKey, review);
   }).length;
+  let invalidMeaningfulSourceParityRecords = 0;
+  let invalidZeroUnitSourceParityRecords = 0;
+  let incompleteNonzeroSourceReviews = 0;
+  let actionableZeroUnitSourceReviews = 0;
+  for (const [coverageKey, sourceCoverage] of expectedSourcesByCoverage) {
+    const coverageParity = parityByCoverage.get(coverageKey) ?? [];
+    const coverageReviews = reviewsByCoverage.get(coverageKey) ?? [];
+    if (sourceCoverage.some((source) => source.meaningful_unit_occurrences.length > 0)) {
+      if (coverageParity.length === 1) {
+        const parity = coverageParity[0]!;
+        if (parity.coverage_state !== "represented"
+          || parity.representation_kind !== "observation"
+          || parity.canonical_object_ids.length === 0) invalidMeaningfulSourceParityRecords += 1;
+      }
+      if (coverageReviews.length === 1
+        && !isCompleteNonzeroReview(coverageKey, coverageReviews[0]!)) incompleteNonzeroSourceReviews += 1;
+      continue;
+    }
+    if (coverageParity.length === 1) {
+      const parity = coverageParity[0]!;
+      if (parity.coverage_state !== "unrepresented"
+        || parity.representation_kind !== undefined
+        || parity.canonical_object_ids.length > 0) invalidZeroUnitSourceParityRecords += 1;
+    }
+    if (coverageReviews.length === 1 && coverageReviews[0]!.proposed_object_ids.length > 0) {
+      actionableZeroUnitSourceReviews += 1;
+    }
+  }
+  const duplicateExpectedCoverageKeys = [...expectedSourcesByCoverage.values()]
+    .reduce((total, sources) => total + Math.max(0, sources.length - 1), 0);
+  const missingExpectedParityRecords = [...expectedCoverageKeys]
+    .filter((key) => (parityByCoverage.get(key) ?? []).length === 0).length;
+  const duplicateExpectedParityRecords = [...expectedCoverageKeys]
+    .reduce((total, key) => total + Math.max(0, (parityByCoverage.get(key) ?? []).length - 1), 0);
+  const unexpectedParityCoverageRecords = parityRecords
+    .filter((parity) => !expectedCoverageKeys.has(parity.source_coverage_key)).length;
+  const missingExpectedReviewRecords = [...expectedCoverageKeys]
+    .filter((key) => (reviewsByCoverage.get(key) ?? []).length === 0).length;
+  const duplicateExpectedReviewRecords = [...expectedCoverageKeys]
+    .reduce((total, key) => total + Math.max(0, (reviewsByCoverage.get(key) ?? []).length - 1), 0);
+  const unexpectedReviewCoverageReferences = reviews
+    .flatMap((review) => review.source_coverage_keys)
+    .filter((key) => !expectedCoverageKeys.has(key)).length;
   const schemas = Object.fromEntries(canonicalSchemas.map((schema) => [
     schema,
     payloads.filter((payload) => payload.schema === schema).length
@@ -275,7 +382,10 @@ export function analyzeCanonicalConversion(input: {
     schemas,
     objects: {
       total: input.records.length,
-      meaningful_unit_occurrences: meaningfulUnitOccurrences.size,
+      meaningful_unit_occurrences: expectedSources.reduce(
+        (total, source) => total + source.meaningful_unit_occurrences.length,
+        0
+      ),
       unit_evidence: unitEvidence.length,
       observations: schemas["atlas.observation:v1"],
       facts: schemas["atlas.fact:v1"],
@@ -299,8 +409,22 @@ export function analyzeCanonicalConversion(input: {
       missing_parity_object_references: parityObjectReferences.filter((id) => !objectIds.has(id)).length,
       missing_lineage_references: lineageReferences.filter((id) => !objectIds.has(id)).length,
       missing_snapshot_references: snapshotReferences.filter((id) => !objectIds.has(id)).length,
+      cross_source_parity_observation_references: crossSourceParityObservationReferences,
+      duplicate_expected_coverage_keys: duplicateExpectedCoverageKeys,
+      missing_expected_parity_records: missingExpectedParityRecords,
+      duplicate_expected_parity_records: duplicateExpectedParityRecords,
+      unexpected_parity_coverage_records: unexpectedParityCoverageRecords,
+      missing_expected_review_records: missingExpectedReviewRecords,
+      duplicate_expected_review_records: duplicateExpectedReviewRecords,
+      unexpected_review_coverage_references: unexpectedReviewCoverageReferences,
+      invalid_meaningful_source_parity_records: invalidMeaningfulSourceParityRecords,
+      invalid_zero_unit_source_parity_records: invalidZeroUnitSourceParityRecords,
+      incomplete_nonzero_source_reviews: incompleteNonzeroSourceReviews,
+      actionable_zero_unit_source_reviews: actionableZeroUnitSourceReviews,
       unrepresented_meaningful_units: unrepresentedMeaningfulUnits,
-      unrepresented_source_parity: Math.max(0, input.sources.length - representedParity.length),
+      unrepresented_source_parity: parityRecords.filter((parity) => (
+        parity.coverage_state === "unrepresented" && expectedCoverageKeys.has(parity.source_coverage_key)
+      )).length,
       reopened_manifest_mismatches: input.reopened_manifest_mismatches
     }
   };
@@ -315,20 +439,49 @@ export function assertCanonicalConversionIntegrity(report: CanonicalConversionRe
     + integrity.missing_parity_object_references
     + integrity.missing_lineage_references
     + integrity.missing_snapshot_references;
+  const malformedSourceCoverage = integrity.duplicate_expected_coverage_keys
+    + integrity.missing_expected_parity_records
+    + integrity.duplicate_expected_parity_records
+    + integrity.unexpected_parity_coverage_records
+    + integrity.missing_expected_review_records
+    + integrity.duplicate_expected_review_records
+    + integrity.unexpected_review_coverage_references
+    + integrity.invalid_meaningful_source_parity_records
+    + integrity.invalid_zero_unit_source_parity_records
+    + integrity.incomplete_nonzero_source_reviews
+    + integrity.actionable_zero_unit_source_reviews;
   if (integrity.duplicate_object_ids > 0
     || missingReferences > 0
+    || malformedSourceCoverage > 0
+    || integrity.cross_source_parity_observation_references > 0
     || integrity.unrepresented_meaningful_units > 0
     || integrity.reopened_manifest_mismatches > 0) {
     throw new Error("canonical isolated-copy integrity check failed");
   }
 }
 
-function expectedMeaningfulUnitOccurrences(
+export async function persistCanonicalConversionArtifacts(input: {
+  copy_dir: string;
+  report: CanonicalConversionReport;
+  manifest: CanonicalManifestEntry[];
+}): Promise<void> {
+  assertCanonicalConversionIntegrity(input.report);
+  await writePrivateJson(join(input.copy_dir, "canonical-manifest.json"), input.manifest);
+  await writePrivateJson(join(input.copy_dir, "conversion-report.json"), input.report);
+}
+
+type ExpectedSourceCoverage = {
+  source_ref: string;
+  coverage_key: string;
+  meaningful_unit_occurrences: string[];
+};
+
+function expectedSourceCoverages(
   sources: Array<{ source_path: string; markdown: string }>,
+  authorityId: string,
   pathRedactionSecret: string
-): Set<string> {
-  const occurrences = new Set<string>();
-  for (const source of sources) {
+): ExpectedSourceCoverage[] {
+  return sources.map((source) => {
     const sourceRef = createMarkdownSourceRef(source.source_path, { path_redaction_secret: pathRedactionSecret });
     const excerpts = source.markdown.length === 0
       ? [""]
@@ -347,18 +500,32 @@ function expectedMeaningfulUnitOccurrences(
       extraction_method: "canonical-markdown-lossless-v1"
     }));
     const occurrenceByUnitId = new Map<string, number>();
+    const occurrences: string[] = [];
     for (const unit of accountSourceMeaning(accountingEvidence).meaningful_units) {
       const occurrence = (occurrenceByUnitId.get(unit.unit_id) ?? 0) + 1;
       occurrenceByUnitId.set(unit.unit_id, occurrence);
-      occurrences.add(`${sourceRef}:${unit.unit_id}:${occurrence}`);
+      occurrences.push(`${sourceRef}:${unit.unit_id}:${occurrence}`);
     }
-  }
-  return occurrences;
+    const stableBase = `${authorityId}:${sourceRef}:${sha256(source.markdown)}`;
+    return {
+      source_ref: sourceRef,
+      coverage_key: stableIdentifier("la_coverage", `${stableBase}:coverage`),
+      meaningful_unit_occurrences: occurrences
+    };
+  });
 }
 
-function unitOccurrenceKey(locator: string): string | undefined {
+function unitOccurrence(locator: string): { key: string; source_ref: string } | undefined {
   const matched = /^migration:(la_source_[a-f0-9]{24}):unit:(sha256:[a-f0-9]{64}):occurrence:(\d+):excerpt:\d+$/.exec(locator);
-  return matched ? `${matched[1]}:${matched[2]}:${matched[3]}` : undefined;
+  return matched ? { key: `${matched[1]}:${matched[2]}:${matched[3]}`, source_ref: matched[1]! } : undefined;
+}
+
+function stableIdentifier(prefix: string, input: string): string {
+  return `${prefix}_${sha256(input).slice("sha256:".length, "sha256:".length + 24)}`;
+}
+
+function sha256(input: string): `sha256:${string}` {
+  return `sha256:${createHash("sha256").update(input).digest("hex")}`;
 }
 
 function manifestMismatchCount(left: CanonicalManifestEntry[], right: CanonicalManifestEntry[]): number {
