@@ -132,7 +132,7 @@ Commit: `git commit -m "Add reversible canonical entity redirects (#46)"`
 - Returns `{ totals, represented_coverage_keys, unrepresented_coverage_keys, open_review_ids, blockers, cutover_ready }`, where blockers are stable public-safe reason codes.
 - Produces `loadCanonicalParityInputsFromObjects(objects, decryptPayload)` that reads only `manifest`, `review`, and `assertion` canonical envelopes.
 
-- [ ] **Step 1: Write failing parity tests**
+- [x] **Step 1: Write failing parity tests**
 
 ```ts
 const report = projectCanonicalParity({
@@ -148,17 +148,17 @@ expect(report.blockers).toContain("unrepresented-coverage");
 
 Add a second fixture where an `owner-review` item names a represented observation and every coverage key is represented; assert no open-review blocker. Add failures for a parity record naming a missing canonical id and an open review without an observation. Add a legacy envelope that must not be decrypted by the loader.
 
-- [ ] **Step 2: Verify the tests fail**
+- [x] **Step 2: Verify the tests fail**
 
 Run: `pnpm vitest run packages/graph-service/src/canonical-parity.test.ts`
 
 Expected: FAIL because the parity projection module does not exist.
 
-- [ ] **Step 3: Implement the report without migration-source dependencies**
+- [x] **Step 3: Implement the report without migration-source dependencies**
 
 Build maps by coverage key and canonical object id. A parity record is valid only when `coverage_state === "represented"` and all named object ids are in `canonical_object_ids`. For `research`, `owner-review`, and `deferred-unknown`, require at least one proposed id in `observations`; otherwise add `open-review-without-observation`. Never report raw payload text, locators, or source context.
 
-- [ ] **Step 4: Verify and commit**
+- [x] **Step 4: Verify and commit**
 
 Run: `pnpm vitest run packages/graph-service/src/canonical-parity.test.ts packages/graph-service/src/canonical-entity-resolution.test.ts`
 
@@ -171,7 +171,7 @@ Commit: `git commit -m "Add canonical parity cutover reporting (#48)"`
 **Files:**
 - Modify only the task files and this plan if verification reveals a real issue.
 
-- [ ] **Step 1: Run focused proof**
+- [x] **Step 1: Run focused proof**
 
 Run:
 
@@ -181,7 +181,7 @@ pnpm vitest run packages/contracts/src/knowledge.test.ts packages/graph-service/
 
 Expected: PASS.
 
-- [ ] **Step 2: Run repository gate and legacy audit**
+- [x] **Step 2: Run repository gate and legacy audit**
 
 Run:
 
