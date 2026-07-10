@@ -74,6 +74,6 @@ pnpm check
 
 Expected: no remote/legacy path in the local client; repository gate passes.
 
-- [ ] **Step 2: Track and commit locally**
+- [x] **Step 2: Track and commit locally**
 
 Post public-safe scope and test evidence to #49 and #43, keep #49 In Progress until the review app consumes it, and commit locally only.
