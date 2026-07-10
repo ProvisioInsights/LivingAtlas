@@ -31,7 +31,7 @@
 - A transaction takes `{ expected_generation, actor_id, operation_id, idempotency_key, recorded_at, writes }`; each write is a full create or update envelope/draft.
 - A successful result contains all committed objects, their derived `SyncChangeEvent`s, one incremented generation, one journal sequence, and `persistence: "atomic-snapshot-operation"`.
 
-- [ ] **Step 1: Write failing transaction tests**
+- [x] **Step 1: Write failing transaction tests**
 
 Add tests proving that a two-write transaction:
 
@@ -57,13 +57,13 @@ expect(store.listObjects().map((object) => object.object_id)).toEqual([firstDraf
 Add a second test with a duplicate object id in the same transaction and assert
 `{ ok: false, reason: "object-already-exists" }` and an unchanged generation and object list. Add a third test that retries the same idempotency key and receives the original committed result without another generation increment.
 
-- [ ] **Step 2: Run the test to verify it fails**
+- [x] **Step 2: Run the test to verify it fails**
 
 Run: `pnpm vitest run packages/local-graph-store/src/local-graph-store.test.ts`
 
 Expected: FAIL because `commitTransaction` does not exist.
 
-- [ ] **Step 3: Write the minimal transaction implementation**
+- [x] **Step 3: Write the minimal transaction implementation**
 
 Add strict Zod schemas and types for operation records. Add optional
 `operation_records` to `LocalGraphSnapshotSchema` with default `[]`, and add it
@@ -92,7 +92,7 @@ the complete state with one `atomicWriteJson(snapshotPath, ...)`. Assign
 `this.state` only after that write succeeds. Do not append any per-object journal
 entry for this transaction.
 
-- [ ] **Step 4: Run the test to verify it passes**
+- [x] **Step 4: Run the test to verify it passes**
 
 Run: `pnpm vitest run packages/local-graph-store/src/local-graph-store.test.ts`
 

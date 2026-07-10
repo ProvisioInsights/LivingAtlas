@@ -93,7 +93,110 @@ function sensitivePlaintextDraft(objectId: string) {
   };
 }
 
+function canonicalTransactionDraft(objectId: string, recordedAt = now) {
+  return {
+    schema_version: 1,
+    authority_id: fixtureAuthorityId,
+    object_id: objectId,
+    object_type: "assertion",
+    version: 1,
+    access_class: "local-private",
+    encryption_class: "plaintext",
+    created_at: recordedAt,
+    updated_at: recordedAt,
+    content_hash: fixedHash("b"),
+    visible_metadata: {
+      tombstone: false,
+      remote_indexable: false
+    },
+    payload: {
+      kind: "plaintext-json",
+      data: {
+        schema: "atlas.fact:v1",
+        assertion_id: objectId,
+        subject_entity_id: "la_object_entity0001",
+        predicate: "status",
+        value: { kind: "text", value: "Synthetic transaction fact" },
+        recorded_at: recordedAt,
+        lineage_action: "assert",
+        evidence_links: [{ evidence_id: "la_object_evidence0001", stance: "supports" }],
+        confidence: {
+          band: "high",
+          assessment_kind: "assertion",
+          method: "synthetic-transaction-test",
+          assessed_at: recordedAt,
+          evidence_refs: ["la_object_evidence0001"]
+        }
+      }
+    }
+  };
+}
+
 describe("file local graph store", () => {
+  it("commits a complete local operation group once or leaves no partial objects", async () => {
+    const directory = await tempStoreDir();
+    const keyring = createDefaultLocalKeyring({ authorityId: fixtureAuthorityId, createdAt: now });
+    const store = await FileLocalGraphStore.open({
+      directory,
+      authorityId: fixtureAuthorityId,
+      plaintextPersistence: "encrypt",
+      keyring,
+      now: () => now
+    });
+    const first = canonicalTransactionDraft("la_object_transaction0001");
+    const second = canonicalTransactionDraft("la_object_transaction0002");
+
+    await expect(store.commitTransaction({
+      expected_generation: 0,
+      actor_id: fixtureLocalClientId,
+      operation_id: "la_operation_resolution0001",
+      idempotency_key: "la_idem_resolution0001",
+      recorded_at: now,
+      writes: [
+        { kind: "create", object: first },
+        { kind: "create", object: second }
+      ]
+    })).resolves.toMatchObject({
+      ok: true,
+      generation: 1,
+      objects: [
+        expect.objectContaining({ object_id: first.object_id }),
+        expect.objectContaining({ object_id: second.object_id })
+      ]
+    });
+    expect(store.listObjects().map((object) => object.object_id)).toEqual([first.object_id, second.object_id]);
+
+    await expect(store.commitTransaction({
+      expected_generation: 1,
+      actor_id: fixtureLocalClientId,
+      operation_id: "la_operation_resolution0002",
+      idempotency_key: "la_idem_resolution0002",
+      recorded_at: now,
+      writes: [
+        { kind: "create", object: canonicalTransactionDraft("la_object_transaction0003") },
+        { kind: "create", object: canonicalTransactionDraft("la_object_transaction0003") }
+      ]
+    })).resolves.toEqual(expect.objectContaining({
+      ok: false,
+      reason: "object-already-exists",
+      current_generation: 1
+    }));
+    expect(store.listObjects().map((object) => object.object_id)).toEqual([first.object_id, second.object_id]);
+
+    await expect(store.commitTransaction({
+      expected_generation: 0,
+      actor_id: fixtureLocalClientId,
+      operation_id: "la_operation_resolution0001",
+      idempotency_key: "la_idem_resolution0001",
+      recorded_at: now,
+      writes: [{ kind: "create", object: first }]
+    })).resolves.toMatchObject({
+      ok: true,
+      generation: 1
+    });
+    expect(store.status().generation).toBe(1);
+  });
+
   it("initializes from synthetic fixtures and redacts plaintext payloads on disk by default", async () => {
     const directory = await tempStoreDir();
     const store = await FileLocalGraphStore.open({
