@@ -248,7 +248,7 @@ rg -n 'object_batch|edge_batch|logseq-|object_type: "page"|object_type: "block"'
 Expected: `resolution_apply` does not call generic batch tools or write a legacy
 canonical payload.
 
-- [ ] **Step 4: Update tracker and commit locally**
+- [x] **Step 4: Update tracker and commit locally**
 
 Post public-safe test and scope evidence to #47 and #43, keep #47 In Progress
 until #46/#48/#49 consume the operation record, and commit only this #47 slice.
