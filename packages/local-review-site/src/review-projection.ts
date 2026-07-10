@@ -17,10 +17,11 @@ export type LocalReviewQueueItem = {
   proposed_records: CanonicalPayload[];
   evidence_ids: string[];
   evidence: CanonicalEvidencePayload[];
+  source_context: CanonicalEvidencePayload[];
   parity_ids: string[];
   parity_records: CanonicalParityRecordPayload[];
   missing_references: string[];
-  context_unavailable: true;
+  context_unavailable: boolean;
 };
 
 export type LocalReviewQueue = {
@@ -65,8 +66,9 @@ export async function projectLocalReviewQueue(input: {
       return payload?.schema === "atlas.evidence:v1" ? [payload] : [];
     });
     const parityRecords = [...payloads.values()].filter((payload): payload is CanonicalParityRecordPayload => payload.schema === "atlas.parity-record:v1" && parityIds.includes(payload.parity_id));
+    const sourceContext = evidence.filter((item) => item.source_kind === "migration");
     const referenced = [...proposed, ...evidenceIds, ...parityIds];
-    return { review_id: review.review_id, candidate_id: review.candidate_id, resolution_state: review.resolution_state, proposed_object_ids: proposed, proposed_records: proposedRecords, evidence_ids: [...evidenceIds].sort(), evidence, parity_ids: parityIds.sort(), parity_records: parityRecords, missing_references: referenced.filter((id) => !payloads.has(id)).sort(), context_unavailable: true };
+    return { review_id: review.review_id, candidate_id: review.candidate_id, resolution_state: review.resolution_state, proposed_object_ids: proposed, proposed_records: proposedRecords, evidence_ids: [...evidenceIds].sort(), evidence, source_context: sourceContext, parity_ids: parityIds.sort(), parity_records: parityRecords, missing_references: referenced.filter((id) => !payloads.has(id)).sort(), context_unavailable: sourceContext.length === 0 };
   };
   const items = reviews.map(itemFor).sort((left, right) => left.review_id.localeCompare(right.review_id));
   return {
