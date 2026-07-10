@@ -1,0 +1,10 @@
+{
+  "name": "@living-atlas/local-review-site",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@living-atlas/contracts": "workspace:*",
+    "@living-atlas/graph-service": "workspace:*"
+  }
+}

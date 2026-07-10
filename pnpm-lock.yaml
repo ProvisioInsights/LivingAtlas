@@ -306,6 +306,15 @@ importers:
         specifier: 4.4.3
         version: 4.4.3
 
+  packages/local-review-site:
+    dependencies:
+      '@living-atlas/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+      '@living-atlas/graph-service':
+        specifier: workspace:*
+        version: link:../graph-service
+
   packages/mcp-contract: {}
 
   packages/policy:

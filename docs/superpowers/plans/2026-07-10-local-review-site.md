@@ -28,21 +28,21 @@
 - Produces `projectLocalReviewQueue({ objects, decryptPayload })` with `owner_review`, `research`, and `automatic` buckets.
 - Each item carries its review payload, proposed canonical records, evidence, parity records, dependency ids, and an explicit `missing_references` list—never a source/page/block payload.
 
-- [ ] **Step 1: Write failing synthetic projection tests**
+- [x] **Step 1: Write failing synthetic projection tests**
 
 Use encrypted review, evidence, observation, and parity objects. Assert the owner bucket contains only `resolution_state: "owner-review"`; research and `auto-applied` appear in separate buckets; referenced evidence/parity/observation ids resolve into the item while a missing id is reported, not invented.
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `pnpm vitest run packages/local-review-site/src/review-projection.test.ts`
 
 Expected: FAIL because the module does not exist.
 
-- [ ] **Step 3: Implement narrow canonical projection**
+- [x] **Step 3: Implement narrow canonical projection**
 
 Decrypt only envelope types `review`, `evidence`, `assertion`, `edge`, `entity`, and `manifest`; parse their canonical contracts and join by canonical ids. Reject/ignore legacy types before decrypt. Return no raw source context until an Atlas-native migration-context record exists; report `context_unavailable` instead.
 
-- [ ] **Step 4: Verify and commit**
+- [x] **Step 4: Verify and commit**
 
 Run: `pnpm vitest run packages/local-review-site/src/review-projection.test.ts`
 
