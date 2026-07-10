@@ -12,6 +12,7 @@ export type LivingAtlasMcpToolName =
   | "object_update"
   | "object_delete"
   | "object_batch"
+  | "resolution_apply"
   | "search"
   | "traverse"
   | "timeline"
@@ -350,6 +351,18 @@ export const LivingAtlasMcpToolDefinitions = [
     }, ["authority_id", "items"])
   },
   {
+    name: "resolution_apply",
+    description: "Apply one fully validated canonical review resolution atomically on the authenticated local Atlas replica.",
+    inputSchema: objectSchema({
+      operation_id: { type: "string", pattern: "^la_operation_[A-Za-z0-9_-]{8,}$" },
+      idempotency_key: { type: "string", pattern: "^la_idem_[A-Za-z0-9_-]{8,}$" },
+      candidate_id: { type: "string", pattern: "^la_candidate_[A-Za-z0-9_-]{8,}$" },
+      expected_generation: { type: "integer", minimum: 0 },
+      expected_review_version: { type: "integer", minimum: 0 },
+      objects: { type: "array", minItems: 1, items: { type: "object" } }
+    }, ["operation_id", "idempotency_key", "candidate_id", "expected_generation", "expected_review_version", "objects"])
+  },
+  {
     name: "search",
     description: "Search graph object text and metadata. Current mode is deterministic text scoring; embedding/vector search can replace the scorer later.",
     inputSchema: objectSchema({
@@ -476,6 +489,21 @@ export const LivingAtlasMcpToolDefinitions = [
 ] as const satisfies readonly LivingAtlasMcpToolDefinition[];
 
 export const LivingAtlasMcpToolNames = LivingAtlasMcpToolDefinitions.map((tool) => tool.name);
+
+/** Tools that must never be advertised or callable through remote MCP transports. */
+export const LocalOnlyLivingAtlasMcpToolNames = ["resolution_apply"] as const satisfies readonly LivingAtlasMcpToolName[];
+export type RemoteLivingAtlasMcpToolName = Exclude<
+  LivingAtlasMcpToolName,
+  (typeof LocalOnlyLivingAtlasMcpToolNames)[number]
+>;
+export const RemoteLivingAtlasMcpToolDefinitions: readonly LivingAtlasMcpToolDefinition[] = LivingAtlasMcpToolDefinitions.filter(
+  (tool) => !LocalOnlyLivingAtlasMcpToolNames.includes(
+    tool.name as (typeof LocalOnlyLivingAtlasMcpToolNames)[number]
+  )
+);
+export const RemoteLivingAtlasMcpToolNames = RemoteLivingAtlasMcpToolDefinitions.map(
+  (tool) => tool.name as RemoteLivingAtlasMcpToolName
+);
 
 export function livingAtlasMcpToolDefinition(name: LivingAtlasMcpToolName): LivingAtlasMcpToolDefinition {
   const definition = LivingAtlasMcpToolDefinitions.find((tool) => tool.name === name);

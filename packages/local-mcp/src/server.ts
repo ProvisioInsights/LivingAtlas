@@ -8,6 +8,7 @@ import {
   type LivingAtlasMcpToolName
 } from "@living-atlas/mcp-contract";
 import { z } from "zod";
+import { PlaintextGraphObjectDraftSchema } from "@living-atlas/local-keyring";
 import {
   LocalGraphExpectedVersionSchema,
   LocalGraphObjectInputSchema,
@@ -21,6 +22,7 @@ import {
   localListObjects,
   localReadObject,
   localReadEdgeObject,
+  localResolutionApply,
   localReconcileGraph,
   localSearchObjects,
   localSensitiveDecrypt,
@@ -39,6 +41,7 @@ import {
   type LocalGraphEdgeReadToolInput,
   type LocalGraphEdgeUpdateToolInput,
   type LocalGraphReadToolInput,
+  type LocalResolutionApplyInput,
   type LocalGraphSearchToolInput,
   type LocalGraphTombstoneToolInput,
   type LocalGraphToolInput,
@@ -106,6 +109,14 @@ const ObjectBatchInputSchema = {
   idempotency_key: z.string().optional(),
   items: z.array(ObjectBatchItemInputSchema).min(1).max(100),
   limits: z.object(BatchLimitsInputSchema).strict().optional()
+};
+const ResolutionApplyInputSchema = {
+  operation_id: z.string().regex(/^la_operation_[A-Za-z0-9_-]{8,}$/),
+  idempotency_key: z.string().regex(/^la_idem_[A-Za-z0-9_-]{8,}$/),
+  candidate_id: z.string().regex(/^la_candidate_[A-Za-z0-9_-]{8,}$/),
+  expected_generation: z.number().int().nonnegative(),
+  expected_review_version: z.number().int().nonnegative(),
+  objects: z.array(PlaintextGraphObjectDraftSchema).min(1)
 };
 const ActivityReadInputSchema = {
   authority_id: AuthorityIdSchema.describe("Living Atlas authority id.").optional(),
@@ -195,6 +206,7 @@ export const LocalMcpToolInputSchemas = {
   object_update: UpdateObjectInputSchema,
   object_delete: TombstoneObjectInputSchema,
   object_batch: ObjectBatchInputSchema,
+  resolution_apply: ResolutionApplyInputSchema,
   search: SearchInputSchema,
   traverse: TraverseInputSchema,
   timeline: TimelineInputSchema,
@@ -246,6 +258,10 @@ function withUpdateAuthorization(input: unknown, options: LocalMcpServerAuthOpti
 
 function withTombstoneAuthorization(input: unknown, options: LocalMcpServerAuthOptions): LocalGraphTombstoneToolInput {
   return withAuthorization(input, options) as LocalGraphTombstoneToolInput;
+}
+
+function withResolutionAuthorization(input: unknown, options: LocalMcpServerAuthOptions): LocalResolutionApplyInput {
+  return withAuthorization(input, options) as LocalResolutionApplyInput;
 }
 
 function withSearchAuthorization(input: unknown, options: LocalMcpServerAuthOptions): LocalGraphSearchToolInput {
@@ -318,6 +334,8 @@ export function createLivingAtlasLocalMcpServer(
           return localUpdateObject(context, withUpdateAuthorization(input, options));
         case "object_delete":
           return localTombstoneObject(context, withTombstoneAuthorization(input, options));
+        case "resolution_apply":
+          return localResolutionApply(context, withResolutionAuthorization(input, options));
         case "object_batch":
         case "edge_batch":
           throw new Error("batch-tools-are-handled-by-graph-service");
@@ -526,6 +544,22 @@ export function createLivingAtlasLocalMcpServer(
       }
     },
     async (input: unknown) => asToolContent(await callLocalTool("object_batch", input))
+  );
+
+  server.registerTool(
+    "resolution_apply",
+    {
+      title: "Apply canonical review resolution",
+      description: toolMetadata("resolution_apply").description,
+      inputSchema: LocalMcpToolInputSchemas.resolution_apply,
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false
+      }
+    },
+    async (input: unknown) => asToolContent(await callLocalTool("resolution_apply", input))
   );
 
   server.registerTool(

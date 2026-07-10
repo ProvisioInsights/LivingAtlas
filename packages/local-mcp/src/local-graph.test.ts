@@ -107,6 +107,97 @@ function sensitivePlaintextDraft(objectId: string) {
   };
 }
 
+function canonicalResolutionDrafts(reviewVersion: number) {
+  const entityId = "la_object_resolutionentity0001";
+  const evidenceId = "la_object_resolutionevidence0001";
+  const factId = "la_object_resolutionfact0001";
+  const reviewId = "la_object_resolutionreview0001";
+  const parityId = "la_object_resolutionparity0001";
+  const candidateId = "la_candidate_resolution0001";
+  const coverageKey = "la_coverage_resolution0001";
+
+  const draft = (objectId: string, objectType: string, version: number, data: Record<string, unknown>) => ({
+    schema_version: 1 as const,
+    authority_id: fixtureAuthorityId,
+    object_id: objectId,
+    object_type: objectType,
+    version,
+    access_class: "local-private" as const,
+    encryption_class: "plaintext" as const,
+    created_at: now,
+    updated_at: now,
+    content_hash: fixedHash(objectId.slice(-1)),
+    visible_metadata: {
+      schema_namespace: "atlas/synthetic-resolution",
+      tombstone: false,
+      size_class: "tiny" as const,
+      remote_indexable: false
+    },
+    payload: { kind: "plaintext-json" as const, data }
+  });
+
+  const entity = draft(entityId, "entity", 1, {
+    schema: "atlas.entity:v1",
+    entity_id: entityId,
+    type: "organization",
+    subtype: "company",
+    name: "Synthetic Resolution Company",
+    aliases: [],
+    created_at: now,
+    updated_at: now
+  });
+  const evidence = draft(evidenceId, "evidence", 1, {
+    schema: "atlas.evidence:v1",
+    evidence_id: evidenceId,
+    source_kind: "migration",
+    locator: "synthetic://resolution/0001",
+    content_hash: fixedHash("e"),
+    retrieved_at: now,
+    independence_key: "synthetic-resolution-source",
+    excerpt: "Synthetic evidence for one canonical assertion."
+  });
+  const fact = draft(factId, "assertion", 1, {
+    schema: "atlas.fact:v1",
+    assertion_id: factId,
+    subject_entity_id: entityId,
+    predicate: "name",
+    value: { kind: "text", value: "Synthetic Resolution Company" },
+    recorded_at: now,
+    lineage_action: "assert",
+    supersedes: [],
+    evidence_links: [{ evidence_id: evidenceId, stance: "supports" }],
+    confidence: {
+      band: "high",
+      assessment_kind: "assertion",
+      method: "synthetic-fixture",
+      assessed_at: now,
+      evidence_refs: [evidenceId]
+    }
+  });
+  const review = draft(reviewId, "review", reviewVersion, {
+    schema: "atlas.review-item:v1",
+    review_id: reviewId,
+    candidate_id: candidateId,
+    source_coverage_keys: [coverageKey],
+    recommendation: "auto-apply",
+    resolution_state: "resolved",
+    proposed_object_ids: [entityId, evidenceId, factId],
+    recorded_at: now
+  });
+  const parity = draft(parityId, "manifest", 1, {
+    schema: "atlas.parity-record:v1",
+    parity_id: parityId,
+    source_coverage_key: coverageKey,
+    coverage_state: "represented",
+    representation_kind: "fact",
+    canonical_object_ids: [factId],
+    idempotency_key: "la_idem_resolution0001",
+    recorded_at: now
+  });
+
+  return { entity, evidence, fact, review, parity, candidateId };
+}
+
 function temporalEdgeObject(objectId: string): GraphObjectEnvelope {
   return {
     schema_version: 1,
@@ -270,6 +361,263 @@ describe("local fixture graph tools", () => {
       expected_review_version: 1,
       objects: []
     })).resolves.toEqual({ ok: false, reason: "resolution-requires-durable-local-store" });
+  });
+
+  it("commits a complete resolution once and labels its review update in the local outbox", async () => {
+    const token = "local-token-resolution-atomic-0001";
+    const directory = await mkdtemp(join(tmpdir(), "living-atlas-local-resolution-"));
+    try {
+      const controlState = await createFixtureLocalControlState(token);
+      const keyring = createDefaultLocalKeyring({ authorityId: controlState.authority_id, createdAt: now });
+      const graphStore = await FileLocalGraphStore.open({
+        directory,
+        authorityId: controlState.authority_id,
+        plaintextPersistence: "encrypt",
+        keyring
+      });
+      const drafts = canonicalResolutionDrafts(2);
+      await expect(graphStore.createObject({
+        object: { ...drafts.review, version: 1, payload: { ...drafts.review.payload, data: {
+          ...drafts.review.payload.data,
+          resolution_state: "pending"
+        } } },
+        expected_generation: 0,
+        actor_id: fixtureLocalClientId,
+        recorded_at: now
+      })).resolves.toMatchObject({ ok: true, generation: 1 });
+
+      const auditSink = new InMemoryLocalMcpAuditSink();
+      const outboxSink = new InMemoryLocalMcpMutationOutboxSink();
+      const context = createLocalMcpContextFromControlState({
+        controlState,
+        graphStore,
+        decryptPayload: decryptWithKeyring(keyring),
+        auditSink,
+        outboxSink,
+        now
+      });
+
+      await expect(localResolutionApply(context, {
+        authorization: `Bearer ${token}`,
+        operation_id: "la_operation_resolution0001",
+        idempotency_key: "la_idem_resolution0001",
+        candidate_id: drafts.candidateId,
+        expected_generation: 1,
+        expected_review_version: 1,
+        objects: [drafts.entity, drafts.evidence, drafts.fact, drafts.review, drafts.parity]
+      })).resolves.toMatchObject({
+        ok: true,
+        result: {
+          local_commit: "committed",
+          audit: "recorded",
+          sync_queue: "queued",
+          committed_object_ids: expect.arrayContaining([
+            drafts.entity.object_id,
+            drafts.evidence.object_id,
+            drafts.fact.object_id,
+            drafts.review.object_id,
+            drafts.parity.object_id
+          ]),
+          generation: 2,
+          journal_sequence: 2
+        }
+      });
+
+      expect(graphStore.status()).toMatchObject({ generation: 2, object_count: 5 });
+      expect(outboxSink.records.map((record) => record.mutation)).toEqual([
+        "created", "created", "created", "updated", "created"
+      ]);
+      expect(outboxSink.records.map((record) => record.generation)).toEqual([2, 2, 2, 2, 2]);
+      expect(outboxSink.records.every((record) => record.object.payload.kind === "ciphertext-inline")).toBe(true);
+      expect(auditSink.events).toContainEqual(expect.objectContaining({
+        event_type: "tool.allowed",
+        tool_name: "resolution_apply",
+        reason_code: "resolution-committed"
+      }));
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects a resolution without represented parity before writing any canonical object", async () => {
+    const token = "local-token-resolution-parity-0001";
+    const directory = await mkdtemp(join(tmpdir(), "living-atlas-local-resolution-parity-"));
+    try {
+      const controlState = await createFixtureLocalControlState(token);
+      const keyring = createDefaultLocalKeyring({ authorityId: controlState.authority_id, createdAt: now });
+      const graphStore = await FileLocalGraphStore.open({
+        directory,
+        authorityId: controlState.authority_id,
+        plaintextPersistence: "encrypt",
+        keyring
+      });
+      const drafts = canonicalResolutionDrafts(1);
+      const context = createLocalMcpContextFromControlState({ controlState, graphStore, now });
+
+      await expect(localResolutionApply(context, {
+        authorization: `Bearer ${token}`,
+        operation_id: "la_operation_resolutionparity0001",
+        idempotency_key: "la_idem_resolutionparity0001",
+        candidate_id: drafts.candidateId,
+        expected_generation: 0,
+        expected_review_version: 1,
+        objects: [drafts.entity, drafts.evidence, drafts.fact, drafts.review]
+      })).resolves.toEqual({ ok: false, reason: "resolution-parity-mismatch" });
+
+      expect(graphStore.status()).toMatchObject({ generation: 0, object_count: 0 });
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects a pending review as an unresolved semantic resolution", async () => {
+    const token = "local-token-resolution-pending-0001";
+    const directory = await mkdtemp(join(tmpdir(), "living-atlas-local-resolution-pending-"));
+    try {
+      const controlState = await createFixtureLocalControlState(token);
+      const keyring = createDefaultLocalKeyring({ authorityId: controlState.authority_id, createdAt: now });
+      const graphStore = await FileLocalGraphStore.open({
+        directory,
+        authorityId: controlState.authority_id,
+        plaintextPersistence: "encrypt",
+        keyring
+      });
+      const drafts = canonicalResolutionDrafts(1);
+      const pendingReview = {
+        ...drafts.review,
+        payload: {
+          ...drafts.review.payload,
+          data: { ...drafts.review.payload.data, resolution_state: "pending" }
+        }
+      };
+      const context = createLocalMcpContextFromControlState({ controlState, graphStore, now });
+
+      await expect(localResolutionApply(context, {
+        authorization: `Bearer ${token}`,
+        operation_id: "la_operation_resolutionpending0001",
+        idempotency_key: "la_idem_resolutionpending0001",
+        candidate_id: drafts.candidateId,
+        expected_generation: 0,
+        expected_review_version: 1,
+        objects: [drafts.entity, drafts.evidence, drafts.fact, pendingReview, drafts.parity]
+      })).resolves.toEqual({ ok: false, reason: "resolution-review-not-resolved" });
+
+      expect(graphStore.status()).toMatchObject({ generation: 0, object_count: 0 });
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("reports an outbox failure for reconciliation after the local resolution commit", async () => {
+    const token = "local-token-resolution-outbox-0001";
+    const directory = await mkdtemp(join(tmpdir(), "living-atlas-local-resolution-outbox-"));
+    try {
+      const controlState = await createFixtureLocalControlState(token);
+      const keyring = createDefaultLocalKeyring({ authorityId: controlState.authority_id, createdAt: now });
+      const graphStore = await FileLocalGraphStore.open({
+        directory,
+        authorityId: controlState.authority_id,
+        plaintextPersistence: "encrypt",
+        keyring
+      });
+      const drafts = canonicalResolutionDrafts(1);
+      const context = createLocalMcpContextFromControlState({
+        controlState,
+        graphStore,
+        auditSink: new InMemoryLocalMcpAuditSink(),
+        outboxSink: {
+          async enqueue() {
+            throw new Error("synthetic outbox outage");
+          }
+        },
+        now
+      });
+
+      await expect(localResolutionApply(context, {
+        authorization: `Bearer ${token}`,
+        operation_id: "la_operation_resolutionoutbox0001",
+        idempotency_key: "la_idem_resolutionoutbox0001",
+        candidate_id: drafts.candidateId,
+        expected_generation: 0,
+        expected_review_version: 1,
+        objects: [drafts.entity, drafts.evidence, drafts.fact, drafts.review, drafts.parity]
+      })).resolves.toMatchObject({
+        ok: true,
+        result: {
+          local_commit: "committed",
+          audit: "recorded",
+          sync_queue: "reconciliation-required"
+        }
+      });
+      expect(graphStore.status()).toMatchObject({ generation: 1, object_count: 5 });
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("runs local create policy for every resolution member before its atomic commit", async () => {
+    const token = "local-token-resolution-readonly-0001";
+    const directory = await mkdtemp(join(tmpdir(), "living-atlas-local-resolution-readonly-"));
+    try {
+      const controlState = await createFixtureLocalControlState(token);
+      controlState.control_plane = readonlyControlPlane();
+      controlState.local_credentials[0]!.capability_id = "la_cap_localreadonly0001";
+      const keyring = createDefaultLocalKeyring({ authorityId: controlState.authority_id, createdAt: now });
+      const graphStore = await FileLocalGraphStore.open({
+        directory,
+        authorityId: controlState.authority_id,
+        plaintextPersistence: "encrypt",
+        keyring
+      });
+      const drafts = canonicalResolutionDrafts(1);
+      const context = createLocalMcpContextFromControlState({ controlState, graphStore, now });
+
+      await expect(localResolutionApply(context, {
+        authorization: `Bearer ${token}`,
+        operation_id: "la_operation_resolutionreadonly0001",
+        idempotency_key: "la_idem_resolutionreadonly0001",
+        candidate_id: drafts.candidateId,
+        expected_generation: 0,
+        expected_review_version: 1,
+        objects: [drafts.entity, drafts.evidence, drafts.fact, drafts.review, drafts.parity]
+      })).resolves.toEqual({ ok: false, reason: "capability-operation-denied" });
+
+      expect(graphStore.status()).toMatchObject({ generation: 0, object_count: 0 });
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects a canonical payload whose semantic identifier differs from its envelope identifier", async () => {
+    const token = "local-token-resolution-object-id-0001";
+    const directory = await mkdtemp(join(tmpdir(), "living-atlas-local-resolution-object-id-"));
+    try {
+      const controlState = await createFixtureLocalControlState(token);
+      const keyring = createDefaultLocalKeyring({ authorityId: controlState.authority_id, createdAt: now });
+      const graphStore = await FileLocalGraphStore.open({
+        directory,
+        authorityId: controlState.authority_id,
+        plaintextPersistence: "encrypt",
+        keyring
+      });
+      const drafts = canonicalResolutionDrafts(1);
+      const mismatchedReview = { ...drafts.review, object_id: "la_object_mismatchedreview0001" };
+      const context = createLocalMcpContextFromControlState({ controlState, graphStore, now });
+
+      await expect(localResolutionApply(context, {
+        authorization: `Bearer ${token}`,
+        operation_id: "la_operation_resolutionobjectid0001",
+        idempotency_key: "la_idem_resolutionobjectid0001",
+        candidate_id: drafts.candidateId,
+        expected_generation: 0,
+        expected_review_version: 1,
+        objects: [drafts.entity, drafts.evidence, drafts.fact, mismatchedReview, drafts.parity]
+      })).resolves.toEqual({ ok: false, reason: "resolution-object-id-mismatch" });
+
+      expect(graphStore.status()).toMatchObject({ generation: 0, object_count: 0 });
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
   });
 
   it("returns local status for an authenticated local client", async () => {

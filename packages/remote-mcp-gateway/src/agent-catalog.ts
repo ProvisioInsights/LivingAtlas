@@ -1,7 +1,7 @@
 import {
-  LivingAtlasMcpToolDefinitions,
-  LivingAtlasMcpToolNames,
-  type LivingAtlasMcpToolName
+  RemoteLivingAtlasMcpToolDefinitions,
+  RemoteLivingAtlasMcpToolNames,
+  type RemoteLivingAtlasMcpToolName
 } from "@living-atlas/mcp-contract";
 
 /**
@@ -45,15 +45,15 @@ export type GatewayEnv = {
  * imports these to drive its `McpServer.tool` registrations.
  */
 export function remoteToolNames(): string[] {
-  return LivingAtlasMcpToolNames.map((name) => `remote_${name}`);
+  return RemoteLivingAtlasMcpToolNames.map((name) => `remote_${name}`);
 }
 
-export function toRemoteToolName(name: LivingAtlasMcpToolName): string {
+export function toRemoteToolName(name: RemoteLivingAtlasMcpToolName): string {
   return `remote_${name}`;
 }
 
 export function buildToolRegistrations(props: GatewayProps): ToolRegistration[] {
-  return LivingAtlasMcpToolDefinitions.map((def) => ({
+  return RemoteLivingAtlasMcpToolDefinitions.map((def) => ({
     name: `remote_${def.name}`,
     description: def.description,
     capability_id: props.capability_id

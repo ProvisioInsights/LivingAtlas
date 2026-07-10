@@ -6,11 +6,17 @@ import {
   isStreamingTool,
   type GatewayProps
 } from "./agent-catalog";
-import { LivingAtlasMcpToolNames, LivingAtlasMcpToolDefinitions } from "@living-atlas/mcp-contract";
+import { RemoteLivingAtlasMcpToolNames, RemoteLivingAtlasMcpToolDefinitions } from "@living-atlas/mcp-contract";
 
 describe("gateway agent tool surface", () => {
   it("exposes exactly the mcp-contract catalog, prefixed remote_", () => {
-    expect(remoteToolNames()).toEqual(LivingAtlasMcpToolNames.map((n) => `remote_${n}`));
+    expect(remoteToolNames()).toEqual(RemoteLivingAtlasMcpToolNames.map((n) => `remote_${n}`));
+  });
+
+  it("does not expose local-only semantic resolution through the gateway", () => {
+    const props: GatewayProps = { capability_id: "la_cap_owner0001", authority_id: "la_authority_worker0001" };
+    expect(remoteToolNames()).not.toContain("remote_resolution_apply");
+    expect(buildToolRegistrations(props).map((registration) => registration.name)).not.toContain("remote_resolution_apply");
   });
 
   it("prefixes a single tool name deterministically", () => {
@@ -29,7 +35,7 @@ describe("gateway agent tool surface", () => {
   it("carries the mcp-contract description onto each registration (no drift)", () => {
     const props: GatewayProps = { capability_id: "c", authority_id: "a" };
     const regs = buildToolRegistrations(props);
-    for (const def of LivingAtlasMcpToolDefinitions) {
+    for (const def of RemoteLivingAtlasMcpToolDefinitions) {
       const reg = regs.find((r) => r.name === `remote_${def.name}`);
       expect(reg?.description).toBe(def.description);
     }

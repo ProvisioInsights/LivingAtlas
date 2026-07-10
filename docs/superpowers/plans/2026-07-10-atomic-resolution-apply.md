@@ -112,7 +112,7 @@ idempotent.
 - Input carries authorization, operation id, idempotency key, candidate id, expected graph generation, expected review version, and complete plaintext canonical drafts.
 - Receipt separates `local_commit: "committed" | "not-committed"`, `audit: "recorded" | "reconciliation-required"`, and `sync_queue: "queued" | "not-configured" | "reconciliation-required"`.
 
-- [ ] **Step 1: Write the failing local MCP tests**
+- [x] **Step 1: Write the failing local MCP tests**
 
 Build a synthetic local keyring/store context and an authenticated local client.
 Create a request with an entity draft, fact draft, evidence draft, review-item
@@ -141,13 +141,13 @@ set; assert `local_commit: "not-committed"` and no object-count change. Add a
 third request with an outbox sink that throws; assert `local_commit: "committed"`
 and `sync_queue: "reconciliation-required"`.
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [x] **Step 2: Run the tests to verify they fail**
 
 Run: `pnpm vitest run packages/local-mcp/src/local-graph.test.ts`
 
 Expected: FAIL because `localResolutionApply` does not exist.
 
-- [ ] **Step 3: Write the minimal local resolution service**
+- [x] **Step 3: Write the minimal local resolution service**
 
 Add a strict input schema that accepts only `PlaintextGraphObjectDraft`s whose
 `payload.data` parses as `CanonicalWriteSchema`; require the envelope object type
@@ -168,7 +168,7 @@ outbox enqueue per committed object using the same operation id/generation/
 sequence. Catch audit or outbox failures independently and return the receipt
 states instead of changing the local commit result.
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [x] **Step 4: Run the tests to verify they pass**
 
 Run: `pnpm vitest run packages/local-mcp/src/local-graph.test.ts packages/local-graph-store/src/local-graph-store.test.ts`
 
@@ -188,19 +188,19 @@ are reported honestly.
 - Adds `resolution_apply` to `LivingAtlasMcpToolName` and its local-only metadata.
 - `LocalMcpToolInputSchemas.resolution_apply` exposes the typed request without an authorization field; the server injects authorization internally.
 
-- [ ] **Step 1: Write the failing server contract test**
+- [x] **Step 1: Write the failing server contract test**
 
 Add assertions that `LivingAtlasMcpToolNames` and `LocalMcpToolInputSchemas` both
 contain `resolution_apply`, its input schema has no `authorization` property,
 and the graph-service adapter dispatches it to `localResolutionApply`.
 
-- [ ] **Step 2: Run the test to verify it fails**
+- [x] **Step 2: Run the test to verify it fails**
 
 Run: `pnpm vitest run packages/local-mcp/src/server.test.ts packages/graph-service/src/index.test.ts`
 
 Expected: FAIL because the tool name and route are absent.
 
-- [ ] **Step 3: Write the minimal MCP wiring**
+- [x] **Step 3: Write the minimal MCP wiring**
 
 Add the name, public-safe description, and an object input schema with
 `operation_id`, `idempotency_key`, `candidate_id`, `expected_generation`,
@@ -209,7 +209,7 @@ only the local-stdio command to `localResolutionApply`; do not add a remote HTTP
 route or Cloudflare worker handler. Register one MCP tool with
 `readOnlyHint: false`, `destructiveHint: false`, and `idempotentHint: true`.
 
-- [ ] **Step 4: Run the test to verify it passes**
+- [x] **Step 4: Run the test to verify it passes**
 
 Run: `pnpm vitest run packages/local-mcp/src/server.test.ts packages/graph-service/src/index.test.ts`
 
@@ -221,7 +221,7 @@ Expected: PASS; generic batch tools remain separate from semantic resolution.
 
 - Modify only the files in Tasks 1–3 and this plan if verification finds a real defect.
 
-- [ ] **Step 1: Run focused tests**
+- [x] **Step 1: Run focused tests**
 
 Run:
 
@@ -231,13 +231,13 @@ pnpm vitest run packages/local-graph-store/src/local-graph-store.test.ts package
 
 Expected: PASS.
 
-- [ ] **Step 2: Run full verification**
+- [x] **Step 2: Run full verification**
 
 Run: `pnpm check`
 
 Expected: repository safety, typecheck, and all tests pass.
 
-- [ ] **Step 3: Audit the resolution boundary**
+- [x] **Step 3: Audit the resolution boundary**
 
 Run:
 

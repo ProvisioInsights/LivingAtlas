@@ -21,6 +21,7 @@ import {
   ObjectTypeSchema,
   Sha256HashSchema,
   TemporalEdgeSchema,
+  canonicalPayloadObjectId,
   canonicalizePredicate,
   type TemporalEdge
 } from "@living-atlas/contracts";
@@ -721,6 +722,9 @@ export async function localResolutionApply(
       payload: draft.data.payload.data
     });
     if (!canonicalWrite.success) return { ok: false, reason: "resolution-invalid-canonical-write" };
+    if (draft.data.object_id !== canonicalPayloadObjectId(canonicalWrite.data.payload)) {
+      return { ok: false, reason: "resolution-object-id-mismatch" };
+    }
     parsedDrafts.push(draft.data);
     payloads.push(canonicalWrite.data.payload);
   }
@@ -732,7 +736,10 @@ export async function localResolutionApply(
     payload.schema === "atlas.review-item:v1" && payload.candidate_id === input.candidate_id
   ));
   const parityRecords = payloads.filter((payload) => payload.schema === "atlas.parity-record:v1");
-  if (!review || parityRecords.some((record) => record.coverage_state === "represented" && record.canonical_object_ids.some((id) => !objectIds.has(id)))) {
+  if (!review || review.resolution_state === "pending") {
+    return { ok: false, reason: "resolution-review-not-resolved" };
+  }
+  if (parityRecords.length === 0 || parityRecords.some((record) => record.coverage_state !== "represented" || record.canonical_object_ids.some((id) => !objectIds.has(id)))) {
     return { ok: false, reason: "resolution-parity-mismatch" };
   }
 
@@ -742,6 +749,29 @@ export async function localResolutionApply(
   }
   if (context.graphStore.status().generation !== input.expected_generation) {
     return { ok: false, reason: "generation-conflict" };
+  }
+  for (const draft of parsedDrafts) {
+    const operation: Operation = context.graphStore.readObject(draft.object_id) ? "update" : "create";
+    const decision = evaluatePolicy({
+      profile: auth.authenticated.capability.profile,
+      operation,
+      actor_id: auth.authenticated.client.client_id,
+      capability: auth.authenticated.capability,
+      now: context.now
+    }, policyEnvelopeForDraft(draft));
+    if (!decision.allowed) {
+      recordToolDecision({
+        context,
+        authenticated: auth.authenticated,
+        toolName: "resolution_apply",
+        operation,
+        object: policyEnvelopeForDraft(draft),
+        decision,
+        allowed: false,
+        reason: decision.reason_code
+      });
+      return { ok: false, reason: decision.reason_code };
+    }
   }
   const transaction = await context.graphStore.commitTransaction({
     expected_generation: input.expected_generation,
@@ -777,9 +807,10 @@ export async function localResolutionApply(
   let sync_queue: LocalResolutionReceipt["sync_queue"] = context.outboxSink ? "queued" : "not-configured";
   if (context.outboxSink) {
     try {
-      for (const object of transaction.objects) {
+      for (const [index, object] of transaction.objects.entries()) {
+        const change = transaction.changes[index];
         await context.outboxSink.enqueue({
-          mutation: "created",
+          mutation: change?.operation === "update" ? "updated" : "created",
           object,
           actor_id: auth.authenticated.client.client_id,
           recorded_at: object.updated_at,

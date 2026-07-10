@@ -428,7 +428,7 @@ export const CanonicalWriteSchema = z.object({
 }));
 export type CanonicalWrite = z.infer<typeof CanonicalWriteSchema>;
 
-function canonicalPayloadObjectId(payload: CanonicalPayload): string {
+export function canonicalPayloadObjectId(payload: CanonicalPayload): string {
   switch (payload.schema) {
     case "atlas.entity:v1":
       return payload.entity_id;

@@ -46,6 +46,27 @@ describe("Living Atlas graph service", () => {
     await expect(service.callTool(["remote", "graph", "read"].join("_"), {}, remoteSafeContext)).rejects.toThrow("unknown-tool");
   });
 
+  it("dispatches resolution_apply only on the local stdio ingress", async () => {
+    const calls: Array<{ toolName: string; context: LivingAtlasGraphExecutionContext }> = [];
+    const service = createLivingAtlasGraphService({
+      async execute(toolName, _args, context) {
+        calls.push({ toolName, context });
+        return { ok: true, toolName };
+      }
+    });
+    const localContext: LivingAtlasGraphExecutionContext = {
+      ingress: "local-stdio",
+      access_mode: "local-keyholding-only"
+    };
+
+    await expect(service.callTool("resolution_apply", {}, localContext)).resolves.toEqual({
+      ok: true,
+      toolName: "resolution_apply"
+    });
+    expect(calls).toEqual([{ toolName: "resolution_apply", context: localContext }]);
+    await expect(service.callTool("resolution_apply", {}, remoteSafeContext)).rejects.toThrow("local-only-tool");
+  });
+
   it("describes key custody by ingress and mode", () => {
     expect(resolveKeyCustody({
       ingress: "local-stdio",
