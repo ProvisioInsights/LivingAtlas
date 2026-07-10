@@ -317,6 +317,9 @@ importers:
       '@living-atlas/graph-service':
         specifier: workspace:*
         version: link:../graph-service
+      '@living-atlas/importer':
+        specifier: workspace:*
+        version: link:../importer
       '@living-atlas/local-mcp':
         specifier: workspace:*
         version: link:../local-mcp
