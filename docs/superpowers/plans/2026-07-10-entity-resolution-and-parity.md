@@ -112,7 +112,7 @@ if (resolution.success) resolutions.push(resolution.data);
 
 Export the module from `packages/graph-service/src/index.ts`.
 
-- [ ] **Step 4: Verify encrypted durability and commit**
+- [x] **Step 4: Verify encrypted durability and commit**
 
 Run: `pnpm vitest run packages/graph-service/src/canonical-entity-resolution.test.ts packages/graph-service/src/canonical-assertions.test.ts`
 

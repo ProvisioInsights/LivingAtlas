@@ -1,5 +1,11 @@
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { CanonicalEntityResolutionPayload, GraphObjectEnvelope } from "@living-atlas/contracts";
+import { fixtureAuthorityId, fixtureLocalClientId } from "@living-atlas/fixtures";
+import { FileLocalGraphStore } from "@living-atlas/local-graph-store";
+import { createDefaultLocalKeyring, decryptGraphObjectPayload, type PlaintextGraphObjectDraft } from "@living-atlas/local-keyring";
 import {
   loadCanonicalEntityResolutionsFromObjects,
   projectCanonicalEntityResolutions,
@@ -50,6 +56,30 @@ function encryptedEnvelope(objectId: string, objectType: GraphObjectEnvelope["ob
     key_ref: "la_key_resolution0001",
     visible_metadata: { tombstone: false, remote_indexable: false },
     payload: { kind: "ciphertext-inline", ciphertext: "synthetic-ciphertext", nonce: "synthetic-nonce", algorithm: "xchacha20-poly1305" }
+  };
+}
+
+function resolutionDraft(payload: CanonicalEntityResolutionPayload): PlaintextGraphObjectDraft {
+  return {
+    schema_version: 1,
+    authority_id: fixtureAuthorityId,
+    object_id: payload.resolution_id,
+    object_type: "review",
+    version: 1,
+    access_class: "local-private",
+    encryption_class: "plaintext",
+    created_at: payload.recorded_at,
+    updated_at: payload.recorded_at,
+    content_hash: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    visible_metadata: { tombstone: false, remote_indexable: false },
+    payload: { kind: "plaintext-json", data: payload }
+  };
+}
+
+function decryptCanonicalPayload(keyring: ReturnType<typeof createDefaultLocalKeyring>) {
+  return async (object: GraphObjectEnvelope): Promise<Record<string, unknown> | undefined> => {
+    const payload = await decryptGraphObjectPayload(object, keyring);
+    return payload?.kind === "plaintext-json" ? payload.data : undefined;
   };
 }
 
@@ -112,5 +142,63 @@ describe("canonical entity-resolution projection", () => {
       if (object.object_type === "page") throw new Error("legacy objects must not be decrypted");
       return decision;
     })).resolves.toEqual([decision]);
+  });
+
+  it("preserves local-private redirects through encrypted reopen and compaction", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "living-atlas-entity-resolution-"));
+    try {
+      const keyring = createDefaultLocalKeyring({ authorityId: fixtureAuthorityId, createdAt: now });
+      const merge = resolution({ resolution_id: "la_object_resolutiondurable0001", decision: "merge" });
+      const split = resolution({
+        resolution_id: "la_object_resolutiondurable0002",
+        decision: "split",
+        canonical_entity_id: undefined,
+        supersedes: [merge.resolution_id],
+        recorded_at: "2026-07-10T12:01:00.000Z"
+      });
+      const store = await FileLocalGraphStore.open({
+        directory,
+        authorityId: fixtureAuthorityId,
+        plaintextPersistence: "encrypt",
+        keyring
+      });
+      await expect(store.createObject({
+        object: resolutionDraft(merge),
+        expected_generation: 0,
+        actor_id: fixtureLocalClientId,
+        recorded_at: merge.recorded_at
+      })).resolves.toMatchObject({ ok: true });
+      await expect(store.createObject({
+        object: resolutionDraft(split),
+        expected_generation: 1,
+        actor_id: fixtureLocalClientId,
+        recorded_at: split.recorded_at
+      })).resolves.toMatchObject({ ok: true });
+
+      const before = projectCanonicalEntityResolutions(await loadCanonicalEntityResolutionsFromObjects(
+        store.listObjects(), decryptCanonicalPayload(keyring)
+      ));
+      await store.compact();
+      const reopened = await FileLocalGraphStore.open({
+        directory,
+        authorityId: fixtureAuthorityId,
+        plaintextPersistence: "encrypt",
+        keyring
+      });
+      const after = projectCanonicalEntityResolutions(await loadCanonicalEntityResolutionsFromObjects(
+        reopened.listObjects(), decryptCanonicalPayload(keyring)
+      ));
+
+      expect(after).toEqual(before);
+      const persisted = [
+        await readFile(join(directory, "snapshot.json"), "utf8"),
+        await readFile(join(directory, "journal.jsonl"), "utf8")
+      ].join("\n");
+      expect(persisted).toContain("AES-GCM-256+local-keyring-v1");
+      expect(persisted).not.toContain("synthetic-identity");
+      expect(persisted).not.toContain("synthetic-resolution-test");
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
   });
 });
