@@ -5,6 +5,7 @@ import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createLocalCanonicalAtlasClient } from "@living-atlas/atlas-client";
+import { createCanonicalMarkdownMigration, createCanonicalMarkdownMigrationExport } from "@living-atlas/importer";
 import { createDefaultLocalKeyring, decryptGraphObjectPayload } from "@living-atlas/local-keyring";
 import { fixtureAuthorityId, fixtureLocalClientId } from "@living-atlas/fixtures";
 import { randomBytes } from "node:crypto";
@@ -59,6 +60,35 @@ describe("canonical local MVP proof", () => {
       await expect(client.exportCanonical()).resolves.toEqual(exported);
     } finally {
       await fixture.dispose();
+      await rm(targetDir, { recursive: true, force: true });
+    }
+  });
+
+  it("imports a canonical-only source conversion into an encrypted store without legacy writes", async () => {
+    const targetDir = await mkdtemp(join(tmpdir(), "living-atlas-canonical-source-target-"));
+    const keyring = createDefaultLocalKeyring({ authorityId: fixtureAuthorityId, createdAt: "2026-07-10T12:00:00.000Z" });
+    try {
+      const migration = createCanonicalMarkdownMigration([{
+        source_path: "/synthetic/private-vault/pages/Private Contact.md",
+        markdown: "Reach an example contact at person@example.test.\n\nDo not infer a relationship from this source.",
+        source_kind: "logseq"
+      }], {
+        authority_id: fixtureAuthorityId,
+        created_at: "2026-07-10T12:00:00.000Z",
+        path_redaction_secret: "synthetic-canonical-source-secret"
+      });
+      const exported = createCanonicalMarkdownMigrationExport(migration);
+      const target = await FileLocalGraphStore.open({ directory: targetDir, authorityId: fixtureAuthorityId, plaintextPersistence: "encrypt", keyring });
+      const decrypt = async (object: Parameters<typeof decryptGraphObjectPayload>[0]) => {
+        const payload = await decryptGraphObjectPayload(object, keyring);
+        return payload?.kind === "plaintext-json" ? payload.data : undefined;
+      };
+      const client = createLocalCanonicalAtlasClient({ graphStore: target, decryptPayload: decrypt, now: "2026-07-10T12:00:00.000Z" });
+      await expect(client.importCanonical({ exported, expected_generation: 0, actor_id: fixtureLocalClientId, operation_id: "la_operation_canonicalsource0001", idempotency_key: "la_idem_canonicalsource0001" })).resolves.toMatchObject({ ok: true });
+      expect(target.listObjects().every((object) => object.access_class === "local-private" && object.payload.kind === "ciphertext-inline")).toBe(true);
+      expect(target.listObjects().map((object) => object.object_type)).not.toEqual(expect.arrayContaining(["page", "block", "attachment", "index"]));
+      await expect(client.exportCanonical()).resolves.toEqual(exported);
+    } finally {
       await rm(targetDir, { recursive: true, force: true });
     }
   });
