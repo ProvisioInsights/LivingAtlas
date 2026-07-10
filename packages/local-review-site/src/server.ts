@@ -1,4 +1,5 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { readFile } from "node:fs/promises";
 import { authenticateLocalMcp, localResolutionApply, type LocalMcpContext } from "@living-atlas/local-mcp";
 import { projectLocalReviewQueue } from "./review-projection";
 
@@ -10,6 +11,21 @@ export function createLocalReviewSiteServer(input: { context: LocalMcpContext })
 
 async function handleRequest(request: IncomingMessage, response: ServerResponse, context: LocalMcpContext): Promise<void> {
   const pathname = new URL(request.url ?? "/", "http://127.0.0.1").pathname;
+  if (request.method === "GET" && pathname === "/") {
+    response.writeHead(200, { "cache-control": "no-store", "content-type": "text/html; charset=utf-8" });
+    response.end(await readFile(new URL("./index.html", import.meta.url)));
+    return;
+  }
+  if (request.method === "GET" && pathname === "/app.js") {
+    response.writeHead(200, { "cache-control": "no-store", "content-type": "text/javascript; charset=utf-8" });
+    response.end(await readFile(new URL("./app.js", import.meta.url)));
+    return;
+  }
+  if (request.method === "GET" && pathname === "/styles.css") {
+    response.writeHead(200, { "cache-control": "no-store", "content-type": "text/css; charset=utf-8" });
+    response.end(await readFile(new URL("./styles.css", import.meta.url)));
+    return;
+  }
   const auth = await authenticateLocalMcp({ authorizationHeader: request.headers.authorization, credentialStore: context.credentialStore, controlPlane: context.controlPlane, auditSink: context.auditSink, now: context.now });
   if (!auth.ok) {
     sendJson(response, 401, { ok: false, reason: auth.reason });
