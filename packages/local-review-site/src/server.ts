@@ -152,7 +152,7 @@ async function handleRequest(
         : typeof statement === "string" ? [statement.trim()] : undefined,
       Array.isArray(observationEdits) ? observationEdits.map((value) => ({
         observation_id: (value as ObservationEdit).observation_id,
-        statement: (value as ObservationEdit).statement.trim()
+        statement: (value as ObservationEdit).statement
       })) : undefined,
       Array.isArray(unitIds) ? unitIds.map(String) : undefined
     );

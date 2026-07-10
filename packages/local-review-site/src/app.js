@@ -369,7 +369,7 @@ function technicalDetails(item) {
 
 function changedObservationEdits(fields) {
   return fields.flatMap((field) => {
-    const statement = field.textarea.value.trim();
+    const statement = field.textarea.value;
     return statement === field.original_statement
       ? []
       : [{ observation_id: field.observation_id, statement }];

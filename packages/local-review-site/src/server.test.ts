@@ -34,6 +34,32 @@ describe("local review site server", () => {
       fetch(`${origin}/app.js`).then((response) => response.text()),
       fetch(`${origin}/styles.css`).then((response) => response.text())
     ]);
+    const changedObservationEditsStart = app.indexOf("function changedObservationEdits");
+    const changedObservationEditsEnd = app.indexOf("\n}\n\nfunction editForm", changedObservationEditsStart) + 2;
+    const changedObservationEdits = Function(
+      `${app.slice(changedObservationEditsStart, changedObservationEditsEnd)}\nreturn changedObservationEdits;`
+    )() as (fields: Array<{
+      textarea: { value: string };
+      observation_id: string;
+      original_statement: string;
+    }>) => Array<{ observation_id: string; statement: string }>;
+    const trailingBoundaryWhitespace = `${"x".repeat(8_191)} `;
+    const leadingBoundaryWhitespace = ` ${"y".repeat(8_191)}`;
+    const whitespaceFields = [{
+      textarea: { value: trailingBoundaryWhitespace },
+      observation_id: "la_object_whitespacechunk0001",
+      original_statement: trailingBoundaryWhitespace
+    }, {
+      textarea: { value: leadingBoundaryWhitespace },
+      observation_id: "la_object_whitespacechunk0002",
+      original_statement: leadingBoundaryWhitespace
+    }];
+    expect(changedObservationEdits(whitespaceFields)).toEqual([]);
+    whitespaceFields[1]!.textarea.value = "  intentional whitespace edit  ";
+    expect(changedObservationEdits(whitespaceFields)).toEqual([{
+      observation_id: "la_object_whitespacechunk0002",
+      statement: "  intentional whitespace edit  "
+    }]);
     expect(html).toContain('id="search"');
     expect(html).toContain('id="queue-summary"');
     expect(app).toContain("Preserve all now");
@@ -57,7 +83,8 @@ describe("local review site server", () => {
     expect(app).toContain("observation_edits");
     expect(app).toContain("observation_id");
     expect(app).toContain("function changedObservationEdits");
-    expect(app).toContain("field.textarea.value.trim()");
+    expect(app).toContain("const statement = field.textarea.value;");
+    expect(app).not.toContain("field.textarea.value.trim()");
     expect(app).toContain("field.original_statement");
     expect(app).toContain("const observationEdits = changedObservationEdits(fields)");
     expect(app).toContain("observationEdits.length ? observationEdits : undefined");
@@ -334,6 +361,7 @@ describe("local review site server", () => {
         now: () => now
       });
       const longMeaning = "x".repeat(9_000);
+      const boundaryMeaning = `${"b".repeat(8_191)} ${"c".repeat(808)}`;
       const migration = createCanonicalMarkdownMigration([
         {
           source_path: "pages/Synthetic Rich Person.md",
@@ -353,6 +381,11 @@ describe("local review site server", () => {
         {
           source_path: "notes/Synthetic Rich Single.md",
           markdown: "- One synthetic canonical unit.",
+          source_kind: "generic-markdown"
+        },
+        {
+          source_path: "notes/Synthetic Rich Boundary.md",
+          markdown: `- ${boundaryMeaning}`,
           source_kind: "generic-markdown"
         }
       ], {
@@ -414,9 +447,13 @@ describe("local review site server", () => {
         && item.destination_graph.observations.length === 1);
       const richOrg = before.owner_review.find((item) => item.candidate_id !== rich?.candidate_id
         && item.destination_graph.entities.some((destination) => destination.record.name === "Synthetic Rich Org"));
+      const boundaryRich = [...before.owner_review, ...before.research].find((item) => (
+        item.source_accounting.meaningful_units.some((unit) => unit.atlas_text === boundaryMeaning)
+      ));
       expect(rich).toBeDefined();
       expect(singleUnitRich).toBeDefined();
       expect(richOrg).toBeDefined();
+      expect(boundaryRich).toBeDefined();
       expect(richOrg).toMatchObject({
         resolution_mode: "incomplete",
         resolution_mode_explanation: expect.stringContaining("parity")
@@ -445,6 +482,33 @@ describe("local review site server", () => {
       const editedObservationId = longMapping!.observation_ids[0]!;
       const untouchedObservationId = longMapping!.observation_ids[1]!;
 
+      const boundaryMapping = boundaryRich!.unit_mappings.find((mapping) => mapping.unit.atlas_text === boundaryMeaning)!;
+      const expectedBoundaryStatements = [boundaryMeaning.slice(0, 8_192), boundaryMeaning.slice(8_192)];
+      expect(expectedBoundaryStatements[0]).toHaveLength(8_192);
+      expect(expectedBoundaryStatements[0]!.endsWith(" ")).toBe(true);
+      expect(boundaryMapping.destination_records.map((destination) => destination.record)
+        .filter((record) => record.schema === "atlas.observation:v1")
+        .map((record) => record.statement)).toEqual(expectedBoundaryStatements);
+      const boundaryObservationEnvelopes = new Map(boundaryMapping.observation_ids.map((observationId) => [
+        observationId,
+        graphStore.readObject(observationId)!
+      ]));
+      const preserveBoundaryWithoutEdits = await fetch(`${origin}/api/review/${boundaryRich!.candidate_id}/decision`, {
+        method: "POST",
+        headers: { cookie, "content-type": "application/json" },
+        body: JSON.stringify({ action: "keep" })
+      });
+      expect(preserveBoundaryWithoutEdits.status).toBe(200);
+      const afterBoundaryPreserve = await fetch(`${origin}/api/review-queue`, { headers: { cookie } }).then((response) => response.json()) as LocalReviewQueue;
+      const keptBoundary = afterBoundaryPreserve.automatic.find((item) => item.candidate_id === boundaryRich!.candidate_id)!;
+      const keptBoundaryMapping = keptBoundary.unit_mappings.find((mapping) => mapping.unit.atlas_text === boundaryMeaning)!;
+      expect(keptBoundaryMapping.destination_records.map((destination) => destination.record)
+        .filter((record) => record.schema === "atlas.observation:v1")
+        .map((record) => record.statement)).toEqual(expectedBoundaryStatements);
+      for (const [observationId, envelope] of boundaryObservationEnvelopes) {
+        expect(graphStore.readObject(observationId)).toEqual(envelope);
+      }
+
       const rejectedTypedEdit = await fetch(`${origin}/api/review/${rich!.candidate_id}/decision`, {
         method: "POST",
         headers: { cookie, "content-type": "application/json" },
@@ -458,12 +522,13 @@ describe("local review site server", () => {
       });
       expect(rejectedTypedEdit.status).toBe(400);
 
+      const intentionalWhitespaceEdit = "  Edited synthetic first chunk.  ";
       const decision = await fetch(`${origin}/api/review/${rich!.candidate_id}/decision`, {
         method: "POST",
         headers: { cookie, "content-type": "application/json" },
         body: JSON.stringify({
           action: "keep",
-          observation_edits: [{ observation_id: editedObservationId, statement: "Edited synthetic first chunk." }]
+          observation_edits: [{ observation_id: editedObservationId, statement: intentionalWhitespaceEdit }]
         })
       });
       expect(decision.status).toBe(200);
@@ -480,7 +545,7 @@ describe("local review site server", () => {
         destination.object_id,
         destination.record
       ]));
-      expect(keptObservations.get(editedObservationId)?.statement).toBe("Edited synthetic first chunk.");
+      expect(keptObservations.get(editedObservationId)?.statement).toBe(intentionalWhitespaceEdit);
       expect(keptObservations.get(editedObservationId)?.recorded_at).toBe(now);
       expect(keptObservations.get(untouchedObservationId)?.statement).toBe(originalObservations.get(untouchedObservationId)?.statement);
       expect(keptObservations.get(untouchedObservationId)?.recorded_at).toBe(migrationRecordedAt);
