@@ -75,6 +75,7 @@ export type CanonicalConversionReport = {
     missing_expected_review_records: number;
     duplicate_expected_review_records: number;
     unexpected_review_coverage_references: number;
+    invalid_review_coverage_cardinality: number;
     invalid_meaningful_source_parity_records: number;
     invalid_zero_unit_source_parity_records: number;
     incomplete_nonzero_source_reviews: number;
@@ -350,8 +351,13 @@ export function analyzeCanonicalConversion(input: {
         || parity.representation_kind !== undefined
         || parity.canonical_object_ids.length > 0) invalidZeroUnitSourceParityRecords += 1;
     }
-    if (coverageReviews.length === 1 && coverageReviews[0]!.proposed_object_ids.length > 0) {
-      actionableZeroUnitSourceReviews += 1;
+    if (coverageReviews.length === 1) {
+      const review = coverageReviews[0]!;
+      if (review.source_coverage_keys.length !== 1
+        || review.source_coverage_keys[0] !== coverageKey
+        || review.proposed_object_ids.length > 0
+        || review.recommendation !== "research"
+        || review.resolution_state !== "research") actionableZeroUnitSourceReviews += 1;
     }
   }
   const duplicateExpectedCoverageKeys = [...expectedSourcesByCoverage.values()]
@@ -369,6 +375,8 @@ export function analyzeCanonicalConversion(input: {
   const unexpectedReviewCoverageReferences = reviews
     .flatMap((review) => review.source_coverage_keys)
     .filter((key) => !expectedCoverageKeys.has(key)).length;
+  const invalidReviewCoverageCardinality = reviews
+    .filter((review) => review.source_coverage_keys.length !== 1).length;
   const schemas = Object.fromEntries(canonicalSchemas.map((schema) => [
     schema,
     payloads.filter((payload) => payload.schema === schema).length
@@ -417,6 +425,7 @@ export function analyzeCanonicalConversion(input: {
       missing_expected_review_records: missingExpectedReviewRecords,
       duplicate_expected_review_records: duplicateExpectedReviewRecords,
       unexpected_review_coverage_references: unexpectedReviewCoverageReferences,
+      invalid_review_coverage_cardinality: invalidReviewCoverageCardinality,
       invalid_meaningful_source_parity_records: invalidMeaningfulSourceParityRecords,
       invalid_zero_unit_source_parity_records: invalidZeroUnitSourceParityRecords,
       incomplete_nonzero_source_reviews: incompleteNonzeroSourceReviews,
@@ -446,6 +455,7 @@ export function assertCanonicalConversionIntegrity(report: CanonicalConversionRe
     + integrity.missing_expected_review_records
     + integrity.duplicate_expected_review_records
     + integrity.unexpected_review_coverage_references
+    + integrity.invalid_review_coverage_cardinality
     + integrity.invalid_meaningful_source_parity_records
     + integrity.invalid_zero_unit_source_parity_records
     + integrity.incomplete_nonzero_source_reviews

@@ -131,6 +131,7 @@ describe("canonical isolated-copy runner guard", () => {
           missing_expected_review_records: 0,
           duplicate_expected_review_records: 0,
           unexpected_review_coverage_references: 0,
+          invalid_review_coverage_cardinality: 0,
           invalid_meaningful_source_parity_records: 0,
           invalid_zero_unit_source_parity_records: 0,
           incomplete_nonzero_source_reviews: 0,
@@ -633,5 +634,95 @@ describe("canonical isolated-copy runner guard", () => {
     } finally {
       await rm(root, { recursive: true, force: true });
     }
+  });
+
+  it("rejects one review that claims two expected zero-unit source keys", () => {
+    const authorityId = "la_authority_fixture0001";
+    const pathRedactionSecret = "synthetic-multisource-review-secret";
+    const sources = ["One", "Two"].map((name) => ({
+      source_path: `pages/Synthetic Empty ${name}.md`,
+      markdown: "",
+      source_kind: "logseq" as const
+    }));
+    const migration = createCanonicalMarkdownMigration(sources, {
+      authority_id: authorityId,
+      created_at: "2026-07-10T12:00:00.000Z",
+      path_redaction_secret: pathRedactionSecret
+    });
+    const exported = createCanonicalMarkdownMigrationExport(migration);
+    const reviews = migration.payloads.filter((payload) => payload.schema === "atlas.review-item:v1");
+    expect(reviews).toHaveLength(2);
+    const records = exported.records.flatMap((record): CanonicalExportRecord[] => {
+      if (record.object_id === reviews[1]!.review_id) return [];
+      if (record.object_id === reviews[0]!.review_id && record.payload.schema === "atlas.review-item:v1") return [{
+        ...record,
+        payload: {
+          ...record.payload,
+          source_coverage_keys: [
+            reviews[0]!.source_coverage_keys[0]!,
+            reviews[1]!.source_coverage_keys[0]!
+          ]
+        }
+      } as CanonicalExportRecord];
+      return [record];
+    });
+
+    const report = analyzeCanonicalConversion({
+      records,
+      authority_id: authorityId,
+      sources: sources.map((source) => ({
+        source_path: source.source_path,
+        markdown: source.markdown,
+        byte_count: 0
+      })),
+      path_redaction_secret: pathRedactionSecret,
+      reopened_manifest_mismatches: 0
+    });
+    expect(report.integrity).toMatchObject({
+      missing_expected_review_records: 0,
+      duplicate_expected_review_records: 0,
+      invalid_review_coverage_cardinality: 1
+    });
+    expect(() => assertCanonicalConversionIntegrity(report)).toThrow("canonical isolated-copy integrity check failed");
+  });
+
+  it("rejects an empty-proposal auto-applied review for a zero-unit source", () => {
+    const authorityId = "la_authority_fixture0001";
+    const pathRedactionSecret = "synthetic-zero-auto-apply-secret";
+    const source = {
+      source_path: "pages/Synthetic Empty Auto.md",
+      markdown: "",
+      source_kind: "logseq" as const
+    };
+    const exported = createCanonicalMarkdownMigrationExport(createCanonicalMarkdownMigration([source], {
+      authority_id: authorityId,
+      created_at: "2026-07-10T12:00:00.000Z",
+      path_redaction_secret: pathRedactionSecret
+    }));
+    const records = exported.records.map((record): CanonicalExportRecord => {
+      if (record.payload.schema !== "atlas.review-item:v1") return record;
+      return {
+        ...record,
+        payload: {
+          ...record.payload,
+          recommendation: "auto-apply",
+          resolution_state: "auto-applied",
+          proposed_object_ids: []
+        }
+      } as CanonicalExportRecord;
+    });
+
+    const report = analyzeCanonicalConversion({
+      records,
+      authority_id: authorityId,
+      sources: [{ source_path: source.source_path, markdown: "", byte_count: 0 }],
+      path_redaction_secret: pathRedactionSecret,
+      reopened_manifest_mismatches: 0
+    });
+    expect(report.integrity).toMatchObject({
+      invalid_review_coverage_cardinality: 0,
+      actionable_zero_unit_source_reviews: 1
+    });
+    expect(() => assertCanonicalConversionIntegrity(report)).toThrow("canonical isolated-copy integrity check failed");
   });
 });
