@@ -12,7 +12,11 @@ import type { CanonicalPayloadDecryptor } from "@living-atlas/graph-service";
 export type LocalReviewQueueItem = {
   review_id: string;
   candidate_id: string;
+  review_record: CanonicalReviewItemPayload;
+  recommendation: CanonicalReviewItemPayload["recommendation"];
   resolution_state: CanonicalReviewItemPayload["resolution_state"];
+  headline: string;
+  proposal_label: string;
   proposed_object_ids: string[];
   proposed_records: CanonicalPayload[];
   evidence_ids: string[];
@@ -27,12 +31,34 @@ export type LocalReviewQueueItem = {
 export type LocalReviewQueue = {
   owner_review: LocalReviewQueueItem[];
   research: LocalReviewQueueItem[];
+  deferred: LocalReviewQueueItem[];
   automatic: LocalReviewQueueItem[];
 };
 
 const DecryptableTypes = new Set<GraphObjectEnvelope["object_type"]>([
   "review", "evidence", "assertion", "edge", "entity", "manifest"
 ]);
+
+function meaningfulHeadline(
+  observation: Extract<CanonicalPayload, { schema: "atlas.observation:v1" }> | undefined,
+  sourceContext: CanonicalEvidencePayload[]
+): string {
+  if (observation && !observation.statement.startsWith("Imported source coverage ")) {
+    return observation.statement;
+  }
+  const lines = sourceContext.flatMap((evidence) => evidence.excerpt?.split(/\r?\n/) ?? []);
+  for (const key of ["title", "name", "description", "summary"]) {
+    const value = lines
+      .map((line) => new RegExp(`^${key}::\\s*(.+)$`, "i").exec(line.trim())?.[1]?.trim())
+      .find(Boolean);
+    if (value) return value;
+  }
+  const contextual = lines
+    .filter((line) => !/^[A-Za-z0-9_-]+::/.test(line.trim()))
+    .map((line) => line.trim().replace(/^[-#>*\s]+/, "").replaceAll("**", "").trim())
+    .find((line) => line.length > 12 && !/^(context|notes?|details?)[:.]?$/i.test(line));
+  return contextual ?? observation?.statement ?? sourceContext[0]?.excerpt ?? "Review candidate";
+}
 
 export async function projectLocalReviewQueue(input: {
   objects: GraphObjectEnvelope[];
@@ -68,12 +94,31 @@ export async function projectLocalReviewQueue(input: {
     const parityRecords = [...payloads.values()].filter((payload): payload is CanonicalParityRecordPayload => payload.schema === "atlas.parity-record:v1" && parityIds.includes(payload.parity_id));
     const sourceContext = evidence.filter((item) => item.source_kind === "migration");
     const referenced = [...proposed, ...evidenceIds, ...parityIds];
-    return { review_id: review.review_id, candidate_id: review.candidate_id, resolution_state: review.resolution_state, proposed_object_ids: proposed, proposed_records: proposedRecords, evidence_ids: [...evidenceIds].sort(), evidence, source_context: sourceContext, parity_ids: parityIds.sort(), parity_records: parityRecords, missing_references: referenced.filter((id) => !payloads.has(id)).sort(), context_unavailable: sourceContext.length === 0 };
+    const observation = proposedRecords.find((payload) => payload.schema === "atlas.observation:v1");
+    return {
+      review_id: review.review_id,
+      candidate_id: review.candidate_id,
+      review_record: review,
+      recommendation: review.recommendation,
+      resolution_state: review.resolution_state,
+      headline: meaningfulHeadline(observation, sourceContext),
+      proposal_label: observation ? "Observation" : "Atlas record",
+      proposed_object_ids: proposed,
+      proposed_records: proposedRecords,
+      evidence_ids: [...evidenceIds].sort(),
+      evidence,
+      source_context: sourceContext,
+      parity_ids: parityIds.sort(),
+      parity_records: parityRecords,
+      missing_references: referenced.filter((id) => !payloads.has(id)).sort(),
+      context_unavailable: sourceContext.length === 0
+    };
   };
   const items = reviews.map(itemFor).sort((left, right) => left.review_id.localeCompare(right.review_id));
   return {
     owner_review: items.filter((item) => item.resolution_state === "owner-review"),
-    research: items.filter((item) => item.resolution_state === "research" || item.resolution_state === "deferred-unknown"),
+    research: items.filter((item) => item.resolution_state === "research"),
+    deferred: items.filter((item) => item.resolution_state === "deferred-unknown"),
     automatic: items.filter((item) => item.resolution_state === "auto-applied" || item.resolution_state === "resolved")
   };
 }

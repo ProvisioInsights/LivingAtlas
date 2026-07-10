@@ -1,1 +1,57 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Atlas Review</title><link rel="stylesheet" href="/styles.css"></head><body><main><p class="eyebrow">LOCAL ATLAS REVIEW</p><h1>Resolve meaning, not source files.</h1><p class="intro">Review only the decisions that need you. Evidence, parity, and dependencies stay attached to each Atlas-native candidate.</p><nav><button data-tab="owner_review" class="active">Owner review</button><button data-tab="research">Research</button><button data-tab="automatic">Automatic</button></nav><section id="status">Secure local session is opening your review queue.</section><section id="queue" aria-live="polite"></section></main><script type="module" src="/app.js"></script></body></html>
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>Living Atlas Review</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <main>
+      <header class="masthead">
+        <div>
+          <p class="eyebrow">Living Atlas · review desk</p>
+          <h1>Make the uncertain useful.</h1>
+          <p class="intro">Compare what the source said with what Atlas proposes, then keep it, refine it, research it, or set it aside.</p>
+        </div>
+        <div class="custody"><span></span>Local and encrypted</div>
+      </header>
+
+      <section class="workbench" aria-label="Review controls">
+        <div id="queue-summary" class="queue-summary" aria-live="polite"></div>
+        <label class="search-control" for="search">
+          <span>Find in this queue</span>
+          <input id="search" type="search" placeholder="Search source text or Atlas proposal" autocomplete="off">
+        </label>
+      </section>
+
+      <nav id="tabs" class="tabs" aria-label="Review queues">
+        <button data-tab="owner_review"><span>Review</span><strong data-count="owner_review">0</strong></button>
+        <button data-tab="research"><span>Research</span><strong data-count="research">0</strong></button>
+        <button data-tab="deferred"><span>Later</span><strong data-count="deferred">0</strong></button>
+        <button data-tab="automatic"><span>Done</span><strong data-count="automatic">0</strong></button>
+      </nav>
+
+      <section id="status" class="status" role="status">Secure local session is opening your review queue.</section>
+
+      <section id="bulk-actions" class="bulk-actions" hidden>
+        <label><input id="select-page" type="checkbox"> Select this page</label>
+        <span id="selection-count">0 selected</span>
+        <div>
+          <button data-bulk-action="keep" class="primary">Keep selected</button>
+          <button data-bulk-action="research">Needs research</button>
+          <button data-bulk-action="defer">Decide later</button>
+        </div>
+      </section>
+
+      <section id="queue" class="queue" aria-live="polite"></section>
+
+      <nav id="pagination" class="pagination" aria-label="Queue pages" hidden>
+        <button id="previous-page">Previous</button>
+        <span id="page-status"></span>
+        <button id="next-page">Next</button>
+      </nav>
+    </main>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

@@ -13,23 +13,98 @@ function envelope(id: string, type: GraphObjectEnvelope["object_type"]): GraphOb
 }
 
 describe("local review projection", () => {
+  it("uses meaningful migration context instead of a generic coverage placeholder", async () => {
+    const placeholderObservationId = "la_object_reviewplaceholderobs0001";
+    const placeholderEvidenceId = "la_object_reviewplaceholderevidence0001";
+    const placeholderReviewId = "la_object_reviewplaceholderreview0001";
+    const placeholderParityId = "la_object_reviewplaceholderparity0001";
+    const coverageKey = "la_coverage_reviewplaceholder0001";
+    const payloads = new Map<string, Record<string, unknown>>([
+      [placeholderObservationId, {
+        schema: "atlas.observation:v1",
+        assertion_id: placeholderObservationId,
+        statement: `Imported source coverage ${coverageKey} without inferred entities, claims, relationships, or dates.`,
+        candidate_entity_ids: [],
+        resolution_state: "research",
+        recorded_at: now,
+        evidence_refs: [placeholderEvidenceId]
+      }],
+      [placeholderEvidenceId, {
+        schema: "atlas.evidence:v1",
+        evidence_id: placeholderEvidenceId,
+        source_kind: "migration",
+        locator: "synthetic://placeholder",
+        content_hash: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        retrieved_at: now,
+        independence_key: "synthetic-placeholder",
+        excerpt: "type:: person\ndescription:: Founder and investor focused on durable cybersecurity companies."
+      }],
+      [placeholderReviewId, {
+        schema: "atlas.review-item:v1",
+        review_id: placeholderReviewId,
+        candidate_id: "la_candidate_reviewplaceholder0001",
+        source_coverage_keys: [coverageKey],
+        recommendation: "research",
+        resolution_state: "research",
+        proposed_object_ids: [placeholderObservationId],
+        recorded_at: now
+      }],
+      [placeholderParityId, {
+        schema: "atlas.parity-record:v1",
+        parity_id: placeholderParityId,
+        source_coverage_key: coverageKey,
+        coverage_state: "represented",
+        representation_kind: "observation",
+        canonical_object_ids: [placeholderObservationId],
+        idempotency_key: "la_idem_reviewplaceholder0001",
+        recorded_at: now
+      }]
+    ]);
+    const queue = await projectLocalReviewQueue({
+      objects: [
+        envelope(placeholderObservationId, "assertion"),
+        envelope(placeholderEvidenceId, "evidence"),
+        envelope(placeholderReviewId, "review"),
+        envelope(placeholderParityId, "manifest")
+      ],
+      decryptPayload: async (object) => payloads.get(object.object_id)
+    });
+
+    expect(queue.research[0]?.headline).toBe("Founder and investor focused on durable cybersecurity companies.");
+  });
+
   it("keeps owner-review items separate and joins their canonical evidence, parity, and proposed records", async () => {
     const review = { schema: "atlas.review-item:v1", review_id: reviewId, candidate_id: "la_candidate_reviewsite0001", source_coverage_keys: ["la_coverage_reviewsite0001"], recommendation: "owner-review", resolution_state: "owner-review", proposed_object_ids: [observationId], recorded_at: now };
     const research = { ...review, review_id: "la_object_reviewsite0002", candidate_id: "la_candidate_reviewsite0002", resolution_state: "research" };
+    const deferred = { ...review, review_id: "la_object_reviewsite0003", candidate_id: "la_candidate_reviewsite0003", resolution_state: "deferred-unknown" };
     const observation = { schema: "atlas.observation:v1", assertion_id: observationId, statement: "Synthetic unresolved review context.", candidate_entity_ids: [], resolution_state: "owner-review", recorded_at: now, evidence_refs: [evidenceId] };
     const evidence = { schema: "atlas.evidence:v1", evidence_id: evidenceId, source_kind: "migration", locator: "synthetic://review", content_hash: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", retrieved_at: now, independence_key: "synthetic-review", excerpt: "Synthetic supporting evidence." };
     const parity = { schema: "atlas.parity-record:v1", parity_id: parityId, source_coverage_key: "la_coverage_reviewsite0001", coverage_state: "represented", representation_kind: "observation", canonical_object_ids: [observationId], idempotency_key: "la_idem_reviewsite0001", recorded_at: now };
     const payloads = new Map<string, Record<string, unknown>>([
-      [reviewId, review], [research.review_id, research], [observationId, observation], [evidenceId, evidence], [parityId, parity]
+      [reviewId, review], [research.review_id, research], [deferred.review_id, deferred], [observationId, observation], [evidenceId, evidence], [parityId, parity]
     ]);
-    const queue = await projectLocalReviewQueue({ objects: [envelope(reviewId, "review"), envelope(research.review_id, "review"), envelope(observationId, "assertion"), envelope(evidenceId, "evidence"), envelope(parityId, "manifest"), envelope("la_object_legacyreview0001", "page")], decryptPayload: async (object) => {
+    const queue = await projectLocalReviewQueue({ objects: [envelope(reviewId, "review"), envelope(research.review_id, "review"), envelope(deferred.review_id, "review"), envelope(observationId, "assertion"), envelope(evidenceId, "evidence"), envelope(parityId, "manifest"), envelope("la_object_legacyreview0001", "page")], decryptPayload: async (object) => {
       if (object.object_type === "page") throw new Error("legacy must not decrypt");
       return payloads.get(object.object_id);
     } });
 
     expect(queue.owner_review).toHaveLength(1);
-    expect(queue.owner_review[0]).toMatchObject({ review_id: reviewId, proposed_object_ids: [observationId], proposed_records: [observation], evidence_ids: [evidenceId], evidence: [evidence], source_context: [evidence], parity_ids: [parityId], parity_records: [parity], context_unavailable: false });
+    expect(queue.owner_review[0]).toMatchObject({
+      review_id: reviewId,
+      recommendation: "owner-review",
+      headline: "Synthetic unresolved review context.",
+      proposal_label: "Observation",
+      proposed_object_ids: [observationId],
+      proposed_records: [observation],
+      evidence_ids: [evidenceId],
+      evidence: [evidence],
+      source_context: [evidence],
+      parity_ids: [parityId],
+      parity_records: [parity],
+      context_unavailable: false
+    });
     expect(queue.research.map((item) => item.review_id)).toEqual([research.review_id]);
+    expect(queue.deferred.map((item) => item.review_id)).toEqual([deferred.review_id]);
     expect(queue.automatic).toEqual([]);
   });
 });
