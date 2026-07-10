@@ -192,6 +192,6 @@ pnpm check
 
 Expected: no legacy write path; repository safety, typecheck, and all tests pass.
 
-- [ ] **Step 3: Track and commit locally**
+- [x] **Step 3: Track and commit locally**
 
 Post public-safe evidence to #46, #48, and #43; keep them In Progress until typed export/import and the local review app consume their projections. Commit locally only. Do not push, deploy, access a profile, or run a migration corpus.
