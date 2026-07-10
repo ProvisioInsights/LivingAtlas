@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { FileLocalGraphStore } from "@living-atlas/local-graph-store";
 import { mkdtemp, rm } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createLocalCanonicalAtlasClient } from "@living-atlas/atlas-client";
@@ -16,6 +17,7 @@ describe("canonical local MVP proof", () => {
       expect(objects.map((object) => object.object_type)).not.toContain("page");
       expect(objects.map((object) => object.object_type)).not.toContain("block");
       expect(objects.every((object) => object.access_class === "local-private" && object.payload.kind === "ciphertext-inline")).toBe(true);
+      await expect(readFile(fixture.keyringPath, "utf8")).resolves.not.toContain(fixture.keyringPassphrase);
     } finally {
       await fixture.dispose();
     }

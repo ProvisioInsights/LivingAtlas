@@ -3,14 +3,17 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fixtureAuthorityId, fixtureLocalClientId } from "@living-atlas/fixtures";
 import { FileLocalGraphStore } from "@living-atlas/local-graph-store";
-import { createDefaultLocalKeyring } from "@living-atlas/local-keyring";
+import { createDefaultLocalKeyring, FileLocalKeyringStore } from "@living-atlas/local-keyring";
 
 const now = "2026-07-10T12:00:00.000Z";
 const hash = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
 export async function createCanonicalSyntheticMvpFixture() {
   const directory = await mkdtemp(join(tmpdir(), "living-atlas-canonical-mvp-"));
+  const keyringPath = join(directory, "keyring.json");
+  const keyringPassphrase = "synthetic-canonical-mvp-keyring-passphrase-0001";
   const keyring = createDefaultLocalKeyring({ authorityId: fixtureAuthorityId, createdAt: now });
+  await new FileLocalKeyringStore(keyringPath).write(keyring, keyringPassphrase);
   const store = await FileLocalGraphStore.open({ directory, authorityId: fixtureAuthorityId, plaintextPersistence: "encrypt", keyring });
   const entityId = "la_object_canonicalmvpentity0001";
   const evidenceId = "la_object_canonicalmvpevidence0001";
@@ -27,5 +30,5 @@ export async function createCanonicalSyntheticMvpFixture() {
   ];
   const result = await store.commitTransaction({ expected_generation: 0, actor_id: fixtureLocalClientId, operation_id: "la_operation_canonicalmvp0001", idempotency_key: "la_idem_canonicalmvp0001", recorded_at: now, writes: objects.map((object) => ({ kind: "create" as const, object })) });
   if (!result.ok) throw new Error(`canonical fixture failed: ${result.reason}`);
-  return { directory, keyring, store, dispose: () => rm(directory, { recursive: true, force: true }) };
+  return { directory, keyring, keyringPath, keyringPassphrase, store, dispose: () => rm(directory, { recursive: true, force: true }) };
 }
