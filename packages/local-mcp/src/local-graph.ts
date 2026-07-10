@@ -226,11 +226,19 @@ export type LocalResolutionApplyInput = LocalGraphToolInput & {
   objects: unknown[];
 };
 
+export type LocalResolutionApplyBatchInput = LocalGraphToolInput & {
+  operation_id: string;
+  idempotency_key: string;
+  expected_generation: number;
+  resolutions: Array<Pick<LocalResolutionApplyInput, "candidate_id" | "expected_review_version" | "objects">>;
+};
+
 export type LocalResolutionReceipt = {
   local_commit: "committed" | "not-committed";
   audit: "recorded" | "reconciliation-required";
   sync_queue: "queued" | "not-configured" | "reconciliation-required";
   committed_object_ids: string[];
+  resolved_candidate_ids: string[];
   generation?: number;
   journal_sequence?: number;
 };
@@ -829,10 +837,52 @@ export async function localResolutionApply(
       audit,
       sync_queue,
       committed_object_ids: transaction.objects.map((object) => object.object_id),
+      resolved_candidate_ids: [input.candidate_id],
       generation: transaction.generation,
       journal_sequence: transaction.journal_sequence
     }
   };
+}
+
+/** Applies independently precomputed owner decisions in one local transaction. */
+export async function localResolutionApplyBatch(
+  context: LocalMcpContext,
+  input: LocalResolutionApplyBatchInput
+): Promise<LocalGraphToolResult<LocalResolutionReceipt>> {
+  const auth = await authenticateToolCall(context, input.authorization);
+  if (!auth.ok) return { ok: false, reason: auth.reason };
+  if (!context.graphStore) return localResolutionApply(context, { ...input, candidate_id: "la_candidate_batch0001", expected_review_version: 1, objects: [] });
+  if (input.resolutions.length === 0 || context.graphStore.status().generation !== input.expected_generation) {
+    return { ok: false, reason: input.resolutions.length === 0 ? "resolution-invalid-request" : "generation-conflict" };
+  }
+  const candidates = new Set<string>();
+  for (const resolution of input.resolutions) {
+    if (!/^la_candidate_[A-Za-z0-9_-]{8,}$/.test(resolution.candidate_id) || resolution.objects.length === 0 || candidates.has(resolution.candidate_id)) {
+      return { ok: false, reason: "resolution-invalid-request" };
+    }
+    candidates.add(resolution.candidate_id);
+    const review = resolution.objects.flatMap((object) => {
+      const draft = PlaintextGraphObjectDraftSchema.safeParse(object);
+      if (!draft.success || draft.data.payload.kind !== "plaintext-json") return [];
+      const write = CanonicalWriteSchema.safeParse({ object_type: draft.data.object_type, payload: draft.data.payload.data });
+      return write.success && write.data.payload.schema === "atlas.review-item:v1" && write.data.payload.candidate_id === resolution.candidate_id ? [write.data.payload] : [];
+    })[0];
+    if (!review || review.resolution_state === "pending") return { ok: false, reason: "resolution-review-not-resolved" };
+    const existing = context.graphStore.readObject(review.review_id);
+    if (existing && existing.version !== resolution.expected_review_version) return { ok: false, reason: "resolution-review-version-conflict" };
+  }
+  const first = input.resolutions[0]!;
+  const result = await localResolutionApply(context, {
+    authorization: input.authorization,
+    operation_id: input.operation_id,
+    idempotency_key: input.idempotency_key,
+    expected_generation: input.expected_generation,
+    candidate_id: first.candidate_id,
+    expected_review_version: first.expected_review_version,
+    objects: input.resolutions.flatMap((resolution) => resolution.objects)
+  });
+  if (!result.ok) return result;
+  return { ok: true, result: { ...result.result, resolved_candidate_ids: [...candidates].sort() } };
 }
 
 export async function localListObjects(
