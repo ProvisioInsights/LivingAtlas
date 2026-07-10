@@ -3,12 +3,16 @@ import {
   AuthorityIdSchema,
   CanonicalEvidencePayloadSchema,
   CanonicalPayloadSchema,
+  EndpointRecordSchema,
+  TemporalEdgeSchema,
   canonicalObjectTypeForPayload,
   canonicalPayloadObjectId,
   parseCanonicalExport,
   type CanonicalExport,
   type CanonicalEvidencePayload,
-  type CanonicalPayload
+  type CanonicalPayload,
+  type EndpointRecord,
+  type TemporalEdge
 } from "@living-atlas/contracts";
 import {
   MarkdownFileInputSchema,
@@ -17,7 +21,10 @@ import {
   type MarkdownPathRedactionOptions
 } from "./markdown";
 import { canonicalEntityPayloadFromEndpoint } from "./canonical";
-import { extractLogseqTypedSemantics } from "./logseq-semantic";
+import {
+  createLogseqSemanticPlaintextGraphObjects,
+  type CreateLogseqSemanticImportOptions
+} from "./logseq-semantic";
 import { accountSourceMeaning } from "./source-meaning";
 
 const maxEvidenceExcerptLength = 4_096;
@@ -54,8 +61,15 @@ export function createCanonicalMarkdownMigration(
   const createdAt = options.created_at ?? new Date().toISOString();
   const pathRedactionSecret = options.path_redaction_secret
     ?? createHash("sha256").update(`${authorityId}:${createdAt}:ephemeral-path-redaction`).digest("hex").slice(0, 32);
+  const parsedFiles = files.map((input) => MarkdownFileInputSchema.parse(input));
+  const seenSourceRefs = new Set<string>();
+  for (const file of parsedFiles) {
+    const sourceRef = createMarkdownSourceRef(file.source_path, { path_redaction_secret: pathRedactionSecret });
+    if (seenSourceRefs.has(sourceRef)) throw new Error(`duplicate canonical markdown source_ref ${sourceRef}`);
+    seenSourceRefs.add(sourceRef);
+  }
   const payloads: CanonicalPayload[] = [];
-  const typed = extractLogseqTypedSemantics(files, {
+  const typed = extractCollisionSafeTypedSemantics(parsedFiles, {
     authority_id: authorityId,
     created_at: createdAt,
     path_redaction_secret: pathRedactionSecret,
@@ -80,8 +94,7 @@ export function createCanonicalMarkdownMigration(
     }
   }
 
-  for (const input of files) {
-    const file = MarkdownFileInputSchema.parse(input);
+  for (const file of parsedFiles) {
     const sourceRef = createMarkdownSourceRef(file.source_path, { path_redaction_secret: pathRedactionSecret });
     const stableBase = `${authorityId}:${sourceRef}:${sha256(file.markdown)}`;
     const coverageKey = stableIdentifier("la_coverage", `${stableBase}:coverage`);
@@ -236,6 +249,7 @@ export function createCanonicalMarkdownMigration(
       existingIds.add(entity.entity_id);
     }
   }
+  assertUniqueCanonicalObjectIds(payloads, "migration");
 
   return {
     migration_schema: "living-atlas-canonical-markdown-migration:v1",
@@ -247,6 +261,7 @@ export function createCanonicalMarkdownMigration(
 }
 
 export function createCanonicalMarkdownMigrationExport(input: CanonicalMarkdownMigration, exportedAt = input.created_at): CanonicalExport {
+  assertUniqueCanonicalObjectIds(input.payloads, "migration export");
   return parseCanonicalExport({
     export_schema: "living-atlas-canonical-export:v1",
     plaintext_policy: "local-keyholding-canonical-export",
@@ -264,8 +279,70 @@ export function createCanonicalMarkdownMigrationExport(input: CanonicalMarkdownM
   });
 }
 
+function extractCollisionSafeTypedSemantics(
+  files: MarkdownFileInput[],
+  options: CreateLogseqSemanticImportOptions
+): {
+  endpoints: Array<{ endpoint: EndpointRecord; source_path_ref: string }>;
+  edges: Array<{ edge: TemporalEdge; source_path_ref: string }>;
+} {
+  const parsed = createLogseqSemanticPlaintextGraphObjects(files, options);
+  const endpointCandidates: Array<{ endpoint: EndpointRecord; source_path_ref: string }> = [];
+  const edgeCandidates: Array<{ edge: TemporalEdge; source_path_ref: string }> = [];
+  for (const object of parsed.objects) {
+    const data = object.payload.data;
+    if (data.kind === "logseq-endpoint") {
+      const endpoint = EndpointRecordSchema.safeParse(data.endpoint);
+      if (endpoint.success && typeof data.source_path_ref === "string") {
+        endpointCandidates.push({ endpoint: endpoint.data, source_path_ref: data.source_path_ref });
+      }
+      continue;
+    }
+    if (data.kind === "logseq-temporal-edge") {
+      const edge = TemporalEdgeSchema.safeParse(data.edge);
+      if (edge.success && typeof data.source_path_ref === "string") {
+        edgeCandidates.push({ edge: edge.data, source_path_ref: data.source_path_ref });
+      }
+    }
+  }
+
+  const sourceRefsByEndpointId = new Map<string, Set<string>>();
+  for (const candidate of endpointCandidates) {
+    const sourceRefs = sourceRefsByEndpointId.get(candidate.endpoint.object_id) ?? new Set<string>();
+    sourceRefs.add(candidate.source_path_ref);
+    sourceRefsByEndpointId.set(candidate.endpoint.object_id, sourceRefs);
+  }
+  const endpointById = new Map<string, { endpoint: EndpointRecord; source_path_ref: string }>();
+  for (const candidate of endpointCandidates) {
+    if (sourceRefsByEndpointId.get(candidate.endpoint.object_id)!.size === 1) {
+      endpointById.set(candidate.endpoint.object_id, candidate);
+    }
+  }
+  const edgeById = new Map<string, { edge: TemporalEdge; source_path_ref: string }>();
+  for (const candidate of edgeCandidates) {
+    const source = endpointById.get(candidate.edge.source_object_id)?.endpoint;
+    const target = endpointById.get(candidate.edge.target_object_id)?.endpoint;
+    if (source?.type === candidate.edge.source_type && target?.type === candidate.edge.target_type) {
+      edgeById.set(candidate.edge.edge_id, candidate);
+    }
+  }
+  return {
+    endpoints: [...endpointById.values()].sort((left, right) => left.endpoint.object_id.localeCompare(right.endpoint.object_id)),
+    edges: [...edgeById.values()].sort((left, right) => left.edge.edge_id.localeCompare(right.edge.edge_id))
+  };
+}
+
+function assertUniqueCanonicalObjectIds(payloads: CanonicalPayload[], context: string): void {
+  const seen = new Set<string>();
+  for (const payload of payloads) {
+    const objectId = canonicalPayloadObjectId(payload);
+    if (seen.has(objectId)) throw new Error(`duplicate canonical object_id ${objectId} in ${context}`);
+    seen.add(objectId);
+  }
+}
+
 function evidenceChunks(markdown: string): string[] {
-  if (markdown.length === 0) return ["[empty source]"];
+  if (markdown.length === 0) return [""];
   const chunks: string[] = [];
   let start = 0;
   while (start < markdown.length) {

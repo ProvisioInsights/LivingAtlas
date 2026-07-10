@@ -288,11 +288,11 @@ export const CanonicalEvidencePayloadSchema = z.object({
   retrieved_at: IsoTimestampSchema,
   publisher: BoundedIdentifierSchema.optional(),
   independence_key: BoundedIdentifierSchema,
-  excerpt: z.string().min(1).max(4_096).optional(),
+  excerpt: z.string().max(4_096).optional(),
   snapshot_ref: ObjectIdSchema.optional(),
   extraction_method: BoundedIdentifierSchema.optional()
 }).strict().superRefine((evidence, ctx) => {
-  if (!evidence.excerpt && !evidence.snapshot_ref) {
+  if (evidence.excerpt === undefined && !evidence.snapshot_ref) {
     ctx.addIssue({
       code: "custom",
       path: ["excerpt"],
@@ -505,6 +505,7 @@ export const CanonicalExportSchema = z.object({
   exported_at: IsoTimestampSchema,
   records: z.array(CanonicalExportRecordSchema)
 }).strict().superRefine((exported, ctx) => {
+  const seenObjectIds = new Set<string>();
   for (const [index, record] of exported.records.entries()) {
     if (record.authority_id !== exported.authority_id) {
       ctx.addIssue({
@@ -513,6 +514,14 @@ export const CanonicalExportSchema = z.object({
         message: "canonical export records must share the export authority"
       });
     }
+    if (seenObjectIds.has(record.object_id)) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["records", index, "object_id"],
+        message: "canonical export object ids must be unique"
+      });
+    }
+    seenObjectIds.add(record.object_id);
   }
 });
 export type CanonicalExport = z.infer<typeof CanonicalExportSchema>;

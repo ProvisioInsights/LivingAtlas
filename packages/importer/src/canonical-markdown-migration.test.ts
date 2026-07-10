@@ -1,8 +1,92 @@
 import { describe, expect, it } from "vitest";
-import { CanonicalPayloadSchema } from "@living-atlas/contracts";
-import { createCanonicalMarkdownMigration } from "./canonical-markdown-migration";
+import { CanonicalPayloadSchema, canonicalPayloadObjectId } from "@living-atlas/contracts";
+import {
+  createCanonicalMarkdownMigration,
+  createCanonicalMarkdownMigrationExport
+} from "./canonical-markdown-migration";
+import { createMarkdownSourceRef } from "./markdown";
 
 describe("canonical markdown migration", () => {
+  it("preserves an empty source exactly without fabricating knowledge or represented parity", () => {
+    const migration = createCanonicalMarkdownMigration([{
+      source_path: "pages/Synthetic Empty.md",
+      markdown: "",
+      source_kind: "logseq"
+    }], {
+      authority_id: "la_authority_fixture0001",
+      created_at: "2026-07-10T12:00:00.000Z",
+      path_redaction_secret: "synthetic-migration-path-secret"
+    });
+
+    const evidence = migration.payloads.filter((payload) => payload.schema === "atlas.evidence:v1");
+    const observations = migration.payloads.filter((payload) => payload.schema === "atlas.observation:v1");
+    const review = migration.payloads.find((payload) => payload.schema === "atlas.review-item:v1");
+    const parity = migration.payloads.find((payload) => payload.schema === "atlas.parity-record:v1");
+
+    expect(evidence).toEqual([expect.objectContaining({
+      excerpt: "",
+      content_hash: "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      extraction_method: "canonical-markdown-lossless-v1"
+    })]);
+    expect(observations).toEqual([]);
+    expect(review).toMatchObject({ recommendation: "research", resolution_state: "research", proposed_object_ids: [] });
+    expect(parity).toEqual(expect.objectContaining({
+      coverage_state: "unrepresented",
+      canonical_object_ids: []
+    }));
+    expect(parity).not.toHaveProperty("representation_kind");
+    expect(JSON.stringify(migration)).not.toContain("[empty source]");
+  });
+
+  it("rejects duplicate source references before canonical payload construction", () => {
+    const pathRedactionSecret = "synthetic-migration-path-secret";
+    const sourcePath = "pages/Synthetic Duplicate.md";
+    const sourceRef = createMarkdownSourceRef(sourcePath, { path_redaction_secret: pathRedactionSecret });
+
+    expect(() => createCanonicalMarkdownMigration([
+      { source_path: sourcePath, markdown: "- First synthetic value.", source_kind: "logseq" },
+      { source_path: sourcePath, markdown: "- Second synthetic value.", source_kind: "logseq" }
+    ], {
+      authority_id: "la_authority_fixture0001",
+      created_at: "2026-07-10T12:00:00.000Z",
+      path_redaction_secret: pathRedactionSecret
+    })).toThrow(`duplicate canonical markdown source_ref ${sourceRef}`);
+  });
+
+  it("keeps identical content at distinct source paths with globally unique canonical object ids", () => {
+    const markdown = "- Shared synthetic content.";
+    const migration = createCanonicalMarkdownMigration([
+      { source_path: "pages/Synthetic Copy One.md", markdown, source_kind: "logseq" },
+      { source_path: "pages/Synthetic Copy Two.md", markdown, source_kind: "logseq" }
+    ], {
+      authority_id: "la_authority_fixture0001",
+      created_at: "2026-07-10T12:00:00.000Z",
+      path_redaction_secret: "synthetic-migration-path-secret"
+    });
+    const objectIds = migration.payloads.map(canonicalPayloadObjectId);
+
+    expect(migration.payloads.filter((payload) => payload.schema === "atlas.review-item:v1")).toHaveLength(2);
+    expect(new Set(objectIds).size).toBe(objectIds.length);
+  });
+
+  it("rejects a duplicate canonical object id at the migration export boundary", () => {
+    const migration = createCanonicalMarkdownMigration([{
+      source_path: "pages/Synthetic Export.md",
+      markdown: "- Synthetic export value.",
+      source_kind: "logseq"
+    }], {
+      authority_id: "la_authority_fixture0001",
+      created_at: "2026-07-10T12:00:00.000Z",
+      path_redaction_secret: "synthetic-migration-path-secret"
+    });
+    const duplicate = migration.payloads[0]!;
+
+    expect(() => createCanonicalMarkdownMigrationExport({
+      ...migration,
+      payloads: [...migration.payloads, duplicate]
+    })).toThrow(`duplicate canonical object_id ${canonicalPayloadObjectId(duplicate)} in migration export`);
+  });
+
   it("keeps repeated meaningful units as distinct occurrence-scoped observations", () => {
     const markdown = [
       "- Repeated synthetic note.",
@@ -133,6 +217,55 @@ describe("canonical markdown migration", () => {
       resolution_state: "research",
       candidate_entity_ids: []
     });
+  });
+
+  it("refuses same-title typed endpoint collisions before entity and candidate projection", () => {
+    const migration = createCanonicalMarkdownMigration([
+      {
+        source_path: "synthetic-one/Synthetic Collision.md",
+        markdown: "type:: person\nphone:: +1 555 0199",
+        source_kind: "logseq"
+      },
+      {
+        source_path: "synthetic-two/Synthetic Collision.md",
+        markdown: "type:: project",
+        source_kind: "logseq"
+      },
+      {
+        source_path: "notes/Synthetic Collision Reference.md",
+        markdown: [
+          "- See [[Synthetic Collision]].",
+          "",
+          "## Edges",
+          "- [[Synthetic Collision]] (project) about [[Synthetic Collision Topic]] (topic)"
+        ].join("\n"),
+        source_kind: "generic-markdown"
+      },
+      {
+        source_path: "pages/Synthetic Collision Topic.md",
+        markdown: "type:: topic",
+        source_kind: "logseq"
+      }
+    ], {
+      authority_id: "la_authority_fixture0001",
+      created_at: "2026-07-10T12:00:00.000Z",
+      path_redaction_secret: "synthetic-migration-path-secret"
+    });
+
+    const collisionEntities = migration.payloads.filter((payload) => payload.schema === "atlas.entity:v1"
+      && payload.name === "Synthetic Collision");
+    const collisionFacts = migration.payloads.filter((payload) => payload.schema === "atlas.fact:v1");
+    const collisionRelationships = migration.payloads.filter((payload) => payload.schema === "atlas.relationship:v2");
+    const collisionObservations = migration.payloads
+      .filter((payload) => payload.schema === "atlas.observation:v1")
+      .filter((payload) => ["Type: person", "Phone: +1 555 0199", "Type: project", "See Synthetic Collision."].includes(payload.statement));
+
+    expect(collisionEntities).toEqual([]);
+    expect(collisionFacts).toEqual([]);
+    expect(collisionRelationships).toEqual([]);
+    expect(collisionObservations).toHaveLength(4);
+    expect(collisionObservations.every((payload) => payload.resolution_state === "research"
+      && payload.candidate_entity_ids.length === 0)).toBe(true);
   });
 
   it("emits only parseable measured direct fields as typed facts backed by unit evidence", () => {

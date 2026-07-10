@@ -195,7 +195,23 @@ describe("canonical knowledge payload contracts", () => {
     });
 
     expect(canonicalObjectTypeForPayload(evidence)).toBe("evidence");
-    expect(CanonicalEvidencePayloadSchema.safeParse({ ...evidence, excerpt: "" }).success).toBe(false);
+    expect(CanonicalEvidencePayloadSchema.safeParse({ ...evidence, excerpt: "x".repeat(4_097) }).success).toBe(false);
+  });
+
+  it("distinguishes a defined empty evidence excerpt from missing evidence custody", () => {
+    const emptyEvidence = {
+      schema: "atlas.evidence:v1",
+      evidence_id: "la_object_emptyevidence0001",
+      source_kind: "migration",
+      locator: "migration:la_source_fixture:excerpt:1",
+      content_hash: "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      retrieved_at: timestamp,
+      independence_key: "migration:la_source_fixture",
+      excerpt: ""
+    };
+
+    expect(CanonicalEvidencePayloadSchema.parse(emptyEvidence).excerpt).toBe("");
+    expect(CanonicalEvidencePayloadSchema.safeParse({ ...emptyEvidence, excerpt: undefined }).success).toBe(false);
   });
 
   it("requires durable identity, review, and parity records", () => {
@@ -300,6 +316,35 @@ describe("canonical knowledge payload contracts", () => {
     expect(CanonicalExportSchema.safeParse({
       ...exported,
       records: [{ ...record, object_type: "page" }]
+    }).success).toBe(false);
+  });
+
+  it("rejects duplicate canonical object ids in one export", () => {
+    const record = {
+      authority_id: "la_authority_contract0001",
+      object_id: "la_object_entity0001",
+      object_type: "entity",
+      version: 1,
+      access_class: "local-private",
+      content_hash: hash,
+      payload: {
+        schema: "atlas.entity:v1",
+        entity_id: "la_object_entity0001",
+        type: "organization",
+        subtype: "company",
+        name: "Synthetic Organization",
+        aliases: [],
+        created_at: timestamp,
+        updated_at: timestamp
+      }
+    } as const;
+
+    expect(CanonicalExportSchema.safeParse({
+      export_schema: "living-atlas-canonical-export:v1",
+      plaintext_policy: "local-keyholding-canonical-export",
+      authority_id: record.authority_id,
+      exported_at: timestamp,
+      records: [record, record]
     }).success).toBe(false);
   });
 });
