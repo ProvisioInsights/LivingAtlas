@@ -1,11 +1,18 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { randomBytes } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { authenticateLocalMcp, localResolutionApply, localResolutionApplyBatch, type LocalMcpContext } from "@living-atlas/local-mcp";
 import { projectLocalReviewQueue } from "./review-projection";
 
-export function createLocalReviewSiteServer(input: { context: LocalMcpContext }) {
+const browserSessionCookie = "atlas_review_session";
+
+export function createLocalReviewSiteServer(input: {
+  context: LocalMcpContext;
+  browserSessionAuthorization?: string;
+}) {
+  const browserSessions = new Map<string, string>();
   return createServer((request, response) => {
-    void handleRequest(request, response, input.context).catch((error: unknown) => {
+    void handleRequest(request, response, input.context, browserSessions, input.browserSessionAuthorization).catch((error: unknown) => {
       const status = error instanceof JsonBodyError ? error.status : 500;
       const reason = error instanceof JsonBodyError ? error.reason : "internal-error";
       if (!response.headersSent) sendJson(response, status, { ok: false, reason });
@@ -14,9 +21,29 @@ export function createLocalReviewSiteServer(input: { context: LocalMcpContext })
   });
 }
 
-async function handleRequest(request: IncomingMessage, response: ServerResponse, context: LocalMcpContext): Promise<void> {
+async function handleRequest(
+  request: IncomingMessage,
+  response: ServerResponse,
+  context: LocalMcpContext,
+  browserSessions: Map<string, string>,
+  browserSessionAuthorization: string | undefined
+): Promise<void> {
   const pathname = new URL(request.url ?? "/", "http://127.0.0.1").pathname;
   if (request.method === "GET" && pathname === "/") {
+    if (!browserAuthorizationFromCookie(request, browserSessions) && browserSessionAuthorization) {
+      const launchAuth = await authenticateLocalMcp({
+        authorizationHeader: browserSessionAuthorization,
+        credentialStore: context.credentialStore,
+        controlPlane: context.controlPlane,
+        auditSink: context.auditSink,
+        now: context.now
+      });
+      if (launchAuth.ok) {
+        const sessionId = randomBytes(32).toString("base64url");
+        browserSessions.set(sessionId, browserSessionAuthorization);
+        response.setHeader("set-cookie", `${browserSessionCookie}=${sessionId}; HttpOnly; SameSite=Strict; Path=/`);
+      }
+    }
     response.writeHead(200, { "cache-control": "no-store", "content-type": "text/html; charset=utf-8" });
     response.end(await readFile(new URL("./index.html", import.meta.url)));
     return;
@@ -31,7 +58,13 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse,
     response.end(await readFile(new URL("./styles.css", import.meta.url)));
     return;
   }
-  const auth = await authenticateLocalMcp({ authorizationHeader: request.headers.authorization, credentialStore: context.credentialStore, controlPlane: context.controlPlane, auditSink: context.auditSink, now: context.now });
+  const auth = await authenticateLocalMcp({
+    authorizationHeader: request.headers.authorization ?? browserAuthorizationFromCookie(request, browserSessions),
+    credentialStore: context.credentialStore,
+    controlPlane: context.controlPlane,
+    auditSink: context.auditSink,
+    now: context.now
+  });
   if (!auth.ok) {
     sendJson(response, 401, { ok: false, reason: auth.reason });
     return;
@@ -68,6 +101,15 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse,
     return;
   }
   sendJson(response, 404, { ok: false, reason: "not-found" });
+}
+
+function browserAuthorizationFromCookie(request: IncomingMessage, browserSessions: Map<string, string>): string | undefined {
+  const sessionId = request.headers.cookie
+    ?.split(";")
+    .map((part) => part.trim())
+    .find((part) => part.startsWith(`${browserSessionCookie}=`))
+    ?.slice(browserSessionCookie.length + 1);
+  return sessionId ? browserSessions.get(sessionId) : undefined;
 }
 
 async function readJson(request: IncomingMessage): Promise<unknown> {

@@ -1,20 +1,11 @@
-const state = { tab: "owner_review", queue: null, authorization: "", selected: new Set() };
+const state = { tab: "owner_review", queue: null, selected: new Set() };
 const status = document.querySelector("#status");
 const root = document.querySelector("#queue");
-const authorizationInput = document.querySelector("#authorization");
-
-const auth = () => state.authorization;
 
 async function load() {
-  const authorization = auth();
-  if (!authorization) {
-    status.textContent = "Enter local authorization to load the queue.";
-    return;
-  }
-  const response = await fetch("/api/review-queue", { headers: { authorization } });
+  const response = await fetch("/api/review-queue", { credentials: "same-origin" });
   if (!response.ok) {
-    state.authorization = "";
-    status.textContent = "Local authorization was not accepted.";
+    status.textContent = "Your local review session is unavailable. Restart Atlas Review and try again.";
     return;
   }
   state.queue = await response.json();
@@ -61,7 +52,7 @@ function appendDetails(article, item) {
 async function applyOne(candidate) {
   const body = promptJson("Paste the complete precomputed resolution request JSON. Atlas will reject incomplete or invalid mutations.");
   if (!body) return;
-  const response = await fetch(`/api/review/${candidate}/apply`, { method: "POST", headers: { authorization: auth(), "content-type": "application/json" }, body: JSON.stringify(body) });
+  const response = await fetch(`/api/review/${candidate}/apply`, { method: "POST", credentials: "same-origin", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
   status.textContent = JSON.stringify(await response.json());
   if (response.ok) load();
 }
@@ -79,7 +70,7 @@ async function applyBulk() {
     status.textContent = "The batch request candidates must exactly match the selected owner-review items.";
     return;
   }
-  const response = await fetch("/api/review/bulk/apply", { method: "POST", headers: { authorization: auth(), "content-type": "application/json" }, body: JSON.stringify(body) });
+  const response = await fetch("/api/review/bulk/apply", { method: "POST", credentials: "same-origin", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
   status.textContent = JSON.stringify(await response.json());
   if (response.ok) {
     state.selected.clear();
@@ -100,9 +91,4 @@ document.querySelectorAll("[data-tab]").forEach((button) => button.onclick = () 
   render();
 });
 
-document.querySelector("#connect").onsubmit = (event) => {
-  event.preventDefault();
-  state.authorization = authorizationInput.value;
-  authorizationInput.value = "";
-  load();
-};
+load();

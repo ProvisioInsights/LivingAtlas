@@ -8,6 +8,39 @@ const servers: Array<ReturnType<typeof createLocalReviewSiteServer>> = [];
 afterEach(() => servers.splice(0).forEach((server) => server.close()));
 
 describe("local review site server", () => {
+  it("creates an HttpOnly loopback browser session when launched with local authorization", async () => {
+    const token = "local-review-site-token-0002";
+    const context = createFixtureLocalMcpContext({ credentialStore: new InMemoryLocalMcpCredentialStore([{
+      credential_id: "la_local_credential_reviewsite0002", client_id: fixtureLocalClientId, capability_id: "la_cap_localfull0001", token_hash: await hashLocalMcpToken(token), created_at: "2026-07-10T12:00:00.000Z"
+    }]), now: "2026-07-10T12:00:00.000Z" });
+    const server = createLocalReviewSiteServer({
+      context,
+      browserSessionAuthorization: `Bearer ${token}`
+    });
+    servers.push(server);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("expected loopback address");
+    const origin = `http://127.0.0.1:${address.port}`;
+
+    const page = await fetch(origin);
+    const cookie = page.headers.get("set-cookie");
+    const html = await page.text();
+    expect(page.status).toBe(200);
+    expect(html).not.toContain("Local authorization");
+    expect(html).toContain("Secure local session");
+    expect(cookie).toMatch(/^atlas_review_session=/);
+    expect(cookie).toContain("HttpOnly");
+    expect(cookie).toContain("SameSite=Strict");
+    expect(cookie).toContain("Path=/");
+    await expect(fetch(`${origin}/api/review-queue`, {
+      headers: { cookie: cookie!.split(";")[0]! }
+    }).then(async (response) => ({ status: response.status, body: await response.json() }))).resolves.toMatchObject({
+      status: 200,
+      body: { owner_review: [], research: [], automatic: [] }
+    });
+  });
+
   it("requires local bearer authorization before returning any review queue", async () => {
     const token = "local-review-site-token-0001";
     const context = createFixtureLocalMcpContext({ credentialStore: new InMemoryLocalMcpCredentialStore([{
