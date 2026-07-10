@@ -1,6 +1,6 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { readFile } from "node:fs/promises";
-import { authenticateLocalMcp, localResolutionApply, type LocalMcpContext } from "@living-atlas/local-mcp";
+import { authenticateLocalMcp, localResolutionApply, localResolutionApplyBatch, type LocalMcpContext } from "@living-atlas/local-mcp";
 import { projectLocalReviewQueue } from "./review-projection";
 
 export function createLocalReviewSiteServer(input: { context: LocalMcpContext }) {
@@ -41,6 +41,18 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse,
   const queue = await projectLocalReviewQueue({ objects, decryptPayload });
   if (request.method === "GET" && pathname === "/api/review-queue") {
     sendJson(response, 200, queue);
+    return;
+  }
+  if (request.method === "POST" && pathname === "/api/review/bulk/apply") {
+    const body = await readJson(request);
+    const resolutions = Array.isArray((body as { resolutions?: unknown }).resolutions) ? (body as { resolutions: Array<{ candidate_id?: unknown }> }).resolutions : [];
+    const ownerCandidates = new Set(queue.owner_review.map((item) => item.candidate_id));
+    if (resolutions.length === 0 || resolutions.some((resolution) => typeof resolution.candidate_id !== "string" || !ownerCandidates.has(resolution.candidate_id))) {
+      sendJson(response, 409, { ok: false, reason: "candidate-not-owner-review" });
+      return;
+    }
+    const result = await localResolutionApplyBatch(context, { ...(body as Record<string, unknown>), authorization: request.headers.authorization ?? "" } as never);
+    sendJson(response, result.ok ? 200 : 409, result);
     return;
   }
   const match = /^\/api\/review\/(la_candidate_[A-Za-z0-9_-]{8,})\/apply$/.exec(pathname);

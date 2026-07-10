@@ -27,5 +27,10 @@ describe("local review site server", () => {
       headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
       body: "not-json"
     }).then(async (response) => ({ status: response.status, body: await response.json() }))).resolves.toEqual({ status: 409, body: { ok: false, reason: "candidate-not-owner-review" } });
+    await expect(fetch(`${url.replace("/api/review-queue", "")}/api/review/bulk/apply`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ resolutions: [{ candidate_id: "la_candidate_notowner0001" }] })
+    }).then(async (response) => ({ status: response.status, body: await response.json() }))).resolves.toEqual({ status: 409, body: { ok: false, reason: "candidate-not-owner-review" } });
   });
 });
