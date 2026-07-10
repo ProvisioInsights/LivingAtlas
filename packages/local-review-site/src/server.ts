@@ -5,7 +5,12 @@ import { projectLocalReviewQueue } from "./review-projection";
 
 export function createLocalReviewSiteServer(input: { context: LocalMcpContext }) {
   return createServer((request, response) => {
-    void handleRequest(request, response, input.context);
+    void handleRequest(request, response, input.context).catch((error: unknown) => {
+      const status = error instanceof JsonBodyError ? error.status : 500;
+      const reason = error instanceof JsonBodyError ? error.reason : "internal-error";
+      if (!response.headersSent) sendJson(response, status, { ok: false, reason });
+      else response.destroy(error instanceof Error ? error : undefined);
+    });
   });
 }
 
@@ -55,8 +60,26 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse,
 
 async function readJson(request: IncomingMessage): Promise<unknown> {
   const chunks: Buffer[] = [];
-  for await (const chunk of request) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-  return JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
+  let bytes = 0;
+  for await (const chunk of request) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    bytes += buffer.byteLength;
+    if (bytes > maxJsonBodyBytes) throw new JsonBodyError(413, "request-body-too-large");
+    chunks.push(buffer);
+  }
+  try {
+    return JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
+  } catch {
+    throw new JsonBodyError(400, "invalid-json");
+  }
+}
+
+const maxJsonBodyBytes = 1024 * 1024;
+
+class JsonBodyError extends Error {
+  constructor(readonly status: 400 | 413, readonly reason: "invalid-json" | "request-body-too-large") {
+    super(reason);
+  }
 }
 
 function sendJson(response: ServerResponse, status: number, body: unknown): void {

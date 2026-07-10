@@ -22,5 +22,10 @@ describe("local review site server", () => {
 
     await expect(fetch(url)).resolves.toMatchObject({ status: 401 });
     await expect(fetch(url, { headers: { authorization: `Bearer ${token}` } }).then(async (response) => ({ status: response.status, body: await response.json() }))).resolves.toMatchObject({ status: 200, body: { owner_review: [], research: [], automatic: [] } });
+    await expect(fetch(`${url.replace("/api/review-queue", "")}/api/review/la_candidate_notowner0001/apply`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: "not-json"
+    }).then(async (response) => ({ status: response.status, body: await response.json() }))).resolves.toEqual({ status: 409, body: { ok: false, reason: "candidate-not-owner-review" } });
   });
 });
