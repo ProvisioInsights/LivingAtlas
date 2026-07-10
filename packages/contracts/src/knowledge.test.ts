@@ -10,7 +10,9 @@ import {
   CanonicalRelationshipPayloadSchema,
   CanonicalReviewItemPayloadSchema,
   CanonicalWriteSchema,
+  canonicalIntervalsOverlap,
   canonicalObjectTypeForPayload,
+  canonicalWorldTimeInterval,
   parseCanonicalExport
 } from "./index";
 
@@ -29,6 +31,38 @@ const confidence = {
 const evidenceLinks = [{ evidence_id: evidenceId, stance: "supports" }] as const;
 
 describe("canonical knowledge payload contracts", () => {
+  it("expands mixed-precision valid time and rejects empty canonical intervals", () => {
+    expect(canonicalWorldTimeInterval("2026")).toEqual({
+      lower: "2026-01-01",
+      upper: "2027-01-01",
+      approximate: false
+    });
+    expect(canonicalWorldTimeInterval("~2026-02")).toEqual({
+      lower: "2026-02-01",
+      upper: "2026-03-01",
+      approximate: true
+    });
+    expect(canonicalWorldTimeInterval("unknown")).toBeUndefined();
+    expect(canonicalIntervalsOverlap(
+      canonicalWorldTimeInterval("2026")!,
+      canonicalWorldTimeInterval("2026-06")!
+    )).toBe(true);
+
+    expect(CanonicalFactPayloadSchema.safeParse({
+      schema: "atlas.fact:v1",
+      assertion_id: "la_object_invalidinterval0001",
+      subject_entity_id: "la_object_entity0001",
+      predicate: "status",
+      value: { kind: "text", value: "Synthetic status" },
+      valid_from: "2026-06",
+      valid_to: "2026-06",
+      recorded_at: timestamp,
+      lineage_action: "assert",
+      evidence_links: evidenceLinks,
+      confidence
+    }).success).toBe(false);
+  });
+
   it("accepts a canonical entity without legacy source or confidence fields", () => {
     const entity = CanonicalEntityPayloadSchema.parse({
       schema: "atlas.entity:v1",

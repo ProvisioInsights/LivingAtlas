@@ -4,6 +4,8 @@ import {
   type LivingAtlasMcpToolName
 } from "@living-atlas/mcp-contract";
 
+export * from "./canonical-assertions";
+
 export type LivingAtlasIngress = "local-stdio" | "remote-http";
 export type LivingAtlasKeyCustody = "local-keyholding" | "transient-cloud-unlock" | "host-blind";
 

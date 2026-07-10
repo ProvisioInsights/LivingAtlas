@@ -33,7 +33,7 @@
 - `canonicalWorldTimeInterval` expands a `MixedPrecisionDateSchema` value to `{ lower, upper, approximate }`; `unknown` returns `undefined`.
 - Fact and relationship schemas reject a finite `valid_to` interval that ends at or before `valid_from`.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Add to `packages/contracts/src/knowledge.test.ts`:
 
@@ -60,13 +60,13 @@ expect(CanonicalFactPayloadSchema.safeParse({
 }).success).toBe(false);
 ```
 
-- [ ] **Step 2: Run the test to verify it fails**
+- [x] **Step 2: Run the test to verify it fails**
 
 Run: `pnpm vitest run packages/contracts/src/knowledge.test.ts`
 
 Expected: FAIL because interval helpers are not exported and a zero-length fact interval is accepted.
 
-- [ ] **Step 3: Write the minimal implementation**
+- [x] **Step 3: Write the minimal implementation**
 
 Add the following public interface near the time-bearing canonical payloads in `packages/contracts/src/knowledge.ts`:
 
@@ -106,7 +106,7 @@ In the fact and relationship `superRefine` functions, parse non-`unknown`
 issue at `valid_to` unless `from.lower < to.lower`. Do not reject an open-ended
 interval or an `unknown` bound.
 
-- [ ] **Step 4: Run the test to verify it passes**
+- [x] **Step 4: Run the test to verify it passes**
 
 Run: `pnpm vitest run packages/contracts/src/knowledge.test.ts`
 
@@ -124,10 +124,10 @@ Expected: PASS with interval expansion and invalid finite interval coverage.
 
 - Produces `CanonicalAssertion`, `CanonicalAssertionQuery`, `CanonicalAssertionProjection`, and `projectCanonicalAssertions(assertions, query)`.
 - A `CanonicalAssertion` is `CanonicalFactPayload | CanonicalRelationshipPayload`.
-- `CanonicalAssertionQuery` accepts optional `valid_at`, `known_at`, `include_superseded`, and `include_non_assert_actions`.
+- `CanonicalAssertionQuery` accepts optional `valid_at`, `known_at`, `include_superseded`, `include_retracted`, and `include_invalidated`.
 - Projection returns `{ assertions, superseded_assertion_ids }`, ordered by `recorded_at` then assertion id.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Create `packages/graph-service/src/canonical-assertions.test.ts` with fixtures
 for a fact assertion, its later correction, an unrelated contradictory fact, and
@@ -147,7 +147,7 @@ expect(projectCanonicalAssertions([original, correction], {
 }).assertions.map((item) => item.assertion_id)).toEqual([original.assertion_id]);
 
 expect(projectCanonicalAssertions([retracted], {
-  include_non_assert_actions: true
+  include_retracted: true
 }).assertions).toEqual([retracted]);
 
 expect(projectCanonicalAssertions([unknownDatedFact], {
@@ -155,13 +155,13 @@ expect(projectCanonicalAssertions([unknownDatedFact], {
 }).assertions).toEqual([]);
 ```
 
-- [ ] **Step 2: Run the test to verify it fails**
+- [x] **Step 2: Run the test to verify it fails**
 
 Run: `pnpm vitest run packages/graph-service/src/canonical-assertions.test.ts`
 
 Expected: FAIL because the projection module does not exist.
 
-- [ ] **Step 3: Write the minimal implementation**
+- [x] **Step 3: Write the minimal implementation**
 
 Create `packages/graph-service/src/canonical-assertions.ts` with this public
 shape:
@@ -179,7 +179,8 @@ export type CanonicalAssertionQuery = {
   valid_at?: string;
   known_at?: string;
   include_superseded?: boolean;
-  include_non_assert_actions?: boolean;
+  include_retracted?: boolean;
+  include_invalidated?: boolean;
 };
 export type CanonicalAssertionProjection = {
   assertions: CanonicalAssertion[];
@@ -198,10 +199,11 @@ Implement the projection in this order:
 3. Build superseded ids only from remaining, known assertions. Unless
    `include_superseded` is true, remove assertions whose id appears in another
    remaining assertion’s `supersedes` array.
-4. Unless `include_non_assert_actions` is true, remove `correct`, `retract`,
-   `invalidate`, and `reinstate` assertion records after they have affected the
-   supersession calculation. This leaves current positive `assert` facts and
-   relationships while preserving an explicit history mode.
+4. Keep current `assert`, `correct`, and `reinstate` records. Unless
+   `include_retracted` or `include_invalidated` is true, remove current
+   `retract` or `invalidate` records after they have affected the supersession
+   calculation. This leaves a corrected current assertion visible while making
+   retraction/invalidation history explicit on demand.
 5. Sort returned assertions by `recorded_at` ascending, then `assertion_id`.
 
 Export the module from `packages/graph-service/src/index.ts` with:
@@ -210,7 +212,7 @@ Export the module from `packages/graph-service/src/index.ts` with:
 export * from "./canonical-assertions";
 ```
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [x] **Step 4: Run the tests to verify they pass**
 
 Run: `pnpm vitest run packages/graph-service/src/canonical-assertions.test.ts packages/contracts/src/knowledge.test.ts`
 

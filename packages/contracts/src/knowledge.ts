@@ -78,6 +78,73 @@ export const FactValueSchema = z.discriminatedUnion("kind", [
 ]);
 export type FactValue = z.infer<typeof FactValueSchema>;
 
+export type CanonicalWorldTimeInterval = {
+  lower: string;
+  upper: string;
+  approximate: boolean;
+};
+
+export function canonicalWorldTimeInterval(value: string): CanonicalWorldTimeInterval | undefined {
+  const parsed = MixedPrecisionDateSchema.parse(value);
+  if (parsed === "unknown") {
+    return undefined;
+  }
+
+  const approximate = parsed.startsWith("~");
+  const normalized = approximate ? parsed.slice(1) : parsed;
+  if (/^\d{4}$/.test(normalized)) {
+    const year = Number(normalized);
+    return {
+      lower: `${normalized}-01-01`,
+      upper: `${year + 1}-01-01`,
+      approximate
+    };
+  }
+
+  if (/^\d{4}-\d{2}$/.test(normalized)) {
+    const [yearText, monthText] = normalized.split("-");
+    const year = Number(yearText);
+    const month = Number(monthText);
+    const [nextYear, nextMonth] = month === 12 ? [year + 1, 1] : [year, month + 1];
+    return {
+      lower: `${normalized}-01`,
+      upper: `${nextYear}-${String(nextMonth).padStart(2, "0")}-01`,
+      approximate
+    };
+  }
+
+  const date = new Date(`${normalized}T00:00:00.000Z`);
+  const next = new Date(date);
+  next.setUTCDate(next.getUTCDate() + 1);
+  return {
+    lower: normalized,
+    upper: next.toISOString().slice(0, 10),
+    approximate
+  };
+}
+
+export function canonicalIntervalsOverlap(left: CanonicalWorldTimeInterval, right: CanonicalWorldTimeInterval): boolean {
+  return left.lower < right.upper && right.lower < left.upper;
+}
+
+function validateCanonicalValidInterval(
+  interval: { valid_from?: string; valid_to?: string },
+  ctx: z.RefinementCtx
+): void {
+  if (!interval.valid_from || !interval.valid_to) {
+    return;
+  }
+  const from = canonicalWorldTimeInterval(interval.valid_from);
+  const to = canonicalWorldTimeInterval(interval.valid_to);
+  if (from && to && from.lower >= to.lower) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["valid_to"],
+      message: "valid_to must end after valid_from in a half-open interval"
+    });
+  }
+}
+
 export const AssertionLineageActionSchema = z.enum([
   "assert",
   "correct",
@@ -137,6 +204,7 @@ export const CanonicalFactPayloadSchema = z.object({
   ...AssertionLineageSchema.shape
 }).strict().superRefine((fact, ctx) => {
   validateAssertionLineage(fact, ctx);
+  validateCanonicalValidInterval(fact, ctx);
   const allowedKinds = FactPredicateRegistry[fact.predicate];
   if (!(allowedKinds as readonly string[]).includes(fact.value.kind)) {
     ctx.addIssue({
@@ -176,6 +244,7 @@ export const CanonicalRelationshipPayloadSchema = z.object({
   ...AssertionLineageSchema.shape
 }).strict().superRefine((relationship, ctx) => {
   validateAssertionLineage(relationship, ctx);
+  validateCanonicalValidInterval(relationship, ctx);
   const temporalEdge = TemporalEdgeSchema.safeParse({
     edge_id: relationship.edge_id,
     source_object_id: relationship.source_entity_id,
