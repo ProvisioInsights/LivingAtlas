@@ -209,6 +209,16 @@ describe("canonical knowledge payload contracts", () => {
     expect(canonicalObjectTypeForPayload(resolution)).toBe("review");
     expect(canonicalObjectTypeForPayload(review)).toBe("review");
     expect(canonicalObjectTypeForPayload(parity)).toBe("manifest");
+    expect(CanonicalEntityResolutionPayloadSchema.safeParse({
+      ...resolution,
+      canonical_entity_id: "la_object_notacandidate0001"
+    }).success).toBe(false);
+    expect(CanonicalEntityResolutionPayloadSchema.safeParse({
+      ...resolution,
+      decision: "split",
+      canonical_entity_id: undefined,
+      supersedes: []
+    }).success).toBe(false);
     expect(CanonicalParityRecordPayloadSchema.safeParse({
       ...parity,
       canonical_object_ids: []

@@ -317,6 +317,22 @@ export const CanonicalEntityResolutionPayloadSchema = z.object({
       message: `${resolution.decision} decisions require a canonical entity id`
     });
   }
+  if ((resolution.decision === "link" || resolution.decision === "merge")
+    && resolution.canonical_entity_id
+    && !resolution.candidate_entity_ids.includes(resolution.canonical_entity_id)) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["canonical_entity_id"],
+      message: `${resolution.decision} canonical entity id must be one of the candidates`
+    });
+  }
+  if (resolution.decision === "split" && resolution.supersedes.length === 0) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["supersedes"],
+      message: "split decisions must supersede one or more prior resolutions"
+    });
+  }
 });
 export type CanonicalEntityResolutionPayload = z.infer<typeof CanonicalEntityResolutionPayloadSchema>;
 
