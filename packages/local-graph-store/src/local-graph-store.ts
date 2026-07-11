@@ -144,6 +144,7 @@ export type LocalGraphTransactionInput = LocalGraphMutationInputBase & {
 
 export type LocalGraphMutationConflictReason =
   | "generation-conflict"
+  | "idempotency-conflict"
   | "version-conflict"
   | "object-already-exists"
   | "object-already-tombstoned"
@@ -296,6 +297,10 @@ function makeId(prefix: "la_change" | "la_operation" | "la_trace", seed: string)
 
 function cloneGraphObject(object: GraphObjectEnvelope): GraphObjectEnvelope {
   return GraphObjectEnvelopeSchema.parse(structuredClone(object));
+}
+
+function cloneOperationRecord(record: LocalGraphOperationRecord): LocalGraphOperationRecord {
+  return LocalGraphOperationRecordSchema.parse(structuredClone(record));
 }
 
 function normalizeRecordedAt(recordedAt: string | undefined, now: () => string): string {
@@ -611,6 +616,12 @@ export class FileLocalGraphStore {
     return object ? cloneGraphObject(object) : undefined;
   }
 
+  operationRecordForIdempotency(idempotencyKey: string): LocalGraphOperationRecord | undefined {
+    const parsedKey = z.string().min(1).parse(idempotencyKey);
+    const record = this.state.operationRecords.find((candidate) => candidate.idempotency_key === parsedKey);
+    return record ? cloneOperationRecord(record) : undefined;
+  }
+
   async initializeFromObjects(
     objectsInput: GraphObjectEnvelope[],
     options: InitializeLocalGraphStoreOptions = {}
@@ -849,11 +860,20 @@ export class FileLocalGraphStore {
   async commitTransaction(input: LocalGraphTransactionInput): Promise<LocalGraphTransactionResult> {
     return this.serializeMutation(async () => {
       const idempotencyKey = z.string().min(1).parse(input.idempotency_key);
+      const operationId = OperationIdSchema.parse(input.operation_id);
+      const actorId = z.string().min(1).parse(input.actor_id);
       const existingRecord = this.state.operationRecords.find((record) => record.idempotency_key === idempotencyKey);
       if (existingRecord) {
+        if (existingRecord.operation_id !== operationId || existingRecord.actor_id !== actorId) {
+          return {
+            ok: false,
+            reason: "idempotency-conflict",
+            current_generation: this.state.generation
+          };
+        }
         return {
           ok: true,
-          operation_record: LocalGraphOperationRecordSchema.parse(structuredClone(existingRecord)),
+          operation_record: cloneOperationRecord(existingRecord),
           objects: existingRecord.objects.map(cloneGraphObject),
           changes: existingRecord.changes.map((change) => SyncChangeEventSchema.parse(structuredClone(change))),
           generation: existingRecord.generation,
@@ -943,7 +963,6 @@ export class FileLocalGraphStore {
       }
 
       const recordedAt = normalizeRecordedAt(input.recorded_at, this.now);
-      const operationId = OperationIdSchema.parse(input.operation_id);
       const generation = this.state.generation + 1;
       const sequence = this.state.journalSequence + 1;
       const changes = committed.map(({ operation, object, baseVersion }) => {
@@ -961,13 +980,13 @@ export class FileLocalGraphStore {
           content_hash: object.content_hash,
           access_class: object.access_class,
           generation,
-          actor_id: input.actor_id
+          actor_id: actorId
         });
       });
       const operationRecord = LocalGraphOperationRecordSchema.parse({
         operation_id: operationId,
         idempotency_key: idempotencyKey,
-        actor_id: input.actor_id,
+        actor_id: actorId,
         recorded_at: recordedAt,
         generation,
         journal_sequence: sequence,
@@ -988,7 +1007,7 @@ export class FileLocalGraphStore {
       this.state = nextState;
       return {
         ok: true,
-        operation_record: LocalGraphOperationRecordSchema.parse(structuredClone(operationRecord)),
+        operation_record: cloneOperationRecord(operationRecord),
         objects: committed.map(({ object }) => cloneGraphObject(object)),
         changes: changes.map((change) => SyncChangeEventSchema.parse(structuredClone(change))),
         generation,

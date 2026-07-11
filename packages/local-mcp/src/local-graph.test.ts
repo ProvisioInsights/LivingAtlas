@@ -19,7 +19,11 @@ import {
   type LocalKeyringState
 } from "@living-atlas/local-keyring";
 import { InMemoryLocalMcpActivitySink } from "./activity";
-import { InMemoryLocalMcpAuditSink } from "./audit";
+import {
+  createLocalMcpAuditEvent,
+  FileLocalMcpAuditSink,
+  InMemoryLocalMcpAuditSink
+} from "./audit";
 import { hashLocalMcpToken, InMemoryLocalMcpCredentialStore } from "./auth";
 import {
   createFixtureLocalMcpContext,
@@ -197,6 +201,50 @@ function canonicalResolutionDrafts(reviewVersion: number) {
   });
 
   return { entity, evidence, fact, review, parity, candidateId };
+}
+
+type ResolutionDrafts = ReturnType<typeof canonicalResolutionDrafts>;
+type ResolutionDraft = ResolutionDrafts["fact"];
+
+function withResolutionPayload(draft: ResolutionDraft, patch: Record<string, unknown>): ResolutionDraft {
+  return {
+    ...draft,
+    payload: {
+      ...draft.payload,
+      data: { ...draft.payload.data, ...patch }
+    }
+  };
+}
+
+function copyResolutionDraftWithId(
+  draft: ResolutionDraft,
+  objectId: string,
+  semanticIdField: "review_id" | "parity_id"
+): ResolutionDraft {
+  return {
+    ...draft,
+    object_id: objectId,
+    content_hash: fixedHash(semanticIdField === "review_id" ? "c" : "d"),
+    payload: {
+      ...draft.payload,
+      data: { ...draft.payload.data, [semanticIdField]: objectId }
+    }
+  };
+}
+
+function canonicalResolutionDraft(
+  base: ResolutionDraft,
+  objectId: string,
+  objectType: "assertion" | "edge" | "review",
+  data: Record<string, unknown>
+): ResolutionDraft {
+  return {
+    ...base,
+    object_id: objectId,
+    object_type: objectType,
+    content_hash: fixedHash("f"),
+    payload: { ...base.payload, data }
+  };
 }
 
 function temporalEdgeObject(objectId: string): GraphObjectEnvelope {
@@ -427,7 +475,7 @@ describe("local fixture graph tools", () => {
         now
       });
 
-      await expect(localResolutionApply(context, {
+      const request = {
         authorization: `Bearer ${token}`,
         operation_id: "la_operation_resolution0001",
         idempotency_key: "la_idem_resolution0001",
@@ -435,7 +483,9 @@ describe("local fixture graph tools", () => {
         expected_generation: 1,
         expected_review_version: 1,
         objects: [drafts.entity, drafts.evidence, drafts.fact, drafts.review, drafts.parity]
-      })).resolves.toMatchObject({
+      };
+
+      await expect(localResolutionApply(context, request)).resolves.toMatchObject({
         ok: true,
         result: {
           local_commit: "committed",
@@ -453,17 +503,40 @@ describe("local fixture graph tools", () => {
         }
       });
 
+      await expect(localResolutionApply(context, request)).resolves.toMatchObject({
+        ok: true,
+        result: {
+          local_commit: "committed",
+          audit: "recorded",
+          sync_queue: "queued",
+          generation: 2,
+          journal_sequence: 2
+        }
+      });
+
       expect(graphStore.status()).toMatchObject({ generation: 2, object_count: 5 });
       expect(outboxSink.records.map((record) => record.mutation)).toEqual([
         "created", "created", "created", "updated", "created"
       ]);
       expect(outboxSink.records.map((record) => record.generation)).toEqual([2, 2, 2, 2, 2]);
       expect(outboxSink.records.every((record) => record.object.payload.kind === "ciphertext-inline")).toBe(true);
-      expect(auditSink.events).toContainEqual(expect.objectContaining({
+      expect(outboxSink.records).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          operation_id: request.operation_id,
+          idempotency_key: request.idempotency_key,
+          change_id: expect.stringMatching(/^la_change_/)
+        })
+      ]));
+      const resolutionEvents = auditSink.events.filter((event) => (
+        event.tool_name === "resolution_apply" && event.reason_code === "resolution-committed"
+      ));
+      expect(resolutionEvents).toEqual([expect.objectContaining({
         event_type: "tool.allowed",
         tool_name: "resolution_apply",
-        reason_code: "resolution-committed"
-      }));
+        reason_code: "resolution-committed",
+        operation_id: request.operation_id,
+        idempotency_key: request.idempotency_key
+      })]);
     } finally {
       await rm(directory, { recursive: true, force: true });
     }
@@ -607,8 +680,13 @@ describe("local fixture graph tools", () => {
         }
       };
       const existingObjects = mode === "tombstoned"
-        ? [{ ...drafts.fact, visible_metadata: { ...drafts.fact.visible_metadata, tombstone: true } }, pendingReview]
-        : [pendingReview];
+        ? [
+            drafts.entity,
+            drafts.evidence,
+            { ...drafts.fact, visible_metadata: { ...drafts.fact.visible_metadata, tombstone: true } },
+            pendingReview
+          ]
+        : [drafts.entity, drafts.evidence, pendingReview];
       await expect(graphStore.initializeFromObjects(existingObjects as never)).resolves.toMatchObject({ ok: true });
       const context = createLocalMcpContextFromControlState({
         controlState,
@@ -629,6 +707,645 @@ describe("local fixture graph tools", () => {
       expect(graphStore.status()).toMatchObject({ generation: 0 });
       expect(graphStore.readObject(drafts.parity.object_id)).toBeUndefined();
       expect(graphStore.readObject(drafts.review.object_id)).toMatchObject({ version: 1 });
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    {
+      label: "duplicate review coverage keys",
+      expectedReason: "resolution-review-mismatch",
+      objects: (drafts: ResolutionDrafts) => [
+        drafts.entity,
+        drafts.evidence,
+        drafts.fact,
+        withResolutionPayload(drafts.review, {
+          source_coverage_keys: ["la_coverage_resolution0001", "la_coverage_resolution0001"]
+        }),
+        drafts.parity
+      ]
+    },
+    {
+      label: "multiple reviews for the requested candidate",
+      expectedReason: "resolution-review-mismatch",
+      objects: (drafts: ResolutionDrafts) => [
+        drafts.entity,
+        drafts.evidence,
+        drafts.fact,
+        drafts.review,
+        copyResolutionDraftWithId(drafts.review, "la_object_resolutionreview0002", "review_id"),
+        drafts.parity
+      ]
+    },
+    {
+      label: "a review for another candidate",
+      expectedReason: "resolution-review-mismatch",
+      objects: (drafts: ResolutionDrafts) => [
+        drafts.entity,
+        drafts.evidence,
+        drafts.fact,
+        drafts.review,
+        withResolutionPayload(
+          copyResolutionDraftWithId(drafts.review, "la_object_resolutionreview0003", "review_id"),
+          { candidate_id: "la_candidate_resolution0002" }
+        ),
+        drafts.parity
+      ]
+    },
+    {
+      label: "duplicate parity coverage records",
+      expectedReason: "resolution-parity-mismatch",
+      objects: (drafts: ResolutionDrafts) => [
+        drafts.entity,
+        drafts.evidence,
+        drafts.fact,
+        drafts.review,
+        drafts.parity,
+        copyResolutionDraftWithId(drafts.parity, "la_object_resolutionparity0002", "parity_id")
+      ]
+    },
+    {
+      label: "review and parity coverage-set mismatch",
+      expectedReason: "resolution-parity-mismatch",
+      objects: (drafts: ResolutionDrafts) => [
+        drafts.entity,
+        drafts.evidence,
+        drafts.fact,
+        withResolutionPayload(drafts.review, {
+          source_coverage_keys: ["la_coverage_resolutionother0001"]
+        }),
+        drafts.parity
+      ]
+    },
+    {
+      label: "an extra parity coverage key",
+      expectedReason: "resolution-parity-mismatch",
+      objects: (drafts: ResolutionDrafts) => [
+        drafts.entity,
+        drafts.evidence,
+        drafts.fact,
+        drafts.review,
+        drafts.parity,
+        withResolutionPayload(
+          copyResolutionDraftWithId(drafts.parity, "la_object_resolutionparity0003", "parity_id"),
+          { source_coverage_key: "la_coverage_resolutionextra0001" }
+        )
+      ]
+    }
+  ])("rejects $label before committing", async ({ expectedReason, objects }) => {
+    const token = `local-token-${expectedReason}-0001`;
+    const directory = await mkdtemp(join(tmpdir(), "living-atlas-local-resolution-coverage-"));
+    try {
+      const controlState = await createFixtureLocalControlState(token);
+      const keyring = createDefaultLocalKeyring({ authorityId: controlState.authority_id, createdAt: now });
+      const graphStore = await FileLocalGraphStore.open({
+        directory,
+        authorityId: controlState.authority_id,
+        plaintextPersistence: "encrypt",
+        keyring
+      });
+      const drafts = canonicalResolutionDrafts(1);
+      const context = createLocalMcpContextFromControlState({ controlState, graphStore, now });
+
+      await expect(localResolutionApply(context, {
+        authorization: `Bearer ${token}`,
+        operation_id: "la_operation_resolutioncoverage0001",
+        idempotency_key: "la_idem_resolutioncoverage0001",
+        candidate_id: drafts.candidateId,
+        expected_generation: 0,
+        expected_review_version: 1,
+        objects: objects(drafts)
+      })).resolves.toEqual({ ok: false, reason: expectedReason });
+
+      expect(graphStore.status()).toMatchObject({ generation: 0, object_count: 0 });
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    {
+      label: "a missing entity reference",
+      build: (drafts: ResolutionDrafts) => ({
+        objects: [
+          drafts.entity,
+          drafts.evidence,
+          withResolutionPayload(drafts.fact, { subject_entity_id: "la_object_missingentity0001" }),
+          drafts.review,
+          drafts.parity
+        ]
+      })
+    },
+    {
+      label: "an entity reference to the wrong object type",
+      build: (drafts: ResolutionDrafts) => ({
+        objects: [
+          drafts.entity,
+          drafts.evidence,
+          withResolutionPayload(drafts.fact, { subject_entity_id: drafts.evidence.object_id }),
+          drafts.review,
+          drafts.parity
+        ]
+      })
+    },
+    {
+      label: "a missing evidence link",
+      build: (drafts: ResolutionDrafts) => ({
+        objects: [
+          drafts.entity,
+          drafts.evidence,
+          withResolutionPayload(drafts.fact, {
+            evidence_links: [{ evidence_id: "la_object_missingevidence0001", stance: "supports" }]
+          }),
+          drafts.review,
+          drafts.parity
+        ]
+      })
+    },
+    {
+      label: "an evidence link to the wrong object type",
+      build: (drafts: ResolutionDrafts) => ({
+        objects: [
+          drafts.entity,
+          drafts.evidence,
+          withResolutionPayload(drafts.fact, {
+            evidence_links: [{ evidence_id: drafts.entity.object_id, stance: "supports" }]
+          }),
+          drafts.review,
+          drafts.parity
+        ]
+      })
+    },
+    {
+      label: "a missing confidence evidence reference",
+      build: (drafts: ResolutionDrafts) => ({
+        objects: [
+          drafts.entity,
+          drafts.evidence,
+          withResolutionPayload(drafts.fact, {
+            confidence: {
+              band: "high",
+              assessment_kind: "assertion",
+              method: "synthetic-fixture",
+              assessed_at: now,
+              evidence_refs: ["la_object_missingconfidence0001"]
+            }
+          }),
+          drafts.review,
+          drafts.parity
+        ]
+      })
+    },
+    {
+      label: "a confidence evidence reference to the wrong object type",
+      build: (drafts: ResolutionDrafts) => ({
+        objects: [
+          drafts.entity,
+          drafts.evidence,
+          withResolutionPayload(drafts.fact, {
+            confidence: {
+              band: "high",
+              assessment_kind: "assertion",
+              method: "synthetic-fixture",
+              assessed_at: now,
+              evidence_refs: [drafts.entity.object_id]
+            }
+          }),
+          drafts.review,
+          drafts.parity
+        ]
+      })
+    },
+    {
+      label: "a missing fact lineage predecessor",
+      build: (drafts: ResolutionDrafts) => ({
+        objects: [
+          drafts.entity,
+          drafts.evidence,
+          withResolutionPayload(drafts.fact, {
+            lineage_action: "correct",
+            supersedes: ["la_object_missingassertion0001"]
+          }),
+          drafts.review,
+          drafts.parity
+        ]
+      })
+    },
+    {
+      label: "a fact lineage predecessor of the wrong object type",
+      build: (drafts: ResolutionDrafts) => ({
+        objects: [
+          drafts.entity,
+          drafts.evidence,
+          withResolutionPayload(drafts.fact, {
+            lineage_action: "correct",
+            supersedes: [drafts.entity.object_id]
+          }),
+          drafts.review,
+          drafts.parity
+        ]
+      })
+    },
+    {
+      label: "a tombstoned referenced object",
+      build: (drafts: ResolutionDrafts) => ({
+        existing: [{
+          ...drafts.entity,
+          visible_metadata: { ...drafts.entity.visible_metadata, tombstone: true }
+        } as unknown as GraphObjectEnvelope],
+        objects: [drafts.evidence, drafts.fact, drafts.review, drafts.parity]
+      })
+    },
+    {
+      label: "a missing proposed object",
+      build: (drafts: ResolutionDrafts) => ({
+        objects: [
+          drafts.entity,
+          drafts.evidence,
+          drafts.fact,
+          withResolutionPayload(drafts.review, {
+            proposed_object_ids: [
+              drafts.entity.object_id,
+              drafts.evidence.object_id,
+              drafts.fact.object_id,
+              "la_object_missingproposed0001"
+            ]
+          }),
+          drafts.parity
+        ]
+      })
+    },
+    {
+      label: "a proposed object that is not canonical",
+      build: (drafts: ResolutionDrafts) => {
+        const page = syntheticRemoteSafeObject("la_object_resolutionpage0001");
+        return {
+          existing: [page],
+          objects: [
+            drafts.entity,
+            drafts.evidence,
+            drafts.fact,
+            withResolutionPayload(drafts.review, {
+              proposed_object_ids: [
+                drafts.entity.object_id,
+                drafts.evidence.object_id,
+                drafts.fact.object_id,
+                page.object_id
+              ]
+            }),
+            drafts.parity
+          ]
+        };
+      }
+    },
+    {
+      label: "a missing parity object",
+      expectedReason: "resolution-parity-mismatch",
+      build: (drafts: ResolutionDrafts) => ({
+        objects: [
+          drafts.entity,
+          drafts.evidence,
+          drafts.fact,
+          withResolutionPayload(drafts.review, {
+            proposed_object_ids: [
+              drafts.entity.object_id,
+              drafts.evidence.object_id,
+              drafts.fact.object_id,
+              "la_object_missingparitytarget0001"
+            ]
+          }),
+          withResolutionPayload(drafts.parity, {
+            canonical_object_ids: ["la_object_missingparitytarget0001"]
+          })
+        ]
+      })
+    },
+    {
+      label: "a parity object that is not canonical",
+      expectedReason: "resolution-parity-mismatch",
+      build: (drafts: ResolutionDrafts) => {
+        const page = syntheticRemoteSafeObject("la_object_resolutionpage0002");
+        return {
+          existing: [page],
+          objects: [
+            drafts.entity,
+            drafts.evidence,
+            drafts.fact,
+            withResolutionPayload(drafts.review, {
+              proposed_object_ids: [
+                drafts.entity.object_id,
+                drafts.evidence.object_id,
+                drafts.fact.object_id,
+                page.object_id
+              ]
+            }),
+            withResolutionPayload(drafts.parity, { canonical_object_ids: [page.object_id] })
+          ]
+        };
+      }
+    },
+    {
+      label: "a parity object omitted from the review proposal",
+      expectedReason: "resolution-parity-mismatch",
+      build: (drafts: ResolutionDrafts) => ({
+        objects: [
+          drafts.entity,
+          drafts.evidence,
+          drafts.fact,
+          withResolutionPayload(drafts.review, {
+            proposed_object_ids: [drafts.entity.object_id, drafts.evidence.object_id]
+          }),
+          drafts.parity
+        ]
+      })
+    }
+  ])("rejects $label before committing", async ({ build, expectedReason }) => {
+    const token = "local-token-resolution-reference-0001";
+    const directory = await mkdtemp(join(tmpdir(), "living-atlas-local-resolution-reference-"));
+    try {
+      const controlState = await createFixtureLocalControlState(token);
+      const keyring = createDefaultLocalKeyring({ authorityId: controlState.authority_id, createdAt: now });
+      const graphStore = await FileLocalGraphStore.open({
+        directory,
+        authorityId: controlState.authority_id,
+        plaintextPersistence: "encrypt",
+        keyring
+      });
+      const drafts = canonicalResolutionDrafts(1);
+      const scenario = build(drafts) as { objects: unknown[]; existing?: GraphObjectEnvelope[] };
+      if (scenario.existing) {
+        await expect(graphStore.initializeFromObjects(scenario.existing)).resolves.toMatchObject({ ok: true });
+      }
+      const context = createLocalMcpContextFromControlState({
+        controlState,
+        graphStore,
+        decryptPayload: decryptWithKeyring(keyring),
+        now
+      });
+
+      await expect(localResolutionApply(context, {
+        authorization: `Bearer ${token}`,
+        operation_id: "la_operation_resolutionreference0001",
+        idempotency_key: "la_idem_resolutionreference0001",
+        candidate_id: drafts.candidateId,
+        expected_generation: 0,
+        expected_review_version: 1,
+        objects: scenario.objects
+      })).resolves.toEqual({ ok: false, reason: expectedReason ?? "resolution-missing-reference" });
+
+      expect(graphStore.status()).toMatchObject({ generation: 0 });
+      expect(graphStore.readObject(drafts.parity.object_id)).toBeUndefined();
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    {
+      label: "an observation candidate with the wrong object type",
+      build: (drafts: ResolutionDrafts) => {
+        const observationId = "la_object_resolutionobservation0002";
+        const observation = canonicalResolutionDraft(drafts.fact, observationId, "assertion", {
+          schema: "atlas.observation:v1",
+          assertion_id: observationId,
+          statement: "Synthetic unresolved observation.",
+          candidate_entity_ids: [drafts.evidence.object_id],
+          resolution_state: "owner-review",
+          recorded_at: now,
+          evidence_refs: [drafts.evidence.object_id]
+        });
+        return [
+          drafts.entity,
+          drafts.evidence,
+          observation,
+          withResolutionPayload(drafts.review, {
+            proposed_object_ids: [drafts.entity.object_id, drafts.evidence.object_id, observationId]
+          }),
+          withResolutionPayload(drafts.parity, {
+            representation_kind: "observation",
+            canonical_object_ids: [observationId]
+          })
+        ];
+      }
+    },
+    {
+      label: "an observation predecessor with the wrong object type",
+      build: (drafts: ResolutionDrafts) => {
+        const observationId = "la_object_resolutionobservation0003";
+        const observation = canonicalResolutionDraft(drafts.fact, observationId, "assertion", {
+          schema: "atlas.observation:v1",
+          assertion_id: observationId,
+          statement: "Synthetic corrected observation.",
+          candidate_entity_ids: [drafts.entity.object_id],
+          resolution_state: "owner-review",
+          recorded_at: now,
+          evidence_refs: [drafts.evidence.object_id],
+          supersedes: [drafts.entity.object_id]
+        });
+        return [
+          drafts.entity,
+          drafts.evidence,
+          observation,
+          withResolutionPayload(drafts.review, {
+            proposed_object_ids: [drafts.entity.object_id, drafts.evidence.object_id, observationId]
+          }),
+          withResolutionPayload(drafts.parity, {
+            representation_kind: "observation",
+            canonical_object_ids: [observationId]
+          })
+        ];
+      }
+    },
+    {
+      label: "a relationship endpoint with the wrong object type",
+      build: (drafts: ResolutionDrafts) => {
+        const relationshipId = "la_object_resolutionrelationship0001";
+        const relationship = canonicalResolutionDraft(drafts.fact, relationshipId, "edge", {
+          schema: "atlas.relationship:v2",
+          assertion_id: relationshipId,
+          edge_id: "la_edge_resolutionrelationship0001",
+          source_entity_id: drafts.evidence.object_id,
+          source_type: "organization",
+          target_entity_id: drafts.entity.object_id,
+          target_type: "organization",
+          predicate: "customer-of",
+          valid_from: "2026",
+          recorded_at: now,
+          lineage_action: "assert",
+          supersedes: [],
+          evidence_links: [{ evidence_id: drafts.evidence.object_id, stance: "supports" }],
+          confidence: {
+            band: "high",
+            assessment_kind: "assertion",
+            method: "synthetic-fixture",
+            assessed_at: now,
+            evidence_refs: [drafts.evidence.object_id]
+          },
+          attrs: {}
+        });
+        return [
+          drafts.entity,
+          drafts.evidence,
+          relationship,
+          withResolutionPayload(drafts.review, {
+            proposed_object_ids: [drafts.entity.object_id, drafts.evidence.object_id, relationshipId]
+          }),
+          withResolutionPayload(drafts.parity, {
+            representation_kind: "relationship",
+            canonical_object_ids: [relationshipId]
+          })
+        ];
+      }
+    },
+    {
+      label: "a relationship predecessor with the wrong object type",
+      build: (drafts: ResolutionDrafts) => {
+        const relationshipId = "la_object_resolutionrelationship0002";
+        const relationship = canonicalResolutionDraft(drafts.fact, relationshipId, "edge", {
+          schema: "atlas.relationship:v2",
+          assertion_id: relationshipId,
+          edge_id: "la_edge_resolutionrelationship0002",
+          source_entity_id: drafts.entity.object_id,
+          source_type: "organization",
+          target_entity_id: drafts.entity.object_id,
+          target_type: "organization",
+          predicate: "customer-of",
+          valid_from: "2026",
+          recorded_at: now,
+          lineage_action: "correct",
+          supersedes: [drafts.entity.object_id],
+          evidence_links: [{ evidence_id: drafts.evidence.object_id, stance: "supports" }],
+          confidence: {
+            band: "high",
+            assessment_kind: "assertion",
+            method: "synthetic-fixture",
+            assessed_at: now,
+            evidence_refs: [drafts.evidence.object_id]
+          },
+          attrs: {}
+        });
+        return [
+          drafts.entity,
+          drafts.evidence,
+          relationship,
+          withResolutionPayload(drafts.review, {
+            proposed_object_ids: [drafts.entity.object_id, drafts.evidence.object_id, relationshipId]
+          }),
+          withResolutionPayload(drafts.parity, {
+            representation_kind: "relationship",
+            canonical_object_ids: [relationshipId]
+          })
+        ];
+      }
+    },
+    {
+      label: "an entity-resolution candidate with the wrong object type",
+      build: (drafts: ResolutionDrafts) => {
+        const resolutionId = "la_object_resolutiondecision0001";
+        const resolution = canonicalResolutionDraft(drafts.fact, resolutionId, "review", {
+          schema: "atlas.entity-resolution:v1",
+          resolution_id: resolutionId,
+          actor_id: fixtureLocalClientId,
+          observed_identifiers: ["synthetic-identifier"],
+          candidate_entity_ids: [drafts.evidence.object_id],
+          decision: "link",
+          canonical_entity_id: drafts.evidence.object_id,
+          evidence_refs: [drafts.evidence.object_id],
+          evidence_links: [{ evidence_id: drafts.evidence.object_id, stance: "supports" }],
+          confidence: {
+            band: "high",
+            assessment_kind: "identity",
+            method: "synthetic-fixture",
+            assessed_at: now,
+            evidence_refs: [drafts.evidence.object_id]
+          },
+          recorded_at: now,
+          supersedes: []
+        });
+        return [
+          drafts.entity,
+          drafts.evidence,
+          drafts.fact,
+          resolution,
+          withResolutionPayload(drafts.review, {
+            proposed_object_ids: [
+              drafts.entity.object_id,
+              drafts.evidence.object_id,
+              drafts.fact.object_id,
+              resolutionId
+            ]
+          }),
+          drafts.parity
+        ];
+      }
+    },
+    {
+      label: "an entity-resolution predecessor with the wrong object type",
+      build: (drafts: ResolutionDrafts) => {
+        const resolutionId = "la_object_resolutiondecision0002";
+        const resolution = canonicalResolutionDraft(drafts.fact, resolutionId, "review", {
+          schema: "atlas.entity-resolution:v1",
+          resolution_id: resolutionId,
+          actor_id: fixtureLocalClientId,
+          observed_identifiers: ["synthetic-identifier"],
+          candidate_entity_ids: [drafts.entity.object_id],
+          decision: "split",
+          evidence_refs: [drafts.evidence.object_id],
+          evidence_links: [{ evidence_id: drafts.evidence.object_id, stance: "supports" }],
+          confidence: {
+            band: "high",
+            assessment_kind: "identity",
+            method: "synthetic-fixture",
+            assessed_at: now,
+            evidence_refs: [drafts.evidence.object_id]
+          },
+          recorded_at: now,
+          supersedes: [drafts.entity.object_id]
+        });
+        return [
+          drafts.entity,
+          drafts.evidence,
+          drafts.fact,
+          resolution,
+          withResolutionPayload(drafts.review, {
+            proposed_object_ids: [
+              drafts.entity.object_id,
+              drafts.evidence.object_id,
+              drafts.fact.object_id,
+              resolutionId
+            ]
+          }),
+          drafts.parity
+        ];
+      }
+    }
+  ])("rejects $label before committing", async ({ build }) => {
+    const token = "local-token-resolution-reference-types-0001";
+    const directory = await mkdtemp(join(tmpdir(), "living-atlas-local-resolution-reference-types-"));
+    try {
+      const controlState = await createFixtureLocalControlState(token);
+      const keyring = createDefaultLocalKeyring({ authorityId: controlState.authority_id, createdAt: now });
+      const graphStore = await FileLocalGraphStore.open({
+        directory,
+        authorityId: controlState.authority_id,
+        plaintextPersistence: "encrypt",
+        keyring
+      });
+      const drafts = canonicalResolutionDrafts(1);
+      const context = createLocalMcpContextFromControlState({ controlState, graphStore, now });
+
+      await expect(localResolutionApply(context, {
+        authorization: `Bearer ${token}`,
+        operation_id: "la_operation_resolutionreferencetypes0001",
+        idempotency_key: "la_idem_resolutionreferencetypes0001",
+        candidate_id: drafts.candidateId,
+        expected_generation: 0,
+        expected_review_version: 1,
+        objects: build(drafts)
+      })).resolves.toEqual({ ok: false, reason: "resolution-missing-reference" });
+
+      expect(graphStore.status()).toMatchObject({ generation: 0, object_count: 0 });
     } finally {
       await rm(directory, { recursive: true, force: true });
     }
@@ -685,19 +1402,26 @@ describe("local fixture graph tools", () => {
         keyring
       });
       const drafts = canonicalResolutionDrafts(1);
+      const auditSink = new InMemoryLocalMcpAuditSink();
+      const outboxSink = new InMemoryLocalMcpMutationOutboxSink();
+      const enqueue = outboxSink.enqueue.bind(outboxSink);
+      let failAfterSecondRecord = true;
+      outboxSink.enqueue = async (record) => {
+        await enqueue(record);
+        if (failAfterSecondRecord && outboxSink.records.length === 2) {
+          failAfterSecondRecord = false;
+          throw new Error("synthetic outbox outage");
+        }
+      };
       const context = createLocalMcpContextFromControlState({
         controlState,
         graphStore,
-        auditSink: new InMemoryLocalMcpAuditSink(),
-        outboxSink: {
-          async enqueue() {
-            throw new Error("synthetic outbox outage");
-          }
-        },
+        auditSink,
+        outboxSink,
         now
       });
 
-      await expect(localResolutionApply(context, {
+      const request = {
         authorization: `Bearer ${token}`,
         operation_id: "la_operation_resolutionoutbox0001",
         idempotency_key: "la_idem_resolutionoutbox0001",
@@ -705,7 +1429,9 @@ describe("local fixture graph tools", () => {
         expected_generation: 0,
         expected_review_version: 1,
         objects: [drafts.entity, drafts.evidence, drafts.fact, drafts.review, drafts.parity]
-      })).resolves.toMatchObject({
+      };
+
+      await expect(localResolutionApply(context, request)).resolves.toMatchObject({
         ok: true,
         result: {
           local_commit: "committed",
@@ -713,7 +1439,100 @@ describe("local fixture graph tools", () => {
           sync_queue: "reconciliation-required"
         }
       });
+      expect(outboxSink.records).toHaveLength(2);
+
+      await expect(localResolutionApply(context, request)).resolves.toMatchObject({
+        ok: true,
+        result: {
+          local_commit: "committed",
+          audit: "recorded",
+          sync_queue: "queued",
+          generation: 1,
+          journal_sequence: 1
+        }
+      });
+
       expect(graphStore.status()).toMatchObject({ generation: 1, object_count: 5 });
+      expect(outboxSink.records).toHaveLength(5);
+      expect(new Set(outboxSink.records.map((record) => record.object.object_id)).size).toBe(5);
+      expect(auditSink.events.filter((event) => (
+        event.tool_name === "resolution_apply" && event.reason_code === "resolution-committed"
+      ))).toHaveLength(1);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("reconciles a failed resolution audit without duplicating queued objects", async () => {
+    const token = "local-token-resolution-audit-reconcile-0001";
+    const directory = await mkdtemp(join(tmpdir(), "living-atlas-local-resolution-audit-reconcile-"));
+    try {
+      const controlState = await createFixtureLocalControlState(token);
+      const keyring = createDefaultLocalKeyring({ authorityId: controlState.authority_id, createdAt: now });
+      const graphStore = await FileLocalGraphStore.open({
+        directory,
+        authorityId: controlState.authority_id,
+        plaintextPersistence: "encrypt",
+        keyring
+      });
+      const drafts = canonicalResolutionDrafts(1);
+      const recordedAudit = new InMemoryLocalMcpAuditSink();
+      let failResolutionAudit = true;
+      const auditSink = {
+        record(event: Parameters<InMemoryLocalMcpAuditSink["record"]>[0]) {
+          if (failResolutionAudit && event.tool_name === "resolution_apply") {
+            failResolutionAudit = false;
+            throw new Error("synthetic audit outage");
+          }
+          recordedAudit.record(event);
+        }
+      };
+      const outboxSink = new InMemoryLocalMcpMutationOutboxSink();
+      const context = createLocalMcpContextFromControlState({
+        controlState,
+        graphStore,
+        auditSink,
+        outboxSink,
+        now
+      });
+      const request = {
+        authorization: `Bearer ${token}`,
+        operation_id: "la_operation_resolutionaudit0001",
+        idempotency_key: "la_idem_resolutionaudit0001",
+        candidate_id: drafts.candidateId,
+        expected_generation: 0,
+        expected_review_version: 1,
+        objects: [drafts.entity, drafts.evidence, drafts.fact, drafts.review, drafts.parity]
+      };
+
+      await expect(localResolutionApply(context, request)).resolves.toMatchObject({
+        ok: true,
+        result: {
+          local_commit: "committed",
+          audit: "reconciliation-required",
+          sync_queue: "queued",
+          generation: 1,
+          journal_sequence: 1
+        }
+      });
+      expect(outboxSink.records).toHaveLength(5);
+
+      await expect(localResolutionApply(context, request)).resolves.toMatchObject({
+        ok: true,
+        result: {
+          local_commit: "committed",
+          audit: "recorded",
+          sync_queue: "queued",
+          generation: 1,
+          journal_sequence: 1
+        }
+      });
+
+      expect(graphStore.status()).toMatchObject({ generation: 1, object_count: 5 });
+      expect(outboxSink.records).toHaveLength(5);
+      expect(recordedAudit.events.filter((event) => (
+        event.tool_name === "resolution_apply" && event.reason_code === "resolution-committed"
+      ))).toHaveLength(1);
     } finally {
       await rm(directory, { recursive: true, force: true });
     }
@@ -1739,6 +2558,61 @@ describe("local fixture graph tools", () => {
         })]
       });
       expect(JSON.stringify(queued)).not.toContain("Synthetic created object");
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("deduplicates durable resolution audit and outbox records with stable metadata", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "living-atlas-local-resolution-sinks-"));
+    const auditPath = join(directory, "audit", "events.jsonl");
+    const outboxDirectory = join(directory, "outbox");
+    try {
+      const operationId = "la_operation_resolutionsinks0001";
+      const idempotencyKey = "la_idem_resolutionsinks0001";
+      const audit = createLocalMcpAuditEvent({
+        event_type: "tool.allowed",
+        client_id: fixtureLocalClientId,
+        profile: "local-full",
+        operation: "create",
+        tool_name: "resolution_apply",
+        reason_code: "resolution-committed",
+        summary: "Local MCP tool call allowed",
+        operation_id: operationId,
+        idempotency_key: idempotencyKey
+      });
+      const auditSink = new FileLocalMcpAuditSink(auditPath);
+      auditSink.record(audit);
+      auditSink.record(audit);
+      expect(auditSink.read(10)).toEqual([expect.objectContaining({
+        operation_id: operationId,
+        idempotency_key: idempotencyKey
+      })]);
+
+      const outboxSink = new FileLocalMcpMutationOutboxSink(outboxDirectory);
+      const outboxRecord = {
+        mutation: "created" as const,
+        object: syntheticRemoteSafeObject("la_object_resolutionsinks0001"),
+        actor_id: fixtureLocalClientId,
+        recorded_at: now,
+        generation: 4,
+        journal_sequence: 7,
+        operation_id: operationId,
+        idempotency_key: idempotencyKey,
+        change_id: "la_change_resolutionsinks0001"
+      };
+      await outboxSink.enqueue(outboxRecord);
+      await outboxSink.enqueue(outboxRecord);
+
+      const files = await readdir(outboxDirectory);
+      expect(files).toHaveLength(1);
+      expect(files[0]).toMatch(/^queued-g4-j7-[a-f0-9]{16}\.json$/);
+      const queued = JSON.parse(await readFile(join(outboxDirectory, files[0]!), "utf8"));
+      expect(queued).toMatchObject({
+        operation_id: operationId,
+        idempotency_key: idempotencyKey,
+        change_id: outboxRecord.change_id
+      });
     } finally {
       await rm(directory, { recursive: true, force: true });
     }

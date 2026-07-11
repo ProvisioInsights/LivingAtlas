@@ -11,6 +11,7 @@ import type {
 import {
   AccessClassSchema,
   CanonicalWriteSchema,
+  type CanonicalPayload,
   type CanonicalReviewItemPayload,
   EncryptionClassSchema,
   GraphObjectEnvelopeSchema,
@@ -26,7 +27,10 @@ import {
   type TemporalEdge
 } from "@living-atlas/contracts";
 import { controlPlaneFixture, syntheticGraphObjects } from "@living-atlas/fixtures";
-import type { FileLocalGraphStore } from "@living-atlas/local-graph-store";
+import type {
+  FileLocalGraphStore,
+  LocalGraphOperationRecord
+} from "@living-atlas/local-graph-store";
 import {
   PlaintextGraphObjectDraftSchema,
   type PlaintextGraphObjectDraft
@@ -66,6 +70,9 @@ export type LocalMcpMutationOutboxRecord = {
   recorded_at: string;
   generation: number;
   journal_sequence: number;
+  operation_id?: string;
+  idempotency_key?: string;
+  change_id?: string;
 };
 
 export type LocalMcpMutationOutboxSink = {
@@ -347,6 +354,8 @@ function recordToolDecision(input: {
   decision?: PolicyDecision;
   allowed: boolean;
   reason: string;
+  operationId?: string;
+  idempotencyKey?: string;
 }): void {
   input.context.auditSink?.record(
     createLocalMcpAuditEvent({
@@ -357,6 +366,8 @@ function recordToolDecision(input: {
       tool_name: input.toolName,
       object_id: input.object?.object_id,
       access_class: input.object?.access_class,
+      operation_id: input.operationId,
+      idempotency_key: input.idempotencyKey,
       reason_code: input.reason,
       summary: input.allowed ? "Local MCP tool call allowed" : "Local MCP tool call denied"
     })
@@ -694,6 +705,247 @@ export async function localGraphStatus(
   };
 }
 
+type ParsedResolutionMutationSet = {
+  drafts: PlaintextGraphObjectDraft[];
+  payloads: CanonicalPayload[];
+};
+
+type ValidatedResolutionMutationSet = ParsedResolutionMutationSet & {
+  review: CanonicalReviewItemPayload;
+};
+
+async function operationRecordMatchesDrafts(
+  context: LocalMcpContext,
+  record: LocalGraphOperationRecord,
+  drafts: PlaintextGraphObjectDraft[]
+): Promise<boolean> {
+  if (record.objects.length !== drafts.length) return false;
+  const draftsById = new Map(drafts.map((draft) => [draft.object_id, draft]));
+  for (const object of record.objects) {
+    const draft = draftsById.get(object.object_id);
+    if (!(
+      draft
+      && draft.version === object.version
+      && draft.object_type === object.object_type
+      && draft.authority_id === object.authority_id
+      && draft.access_class === object.access_class
+    )) return false;
+    if (context.decryptPayload) {
+      const payload = await context.decryptPayload(object).catch(() => undefined);
+      if (!payload || JSON.stringify(payload) !== JSON.stringify(draft.payload)) return false;
+    }
+  }
+  return true;
+}
+
+async function validateCanonicalMutationSet(input: {
+  context: LocalMcpContext;
+  candidateId: string;
+  parsed: ParsedResolutionMutationSet;
+}): Promise<
+  | { ok: true; value: ValidatedResolutionMutationSet }
+  | { ok: false; reason: "resolution-review-mismatch" | "resolution-review-not-resolved" | "resolution-parity-mismatch" | "resolution-missing-reference" }
+> {
+  const reviews = input.parsed.payloads.filter((payload): payload is CanonicalReviewItemPayload => (
+    payload.schema === "atlas.review-item:v1"
+  ));
+  if (reviews.length !== 1 || reviews[0]!.candidate_id !== input.candidateId) {
+    return { ok: false, reason: "resolution-review-mismatch" };
+  }
+  const review = reviews[0]!;
+  if (review.resolution_state === "pending") {
+    return { ok: false, reason: "resolution-review-not-resolved" };
+  }
+
+  const reviewCoverage = new Set(review.source_coverage_keys);
+  if (reviewCoverage.size !== review.source_coverage_keys.length) {
+    return { ok: false, reason: "resolution-review-mismatch" };
+  }
+  const parityRecords = input.parsed.payloads.filter((payload) => payload.schema === "atlas.parity-record:v1");
+  const parityCoverage = new Set(parityRecords.map((record) => record.source_coverage_key));
+  if (
+    parityRecords.length === 0
+    || parityCoverage.size !== parityRecords.length
+    || parityCoverage.size !== reviewCoverage.size
+    || [...reviewCoverage].some((coverageKey) => !parityCoverage.has(coverageKey))
+    || parityRecords.some((record) => record.coverage_state !== "represented")
+  ) {
+    return { ok: false, reason: "resolution-parity-mismatch" };
+  }
+
+  const draftsById = new Map(input.parsed.drafts.map((draft, index) => [
+    draft.object_id,
+    { draft, payload: input.parsed.payloads[index]! }
+  ]));
+  const activeTypedReference = (objectId: string, objectType: ObjectType): boolean => {
+    const proposed = draftsById.get(objectId)?.draft;
+    if (proposed) {
+      return !proposed.visible_metadata.tombstone && proposed.object_type === objectType;
+    }
+    const existing = input.context.graphStore!.readObject(ObjectIdSchema.parse(objectId));
+    return Boolean(
+      existing
+      && !existing.visible_metadata.tombstone
+      && existing.object_type === objectType
+    );
+  };
+  const canonicalReferenceCache = new Map<string, boolean>();
+  const activeCanonicalReference = async (objectId: string): Promise<boolean> => {
+    const proposed = draftsById.get(objectId);
+    if (proposed) return !proposed.draft.visible_metadata.tombstone;
+    const cached = canonicalReferenceCache.get(objectId);
+    if (cached !== undefined) return cached;
+    const existing = input.context.graphStore!.readObject(ObjectIdSchema.parse(objectId));
+    if (!existing || existing.visible_metadata.tombstone) {
+      canonicalReferenceCache.set(objectId, false);
+      return false;
+    }
+    let payload = existing.payload;
+    if (payload.kind !== "plaintext-json") {
+      payload = await input.context.decryptPayload?.(existing).catch(() => undefined) ?? payload;
+    }
+    if (payload.kind !== "plaintext-json") {
+      canonicalReferenceCache.set(objectId, false);
+      return false;
+    }
+    const canonical = CanonicalWriteSchema.safeParse({
+      object_type: existing.object_type,
+      payload: payload.data
+    });
+    const valid = canonical.success && canonicalPayloadObjectId(canonical.data.payload) === existing.object_id;
+    canonicalReferenceCache.set(objectId, valid);
+    return valid;
+  };
+
+  const typedReferences: Array<{ objectId: string; objectType: ObjectType }> = [];
+  for (const payload of input.parsed.payloads) {
+    switch (payload.schema) {
+      case "atlas.fact:v1":
+        typedReferences.push({ objectId: payload.subject_entity_id, objectType: "entity" });
+        if (payload.value.kind === "entity-ref") {
+          typedReferences.push({ objectId: payload.value.entity_id, objectType: "entity" });
+        }
+        typedReferences.push(
+          ...payload.evidence_links.map((link) => ({ objectId: link.evidence_id, objectType: "evidence" as const })),
+          ...payload.confidence.evidence_refs.map((objectId) => ({ objectId, objectType: "evidence" as const })),
+          ...payload.supersedes.map((objectId) => ({ objectId, objectType: "assertion" as const }))
+        );
+        break;
+      case "atlas.observation:v1":
+        typedReferences.push(
+          ...payload.candidate_entity_ids.map((objectId) => ({ objectId, objectType: "entity" as const })),
+          ...payload.evidence_refs.map((objectId) => ({ objectId, objectType: "evidence" as const })),
+          ...(payload.supersedes ?? []).map((objectId) => ({ objectId, objectType: "assertion" as const }))
+        );
+        break;
+      case "atlas.relationship:v2":
+        typedReferences.push(
+          { objectId: payload.source_entity_id, objectType: "entity" },
+          { objectId: payload.target_entity_id, objectType: "entity" },
+          ...payload.evidence_links.map((link) => ({ objectId: link.evidence_id, objectType: "evidence" as const })),
+          ...payload.confidence.evidence_refs.map((objectId) => ({ objectId, objectType: "evidence" as const })),
+          ...payload.supersedes.map((objectId) => ({ objectId, objectType: "edge" as const }))
+        );
+        break;
+      case "atlas.entity-resolution:v1":
+        typedReferences.push(
+          ...payload.candidate_entity_ids.map((objectId) => ({ objectId, objectType: "entity" as const })),
+          ...(payload.canonical_entity_id ? [{ objectId: payload.canonical_entity_id, objectType: "entity" as const }] : []),
+          ...payload.evidence_refs.map((objectId) => ({ objectId, objectType: "evidence" as const })),
+          ...payload.evidence_links.map((link) => ({ objectId: link.evidence_id, objectType: "evidence" as const })),
+          ...payload.confidence.evidence_refs.map((objectId) => ({ objectId, objectType: "evidence" as const })),
+          ...payload.supersedes.map((objectId) => ({ objectId, objectType: "review" as const }))
+        );
+        break;
+    }
+  }
+  if (typedReferences.some((reference) => !activeTypedReference(reference.objectId, reference.objectType))) {
+    return { ok: false, reason: "resolution-missing-reference" };
+  }
+
+  const parityTargetIds = new Set(parityRecords.flatMap((parity) => parity.canonical_object_ids));
+  for (const objectId of review.proposed_object_ids) {
+    if (!await activeCanonicalReference(objectId)) {
+      return {
+        ok: false,
+        reason: parityTargetIds.has(objectId) ? "resolution-parity-mismatch" : "resolution-missing-reference"
+      };
+    }
+  }
+  const proposedIds = new Set(review.proposed_object_ids);
+  for (const parity of parityRecords) {
+    for (const objectId of parity.canonical_object_ids) {
+      if (!proposedIds.has(objectId) || !await activeCanonicalReference(objectId)) {
+        return { ok: false, reason: "resolution-parity-mismatch" };
+      }
+    }
+  }
+
+  return { ok: true, value: { ...input.parsed, review } };
+}
+
+async function reconcileResolutionRecord(input: {
+  context: LocalMcpContext;
+  authenticated: LocalMcpAuthenticatedClient;
+  operationRecord: LocalGraphOperationRecord;
+  candidateIds: string[];
+}): Promise<LocalGraphToolResult<LocalResolutionReceipt>> {
+  let audit: LocalResolutionReceipt["audit"] = "recorded";
+  try {
+    if (!input.context.auditSink) throw new Error("audit-not-configured");
+    recordToolDecision({
+      context: input.context,
+      authenticated: input.authenticated,
+      toolName: "resolution_apply",
+      operation: "create",
+      allowed: true,
+      reason: "resolution-committed",
+      operationId: input.operationRecord.operation_id,
+      idempotencyKey: input.operationRecord.idempotency_key
+    });
+  } catch {
+    audit = "reconciliation-required";
+  }
+
+  let syncQueue: LocalResolutionReceipt["sync_queue"] = input.context.outboxSink ? "queued" : "not-configured";
+  if (input.context.outboxSink) {
+    try {
+      for (const [index, object] of input.operationRecord.objects.entries()) {
+        const change = input.operationRecord.changes[index];
+        if (!change || change.object_id !== object.object_id) {
+          throw new Error("resolution-operation-record-mismatch");
+        }
+        await input.context.outboxSink.enqueue({
+          mutation: change.operation === "update" ? "updated" : "created",
+          object,
+          actor_id: input.authenticated.client.client_id,
+          recorded_at: object.updated_at,
+          generation: input.operationRecord.generation,
+          journal_sequence: input.operationRecord.journal_sequence,
+          operation_id: input.operationRecord.operation_id,
+          idempotency_key: input.operationRecord.idempotency_key,
+          change_id: change.change_id
+        });
+      }
+    } catch {
+      syncQueue = "reconciliation-required";
+    }
+  }
+
+  return {
+    ok: true,
+    result: {
+      local_commit: "committed",
+      audit,
+      sync_queue: syncQueue,
+      committed_object_ids: input.operationRecord.objects.map((object) => object.object_id),
+      resolved_candidate_ids: input.candidateIds,
+      generation: input.operationRecord.generation,
+      journal_sequence: input.operationRecord.journal_sequence
+    }
+  };
+}
+
 export async function localResolutionApply(
   context: LocalMcpContext,
   input: LocalResolutionApplyInput
@@ -709,7 +961,9 @@ export async function localResolutionApply(
       toolName: "resolution_apply",
       operation: "create",
       allowed: false,
-      reason: "resolution-requires-durable-local-store"
+      reason: "resolution-requires-durable-local-store",
+      operationId: input.operation_id,
+      idempotencyKey: input.idempotency_key
     });
     return { ok: false, reason: "resolution-requires-durable-local-store" };
   }
@@ -718,7 +972,7 @@ export async function localResolutionApply(
   }
 
   const parsedDrafts: PlaintextGraphObjectDraft[] = [];
-  const payloads: Array<z.infer<typeof CanonicalWriteSchema>["payload"]> = [];
+  const payloads: CanonicalPayload[] = [];
   for (const object of input.objects) {
     const draft = PlaintextGraphObjectDraftSchema.safeParse(object);
     if (!draft.success) return { ok: false, reason: "resolution-invalid-object" };
@@ -740,25 +994,36 @@ export async function localResolutionApply(
   if (objectIds.size !== parsedDrafts.length) {
     return { ok: false, reason: "resolution-duplicate-object" };
   }
-  const review = payloads.find((payload): payload is CanonicalReviewItemPayload => (
-    payload.schema === "atlas.review-item:v1" && payload.candidate_id === input.candidate_id
-  ));
-  const parityRecords = payloads.filter((payload) => payload.schema === "atlas.parity-record:v1");
-  if (!review || review.resolution_state === "pending") {
-    return { ok: false, reason: "resolution-review-not-resolved" };
+
+  const prior = context.graphStore.operationRecordForIdempotency(input.idempotency_key);
+  if (prior) {
+    const retryReviews = payloads.filter((payload): payload is CanonicalReviewItemPayload => (
+      payload.schema === "atlas.review-item:v1"
+    ));
+    if (
+      prior.operation_id !== input.operation_id
+      || prior.actor_id !== auth.authenticated.client.client_id
+      || retryReviews.length !== 1
+      || retryReviews[0]!.candidate_id !== input.candidate_id
+      || !await operationRecordMatchesDrafts(context, prior, parsedDrafts)
+    ) {
+      return { ok: false, reason: "idempotency-conflict" };
+    }
+    return reconcileResolutionRecord({
+      context,
+      authenticated: auth.authenticated,
+      operationRecord: prior,
+      candidateIds: [input.candidate_id]
+    });
   }
-  const representedObjectExists = (objectId: string): boolean => {
-    const draft = parsedDrafts.find((candidate) => candidate.object_id === objectId);
-    if (draft) return !draft.visible_metadata.tombstone;
-    const existing = context.graphStore!.readObject(objectId);
-    return Boolean(existing && !existing.visible_metadata.tombstone);
-  };
-  if (parityRecords.length === 0 || parityRecords.some((record) => (
-    record.coverage_state !== "represented"
-    || record.canonical_object_ids.some((id) => !representedObjectExists(id))
-  ))) {
-    return { ok: false, reason: "resolution-parity-mismatch" };
-  }
+
+  const validation = await validateCanonicalMutationSet({
+    context,
+    candidateId: input.candidate_id,
+    parsed: { drafts: parsedDrafts, payloads }
+  });
+  if (!validation.ok) return { ok: false, reason: validation.reason };
+  const { review } = validation.value;
 
   const existingReview = context.graphStore.readObject(review.review_id);
   if (existingReview && existingReview.version !== input.expected_review_version) {
@@ -785,7 +1050,9 @@ export async function localResolutionApply(
         object: policyEnvelopeForDraft(draft),
         decision,
         allowed: false,
-        reason: decision.reason_code
+        reason: decision.reason_code,
+        operationId: input.operation_id,
+        idempotencyKey: input.idempotency_key
       });
       return { ok: false, reason: decision.reason_code };
     }
@@ -806,51 +1073,12 @@ export async function localResolutionApply(
   if (!transaction.ok) {
     return { ok: false, reason: transaction.reason };
   }
-
-  let audit: LocalResolutionReceipt["audit"] = "recorded";
-  try {
-    if (!context.auditSink) throw new Error("audit-not-configured");
-    recordToolDecision({
-      context,
-      authenticated: auth.authenticated,
-      toolName: "resolution_apply",
-      operation: "create",
-      allowed: true,
-      reason: "resolution-committed"
-    });
-  } catch {
-    audit = "reconciliation-required";
-  }
-  let sync_queue: LocalResolutionReceipt["sync_queue"] = context.outboxSink ? "queued" : "not-configured";
-  if (context.outboxSink) {
-    try {
-      for (const [index, object] of transaction.objects.entries()) {
-        const change = transaction.changes[index];
-        await context.outboxSink.enqueue({
-          mutation: change?.operation === "update" ? "updated" : "created",
-          object,
-          actor_id: auth.authenticated.client.client_id,
-          recorded_at: object.updated_at,
-          generation: transaction.generation,
-          journal_sequence: transaction.journal_sequence
-        });
-      }
-    } catch {
-      sync_queue = "reconciliation-required";
-    }
-  }
-  return {
-    ok: true,
-    result: {
-      local_commit: "committed",
-      audit,
-      sync_queue,
-      committed_object_ids: transaction.objects.map((object) => object.object_id),
-      resolved_candidate_ids: [input.candidate_id],
-      generation: transaction.generation,
-      journal_sequence: transaction.journal_sequence
-    }
-  };
+  return reconcileResolutionRecord({
+    context,
+    authenticated: auth.authenticated,
+    operationRecord: transaction.operation_record,
+    candidateIds: [input.candidate_id]
+  });
 }
 
 /** Applies independently precomputed owner decisions in one local transaction. */

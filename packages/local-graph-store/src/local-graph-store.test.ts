@@ -197,6 +197,92 @@ describe("file local graph store", () => {
     expect(store.status().generation).toBe(1);
   });
 
+  it("returns an isolated operation record lookup by idempotency key", async () => {
+    const directory = await tempStoreDir();
+    const keyring = createDefaultLocalKeyring({ authorityId: fixtureAuthorityId, createdAt: now });
+    const store = await FileLocalGraphStore.open({
+      directory,
+      authorityId: fixtureAuthorityId,
+      plaintextPersistence: "encrypt",
+      keyring,
+      now: () => now
+    });
+    const object = canonicalTransactionDraft("la_object_transactionlookup0001");
+
+    await expect(store.commitTransaction({
+      expected_generation: 0,
+      actor_id: fixtureLocalClientId,
+      operation_id: "la_operation_resolutionlookup0001",
+      idempotency_key: "la_idem_resolutionlookup0001",
+      recorded_at: now,
+      writes: [{ kind: "create", object }]
+    })).resolves.toMatchObject({ ok: true, generation: 1 });
+
+    const first = store.operationRecordForIdempotency("la_idem_resolutionlookup0001");
+    expect(first).toMatchObject({
+      operation_id: "la_operation_resolutionlookup0001",
+      actor_id: fixtureLocalClientId,
+      generation: 1,
+      journal_sequence: 1
+    });
+    first!.objects[0]!.visible_metadata.tombstone = true;
+
+    expect(store.operationRecordForIdempotency("la_idem_resolutionlookup0001")).toMatchObject({
+      objects: [expect.objectContaining({
+        object_id: object.object_id,
+        visible_metadata: expect.objectContaining({ tombstone: false })
+      })]
+    });
+    expect(store.operationRecordForIdempotency("la_idem_missinglookup0001")).toBeUndefined();
+  });
+
+  it.each([
+    {
+      label: "operation id",
+      operation_id: "la_operation_resolutionconflict0002",
+      actor_id: fixtureLocalClientId
+    },
+    {
+      label: "actor",
+      operation_id: "la_operation_resolutionconflict0001",
+      actor_id: "la_client_resolutionconflict0002"
+    }
+  ])("rejects idempotency-key reuse with another $label", async ({ operation_id, actor_id }) => {
+    const directory = await tempStoreDir();
+    const keyring = createDefaultLocalKeyring({ authorityId: fixtureAuthorityId, createdAt: now });
+    const store = await FileLocalGraphStore.open({
+      directory,
+      authorityId: fixtureAuthorityId,
+      plaintextPersistence: "encrypt",
+      keyring,
+      now: () => now
+    });
+    const first = canonicalTransactionDraft("la_object_transactionconflict0001");
+
+    await expect(store.commitTransaction({
+      expected_generation: 0,
+      actor_id: fixtureLocalClientId,
+      operation_id: "la_operation_resolutionconflict0001",
+      idempotency_key: "la_idem_resolutionconflict0001",
+      recorded_at: now,
+      writes: [{ kind: "create", object: first }]
+    })).resolves.toMatchObject({ ok: true, generation: 1 });
+
+    await expect(store.commitTransaction({
+      expected_generation: 0,
+      actor_id,
+      operation_id,
+      idempotency_key: "la_idem_resolutionconflict0001",
+      recorded_at: now,
+      writes: [{ kind: "create", object: first }]
+    })).resolves.toEqual({
+      ok: false,
+      reason: "idempotency-conflict",
+      current_generation: 1
+    });
+    expect(store.status()).toMatchObject({ generation: 1, object_count: 1 });
+  });
+
   it("initializes from synthetic fixtures and redacts plaintext payloads on disk by default", async () => {
     const directory = await tempStoreDir();
     const store = await FileLocalGraphStore.open({
