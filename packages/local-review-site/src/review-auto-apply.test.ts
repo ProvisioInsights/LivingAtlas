@@ -232,6 +232,7 @@ describe("exact source preservation auto-apply", () => {
         }
       } as never;
     });
+    const appliedAt = "2026-07-11T12:00:00.000Z";
     const context = {
       graphStore: {
         listObjects: () => objects,
@@ -241,7 +242,8 @@ describe("exact source preservation auto-apply", () => {
       },
       decryptPayload: async (object: GraphObjectEnvelope) => payloads.get(object.object_id),
       auditSink: { events: auditEvents },
-      outboxSink: { records: outboxRecords }
+      outboxSink: { records: outboxRecords },
+      now: appliedAt
     };
     const acknowledgement = { authorization: "Bearer synthetic-local-token", plan_hash: plan.plan_hash };
 
@@ -251,6 +253,7 @@ describe("exact source preservation auto-apply", () => {
     expect(first).toMatchObject({ attempted: 1, committed: 1, idempotent: 0, failed: 0 });
     expect(second).toMatchObject({ attempted: 1, committed: 0, idempotent: 1, failed: 0 });
     expect(mockedResolutionApply).toHaveBeenCalledTimes(2);
+    expect(mockedResolutionApply.mock.calls[0]?.[1].objects[0]).toMatchObject({ updated_at: appliedAt });
     expect(auditEvents).toHaveLength(1);
     expect(outboxRecords).toHaveLength(1);
     const receipt = JSON.stringify(second);

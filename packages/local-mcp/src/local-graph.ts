@@ -11,6 +11,7 @@ import type {
 import {
   AccessClassSchema,
   CanonicalWriteSchema,
+  type CanonicalEvidencePayload,
   type CanonicalParityRecordPayload,
   type CanonicalPayload,
   type CanonicalReviewItemPayload,
@@ -28,6 +29,7 @@ import {
   type TemporalEdge
 } from "@living-atlas/contracts";
 import { controlPlaneFixture, syntheticGraphObjects } from "@living-atlas/fixtures";
+import { accountSourceMeaning } from "@living-atlas/importer";
 import type {
   FileLocalGraphStore,
   LocalGraphOperationRecord,
@@ -786,9 +788,7 @@ async function validateCanonicalMutationSet(input: {
     );
   };
   const canonicalReferenceCache = new Map<string, CanonicalPayload | null>();
-  const activeCanonicalPayload = async (objectId: string): Promise<CanonicalPayload | undefined> => {
-    const proposed = draftsById.get(objectId);
-    if (proposed) return proposed.draft.visible_metadata.tombstone ? undefined : proposed.payload;
+  const existingCanonicalPayload = async (objectId: string): Promise<CanonicalPayload | undefined> => {
     const cached = canonicalReferenceCache.get(objectId);
     if (cached !== undefined) return cached ?? undefined;
     const existing = input.context.graphStore!.readObject(ObjectIdSchema.parse(objectId));
@@ -814,8 +814,23 @@ async function validateCanonicalMutationSet(input: {
     canonicalReferenceCache.set(objectId, valid ?? null);
     return valid;
   };
+  const activeCanonicalPayload = async (objectId: string): Promise<CanonicalPayload | undefined> => {
+    const proposed = draftsById.get(objectId);
+    if (proposed) return proposed.draft.visible_metadata.tombstone ? undefined : proposed.payload;
+    return existingCanonicalPayload(objectId);
+  };
 
   const draftedParityRecords = input.parsed.payloads.filter((payload) => payload.schema === "atlas.parity-record:v1");
+  for (const draftedParity of draftedParityRecords) {
+    const existingParity = await existingCanonicalPayload(draftedParity.parity_id);
+    if (!existingParity) continue;
+    if (existingParity.schema !== "atlas.parity-record:v1"
+      || existingParity.source_coverage_key !== draftedParity.source_coverage_key
+      || existingParity.meaning_state !== draftedParity.meaning_state
+      || existingParity.idempotency_key !== draftedParity.idempotency_key) {
+      return { ok: false, reason: "resolution-parity-mismatch" };
+    }
+  }
   const usesExistingParity = draftedParityRecords.length === 0;
   const parityRecords: CanonicalParityRecordPayload[] = [...draftedParityRecords];
   if (usesExistingParity) {
@@ -1156,14 +1171,8 @@ export async function localResolutionApply(
   const { review } = validation.value;
 
   const existingReview = context.graphStore.readObject(review.review_id);
-  const reviewOnlyAutoApply = parsedDrafts.length === 1
-    && parsedDrafts[0]!.object_id === review.review_id
-    && review.recommendation === "auto-apply"
-    && review.resolution_state === "auto-applied";
-  if (reviewOnlyAutoApply) {
-    if (!existingReview || existingReview.visible_metadata.tombstone) {
-      return { ok: false, reason: "resolution-review-mismatch" };
-    }
+  let existingReviewPayload: CanonicalReviewItemPayload | undefined;
+  if (existingReview && !existingReview.visible_metadata.tombstone) {
     let existingPayload = existingReview.payload;
     if (existingPayload.kind !== "plaintext-json") {
       existingPayload = await context.decryptPayload?.(existingReview).catch(() => undefined) ?? existingPayload;
@@ -1171,16 +1180,37 @@ export async function localResolutionApply(
     const existingCanonical = existingPayload.kind === "plaintext-json"
       ? CanonicalWriteSchema.safeParse({ object_type: existingReview.object_type, payload: existingPayload.data })
       : undefined;
-    const existingReviewPayload = existingCanonical?.success
+    existingReviewPayload = existingCanonical?.success
       && existingCanonical.data.payload.schema === "atlas.review-item:v1"
       ? existingCanonical.data.payload
       : undefined;
-    if (!existingReviewPayload || (existingReviewPayload.auto_apply_blockers?.length ?? 0) > 0) {
+    if (!existingReviewPayload) return { ok: false, reason: "resolution-review-mismatch" };
+    const originFields = (payload: CanonicalReviewItemPayload) => ({
+      candidate_id: payload.candidate_id,
+      source_coverage_keys: payload.source_coverage_keys,
+      source_evidence_ids: payload.source_evidence_ids,
+      auto_apply_blockers: payload.auto_apply_blockers
+    });
+    if (JSON.stringify(stableJsonValue(originFields(existingReviewPayload)))
+      !== JSON.stringify(stableJsonValue(originFields(review)))) {
+      return { ok: false, reason: "resolution-review-mismatch" };
+    }
+  }
+  const reviewOnlyAutoApply = parsedDrafts.length === 1
+    && parsedDrafts[0]!.object_id === review.review_id
+    && review.recommendation === "auto-apply"
+    && review.resolution_state === "auto-applied";
+  if (reviewOnlyAutoApply) {
+    if (!existingReview || !existingReviewPayload || existingReview.visible_metadata.tombstone) {
+      return { ok: false, reason: "resolution-review-mismatch" };
+    }
+    if ((existingReviewPayload.auto_apply_blockers?.length ?? 0) > 0) {
       return { ok: false, reason: "resolution-review-mismatch" };
     }
     if (!existingReviewPayload.source_evidence_ids?.length) {
       return { ok: false, reason: "resolution-review-mismatch" };
     }
+    const sourceEvidence: CanonicalEvidencePayload[] = [];
     for (const evidenceId of existingReviewPayload.source_evidence_ids) {
       const evidenceObject = context.graphStore.readObject(evidenceId);
       if (!evidenceObject
@@ -1203,6 +1233,11 @@ export async function localResolutionApply(
         || canonicalEvidence.data.payload.extraction_method !== "canonical-markdown-lossless-v1") {
         return { ok: false, reason: "resolution-review-mismatch" };
       }
+      sourceEvidence.push(canonicalEvidence.data.payload);
+    }
+    if (existingReviewPayload.proposed_object_ids.length === 0
+      && accountSourceMeaning(sourceEvidence).meaningful_units.length > 0) {
+      return { ok: false, reason: "resolution-review-mismatch" };
     }
     const { recommendation: _existingRecommendation, resolution_state: _existingState, ...existingStable } = existingReviewPayload;
     const { recommendation: _submittedRecommendation, resolution_state: _submittedState, ...submittedStable } = review;

@@ -242,11 +242,13 @@ function identifiers(candidateId: string): { operation_id: string; idempotency_k
 function reviewDraft(
   object: GraphObjectEnvelope,
   payload: CanonicalReviewItemPayload,
-  version: number
+  version: number,
+  updatedAt: string
 ): GraphObjectEnvelope {
   return {
     ...object,
     version,
+    updated_at: updatedAt,
     content_hash: stableHash(payload),
     payload: { kind: "plaintext-json", data: payload }
   };
@@ -270,7 +272,7 @@ async function retryRequest(
     candidate_id: entry.candidate_id,
     expected_generation: prior.generation - 1,
     expected_review_version: entry.review_version,
-    objects: [reviewDraft(stored, payload, stored.version)]
+    objects: [reviewDraft(stored, payload, stored.version, stored.updated_at)]
   };
 }
 
@@ -363,7 +365,12 @@ export async function applyExactPreservation(
       candidate_id: candidateId,
       expected_generation: context.graphStore.status().generation,
       expected_review_version: item.review_version,
-      objects: [reviewDraft(existingReview, resolvedReview, item.review_version + 1)]
+      objects: [reviewDraft(
+        existingReview,
+        resolvedReview,
+        item.review_version + 1,
+        context.now ?? new Date().toISOString()
+      )]
     };
     const result = await localResolutionApply(context, request);
     if (cleanResolution(result)) {

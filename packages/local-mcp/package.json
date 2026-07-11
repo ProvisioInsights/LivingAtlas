@@ -12,6 +12,7 @@
   "dependencies": {
     "@living-atlas/contracts": "workspace:*",
     "@living-atlas/graph-service": "workspace:*",
+    "@living-atlas/importer": "workspace:*",
     "@living-atlas/fixtures": "workspace:*",
     "@living-atlas/local-control-store": "workspace:*",
     "@living-atlas/local-graph-store": "workspace:*",
