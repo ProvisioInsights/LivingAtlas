@@ -144,6 +144,8 @@ function normalizedMutationKind(payload: CanonicalPayload): string {
       return `evidence:${payload.source_kind}`;
     case "atlas.entity-resolution:v1":
       return `entity-resolution:${payload.decision}`;
+    case "atlas.research-result:v1":
+      return `research-result:${payload.connector_kind}:${payload.stance}`;
     case "atlas.review-item:v1":
       return "review-decision";
     case "atlas.parity-record:v1":
@@ -333,6 +335,10 @@ export async function projectLocalReviewQueue(input: {
       if (payload?.schema === "atlas.entity-resolution:v1") {
         payload.evidence_links.forEach((link) => evidenceIds.add(link.evidence_id));
         payload.confidence.evidence_refs.forEach((evidence) => evidenceIds.add(evidence));
+      }
+      if (payload?.schema === "atlas.research-result:v1") {
+        evidenceIds.add(payload.evidence_id);
+        payload.identity_confidence.evidence_refs.forEach((evidence) => evidenceIds.add(evidence));
       }
     }
     const parityIds = [...payloads.values()]

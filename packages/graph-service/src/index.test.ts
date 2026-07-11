@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   createLivingAtlasGraphService,
+  canonicalResearchMutationFingerprint,
   describeGraphExecution,
   resolveKeyCustody,
   type LivingAtlasGraphExecutionContext
@@ -13,6 +14,9 @@ const remoteSafeContext: LivingAtlasGraphExecutionContext = {
 };
 
 describe("Living Atlas graph service", () => {
+  it("exports the canonical research recommendation helpers", () => {
+    expect(canonicalResearchMutationFingerprint).toBeTypeOf("function");
+  });
   it("dispatches canonical MCP tools through one shared service boundary", async () => {
     const calls: Array<{ toolName: string; context: LivingAtlasGraphExecutionContext }> = [];
     const service = createLivingAtlasGraphService({

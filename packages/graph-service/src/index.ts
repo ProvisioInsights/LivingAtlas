@@ -7,6 +7,7 @@ import {
 export * from "./canonical-assertions";
 export * from "./canonical-entity-resolution";
 export * from "./canonical-parity";
+export * from "./canonical-recommendation";
 
 export type LivingAtlasIngress = "local-stdio" | "remote-http";
 export type LivingAtlasKeyCustody = "local-keyholding" | "transient-cloud-unlock" | "host-blind";

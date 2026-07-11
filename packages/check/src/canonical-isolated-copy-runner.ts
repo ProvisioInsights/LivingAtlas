@@ -50,6 +50,7 @@ const canonicalSchemas = [
   "atlas.relationship:v2",
   "atlas.evidence:v1",
   "atlas.entity-resolution:v1",
+  "atlas.research-result:v1",
   "atlas.review-item:v1",
   "atlas.parity-record:v1"
 ] as const satisfies readonly CanonicalPayload["schema"][];
@@ -70,6 +71,7 @@ export type CanonicalConversionReport = {
     relationships: number;
     entities: number;
     entity_resolutions: number;
+    research_results: number;
     reviews: number;
     parity_records: number;
   };
@@ -364,6 +366,10 @@ export function analyzeCanonicalConversion(input: {
         evidenceReferences.push(...payload.evidence_refs, ...payload.confidence.evidence_refs);
         lineageReferences.push(...payload.supersedes);
         break;
+      case "atlas.research-result:v1":
+        evidenceReferences.push(payload.evidence_id, ...payload.identity_confidence.evidence_refs);
+        proposedReferences.push(payload.proposed_object_id);
+        break;
       case "atlas.review-item:v1":
         proposedReferences.push(...payload.proposed_object_ids);
         evidenceReferences.push(...(payload.source_evidence_ids ?? []));
@@ -555,6 +561,7 @@ export function analyzeCanonicalConversion(input: {
       relationships: schemas["atlas.relationship:v2"],
       entities: schemas["atlas.entity:v1"],
       entity_resolutions: schemas["atlas.entity-resolution:v1"],
+      research_results: schemas["atlas.research-result:v1"],
       reviews: schemas["atlas.review-item:v1"],
       parity_records: schemas["atlas.parity-record:v1"]
     },

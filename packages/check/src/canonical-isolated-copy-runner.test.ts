@@ -10,7 +10,7 @@ import {
   validateCanonicalIsolatedCopyRun
 } from "./canonical-isolated-copy-runner";
 import { createCanonicalMarkdownMigration, createCanonicalMarkdownMigrationExport } from "@living-atlas/importer";
-import type { CanonicalExportRecord } from "@living-atlas/contracts";
+import { CanonicalResearchResultPayloadSchema, type CanonicalExportRecord } from "@living-atlas/contracts";
 import { FileLocalGraphStore } from "@living-atlas/local-graph-store";
 import { decryptGraphObjectPayload, FileLocalKeyringStore } from "@living-atlas/local-keyring";
 import { createLocalCanonicalAtlasClient } from "@living-atlas/atlas-client";
@@ -127,6 +127,7 @@ describe("canonical isolated-copy runner guard", () => {
           "atlas.relationship:v2": 1,
           "atlas.evidence:v1": 10,
           "atlas.entity-resolution:v1": 0,
+          "atlas.research-result:v1": 0,
           "atlas.review-item:v1": 3,
           "atlas.parity-record:v1": 3
         },
@@ -139,6 +140,7 @@ describe("canonical isolated-copy runner guard", () => {
           relationships: 1,
           entities: 2,
           entity_resolutions: 0,
+          research_results: 0,
           reviews: 3,
           parity_records: 3
         },
@@ -403,6 +405,95 @@ describe("canonical isolated-copy runner guard", () => {
     const missingReport = analyze(withSupersedes("la_object_missinglineage0001"));
     expect(missingReport.integrity.missing_lineage_references).toBe(1);
     expect(() => assertCanonicalConversionIntegrity(missingReport)).toThrow("canonical isolated-copy integrity check failed");
+  });
+
+  it("counts canonical research results and validates their evidence and proposal references", () => {
+    const authorityId = "la_authority_fixture0001";
+    const pathRedactionSecret = "synthetic-research-result-integrity-secret";
+    const source = {
+      source_path: "pages/Synthetic Research Result.md",
+      markdown: "type:: person\nphone:: +1 555 0123",
+      source_kind: "logseq" as const
+    };
+    const exported = createCanonicalMarkdownMigrationExport(createCanonicalMarkdownMigration([source], {
+      authority_id: authorityId,
+      created_at: "2026-07-10T12:00:00.000Z",
+      path_redaction_secret: pathRedactionSecret
+    }));
+    const evidence = exported.records.find((record) => record.payload.schema === "atlas.evidence:v1")!;
+    const proposal = exported.records.find((record) => record.payload.schema === "atlas.fact:v1")!;
+    if (evidence.payload.schema !== "atlas.evidence:v1" || proposal.payload.schema !== "atlas.fact:v1") {
+      throw new Error("expected synthetic evidence and fact");
+    }
+    const result = CanonicalResearchResultPayloadSchema.parse({
+      schema: "atlas.research-result:v1",
+      research_result_id: "la_object_researchintegrity0001",
+      run_id: "la_research_run_aaaaaaaaaaaaaaaaaaaaaaaa",
+      candidate_id: "la_candidate_researchintegrity0001",
+      source_unit_id: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      algorithm_version: "canonical-research-v1",
+      normalized_query_hash: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      connector_kind: "public-web",
+      upstream_identity: "synthetic-integrity-source",
+      independence_key: "synthetic-integrity-group",
+      evidence_id: evidence.object_id,
+      evidence_content_hash: evidence.payload.content_hash,
+      retrieved_at: evidence.payload.retrieved_at,
+      stance: "supports",
+      identity_confidence: {
+        band: "high",
+        assessment_kind: "identity",
+        method: "synthetic-fixture",
+        assessed_at: "2026-07-10T12:00:00.000Z",
+        evidence_refs: [evidence.object_id]
+      },
+      proposed_object_id: proposal.object_id,
+      proposed_mutation_hash: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      recorded_at: "2026-07-10T12:00:00.000Z"
+    });
+    const resultRecord: CanonicalExportRecord = {
+      authority_id: authorityId,
+      object_id: result.research_result_id,
+      object_type: "review",
+      version: 1,
+      access_class: "local-private",
+      content_hash: "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      payload: result
+    };
+    const analyze = (record: CanonicalExportRecord) => analyzeCanonicalConversion({
+      records: [...exported.records, record],
+      authority_id: authorityId,
+      sources: [{
+        source_path: source.source_path,
+        markdown: source.markdown,
+        byte_count: Buffer.byteLength(source.markdown)
+      }],
+      path_redaction_secret: pathRedactionSecret,
+      reopened_manifest_mismatches: 0
+    });
+
+    const valid = analyze(resultRecord);
+    expect(valid.schemas["atlas.research-result:v1"]).toBe(1);
+    expect(valid.objects.research_results).toBe(1);
+    expect(valid.integrity).toMatchObject({
+      missing_evidence_references: 0,
+      missing_proposed_object_references: 0
+    });
+
+    const missing = analyze({
+      ...resultRecord,
+      payload: {
+        ...result,
+        evidence_id: "la_object_missingresearchevidence0001",
+        identity_confidence: {
+          ...result.identity_confidence,
+          evidence_refs: ["la_object_missingresearchevidence0001"]
+        },
+        proposed_object_id: "la_object_missingresearchproposal0001"
+      }
+    } as CanonicalExportRecord);
+    expect(missing.integrity.missing_evidence_references).toBeGreaterThan(0);
+    expect(missing.integrity.missing_proposed_object_references).toBeGreaterThan(0);
   });
 
   it("binds each long meaningful-unit occurrence only to its exact source parity", () => {

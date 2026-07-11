@@ -8,10 +8,12 @@ import {
   CanonicalObservationPayloadSchema,
   CanonicalParityRecordPayloadSchema,
   CanonicalRelationshipPayloadSchema,
+  CanonicalResearchResultPayloadSchema,
   CanonicalReviewItemPayloadSchema,
   CanonicalWriteSchema,
   canonicalIntervalsOverlap,
   canonicalObjectTypeForPayload,
+  canonicalPayloadObjectId,
   canonicalWorldTimeInterval,
   parseCanonicalExport
 } from "./index";
@@ -42,6 +44,35 @@ function entityResolutionInput() {
     evidence_refs: [evidenceId],
     evidence_links: [...evidenceLinks],
     confidence,
+    recorded_at: timestamp
+  } as const;
+}
+
+function researchResultInput() {
+  return {
+    schema: "atlas.research-result:v1",
+    research_result_id: "la_object_researchresult0001",
+    run_id: "la_research_run_aaaaaaaaaaaaaaaaaaaaaaaa",
+    candidate_id: "la_candidate_research0001",
+    source_unit_id: hash,
+    algorithm_version: "canonical-research-v1",
+    normalized_query_hash: hash,
+    connector_kind: "public-web",
+    upstream_identity: "synthetic-public-record-0001",
+    independence_key: "synthetic-publisher-group-0001",
+    evidence_id: evidenceId,
+    evidence_content_hash: hash,
+    retrieved_at: timestamp,
+    stance: "supports",
+    identity_confidence: {
+      band: "high",
+      assessment_kind: "identity",
+      method: "synthetic-identity-match",
+      assessed_at: timestamp,
+      evidence_refs: [evidenceId]
+    },
+    proposed_object_id: "la_object_researchproposal0001",
+    proposed_mutation_hash: hash,
     recorded_at: timestamp
   } as const;
 }
@@ -468,6 +499,59 @@ describe("canonical knowledge payload contracts", () => {
       object_type: "page",
       payload: write.payload
     }).success).toBe(false);
+  });
+
+  it("parses strict canonical research results and routes them as review objects", () => {
+    const result = CanonicalResearchResultPayloadSchema.parse(researchResultInput());
+
+    expect(canonicalObjectTypeForPayload(result)).toBe("review");
+    expect(canonicalPayloadObjectId(result)).toBe(result.research_result_id);
+    expect(CanonicalResearchResultPayloadSchema.safeParse({
+      ...researchResultInput(),
+      connector_kind: "synthetic-unknown"
+    }).success).toBe(false);
+    expect(CanonicalResearchResultPayloadSchema.safeParse({
+      ...researchResultInput(),
+      unexpected_private_field: "must fail strict parsing"
+    }).success).toBe(false);
+  });
+
+  it("requires identity confidence to reference the paired research evidence", () => {
+    expect(CanonicalResearchResultPayloadSchema.safeParse({
+      ...researchResultInput(),
+      identity_confidence: {
+        ...researchResultInput().identity_confidence,
+        assessment_kind: "assertion"
+      }
+    }).success).toBe(false);
+    expect(CanonicalResearchResultPayloadSchema.safeParse({
+      ...researchResultInput(),
+      identity_confidence: {
+        ...researchResultInput().identity_confidence,
+        evidence_refs: ["la_object_otherresearchvidence0001"]
+      }
+    }).success).toBe(false);
+  });
+
+  it("round trips a research result in a canonical export without widening fields", () => {
+    const result = CanonicalResearchResultPayloadSchema.parse(researchResultInput());
+    const exported = {
+      export_schema: "living-atlas-canonical-export:v1",
+      plaintext_policy: "local-keyholding-canonical-export",
+      authority_id: "la_authority_contract0001",
+      exported_at: timestamp,
+      records: [{
+        authority_id: "la_authority_contract0001",
+        object_id: result.research_result_id,
+        object_type: "review",
+        version: 1,
+        access_class: "local-private",
+        content_hash: hash,
+        payload: result
+      }]
+    };
+
+    expect(parseCanonicalExport(JSON.parse(JSON.stringify(exported)))).toEqual(exported);
   });
 
   it("round trips a versioned canonical export and rejects a legacy object type", () => {

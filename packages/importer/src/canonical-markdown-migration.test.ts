@@ -482,12 +482,7 @@ describe("canonical markdown migration", () => {
     });
 
     const payloadById = new Map(migration.payloads.map((payload) => [
-      payload.schema === "atlas.entity:v1" ? payload.entity_id
-        : payload.schema === "atlas.evidence:v1" ? payload.evidence_id
-          : payload.schema === "atlas.review-item:v1" ? payload.review_id
-            : payload.schema === "atlas.parity-record:v1" ? payload.parity_id
-              : payload.schema === "atlas.entity-resolution:v1" ? payload.resolution_id
-                : payload.assertion_id,
+      canonicalPayloadObjectId(payload),
       payload
     ]));
     const reviews = migration.payloads.filter((payload) => payload.schema === "atlas.review-item:v1");

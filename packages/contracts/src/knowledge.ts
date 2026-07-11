@@ -26,7 +26,7 @@ const CanonicalSchemaNamespace = "atlas";
 const AssertionIdSchema = ObjectIdSchema;
 const BoundedTextSchema = z.string().min(1).max(8_192);
 const BoundedIdentifierSchema = z.string().min(1).max(512);
-const CandidateIdSchema = z.string().regex(/^la_candidate_[A-Za-z0-9_-]{8,}$/);
+export const CandidateIdSchema = z.string().regex(/^la_candidate_[A-Za-z0-9_-]{8,}$/);
 const CoverageKeySchema = z.string().regex(/^la_coverage_[A-Za-z0-9_-]{8,}$/);
 const IdempotencyKeySchema = z.string().regex(/^la_idem_[A-Za-z0-9_-]{8,}$/);
 
@@ -373,6 +373,51 @@ export const CanonicalEntityResolutionPayloadSchema = z.object({
 });
 export type CanonicalEntityResolutionPayload = z.infer<typeof CanonicalEntityResolutionPayloadSchema>;
 
+export const CanonicalResearchConnectorKindSchema = z.enum([
+  "public-web",
+  "linkedin",
+  "organization",
+  "local-corpus"
+]);
+export type CanonicalResearchConnectorKind = z.infer<typeof CanonicalResearchConnectorKindSchema>;
+
+export const CanonicalResearchResultPayloadSchema = z.object({
+  schema: z.literal(`${CanonicalSchemaNamespace}.research-result:v1`),
+  research_result_id: ObjectIdSchema,
+  run_id: z.string().regex(/^la_research_run_[a-f0-9]{24}$/),
+  candidate_id: CandidateIdSchema,
+  source_unit_id: Sha256HashSchema,
+  algorithm_version: BoundedIdentifierSchema,
+  normalized_query_hash: Sha256HashSchema,
+  connector_kind: CanonicalResearchConnectorKindSchema,
+  upstream_identity: BoundedIdentifierSchema,
+  independence_key: BoundedIdentifierSchema,
+  evidence_id: ObjectIdSchema,
+  evidence_content_hash: Sha256HashSchema,
+  retrieved_at: IsoTimestampSchema,
+  stance: EvidenceStanceSchema,
+  identity_confidence: ConfidenceAssessmentSchema,
+  proposed_object_id: ObjectIdSchema,
+  proposed_mutation_hash: Sha256HashSchema,
+  recorded_at: IsoTimestampSchema
+}).strict().superRefine((result, ctx) => {
+  if (result.identity_confidence.assessment_kind !== "identity") {
+    ctx.addIssue({
+      code: "custom",
+      path: ["identity_confidence"],
+      message: "identity confidence must use assessment_kind identity"
+    });
+  }
+  if (!result.identity_confidence.evidence_refs.includes(result.evidence_id)) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["identity_confidence", "evidence_refs"],
+      message: "identity confidence must reference evidence_id"
+    });
+  }
+});
+export type CanonicalResearchResultPayload = z.infer<typeof CanonicalResearchResultPayloadSchema>;
+
 export const ReviewRecommendationSchema = z.enum(["auto-apply", "research", "owner-review"]);
 export const ReviewResolutionStateSchema = z.enum([
   "pending",
@@ -469,6 +514,7 @@ export const CanonicalPayloadSchema = z.union([
   CanonicalRelationshipPayloadSchema,
   CanonicalEvidencePayloadSchema,
   CanonicalEntityResolutionPayloadSchema,
+  CanonicalResearchResultPayloadSchema,
   CanonicalReviewItemPayloadSchema,
   CanonicalParityRecordPayloadSchema
 ]);
@@ -488,6 +534,7 @@ export function canonicalObjectTypeForPayload(payload: CanonicalPayload): Canoni
     case "atlas.evidence:v1":
       return "evidence";
     case "atlas.entity-resolution:v1":
+    case "atlas.research-result:v1":
     case "atlas.review-item:v1":
       return "review";
     case "atlas.parity-record:v1":
@@ -525,6 +572,8 @@ export function canonicalPayloadObjectId(payload: CanonicalPayload): string {
       return payload.evidence_id;
     case "atlas.entity-resolution:v1":
       return payload.resolution_id;
+    case "atlas.research-result:v1":
+      return payload.research_result_id;
     case "atlas.review-item:v1":
       return payload.review_id;
     case "atlas.parity-record:v1":

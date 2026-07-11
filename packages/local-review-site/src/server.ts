@@ -457,6 +457,7 @@ function destinationKind(payload: CanonicalPayload): string {
     case "atlas.relationship:v2": return "relationship";
     case "atlas.evidence:v1": return "evidence";
     case "atlas.entity-resolution:v1": return "identity decision";
+    case "atlas.research-result:v1": return "research evidence";
     case "atlas.review-item:v1": return "review decision";
     case "atlas.parity-record:v1": return "source coverage";
   }
