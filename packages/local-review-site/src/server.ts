@@ -4,6 +4,7 @@ import { readFile } from "node:fs/promises";
 import {
   canonicalObjectTypeForPayload,
   canonicalPayloadObjectId,
+  type CanonicalObservationPayload,
   type CanonicalPayload,
   type CanonicalReviewItemPayload
 } from "@living-atlas/contracts";
@@ -115,6 +116,20 @@ async function handleRequest(
     }
     const candidateId = decisionMatch[1]!;
     const item = [...queue.owner_review, ...queue.research].find((candidate) => candidate.candidate_id === candidateId);
+    const completedItem = queue.automatic.find((candidate) => candidate.candidate_id === candidateId);
+    if (!item && completedItem && isIdempotentRichEditRetry(completedItem, action, observationEdits)) {
+      const status = context.graphStore?.status();
+      sendJson(response, 200, {
+        ok: true,
+        result: {
+          local_commit: "committed",
+          resolved_candidate_ids: [candidateId],
+          ...(status ? { generation: status.generation, journal_sequence: status.journal_sequence } : {}),
+          idempotent: true
+        }
+      });
+      return;
+    }
     if (!item || !context.graphStore) {
       sendJson(response, 409, { ok: false, reason: item ? "resolution-requires-durable-local-store" : "candidate-not-actionable" });
       return;
@@ -296,6 +311,26 @@ function digest(value: string): string {
   return createHash("sha256").update(value).digest("hex").slice(0, 24);
 }
 
+function successorObservationId(observationId: string, statement: string): string {
+  return `la_object_${digest(`observation-successor:${observationId}:${statement}`)}`;
+}
+
+function isIdempotentRichEditRetry(
+  item: LocalReviewQueueItem,
+  action: unknown,
+  observationEdits: unknown
+): boolean {
+  if (action !== "keep" || !Array.isArray(observationEdits) || observationEdits.length === 0) return false;
+  const observations = new Map(item.proposed_records.flatMap((payload) => (
+    payload.schema === "atlas.observation:v1" ? [[payload.assertion_id, payload] as const] : []
+  )));
+  return observationEdits.every((value) => {
+    if (!isObservationEdit(value)) return false;
+    const successor = observations.get(successorObservationId(value.observation_id, value.statement));
+    return successor?.statement === value.statement;
+  });
+}
+
 function buildReviewDecision(
   context: LocalMcpContext,
   item: LocalReviewQueueItem,
@@ -321,9 +356,38 @@ function buildReviewDecision(
       evidence_refs: item.evidence_ids
     }))
     : [];
-  const keptPayloads = extractedObservations.length > 0 ? extractedObservations : item.proposed_records;
-  const keptIds = keptPayloads.map(canonicalPayloadObjectId);
   const observationEditById = new Map((observationEdits ?? []).map((edit) => [edit.observation_id, edit.statement]));
+  const observationSuccessorPairs = richCandidate && action === "keep"
+    ? item.proposed_records.flatMap((payload): Array<{ originalId: string; successor: CanonicalObservationPayload }> => {
+      if (payload.schema !== "atlas.observation:v1") return [];
+      const editedStatement = observationEditById.get(payload.assertion_id);
+      if (editedStatement === undefined) return [];
+      return [{
+        originalId: payload.assertion_id,
+        successor: {
+          ...payload,
+          assertion_id: successorObservationId(payload.assertion_id, editedStatement),
+          statement: editedStatement,
+          recorded_at: recordedAt
+        }
+      }];
+    })
+    : [];
+  const observationSuccessors = observationSuccessorPairs.map(({ successor }) => successor);
+  if (observationSuccessors.some((payload) => context.graphStore!.readObject(canonicalPayloadObjectId(payload)))) {
+    return undefined;
+  }
+  const successorByOriginalId = new Map(observationSuccessorPairs.map(({ originalId, successor }) => [originalId, successor]));
+  const keptPayloads = extractedObservations.length > 0
+    ? extractedObservations
+    : richCandidate && action === "keep"
+      ? item.proposed_records.map((payload) => (
+        payload.schema === "atlas.observation:v1"
+          ? successorByOriginalId.get(payload.assertion_id) ?? payload
+          : payload
+      ))
+      : item.proposed_records;
+  const keptIds = keptPayloads.map(canonicalPayloadObjectId);
   const requestedUnitHashes = [...new Set([
     ...(item.review_record.research_requested_unit_hashes ?? []),
     ...(researchUnitIds ?? [])
@@ -343,11 +407,7 @@ function buildReviewDecision(
   const observationPayloads: CanonicalPayload[] = legacyPlaceholder && action === "keep"
     ? extractedObservations
     : richCandidate && action === "keep"
-      ? item.proposed_records.flatMap((payload) => {
-        if (payload.schema !== "atlas.observation:v1") return [];
-        const editedStatement = observationEditById.get(payload.assertion_id);
-        return editedStatement ? [{ ...payload, statement: editedStatement, recorded_at: recordedAt }] : [];
-      })
+      ? observationSuccessors
       : [];
   const keptObservationIds = new Set(keptPayloads.flatMap((payload) => (
     payload.schema === "atlas.observation:v1" ? [payload.assertion_id] : []
@@ -361,7 +421,15 @@ function buildReviewDecision(
         canonical_object_ids: [...keptObservationIds],
         recorded_at: recordedAt
       }
-      : { ...parity, recorded_at: recordedAt }
+      : richCandidate && action === "keep"
+        ? {
+          ...parity,
+          canonical_object_ids: parity.canonical_object_ids.map((objectId) => (
+            successorByOriginalId.get(objectId)?.assertion_id ?? objectId
+          )),
+          recorded_at: recordedAt
+        }
+        : { ...parity, recorded_at: recordedAt }
   ));
   const payloads: CanonicalPayload[] = [
     ...observationPayloads,

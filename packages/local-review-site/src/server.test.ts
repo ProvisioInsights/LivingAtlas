@@ -523,13 +523,14 @@ describe("local review site server", () => {
       expect(rejectedTypedEdit.status).toBe(400);
 
       const intentionalWhitespaceEdit = "  Edited synthetic first chunk.  ";
+      const richEditRequest = {
+        action: "keep",
+        observation_edits: [{ observation_id: editedObservationId, statement: intentionalWhitespaceEdit }]
+      };
       const decision = await fetch(`${origin}/api/review/${rich!.candidate_id}/decision`, {
         method: "POST",
         headers: { cookie, "content-type": "application/json" },
-        body: JSON.stringify({
-          action: "keep",
-          observation_edits: [{ observation_id: editedObservationId, statement: intentionalWhitespaceEdit }]
-        })
+        body: JSON.stringify(richEditRequest)
       });
       expect(decision.status).toBe(200);
       const after = await fetch(`${origin}/api/review-queue`, { headers: { cookie } }).then((response) => response.json()) as LocalReviewQueue;
@@ -540,26 +541,52 @@ describe("local review site server", () => {
         objectId,
         graphStore.readObject(objectId)?.version
       ]))).toEqual(typedVersionsBefore);
-      expect(kept!.proposed_object_ids).toEqual(rich!.proposed_object_ids);
+      const successor = kept!.destination_graph.observations.find((destination) => (
+        destination.object_id !== editedObservationId
+        && destination.object_id !== untouchedObservationId
+        && destination.record.statement === intentionalWhitespaceEdit
+      ));
+      expect(successor).toBeDefined();
+      expect(successor!.object_id).not.toBe(editedObservationId);
+      expect(kept!.proposed_object_ids).toEqual(rich!.proposed_object_ids.map((objectId) => (
+        objectId === editedObservationId ? successor!.object_id : objectId
+      )));
       const keptObservations = new Map(kept!.destination_graph.observations.map((destination) => [
         destination.object_id,
         destination.record
       ]));
-      expect(keptObservations.get(editedObservationId)?.statement).toBe(intentionalWhitespaceEdit);
-      expect(keptObservations.get(editedObservationId)?.recorded_at).toBe(now);
+      expect(successor!.record).toEqual({
+        ...originalObservations.get(editedObservationId),
+        assertion_id: successor!.object_id,
+        statement: intentionalWhitespaceEdit,
+        recorded_at: now
+      });
       expect(keptObservations.get(untouchedObservationId)?.statement).toBe(originalObservations.get(untouchedObservationId)?.statement);
       expect(keptObservations.get(untouchedObservationId)?.recorded_at).toBe(migrationRecordedAt);
       for (const [observationId, envelope] of observationEnvelopesBefore) {
-        expect(graphStore.readObject(observationId)).toEqual(observationId === editedObservationId
-          ? expect.objectContaining({ version: envelope.version + 1 })
-          : envelope);
+        expect(graphStore.readObject(observationId)).toEqual(envelope);
       }
+      const successorEnvelope = graphStore.readObject(successor!.object_id);
+      expect(successorEnvelope).toEqual(expect.objectContaining({ version: 1 }));
       expect(graphStore.readObject(rich!.review_id)?.version).toBe(richReviewVersionBefore + 1);
       for (const [parityId, version] of richParityVersionsBefore) {
         expect(graphStore.readObject(parityId)?.version).toBe(version + 1);
       }
       expect(kept!.parity_records.every((parity) => parity.representation_kind === "observation"
         && parity.canonical_object_ids.every((id) => keptObservations.has(id)))).toBe(true);
+      expect(kept!.parity_records.some((parity) => parity.canonical_object_ids.includes(successor!.object_id))).toBe(true);
+      expect(kept!.parity_records.every((parity) => !parity.canonical_object_ids.includes(editedObservationId))).toBe(true);
+
+      const statusBeforeRetry = graphStore.status();
+      const retry = await fetch(`${origin}/api/review/${rich!.candidate_id}/decision`, {
+        method: "POST",
+        headers: { cookie, "content-type": "application/json" },
+        body: JSON.stringify(richEditRequest)
+      });
+      expect(retry.status).toBe(200);
+      await expect(retry.json()).resolves.toMatchObject({ ok: true, result: { idempotent: true } });
+      expect(graphStore.status()).toEqual(statusBeforeRetry);
+      expect(graphStore.readObject(successor!.object_id)).toEqual(successorEnvelope);
 
       const originalSingleObservation = singleUnitRich!.destination_graph.observations[0]!;
       const originalSingleEnvelope = graphStore.readObject(originalSingleObservation.object_id)!;

@@ -42,6 +42,8 @@ describe("source meaning accounting", () => {
     const accounting = accountSourceMeaning([evidence([
       "- no web research performed",
       "- **Context**",
+      "- **Contact**",
+      "- **Relationship to [[Synthetic Person]]**",
       "type:: query",
       "- Durable synthetic knowledge."
     ].join("\n"))]);
@@ -49,10 +51,50 @@ describe("source meaning accounting", () => {
     expect(accounting.excluded_units).toEqual([
       { source_text: "no web research performed", reason: "editorial migration commentary" },
       { source_text: "- **Context**", reason: "source organization" },
+      { source_text: "- **Contact**", reason: "source organization" },
+      { source_text: "- **Relationship to [[Synthetic Person]]**", reason: "source organization" },
       { source_text: "type:: query", reason: "source-system instruction" }
     ]);
     expect(accounting.meaningful_units.map((unit) => unit.atlas_text)).toEqual([
       "Durable synthetic knowledge."
+    ]);
+  });
+
+  it("keeps fully bold knowledge statements and sentences that merely mention Logseq", () => {
+    const boldStatement = "- **This relationship matters**";
+    const logseqStatement = "- Migrated customer research from Logseq in 2024.";
+    const accounting = accountSourceMeaning([evidence([
+      boldStatement,
+      logseqStatement
+    ].join("\n"))]);
+
+    expect(accounting.meaningful_units).toEqual([
+      expect.objectContaining({
+        source_text: boldStatement,
+        atlas_text: "This relationship matters",
+        kind: "observation"
+      }),
+      expect.objectContaining({
+        source_text: logseqStatement,
+        atlas_text: "Migrated customer research from Logseq in 2024.",
+        kind: "observation"
+      })
+    ]);
+    expect(accounting.excluded_units).toEqual([]);
+  });
+
+  it("continues to exclude actual Logseq query and source-system instructions", () => {
+    const accounting = accountSourceMeaning([evidence([
+      "type:: query",
+      "{{query (property :synthetic)}}",
+      "- Run grep -n against pages/*.md before migration."
+    ].join("\n\n"))]);
+
+    expect(accounting.meaningful_units).toEqual([]);
+    expect(accounting.excluded_units).toEqual([
+      { source_text: "type:: query", reason: "source-system instruction" },
+      { source_text: "{{query (property :synthetic)}}", reason: "source-system instruction" },
+      { source_text: "- Run grep -n against pages/*.md before migration.", reason: "source-system instruction" }
     ]);
   });
 

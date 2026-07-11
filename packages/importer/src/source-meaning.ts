@@ -52,7 +52,7 @@ export function accountSourceMeaning(sourceContext: CanonicalEvidencePayload[]):
       .replace(/^[-*+]\s*(?:·\s*)?$/, "")
       .trim();
     const unit = meaningUnit(withoutEditorial);
-    if (unit && /^[-*+]\s+\*\*/.test(withoutEditorial) && /\*\*\s*$/.test(withoutEditorial) && !unit.atlas_text.includes(":")) {
+    if (unit && isSourceOrganizationHeading(withoutEditorial)) {
       excludedUnits.push({ source_text: segment, reason: "source organization" });
     } else if (unit) {
       meaningfulUnits.push({
@@ -73,14 +73,20 @@ export function accountSourceMeaning(sourceContext: CanonicalEvidencePayload[]):
 }
 
 function sourceExclusionReason(segment: string): SourceMeaningAccounting["excluded_units"][number]["reason"] | undefined {
-  const bulletBody = /^[-*+]\s+(.+)$/.exec(segment)?.[1]?.trim();
-  if (bulletBody?.startsWith("**") && bulletBody.endsWith("**") && !/:\*\*\s*\S/.test(bulletBody)) return "source organization";
+  if (isSourceOrganizationHeading(segment)) return "source organization";
   if (/^type::\s*query$/i.test(segment)
-    || /\bLogseq\b/i.test(segment)
     || /\{\{query\b/i.test(segment)
     || /\bgrep\s+-[A-Za-z]*n[A-Za-z]*\b/i.test(segment)
     || /\bpages\/\*\.md\b/i.test(segment)) return "source-system instruction";
   return undefined;
+}
+
+function isSourceOrganizationHeading(segment: string): boolean {
+  const label = /^[-*+]\s+\*\*([^*]+)\*\*\s*$/.exec(segment)?.[1]?.trim();
+  return label !== undefined && (
+    /^(?:context|contact|notes?|details?|sources?|references?)[:.]?$/i.test(label)
+    || /^relationship to \[\[[^\]\n]+\]\]$/i.test(label)
+  );
 }
 
 function sourceSegments(source: string): string[] {
