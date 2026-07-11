@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
   CanonicalPayloadSchema,
   canonicalPayloadObjectId,
@@ -79,6 +80,7 @@ export type LocalReviewQueueItem = {
   source_accounting: SourceMeaningAccounting;
   missing_references: string[];
   context_unavailable: boolean;
+  bulk_compatibility_key: `sha256:${string}`;
 };
 
 export type LocalReviewQueue = {
@@ -124,6 +126,65 @@ function recordEvidenceIds(payload: CanonicalObservation | CanonicalFact | Canon
   return payload.schema === "atlas.observation:v1"
     ? payload.evidence_refs
     : payload.evidence_links.map((link) => link.evidence_id);
+}
+
+function normalizedMutationKind(payload: CanonicalPayload): string {
+  switch (payload.schema) {
+    case "atlas.entity:v1":
+      return `entity:${payload.type}:${payload.subtype ?? "unspecified"}`;
+    case "atlas.fact:v1":
+      return `fact:${payload.predicate}:${payload.value.kind}`;
+    case "atlas.observation:v1":
+      return "observation";
+    case "atlas.relationship:v2":
+      return `relationship:${payload.source_type}:${payload.predicate}:${payload.target_type}`;
+    case "atlas.evidence:v1":
+      return `evidence:${payload.source_kind}`;
+    case "atlas.entity-resolution:v1":
+      return `entity-resolution:${payload.decision}`;
+    case "atlas.review-item:v1":
+      return "review-decision";
+    case "atlas.parity-record:v1":
+      return `source-coverage:${payload.representation_kind ?? "unrepresented"}`;
+  }
+}
+
+function evidenceRuleKind(evidence: CanonicalEvidencePayload[]): string {
+  const kinds = [...new Set(evidence.map((item) => item.source_kind))].sort();
+  if (kinds.length === 0) return "no-evidence";
+  if (kinds.every((kind) => kind === "migration" || kind === "manual")) return "owner-source";
+  if (kinds.includes("migration") || kinds.includes("manual")) return "owner-plus-third-party";
+  if (kinds.includes("linkedin")) return "linkedin-plus-independent-source";
+  return "independent-third-party";
+}
+
+function bulkCompatibilityKey(input: {
+  proposedRecords: CanonicalPayload[];
+  parityRecords: CanonicalParityRecordPayload[];
+  evidence: CanonicalEvidencePayload[];
+  sourceAccounting: SourceMeaningAccounting;
+  resolutionMode: LocalReviewResolutionMode;
+}): `sha256:${string}` {
+  const descriptor = {
+    payload_schemas: input.proposedRecords.map((payload) => payload.schema).sort(),
+    normalized_mutation_kinds: [
+      ...input.proposedRecords.map(normalizedMutationKind),
+      ...(input.resolutionMode === "legacy"
+        ? input.sourceAccounting.meaningful_units.map((unit) => `create:observation:${unit.kind}`)
+        : []),
+      "update:review-decision",
+      ...input.parityRecords.map((parity) => `update:source-coverage:${parity.representation_kind ?? "unrepresented"}`)
+    ].sort(),
+    evidence_rule_kind: evidenceRuleKind(input.evidence),
+    source_preservation_mode: `${input.sourceAccounting.exact_source_preserved ? "exact" : "unavailable"}:${input.resolutionMode}`,
+    edit_requirement: input.resolutionMode === "rich" ? "observation-edit-optional"
+      : input.resolutionMode === "legacy" ? "source-unit-edit-optional"
+        : "repair-required",
+    merge_requirement: input.proposedRecords.some((payload) => (
+      payload.schema === "atlas.entity-resolution:v1" && payload.decision === "merge"
+    )) ? "required" : "none"
+  };
+  return `sha256:${createHash("sha256").update(JSON.stringify(descriptor)).digest("hex")}`;
 }
 
 function reviewResolutionMode(input: {
@@ -334,7 +395,14 @@ export async function projectLocalReviewQueue(input: {
       parity_records: parityRecords,
       source_accounting: sourceAccounting,
       missing_references: referenced.filter((id) => !payloads.has(id)).sort(),
-      context_unavailable: sourceContext.length === 0
+      context_unavailable: sourceContext.length === 0,
+      bulk_compatibility_key: bulkCompatibilityKey({
+        proposedRecords,
+        parityRecords,
+        evidence,
+        sourceAccounting,
+        resolutionMode: resolutionMode.mode
+      })
     };
   };
   const items = reviews.map(itemFor).sort((left, right) => left.review_id.localeCompare(right.review_id));

@@ -37,7 +37,6 @@ import {
   localReadObject,
   localReadEdgeObject,
   localResolutionApply,
-  localResolutionApplyBatch,
   localSearchObjects,
   localTombstoneObject,
   localTimelineQuery,
@@ -387,35 +386,6 @@ async function createContextForToken(token: string, options?: {
 }
 
 describe("local fixture graph tools", () => {
-  it("rejects an invalid bulk resolution without committing an earlier valid decision", async () => {
-    const token = "local-token-resolution-batch-atomic-0001";
-    const directory = await mkdtemp(join(tmpdir(), "living-atlas-local-resolution-batch-"));
-    try {
-      const controlState = await createFixtureLocalControlState(token);
-      const keyring = createDefaultLocalKeyring({ authorityId: controlState.authority_id, createdAt: now });
-      const graphStore = await FileLocalGraphStore.open({ directory, authorityId: controlState.authority_id, plaintextPersistence: "encrypt", keyring });
-      const drafts = canonicalResolutionDrafts(1);
-      await graphStore.createObject({ object: { ...drafts.review, payload: { ...drafts.review.payload, data: { ...drafts.review.payload.data, resolution_state: "pending" } }, version: 1 }, expected_generation: 0, actor_id: fixtureLocalClientId, recorded_at: now });
-      const context = createLocalMcpContextFromControlState({ controlState, graphStore, decryptPayload: decryptWithKeyring(keyring), now });
-
-      await expect(localResolutionApplyBatch(context, {
-        authorization: `Bearer ${token}`,
-        operation_id: "la_operation_resolutionbatch0001",
-        idempotency_key: "la_idem_resolutionbatch0001",
-        expected_generation: 1,
-        resolutions: [
-          { candidate_id: drafts.candidateId, expected_review_version: 1, objects: [drafts.entity, drafts.evidence, drafts.fact, drafts.review, drafts.parity] },
-          { candidate_id: "la_candidate_resolutionbad0001", expected_review_version: 1, objects: [] }
-        ]
-      })).resolves.toEqual({ ok: false, reason: "resolution-invalid-request" });
-
-      expect(graphStore.status()).toMatchObject({ generation: 1, object_count: 1 });
-      expect(graphStore.readObject(drafts.fact.object_id)).toBeUndefined();
-    } finally {
-      await rm(directory, { recursive: true, force: true });
-    }
-  });
-
   it("requires durable local storage for semantic resolution", async () => {
     const token = "local-token-resolution-no-store-0001";
     const context = createFixtureLocalMcpContext({

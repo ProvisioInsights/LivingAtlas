@@ -2,13 +2,14 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { createHash, randomBytes } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import {
+  CanonicalPayloadSchema,
   canonicalObjectTypeForPayload,
   canonicalPayloadObjectId,
   type CanonicalObservationPayload,
   type CanonicalPayload,
   type CanonicalReviewItemPayload
 } from "@living-atlas/contracts";
-import { authenticateLocalMcp, localResolutionApply, localResolutionApplyBatch, type LocalMcpContext } from "@living-atlas/local-mcp";
+import { authenticateLocalMcp, localResolutionApply, type LocalMcpContext } from "@living-atlas/local-mcp";
 import { projectLocalReviewQueue, type LocalReviewQueueItem } from "./review-projection";
 
 const browserSessionCookie = "atlas_review_session";
@@ -18,8 +19,9 @@ export function createLocalReviewSiteServer(input: {
   browserSessionAuthorization?: string;
 }) {
   const browserSessions = new Map<string, string>();
+  const bulkPreviews = new Map<string, string>();
   return createServer((request, response) => {
-    void handleRequest(request, response, input.context, browserSessions, input.browserSessionAuthorization).catch((error: unknown) => {
+    void handleRequest(request, response, input.context, browserSessions, bulkPreviews, input.browserSessionAuthorization).catch((error: unknown) => {
       const status = error instanceof JsonBodyError ? error.status : 500;
       const reason = error instanceof JsonBodyError ? error.reason : "internal-error";
       if (!response.headersSent) sendJson(response, status, { ok: false, reason });
@@ -33,6 +35,7 @@ async function handleRequest(
   response: ServerResponse,
   context: LocalMcpContext,
   browserSessions: Map<string, string>,
+  bulkPreviews: Map<string, string>,
   browserSessionAuthorization: string | undefined
 ): Promise<void> {
   const pathname = new URL(request.url ?? "/", "http://127.0.0.1").pathname;
@@ -188,7 +191,7 @@ async function handleRequest(
     sendJson(response, result.ok ? 200 : 409, result);
     return;
   }
-  if (request.method === "POST" && pathname === "/api/review/bulk/decision") {
+  if (request.method === "POST" && pathname === "/api/review/bulk/preview") {
     const body = await readJson(request);
     const action = (body as { action?: unknown }).action;
     const candidateIds = (body as { candidate_ids?: unknown }).candidate_ids;
@@ -202,38 +205,80 @@ async function handleRequest(
       sendJson(response, 400, { ok: false, reason: "invalid-bulk-review-decision" });
       return;
     }
-    const actionable = new Map([...queue.owner_review, ...queue.research].map((item) => [item.candidate_id, item]));
-    const orderedCandidateIds = [...(candidateIds as string[])].sort((left, right) => left.localeCompare(right));
+    const prepared = prepareBulkPreview({
+      context,
+      queue,
+      action,
+      candidateIds: candidateIds as string[]
+    });
+    if (!prepared.ok) {
+      sendJson(response, 409, prepared);
+      return;
+    }
+    if (bulkPreviews.size >= 512) bulkPreviews.delete(bulkPreviews.keys().next().value as string);
+    bulkPreviews.set(prepared.preview.bulk_preview_token, stableJson(prepared.preview));
+    sendJson(response, 200, { ok: true, result: prepared.preview });
+    return;
+  }
+  if (request.method === "POST" && pathname === "/api/review/bulk/decision") {
+    const body = await readJson(request);
+    if (!body || typeof body !== "object" || Array.isArray(body)) {
+      sendJson(response, 400, { ok: false, reason: "invalid-bulk-review-decision" });
+      return;
+    }
+    const submitted = body as Record<string, unknown>;
+    const previewToken = submitted.bulk_preview_token;
+    const mintedPreview = typeof previewToken === "string" ? bulkPreviews.get(previewToken) : undefined;
+    if (!mintedPreview) {
+      sendJson(response, 409, { ok: false, reason: "bulk-preview-stale" });
+      return;
+    }
+    const { bulk_preview_token: _token, ...normalizedSubmitted } = submitted;
+    if (stableJson(submitted) !== mintedPreview || bulkPreviewToken(normalizedSubmitted) !== previewToken) {
+      sendJson(response, 409, { ok: false, reason: "bulk-preview-stale" });
+      return;
+    }
+    const action = submitted.action;
+    const candidateIds = submitted.candidate_ids;
+    const previewRecordedAt = submitted.preview_recorded_at;
+    if (!isReviewDecisionAction(action)
+      || !Array.isArray(candidateIds)
+      || candidateIds.some((candidate) => typeof candidate !== "string")
+      || typeof previewRecordedAt !== "string") {
+      sendJson(response, 409, { ok: false, reason: "bulk-preview-stale" });
+      return;
+    }
+    const prepared = prepareBulkPreview({
+      context,
+      queue,
+      action,
+      candidateIds: candidateIds as string[],
+      recordedAt: previewRecordedAt
+    });
+    if (!prepared.ok || stableJson(prepared.preview) !== mintedPreview) {
+      bulkPreviews.delete(previewToken);
+      sendJson(response, 409, { ok: false, reason: "bulk-preview-stale" });
+      return;
+    }
+    bulkPreviews.delete(previewToken);
     const results: Array<{
       candidate_id: string;
       ok: boolean;
       result?: unknown;
       reason?: string;
     }> = [];
-    for (const candidateId of orderedCandidateIds) {
+    for (const candidateId of prepared.preview.candidate_ids) {
       try {
-        const item = actionable.get(candidateId);
-        const expectedReviewVersion = item ? context.graphStore.readObject(item.review_id)?.version : undefined;
-        const objects = item ? buildReviewDecision(context, item, action, undefined, undefined) : undefined;
-        if (!item || expectedReviewVersion === undefined || !objects) {
-          results.push({
-            candidate_id: candidateId,
-            ok: false,
-            reason: !item ? "candidate-not-actionable"
-              : expectedReviewVersion === undefined ? "candidate-review-missing"
-                : "candidate-records-incomplete"
-          });
-          continue;
-        }
-        const seed = `${candidateId}:${action}:${expectedReviewVersion}`;
+        const decision = prepared.decisions.get(candidateId)!;
+        const seed = `${previewToken}:${candidateId}:${action}:${decision.expectedReviewVersion}`;
         const result = await localResolutionApply(context, {
           authorization: authorization ?? "",
           operation_id: `la_operation_${digest(`bulk-item:${seed}`)}`,
           idempotency_key: `la_idem_${digest(`bulk-item-decision:${seed}`)}`,
           candidate_id: candidateId,
-          expected_generation: context.graphStore.status().generation,
-          expected_review_version: expectedReviewVersion,
-          objects
+          expected_generation: context.graphStore!.status().generation,
+          expected_review_version: decision.expectedReviewVersion,
+          objects: decision.objects
         });
         results.push({ candidate_id: candidateId, ...result });
       } catch {
@@ -259,18 +304,6 @@ async function handleRequest(
     });
     return;
   }
-  if (request.method === "POST" && pathname === "/api/review/bulk/apply") {
-    const body = await readJson(request);
-    const resolutions = Array.isArray((body as { resolutions?: unknown }).resolutions) ? (body as { resolutions: Array<{ candidate_id?: unknown }> }).resolutions : [];
-    const ownerCandidates = new Set(queue.owner_review.map((item) => item.candidate_id));
-    if (resolutions.length === 0 || resolutions.some((resolution) => typeof resolution.candidate_id !== "string" || !ownerCandidates.has(resolution.candidate_id))) {
-      sendJson(response, 409, { ok: false, reason: "candidate-not-owner-review" });
-      return;
-    }
-    const result = await localResolutionApplyBatch(context, { ...(body as Record<string, unknown>), authorization: authorization ?? "" } as never);
-    sendJson(response, result.ok ? 200 : 409, result);
-    return;
-  }
   const match = /^\/api\/review\/(la_candidate_[A-Za-z0-9_-]{8,})\/apply$/.exec(pathname);
   if (request.method === "POST" && match) {
     const candidateId = match[1]!;
@@ -288,6 +321,46 @@ async function handleRequest(
 
 type ReviewDecisionAction = "keep" | "research" | "defer";
 type ObservationEdit = { observation_id: string; statement: string };
+type BulkObjectMutation = {
+  candidate_id: string;
+  object_id: string;
+  operation: "create" | "update";
+  destination_kind: string;
+  schema: CanonicalPayload["schema"];
+  target_version: number;
+  mutation_hash: `sha256:${string}`;
+};
+type BulkEvidenceIndependenceGroup = {
+  candidate_id: string;
+  independence_key: string;
+  source_kinds: string[];
+  evidence_count: number;
+};
+type BulkPreviewPayload = {
+  action: ReviewDecisionAction;
+  candidate_ids: string[];
+  review_versions: Array<{ candidate_id: string; review_id: string; version: number }>;
+  object_mutations: BulkObjectMutation[];
+  evidence_independence_groups: BulkEvidenceIndependenceGroup[];
+  counts: {
+    candidates: number;
+    object_mutations: number;
+    creates: number;
+    updates: number;
+    evidence_independence_groups: number;
+  };
+  bulk_compatibility_key: `sha256:${string}`;
+  preview_recorded_at: string;
+  bulk_preview_token: `sha256:${string}`;
+};
+type PreparedBulkPreview = {
+  ok: true;
+  preview: BulkPreviewPayload;
+  decisions: Map<string, { expectedReviewVersion: number; objects: unknown[] }>;
+} | {
+  ok: false;
+  reason: "candidate-not-actionable" | "candidate-review-missing" | "candidate-records-incomplete" | "heterogeneous-bulk-selection";
+};
 
 function isReviewDecisionAction(value: unknown): value is ReviewDecisionAction {
   return value === "keep" || value === "research" || value === "defer";
@@ -309,6 +382,144 @@ function mappedObservationIds(item: LocalReviewQueueItem): Set<string> {
 
 function digest(value: string): string {
   return createHash("sha256").update(value).digest("hex").slice(0, 24);
+}
+
+function sha256(value: string): `sha256:${string}` {
+  return `sha256:${createHash("sha256").update(value).digest("hex")}`;
+}
+
+function stableJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+  if (value && typeof value === "object") {
+    return `{${Object.entries(value as Record<string, unknown>)
+      .filter(([, entry]) => entry !== undefined)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, entry]) => `${JSON.stringify(key)}:${stableJson(entry)}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function bulkPreviewToken(preview: Record<string, unknown>): `sha256:${string}` {
+  return sha256(stableJson(preview));
+}
+
+function destinationKind(payload: CanonicalPayload): string {
+  switch (payload.schema) {
+    case "atlas.entity:v1": return "entity";
+    case "atlas.fact:v1": return "fact";
+    case "atlas.observation:v1": return "unresolved observation";
+    case "atlas.relationship:v2": return "relationship";
+    case "atlas.evidence:v1": return "evidence";
+    case "atlas.entity-resolution:v1": return "identity decision";
+    case "atlas.review-item:v1": return "review decision";
+    case "atlas.parity-record:v1": return "source coverage";
+  }
+}
+
+function summarizeBulkMutation(
+  context: LocalMcpContext,
+  candidateId: string,
+  object: unknown
+): BulkObjectMutation | undefined {
+  if (!context.graphStore || !object || typeof object !== "object" || Array.isArray(object)) return undefined;
+  const draft = object as Record<string, unknown>;
+  const payloadEnvelope = draft.payload;
+  if (!payloadEnvelope || typeof payloadEnvelope !== "object" || Array.isArray(payloadEnvelope)) return undefined;
+  const plaintext = payloadEnvelope as Record<string, unknown>;
+  if (plaintext.kind !== "plaintext-json") return undefined;
+  const parsed = CanonicalPayloadSchema.safeParse(plaintext.data);
+  if (!parsed.success || typeof draft.version !== "number") return undefined;
+  const objectId = canonicalPayloadObjectId(parsed.data);
+  return {
+    candidate_id: candidateId,
+    object_id: objectId,
+    operation: context.graphStore.readObject(objectId) ? "update" : "create",
+    destination_kind: destinationKind(parsed.data),
+    schema: parsed.data.schema,
+    target_version: draft.version,
+    mutation_hash: sha256(stableJson(parsed.data))
+  };
+}
+
+function evidenceIndependenceGroups(item: LocalReviewQueueItem): BulkEvidenceIndependenceGroup[] {
+  const grouped = new Map<string, typeof item.evidence>();
+  for (const evidence of item.evidence) {
+    const group = grouped.get(evidence.independence_key) ?? [];
+    group.push(evidence);
+    grouped.set(evidence.independence_key, group);
+  }
+  return [...grouped.entries()].map(([independenceKey, evidence]) => ({
+    candidate_id: item.candidate_id,
+    independence_key: independenceKey,
+    source_kinds: [...new Set(evidence.map((record) => record.source_kind))].sort(),
+    evidence_count: evidence.length
+  })).sort((left, right) => left.independence_key.localeCompare(right.independence_key));
+}
+
+function prepareBulkPreview(input: {
+  context: LocalMcpContext;
+  queue: Awaited<ReturnType<typeof projectLocalReviewQueue>>;
+  action: ReviewDecisionAction;
+  candidateIds: string[];
+  recordedAt?: string;
+}): PreparedBulkPreview {
+  if (!input.context.graphStore) return { ok: false, reason: "candidate-not-actionable" };
+  const candidateIds = [...input.candidateIds].sort((left, right) => left.localeCompare(right));
+  const byCandidate = new Map([...input.queue.owner_review, ...input.queue.research].map((item) => [item.candidate_id, item]));
+  const items = candidateIds.flatMap((candidateId) => {
+    const item = byCandidate.get(candidateId);
+    return item ? [item] : [];
+  });
+  if (items.length !== candidateIds.length) return { ok: false, reason: "candidate-not-actionable" };
+  if (new Set(items.map((item) => item.bulk_compatibility_key)).size !== 1) {
+    return { ok: false, reason: "heterogeneous-bulk-selection" };
+  }
+  if (items.some((item) => item.resolution_mode === "incomplete")) {
+    return { ok: false, reason: "candidate-not-actionable" };
+  }
+  const recordedAt = input.recordedAt ?? input.context.now ?? new Date().toISOString();
+  const reviewVersions: BulkPreviewPayload["review_versions"] = [];
+  const objectMutations: BulkObjectMutation[] = [];
+  const evidenceGroups: BulkEvidenceIndependenceGroup[] = [];
+  const decisions = new Map<string, { expectedReviewVersion: number; objects: unknown[] }>();
+  for (const item of items) {
+    const expectedReviewVersion = input.context.graphStore.readObject(item.review_id)?.version;
+    if (expectedReviewVersion === undefined) return { ok: false, reason: "candidate-review-missing" };
+    const objects = buildReviewDecision(input.context, item, input.action, undefined, undefined, undefined, recordedAt);
+    if (!objects) return { ok: false, reason: "candidate-records-incomplete" };
+    const mutations = objects.map((object) => summarizeBulkMutation(input.context, item.candidate_id, object));
+    if (mutations.some((mutation) => mutation === undefined)) return { ok: false, reason: "candidate-records-incomplete" };
+    reviewVersions.push({ candidate_id: item.candidate_id, review_id: item.review_id, version: expectedReviewVersion });
+    objectMutations.push(...mutations as BulkObjectMutation[]);
+    evidenceGroups.push(...evidenceIndependenceGroups(item));
+    decisions.set(item.candidate_id, { expectedReviewVersion, objects });
+  }
+  objectMutations.sort((left, right) => left.candidate_id.localeCompare(right.candidate_id)
+    || left.object_id.localeCompare(right.object_id));
+  evidenceGroups.sort((left, right) => left.candidate_id.localeCompare(right.candidate_id)
+    || left.independence_key.localeCompare(right.independence_key));
+  const normalized = {
+    action: input.action,
+    candidate_ids: candidateIds,
+    review_versions: reviewVersions,
+    object_mutations: objectMutations,
+    evidence_independence_groups: evidenceGroups,
+    counts: {
+      candidates: candidateIds.length,
+      object_mutations: objectMutations.length,
+      creates: objectMutations.filter((mutation) => mutation.operation === "create").length,
+      updates: objectMutations.filter((mutation) => mutation.operation === "update").length,
+      evidence_independence_groups: evidenceGroups.length
+    },
+    bulk_compatibility_key: items[0]!.bulk_compatibility_key,
+    preview_recorded_at: recordedAt
+  };
+  return {
+    ok: true,
+    preview: { ...normalized, bulk_preview_token: bulkPreviewToken(normalized) },
+    decisions
+  };
 }
 
 function successorObservationId(observationId: string, statement: string): string {
@@ -337,10 +548,11 @@ function buildReviewDecision(
   action: ReviewDecisionAction,
   statements: string[] | undefined,
   observationEdits: ObservationEdit[] | undefined,
-  researchUnitIds: string[] | undefined = undefined
+  researchUnitIds: string[] | undefined = undefined,
+  previewRecordedAt: string | undefined = undefined
 ): unknown[] | undefined {
   if (!context.graphStore) return undefined;
-  const recordedAt = context.now ?? new Date().toISOString();
+  const recordedAt = previewRecordedAt ?? context.now ?? new Date().toISOString();
   if (item.resolution_mode === "incomplete") return undefined;
   if (action === "keep" && !item.source_accounting.exact_source_preserved) return undefined;
   const richCandidate = item.resolution_mode === "rich";

@@ -134,6 +134,20 @@ h1 {
 .bulk-actions label { display: flex; gap: 7px; align-items: center; font-weight: 650; }
 .bulk-actions > span { color: var(--muted); font-size: 0.8rem; }
 .bulk-actions > div { display: flex; gap: 7px; margin-left: auto; }
+.bulk-actions > div[hidden] { display: none; }
+
+.bulk-preview { margin: 0 0 12px; padding: 13px 15px; border: 1px solid var(--blue); border-radius: 11px; background: var(--decision); box-shadow: 0 8px 22px rgba(30, 56, 70, 0.07); }
+.bulk-preview[hidden],
+.bulk-preview [hidden] { display: none; }
+.bulk-preview > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.bulk-preview .lane-label { margin-bottom: 4px; }
+.bulk-preview h2 { margin: 0; font: 700 1.1rem/1.2 var(--body); }
+.bulk-preview h3 { margin: 0 0 6px; color: var(--blue); font: 700 0.68rem/1.2 var(--utility); letter-spacing: 0.05em; text-transform: uppercase; }
+.bulk-preview-summary { margin: 9px 0; color: var(--muted); font-size: 0.78rem; line-height: 1.42; }
+.bulk-preview-details { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.bulk-preview-details section { padding: 9px 10px; border: 1px solid rgba(49, 95, 120, 0.18); border-radius: 8px; background: rgba(255, 255, 255, 0.58); }
+.bulk-preview-details ul { display: grid; gap: 4px; margin: 0; padding-left: 18px; color: var(--ink); font-size: 0.72rem; line-height: 1.35; overflow-wrap: anywhere; }
+.bulk-preview > footer { display: flex; justify-content: flex-end; margin-top: 10px; }
 
 .review-workspace {
   display: grid;
@@ -314,6 +328,10 @@ h1 {
   .bulk-actions { align-items: flex-start; flex-direction: column; }
   .bulk-actions > div { width: 100%; flex-direction: column; margin-left: 0; }
   .bulk-actions button { width: 100%; }
+  .bulk-preview > header { align-items: stretch; flex-direction: column; }
+  .bulk-preview-details { grid-template-columns: 1fr; }
+  .bulk-preview > footer,
+  .bulk-preview > footer button { width: 100%; }
 }
 
 @media (prefers-reduced-motion: no-preference) {

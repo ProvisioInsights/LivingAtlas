@@ -5,6 +5,7 @@ const state = {
   query: "",
   page: 1,
   selected: new Set(),
+  bulkPreview: null,
   activeCandidate: null,
   editing: null,
   busy: false
@@ -17,6 +18,15 @@ const search = document.querySelector("#search");
 const bulk = document.querySelector("#bulk-actions");
 const selectPage = document.querySelector("#select-page");
 const selectionCount = document.querySelector("#selection-count");
+const bulkDecisionActions = document.querySelector("#bulk-decision-actions");
+const bulkPreview = document.querySelector("#bulk-preview");
+const bulkPreviewTitle = document.querySelector("#bulk-preview-title");
+const bulkPreviewSummary = document.querySelector("#bulk-preview-summary");
+const bulkPreviewDetails = document.querySelector("#bulk-preview-details");
+const bulkPreviewMutations = document.querySelector("#bulk-preview-mutations");
+const bulkPreviewEvidence = document.querySelector("#bulk-preview-evidence");
+const bulkPreviewApply = document.querySelector("#bulk-preview-apply");
+const bulkPreviewCancel = document.querySelector("#bulk-preview-cancel");
 const pagination = document.querySelector("#pagination");
 const pageStatus = document.querySelector("#page-status");
 const previousPage = document.querySelector("#previous-page");
@@ -120,6 +130,17 @@ function isActionableReviewItem(item) {
   return item.resolution_mode !== "incomplete";
 }
 
+function selectedBulkItems() {
+  return [...state.queue.owner_review, ...state.queue.research]
+    .filter(isActionableReviewItem)
+    .filter((item) => state.selected.has(item.candidate_id));
+}
+
+function clearBulkPreview() {
+  state.bulkPreview = null;
+  bulkPreview.hidden = true;
+}
+
 function selectedItem(items) {
   const selected = items.find((item) => item.candidate_id === state.activeCandidate) || items[0];
   state.activeCandidate = selected?.candidate_id ?? null;
@@ -136,6 +157,7 @@ function sourceRow(item, active) {
     select.onchange = () => {
       if (select.checked && state.selected.size < 100) state.selected.add(item.candidate_id);
       else state.selected.delete(item.candidate_id);
+      clearBulkPreview();
       renderBulk();
     };
     row.append(select);
@@ -503,19 +525,33 @@ function renderSummary(items) {
 function renderBulk() {
   const actionable = state.tab === "owner_review" || state.tab === "research";
   const visible = visibleItems().filter(isActionableReviewItem);
-  const selectedItems = [...state.queue.owner_review, ...state.queue.research]
-    .filter(isActionableReviewItem)
-    .filter((item) => state.selected.has(item.candidate_id));
+  const selectedItems = selectedBulkItems();
+  const compatibilityKeys = new Set(selectedItems.map((item) => item.bulk_compatibility_key));
+  const compatible = selectedItems.length > 0 && compatibilityKeys.size === 1;
   bulk.hidden = !actionable || visible.length === 0;
   selectionCount.textContent = `${selectedItems.length} selected`;
   selectPage.checked = visible.length > 0 && visible.every((item) => state.selected.has(item.candidate_id));
   selectPage.indeterminate = visible.some((item) => state.selected.has(item.candidate_id)) && !selectPage.checked;
-  bulk.querySelectorAll("button").forEach((button) => button.disabled = state.busy || selectedItems.length === 0);
+  bulkDecisionActions.hidden = !compatible;
+  bulkDecisionActions.querySelectorAll("button").forEach((button) => button.disabled = state.busy);
   const unsafePreserve = selectedItems.some((item) => !item.source_accounting.exact_source_preserved
     || item.source_accounting.meaningful_units.length === 0);
   const preserveButton = bulk.querySelector('[data-bulk-action="keep"]');
-  preserveButton.disabled = preserveButton.disabled || unsafePreserve;
+  preserveButton.disabled = state.busy || unsafePreserve;
   preserveButton.title = unsafePreserve ? "One or more selected sources do not have complete extraction coverage." : "";
+  bulkPreviewApply.disabled = state.busy;
+  bulkPreviewCancel.disabled = state.busy;
+  if (selectedItems.length > 1 && !compatible) {
+    state.bulkPreview = null;
+    bulkPreview.hidden = false;
+    bulkPreviewTitle.textContent = "Narrow this selection";
+    bulkPreviewSummary.textContent = "These sources have different destination shapes or evidence rules. Your selection is unchanged; choose sources with the same exact effects.";
+    bulkPreviewDetails.hidden = true;
+    bulkPreviewApply.hidden = true;
+    bulkPreviewCancel.hidden = true;
+  } else if (!state.bulkPreview) {
+    bulkPreview.hidden = true;
+  }
 }
 
 function renderPagination(items) {
@@ -557,6 +593,7 @@ async function load(message) {
   const actionable = new Set([...state.queue.owner_review, ...state.queue.research]
     .filter(isActionableReviewItem).map((item) => item.candidate_id));
   state.selected = new Set([...state.selected].filter((candidate) => actionable.has(candidate)));
+  state.bulkPreview = null;
   status.textContent = message || "Ready. Decisions write atomically to your local Atlas; research requests wait for an active Codex task.";
   render();
 }
@@ -593,16 +630,68 @@ async function decide(candidate, action, statements, unitIds, observationEdits) 
 
 async function decideBulk(action) {
   if (state.busy || state.selected.size === 0) return;
-  const selectedItems = [...state.queue.owner_review, ...state.queue.research]
-    .filter(isActionableReviewItem)
-    .filter((item) => state.selected.has(item.candidate_id));
+  const selectedItems = selectedBulkItems();
+  if (new Set(selectedItems.map((item) => item.bulk_compatibility_key)).size !== 1) {
+    renderBulk();
+    return;
+  }
   const candidates = selectedItems.map((item) => item.candidate_id);
   if (candidates.length === 0) return;
-  const meaningfulCount = selectedItems.reduce((total, item) => total + item.source_accounting.meaningful_units.length, 0);
-  const excludedCount = selectedItems.reduce((total, item) => total + item.source_accounting.excluded_units.length, 0);
-  const verb = action === "keep" ? `Preserve ${meaningfulCount} extracted items from ${candidates.length} sources` : action === "research" ? `Queue ${candidates.length} sources for research` : `Set aside ${candidates.length} sources`;
-  const consequence = action === "keep" && excludedCount ? ` ${excludedCount} source-only item${excludedCount === 1 ? "" : "s"} will remain only in encrypted evidence.` : "";
-  if (!confirm(`${verb}?${consequence}`)) return;
+  state.busy = true;
+  status.textContent = `Preparing exact effects for ${candidates.length} selected source${candidates.length === 1 ? "" : "s"}…`;
+  renderBulk();
+  try {
+    const response = await fetch("/api/review/bulk/preview", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ candidate_ids: candidates, action })
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.reason || "bulk-preview-unavailable");
+    showBulkPreview(result.result);
+    status.textContent = "Review the exact destination and evidence effects before applying.";
+  } catch (error) {
+    state.bulkPreview = null;
+    status.textContent = `Preview unavailable: ${String(error.message || error).replaceAll("-", " ")}. Your selection is unchanged.`;
+  } finally {
+    state.busy = false;
+    renderBulk();
+  }
+}
+
+function showBulkPreview(preview) {
+  state.bulkPreview = preview;
+  bulkPreview.hidden = false;
+  bulkPreviewDetails.hidden = false;
+  bulkPreviewApply.hidden = false;
+  bulkPreviewCancel.hidden = false;
+  bulkPreviewTitle.textContent = `${preview.action === "keep" ? "Keep" : preview.action === "research" ? "Research" : "Defer"} ${preview.counts.candidates} selected source${preview.counts.candidates === 1 ? "" : "s"}`;
+  bulkPreviewSummary.textContent = `${preview.counts.object_mutations} exact object change${preview.counts.object_mutations === 1 ? "" : "s"}: ${preview.counts.creates} create, ${preview.counts.updates} update. No source material is deleted.`;
+
+  const mutationCounts = new Map();
+  preview.object_mutations.forEach((mutation) => {
+    const key = `${mutation.operation}:${mutation.destination_kind}`;
+    mutationCounts.set(key, (mutationCounts.get(key) || 0) + 1);
+  });
+  bulkPreviewMutations.replaceChildren(...[...mutationCounts.entries()].map(([key, count]) => {
+    const [operation, destinationKind] = key.split(":");
+    return node("li", "", `${count} × ${operation === "create" ? "Create" : "Update"} ${destinationKind}`);
+  }));
+
+  bulkPreviewEvidence.replaceChildren(...preview.evidence_independence_groups.map((group, index) => (
+    node("li", "", `Evidence group ${index + 1} · ${group.source_kinds.join(" + ")} · ${group.evidence_count} record${group.evidence_count === 1 ? "" : "s"}`)
+  )));
+  if (preview.evidence_independence_groups.length === 0) {
+    bulkPreviewEvidence.append(node("li", "", "No evidence group is attached to these changes."));
+  }
+  bulkPreviewApply.textContent = `Apply ${preview.action === "keep" ? "Keep" : preview.action === "research" ? "Research" : "Defer"}`;
+}
+
+async function applyBulkPreview() {
+  if (state.busy || !state.bulkPreview) return;
+  const preview = state.bulkPreview;
+  const candidates = preview.candidate_ids;
   state.busy = true;
   status.textContent = `Saving ${candidates.length} independent decisions…`;
   renderBulk();
@@ -611,7 +700,7 @@ async function decideBulk(action) {
       method: "POST",
       credentials: "same-origin",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ candidate_ids: candidates, action })
+      body: JSON.stringify(preview)
     });
     const result = await response.json();
     const committed = result.committed_candidate_ids || result.result?.resolved_candidate_ids || [];
@@ -637,6 +726,7 @@ document.querySelectorAll("[data-tab]").forEach((button) => {
     state.query = "";
     state.activeCandidate = null;
     state.selected.clear();
+    clearBulkPreview();
     search.value = "";
     render();
   };
@@ -650,6 +740,7 @@ search.oninput = () => {
 };
 
 selectPage.onchange = () => {
+  clearBulkPreview();
   visibleItems().filter(isActionableReviewItem).forEach((item) => {
     if (selectPage.checked && state.selected.size < 100) state.selected.add(item.candidate_id);
     else state.selected.delete(item.candidate_id);
@@ -660,6 +751,12 @@ selectPage.onchange = () => {
 document.querySelectorAll("[data-bulk-action]").forEach((button) => {
   button.onclick = () => decideBulk(button.dataset.bulkAction);
 });
+
+bulkPreviewApply.onclick = () => applyBulkPreview();
+bulkPreviewCancel.onclick = () => {
+  clearBulkPreview();
+  status.textContent = "Preview closed. Your selection is unchanged.";
+};
 
 previousPage.onclick = () => {
   state.page = Math.max(1, state.page - 1);

@@ -102,6 +102,13 @@ describe("local review site server", () => {
     const decisionPanelStart = app.indexOf("function decisionPanel");
     const decisionPanelSource = app.slice(decisionPanelStart, app.indexOf("function technicalDetails", decisionPanelStart));
     expect(decisionPanelSource.indexOf('if (item.resolution_mode === "incomplete")')).toBeLessThan(decisionPanelSource.indexOf('const actions = node("div", "decision-actions")'));
+    const bulkPreviewStart = app.indexOf("function showBulkPreview");
+    const bulkPreviewSource = app.slice(bulkPreviewStart, app.indexOf("async function applyBulkPreview", bulkPreviewStart));
+    expect(bulkPreviewSource).toContain("Evidence group ${index + 1}");
+    expect(bulkPreviewSource).not.toContain("group.independence_key");
+    expect(bulkPreviewSource).not.toContain("mutation.object_id");
+    expect(bulkPreviewSource).not.toContain("mutation.schema");
+    expect(bulkPreviewSource).not.toContain("mutation.mutation_hash");
     expect(app.match(/&& isActionableReviewItem\(item\)/g)).toHaveLength(2);
     expect(styles).toContain(".destination-record");
     expect(styles).toContain(".record-entity");
@@ -112,7 +119,13 @@ describe("local review site server", () => {
     expect(app).toContain("Review / edit extraction");
     expect(app).toContain("Request research");
     expect(app).toContain("Decide later");
+    expect(html).toContain('id="bulk-preview"');
+    expect(app).toContain("/api/review/bulk/preview");
     expect(app).toContain("/api/review/bulk/decision");
+    expect(app).toContain("bulk_compatibility_key");
+    expect(app).toContain("object_mutations");
+    expect(app).toContain("evidence_independence_groups");
+    expect(app).not.toContain("confirm(");
     expect(app).toContain("const pageSize = 24");
     expect(app).not.toContain("Source coverage is represented.");
     expect(app).not.toContain("promptJson");
@@ -326,10 +339,17 @@ describe("local review site server", () => {
         }]
       });
 
-      const bulkDecision = await fetch(`${origin}/api/review/bulk/decision`, {
+      const bulkPreview = await fetch(`${origin}/api/review/bulk/preview`, {
         method: "POST",
         headers: { cookie, "content-type": "application/json" },
         body: JSON.stringify({ candidate_ids: [candidateId2], action: "defer" })
+      });
+      expect(bulkPreview.status).toBe(200);
+      const bulkPreviewBody = await bulkPreview.json() as { result: Record<string, unknown> };
+      const bulkDecision = await fetch(`${origin}/api/review/bulk/decision`, {
+        method: "POST",
+        headers: { cookie, "content-type": "application/json" },
+        body: JSON.stringify(bulkPreviewBody.result)
       });
       expect(bulkDecision.status).toBe(200);
       await expect(bulkDecision.json()).resolves.toMatchObject({
@@ -758,11 +778,111 @@ describe("local review site server", () => {
       const session = await fetch(origin);
       const cookie = session.headers.get("set-cookie")!.split(";")[0]!;
 
-      const successful = await fetch(`${origin}/api/review/bulk/decision`, {
+      type BulkPreview = {
+        action: "keep" | "research" | "defer";
+        candidate_ids: string[];
+        review_versions: Array<{ candidate_id: string; review_id: string; version: number }>;
+        object_mutations: Array<{
+          candidate_id: string;
+          object_id: string;
+          operation: "create" | "update";
+          destination_kind: string;
+          mutation_hash: string;
+        }>;
+        evidence_independence_groups: Array<{
+          candidate_id: string;
+          independence_key: string;
+          source_kinds: string[];
+          evidence_count: number;
+        }>;
+        bulk_preview_token: string;
+      };
+      const preview = async (selected: string[], action: BulkPreview["action"]) => {
+        const response = await fetch(`${origin}/api/review/bulk/preview`, {
+          method: "POST",
+          headers: { cookie, "content-type": "application/json" },
+          body: JSON.stringify({ candidate_ids: selected, action })
+        });
+        return { response, body: await response.json() as { ok: boolean; reason?: string; result?: BulkPreview } };
+      };
+      const applyPreview = async (result: BulkPreview) => fetch(`${origin}/api/review/bulk/decision`, {
         method: "POST",
         headers: { cookie, "content-type": "application/json" },
-        body: JSON.stringify({ candidate_ids: [candidateIds[1], candidateIds[0]], action: "defer" })
+        body: JSON.stringify(result)
       });
+
+      const beforeDuplicateGeneration = graphStore.status().generation;
+      const duplicate = await preview([candidateIds[0]!, candidateIds[0]!], "defer");
+      expect(duplicate.response.status).toBe(400);
+      expect(duplicate.body).toMatchObject({ ok: false, reason: "invalid-bulk-review-decision" });
+      expect(graphStore.status().generation).toBe(beforeDuplicateGeneration);
+
+      const bound = await preview([candidateIds[1]!, candidateIds[0]!], "defer");
+      expect(bound.response.status).toBe(200);
+      expect(bound.body.result).toMatchObject({
+        action: "defer",
+        candidate_ids: [candidateIds[0], candidateIds[1]],
+        review_versions: [
+          { candidate_id: candidateIds[0], version: 1 },
+          { candidate_id: candidateIds[1], version: 1 }
+        ],
+        object_mutations: expect.arrayContaining([
+          expect.objectContaining({ candidate_id: candidateIds[0], operation: "update", destination_kind: "review decision" }),
+          expect.objectContaining({ candidate_id: candidateIds[1], operation: "update", destination_kind: "source coverage" })
+        ]),
+        evidence_independence_groups: expect.arrayContaining([
+          expect.objectContaining({ candidate_id: candidateIds[0], independence_key: "synthetic-bulk-0001" }),
+          expect.objectContaining({ candidate_id: candidateIds[1], independence_key: "synthetic-bulk-0002" })
+        ]),
+        bulk_preview_token: expect.stringMatching(/^sha256:[a-f0-9]{64}$/)
+      });
+      const validBoundPreview = bound.body.result!;
+      const tamperedPreviews: BulkPreview[] = [
+        {
+          ...structuredClone(validBoundPreview),
+          review_versions: validBoundPreview.review_versions.map((version, index) => (
+            index === 0 ? { ...version, version: version.version + 1 } : version
+          ))
+        },
+        {
+          ...structuredClone(validBoundPreview),
+          candidate_ids: [validBoundPreview.candidate_ids[0]!]
+        },
+        {
+          ...structuredClone(validBoundPreview),
+          object_mutations: validBoundPreview.object_mutations.map((mutation, index) => (
+            index === 0 ? { ...mutation, mutation_hash: "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff" } : mutation
+          ))
+        },
+        {
+          ...structuredClone(validBoundPreview),
+          evidence_independence_groups: validBoundPreview.evidence_independence_groups.map((group, index) => (
+            index === 0 ? { ...group, independence_key: "synthetic-tampered-group" } : group
+          ))
+        }
+      ];
+      for (const tampered of tamperedPreviews) {
+        const beforeGeneration = graphStore.status().generation;
+        const rejected = await applyPreview(tampered);
+        expect(rejected.status).toBe(409);
+        await expect(rejected.json()).resolves.toMatchObject({ ok: false, reason: "bulk-preview-stale" });
+        expect(graphStore.status().generation).toBe(beforeGeneration);
+      }
+
+      const rawBatch = await fetch(`${origin}/api/review/bulk/apply`, {
+        method: "POST",
+        headers: { cookie, "content-type": "application/json" },
+        body: JSON.stringify({ resolutions: [{ candidate_id: candidateIds[0] }] })
+      });
+      expect(rawBatch.status).toBe(404);
+
+      const beforeHeterogeneousGeneration = graphStore.status().generation;
+      const heterogeneous = await preview([candidateIds[3]!, candidateIds[2]!], "keep");
+      expect(heterogeneous.response.status).toBe(409);
+      expect(heterogeneous.body).toMatchObject({ ok: false, reason: "heterogeneous-bulk-selection" });
+      expect(graphStore.status().generation).toBe(beforeHeterogeneousGeneration);
+
+      const successful = await applyPreview(validBoundPreview);
       expect(successful.status).toBe(200);
       const successfulBody = await successful.json() as {
         ok: boolean;
@@ -783,40 +903,16 @@ describe("local review site server", () => {
       ]);
       expect(successfulBody.results[1]!.result!.generation).toBe(successfulBody.results[0]!.result!.generation + 1);
 
-      const partial = await fetch(`${origin}/api/review/bulk/decision`, {
-        method: "POST",
-        headers: { cookie, "content-type": "application/json" },
-        body: JSON.stringify({ candidate_ids: [candidateIds[3], candidateIds[2]], action: "keep" })
-      });
-      expect(partial.status).toBe(409);
-      await expect(partial.json()).resolves.toMatchObject({
-        ok: false,
-        reason: "bulk-decision-partial-failure",
-        committed_candidate_ids: [candidateIds[3]],
-        failed_candidate_ids: [candidateIds[2]],
-        results: [
-          { candidate_id: candidateIds[2], ok: false, reason: "candidate-records-incomplete" },
-          { candidate_id: candidateIds[3], ok: true }
-        ]
-      });
       const queue = await fetch(`${origin}/api/review-queue`, { headers: { cookie } }).then((response) => response.json()) as LocalReviewQueue;
       expect(queue.owner_review.map((item) => item.candidate_id)).toContain(candidateIds[2]);
-      expect(queue.automatic.map((item) => item.candidate_id)).toContain(candidateIds[3]);
+      expect(queue.owner_review.map((item) => item.candidate_id)).toContain(candidateIds[3]);
 
-      const incompleteDefer = await fetch(`${origin}/api/review/bulk/decision`, {
-        method: "POST",
-        headers: { cookie, "content-type": "application/json" },
-        body: JSON.stringify({ candidate_ids: [candidateIds[2]], action: "defer" })
-      });
-      expect(incompleteDefer.status).toBe(409);
-      await expect(incompleteDefer.json()).resolves.toMatchObject({
-        ok: false,
-        reason: "bulk-decision-failed",
-        committed_candidate_ids: [],
-        failed_candidate_ids: [candidateIds[2]],
-        results: [{ candidate_id: candidateIds[2], ok: false, reason: "candidate-records-incomplete" }]
-      });
+      const incompleteDefer = await preview([candidateIds[2]!], "defer");
+      expect(incompleteDefer.response.status).toBe(409);
+      expect(incompleteDefer.body).toMatchObject({ ok: false, reason: "candidate-not-actionable" });
 
+      const partialPreview = await preview([candidateIds[6]!, candidateIds[5]!, candidateIds[4]!], "defer");
+      expect(partialPreview.response.status).toBe(200);
       const commitTransaction = graphStore.commitTransaction.bind(graphStore);
       let commitAttempts = 0;
       graphStore.commitTransaction = async (input) => {
@@ -824,11 +920,7 @@ describe("local review site server", () => {
         if (commitAttempts === 2) throw new Error("synthetic commit exception that must not escape the candidate boundary");
         return commitTransaction(input);
       };
-      const thrownPartial = await fetch(`${origin}/api/review/bulk/decision`, {
-        method: "POST",
-        headers: { cookie, "content-type": "application/json" },
-        body: JSON.stringify({ candidate_ids: [candidateIds[6], candidateIds[5], candidateIds[4]], action: "defer" })
-      });
+      const thrownPartial = await applyPreview(partialPreview.body.result!);
       expect(thrownPartial.status).toBe(409);
       await expect(thrownPartial.json()).resolves.toMatchObject({
         ok: false,
@@ -849,37 +941,22 @@ describe("local review site server", () => {
       expect(afterException.owner_review.map((item) => item.candidate_id)).toContain(candidateIds[5]);
 
       graphStore.commitTransaction = commitTransaction;
-      const readObject = graphStore.readObject.bind(graphStore);
-      graphStore.readObject = (objectId) => {
-        if (objectId === "la_object_bulkdecisionreview0009") {
-          throw new Error("synthetic pre-apply read exception that must not escape the candidate boundary");
-        }
-        return readObject(objectId);
-      };
-      const preApplyPartial = await fetch(`${origin}/api/review/bulk/decision`, {
+
+      const currentStatePreview = await preview([candidateIds[8]!, candidateIds[7]!], "defer");
+      expect(currentStatePreview.response.status).toBe(200);
+      const interveningDecision = await fetch(`${origin}/api/review/${candidateIds[7]}/decision`, {
         method: "POST",
         headers: { cookie, "content-type": "application/json" },
-        body: JSON.stringify({ candidate_ids: [candidateIds[9], candidateIds[8], candidateIds[7]], action: "defer" })
+        body: JSON.stringify({ action: "defer" })
       });
-      expect(preApplyPartial.status).toBe(409);
-      await expect(preApplyPartial.json()).resolves.toMatchObject({
-        ok: false,
-        reason: "bulk-decision-partial-failure",
-        committed_candidate_ids: [candidateIds[7], candidateIds[9]],
-        failed_candidate_ids: [candidateIds[8]],
-        results: [
-          { candidate_id: candidateIds[7], ok: true },
-          { candidate_id: candidateIds[8], ok: false, reason: "candidate-transaction-exception" },
-          { candidate_id: candidateIds[9], ok: true }
-        ]
-      });
-      graphStore.readObject = readObject;
-      const afterPreApplyException = await fetch(`${origin}/api/review-queue`, { headers: { cookie } }).then((response) => response.json()) as LocalReviewQueue;
-      expect(afterPreApplyException.deferred.map((item) => item.candidate_id)).toEqual(expect.arrayContaining([
-        candidateIds[7],
-        candidateIds[9]
-      ]));
-      expect(afterPreApplyException.owner_review.map((item) => item.candidate_id)).toContain(candidateIds[8]);
+      expect(interveningDecision.status).toBe(200);
+      const beforeStaleApply = graphStore.status().generation;
+      const staleApply = await applyPreview(currentStatePreview.body.result!);
+      expect(staleApply.status).toBe(409);
+      await expect(staleApply.json()).resolves.toMatchObject({ ok: false, reason: "bulk-preview-stale" });
+      expect(graphStore.status().generation).toBe(beforeStaleApply);
+      const afterStale = await fetch(`${origin}/api/review-queue`, { headers: { cookie } }).then((response) => response.json()) as LocalReviewQueue;
+      expect(afterStale.owner_review.map((item) => item.candidate_id)).toContain(candidateIds[8]);
     } finally {
       await rm(directory, { recursive: true, force: true });
     }
@@ -941,6 +1018,6 @@ describe("local review site server", () => {
       method: "POST",
       headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
       body: JSON.stringify({ resolutions: [{ candidate_id: "la_candidate_notowner0001" }] })
-    }).then(async (response) => ({ status: response.status, body: await response.json() }))).resolves.toEqual({ status: 409, body: { ok: false, reason: "candidate-not-owner-review" } });
+    }).then(async (response) => ({ status: response.status, body: await response.json() }))).resolves.toEqual({ status: 404, body: { ok: false, reason: "not-found" } });
   });
 });

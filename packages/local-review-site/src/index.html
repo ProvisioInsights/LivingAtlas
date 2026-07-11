@@ -37,11 +37,35 @@
       <section id="bulk-actions" class="bulk-actions" hidden>
         <label><input id="select-page" type="checkbox"> Select this page</label>
         <span id="selection-count">0 selected</span>
-        <div>
-          <button data-bulk-action="keep" class="primary">Preserve selected</button>
-          <button data-bulk-action="research">Request research</button>
-          <button data-bulk-action="defer">Decide later</button>
+        <div id="bulk-decision-actions">
+          <button data-bulk-action="keep" class="primary">Keep</button>
+          <button data-bulk-action="research">Research</button>
+          <button data-bulk-action="defer">Defer</button>
         </div>
+      </section>
+
+      <section id="bulk-preview" class="bulk-preview" aria-live="polite" hidden>
+        <header>
+          <div>
+            <p class="lane-label">Exact effects</p>
+            <h2 id="bulk-preview-title">Review selected changes</h2>
+          </div>
+          <button id="bulk-preview-cancel" class="quiet" type="button">Close preview</button>
+        </header>
+        <p id="bulk-preview-summary" class="bulk-preview-summary"></p>
+        <div id="bulk-preview-details" class="bulk-preview-details">
+          <section>
+            <h3>Destinations</h3>
+            <ul id="bulk-preview-mutations"></ul>
+          </section>
+          <section>
+            <h3>Evidence groups</h3>
+            <ul id="bulk-preview-evidence"></ul>
+          </section>
+        </div>
+        <footer>
+          <button id="bulk-preview-apply" class="primary" type="button">Apply exact effects</button>
+        </footer>
       </section>
 
       <section id="queue" class="queue" aria-live="polite"></section>

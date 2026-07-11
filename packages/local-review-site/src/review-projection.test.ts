@@ -18,6 +18,48 @@ function envelope(id: string, type: GraphObjectEnvelope["object_type"]): GraphOb
 }
 
 describe("local review projection", () => {
+  it("normalizes bulk compatibility across IDs and separates different mutation templates", async () => {
+    const migration = createCanonicalMarkdownMigration([
+      {
+        source_path: "pages/Synthetic Bulk Person A.md",
+        markdown: "type:: person\nphone:: +1 555 0101",
+        source_kind: "logseq"
+      },
+      {
+        source_path: "pages/Synthetic Bulk Person B.md",
+        markdown: "type:: person\nphone:: +1 555 0102",
+        source_kind: "logseq"
+      },
+      {
+        source_path: "pages/Synthetic Bulk Organization.md",
+        markdown: "type:: organization",
+        source_kind: "logseq"
+      }
+    ], {
+      authority_id: "la_authority_reviewsite0001",
+      created_at: now,
+      path_redaction_secret: "synthetic-bulk-compatibility-secret"
+    });
+    const payloads = new Map(migration.payloads.map((payload) => [canonicalPayloadObjectId(payload), payload]));
+    const queue = await projectLocalReviewQueue({
+      objects: migration.payloads.map((payload) => envelope(
+        canonicalPayloadObjectId(payload),
+        canonicalObjectTypeForPayload(payload)
+      )),
+      decryptPayload: async (object) => payloads.get(object.object_id)
+    });
+    const itemNamed = (name: string) => queue.owner_review.find((item) => item.proposed_records.some((record) => (
+      record.schema === "atlas.entity:v1" && record.name === name
+    )))!;
+    const left = itemNamed("Synthetic Bulk Person A");
+    const sameTemplate = itemNamed("Synthetic Bulk Person B");
+    const differentTemplate = itemNamed("Synthetic Bulk Organization");
+
+    expect(left.bulk_compatibility_key).toMatch(/^sha256:[a-f0-9]{64}$/);
+    expect(left.bulk_compatibility_key).toBe(sameTemplate.bulk_compatibility_key);
+    expect(left.bulk_compatibility_key).not.toBe(differentTemplate.bulk_compatibility_key);
+  });
+
   it("maps repeated source-unit occurrences to their real canonical destination graph", async () => {
     const migration = createCanonicalMarkdownMigration([
       {
