@@ -236,6 +236,64 @@ describe("file local graph store", () => {
     expect(store.operationRecordForIdempotency("la_idem_missinglookup0001")).toBeUndefined();
   });
 
+  it("persists a versioned request fingerprint and fails closed on missing or changed retry fingerprints", async () => {
+    const directory = await tempStoreDir();
+    const keyring = createDefaultLocalKeyring({ authorityId: fixtureAuthorityId, createdAt: now });
+    const store = await FileLocalGraphStore.open({
+      directory,
+      authorityId: fixtureAuthorityId,
+      plaintextPersistence: "encrypt",
+      keyring,
+      now: () => now
+    });
+    const object = canonicalTransactionDraft("la_object_transactionfingerprint0001");
+    const requestFingerprint = {
+      schema: "living-atlas-resolution-request-fingerprint:v1" as const,
+      candidate_id: "la_candidate_resolutionfingerprint0001",
+      digest: fixedHash("c")
+    };
+    const transaction = {
+      expected_generation: 0,
+      actor_id: fixtureLocalClientId,
+      operation_id: "la_operation_resolutionfingerprint0001",
+      idempotency_key: "la_idem_resolutionfingerprint0001",
+      request_fingerprint: requestFingerprint,
+      recorded_at: now,
+      writes: [{ kind: "create" as const, object }]
+    };
+
+    await expect(store.commitTransaction(transaction)).resolves.toMatchObject({ ok: true, generation: 1 });
+    expect(store.operationRecordForIdempotency(transaction.idempotency_key)).toMatchObject({
+      request_fingerprint: requestFingerprint
+    });
+
+    await expect(store.commitTransaction({
+      ...transaction,
+      request_fingerprint: { ...requestFingerprint, digest: fixedHash("d") }
+    })).resolves.toEqual({
+      ok: false,
+      reason: "idempotency-conflict",
+      current_generation: 1
+    });
+    const { request_fingerprint: _fingerprint, ...missingFingerprintRetry } = transaction;
+    await expect(store.commitTransaction(missingFingerprintRetry)).resolves.toEqual({
+      ok: false,
+      reason: "idempotency-conflict",
+      current_generation: 1
+    });
+
+    const reopened = await FileLocalGraphStore.open({
+      directory,
+      authorityId: fixtureAuthorityId,
+      plaintextPersistence: "encrypt",
+      keyring,
+      now: () => now
+    });
+    expect(reopened.operationRecordForIdempotency(transaction.idempotency_key)).toMatchObject({
+      request_fingerprint: requestFingerprint
+    });
+  });
+
   it.each([
     {
       label: "operation id",

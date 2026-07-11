@@ -27,10 +27,18 @@ import {
 const LocalGraphJournalOperationSchema = z.enum(["create", "update", "tombstone"]);
 export type LocalGraphJournalOperation = z.infer<typeof LocalGraphJournalOperationSchema>;
 
+export const LocalGraphResolutionRequestFingerprintSchema = z.object({
+  schema: z.literal("living-atlas-resolution-request-fingerprint:v1"),
+  candidate_id: z.string().regex(/^la_candidate_[A-Za-z0-9_-]{8,}$/),
+  digest: Sha256HashSchema
+}).strict();
+export type LocalGraphResolutionRequestFingerprint = z.infer<typeof LocalGraphResolutionRequestFingerprintSchema>;
+
 export const LocalGraphOperationRecordSchema = z
   .object({
     operation_id: OperationIdSchema,
     idempotency_key: z.string().min(1),
+    request_fingerprint: LocalGraphResolutionRequestFingerprintSchema.optional(),
     actor_id: z.string().min(1),
     recorded_at: IsoTimestampSchema,
     generation: z.number().int().positive(),
@@ -139,6 +147,7 @@ export type LocalGraphTransactionWrite =
 export type LocalGraphTransactionInput = LocalGraphMutationInputBase & {
   operation_id: string;
   idempotency_key: string;
+  request_fingerprint?: LocalGraphResolutionRequestFingerprint;
   writes: LocalGraphTransactionWrite[];
 };
 
@@ -862,9 +871,14 @@ export class FileLocalGraphStore {
       const idempotencyKey = z.string().min(1).parse(input.idempotency_key);
       const operationId = OperationIdSchema.parse(input.operation_id);
       const actorId = z.string().min(1).parse(input.actor_id);
+      const requestFingerprint = input.request_fingerprint
+        ? LocalGraphResolutionRequestFingerprintSchema.parse(input.request_fingerprint)
+        : undefined;
       const existingRecord = this.state.operationRecords.find((record) => record.idempotency_key === idempotencyKey);
       if (existingRecord) {
-        if (existingRecord.operation_id !== operationId || existingRecord.actor_id !== actorId) {
+        const fingerprintConflict = Boolean(existingRecord.request_fingerprint || requestFingerprint)
+          && JSON.stringify(existingRecord.request_fingerprint) !== JSON.stringify(requestFingerprint);
+        if (existingRecord.operation_id !== operationId || existingRecord.actor_id !== actorId || fingerprintConflict) {
           return {
             ok: false,
             reason: "idempotency-conflict",
@@ -986,6 +1000,7 @@ export class FileLocalGraphStore {
       const operationRecord = LocalGraphOperationRecordSchema.parse({
         operation_id: operationId,
         idempotency_key: idempotencyKey,
+        ...(requestFingerprint ? { request_fingerprint: requestFingerprint } : {}),
         actor_id: actorId,
         recorded_at: recordedAt,
         generation,

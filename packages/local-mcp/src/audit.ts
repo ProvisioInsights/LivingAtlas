@@ -65,8 +65,14 @@ export class InMemoryLocalMcpAuditSink implements LocalMcpAuditSink {
 export class FileLocalMcpAuditSink implements LocalMcpAuditSink {
   private readonly identities = new Set<string>();
   private identitiesLoaded = false;
+  private readonly chmod: typeof chmodSync;
 
-  constructor(private readonly path: string) {}
+  constructor(
+    private readonly path: string,
+    options: { chmod?: typeof chmodSync } = {}
+  ) {
+    this.chmod = options.chmod ?? chmodSync;
+  }
 
   private loadIdentities(): void {
     if (this.identitiesLoaded) return;
@@ -83,13 +89,16 @@ export class FileLocalMcpAuditSink implements LocalMcpAuditSink {
     const parsed = LocalMcpAuditEventSchema.parse(event);
     this.loadIdentities();
     const identity = auditEventIdentity(parsed);
-    if (identity && this.identities.has(identity)) return;
+    if (identity && this.identities.has(identity)) {
+      this.chmod(this.path, 0o600);
+      return;
+    }
     const directory = dirname(this.path);
     mkdirSync(directory, { recursive: true, mode: 0o700 });
-    chmodSync(directory, 0o700);
+    this.chmod(directory, 0o700);
     appendFileSync(this.path, `${JSON.stringify(parsed)}\n`, { encoding: "utf8", mode: 0o600 });
-    chmodSync(this.path, 0o600);
     if (identity) this.identities.add(identity);
+    this.chmod(this.path, 0o600);
   }
 
   read(limit: number): LocalMcpAuditEvent[] {

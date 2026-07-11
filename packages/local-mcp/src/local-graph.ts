@@ -29,7 +29,8 @@ import {
 import { controlPlaneFixture, syntheticGraphObjects } from "@living-atlas/fixtures";
 import type {
   FileLocalGraphStore,
-  LocalGraphOperationRecord
+  LocalGraphOperationRecord,
+  LocalGraphResolutionRequestFingerprint
 } from "@living-atlas/local-graph-store";
 import {
   PlaintextGraphObjectDraftSchema,
@@ -714,28 +715,41 @@ type ValidatedResolutionMutationSet = ParsedResolutionMutationSet & {
   review: CanonicalReviewItemPayload;
 };
 
-async function operationRecordMatchesDrafts(
-  context: LocalMcpContext,
-  record: LocalGraphOperationRecord,
-  drafts: PlaintextGraphObjectDraft[]
-): Promise<boolean> {
-  if (record.objects.length !== drafts.length) return false;
-  const draftsById = new Map(drafts.map((draft) => [draft.object_id, draft]));
-  for (const object of record.objects) {
-    const draft = draftsById.get(object.object_id);
-    if (!(
-      draft
-      && draft.version === object.version
-      && draft.object_type === object.object_type
-      && draft.authority_id === object.authority_id
-      && draft.access_class === object.access_class
-    )) return false;
-    if (context.decryptPayload) {
-      const payload = await context.decryptPayload(object).catch(() => undefined);
-      if (!payload || JSON.stringify(payload) !== JSON.stringify(draft.payload)) return false;
+function stableJsonValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(stableJsonValue);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(
+    Object.entries(value)
+      .sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0)
+      .map(([key, nested]) => [key, stableJsonValue(nested)])
+  );
+}
+
+function resolutionRequestFingerprint(input: {
+  candidateId: string;
+  expectedGeneration: number;
+  expectedReviewVersion: number;
+  parsed: ParsedResolutionMutationSet;
+}): LocalGraphResolutionRequestFingerprint {
+  const objects = input.parsed.drafts.map((draft, index) => ({
+    ...draft,
+    payload: {
+      kind: "plaintext-json" as const,
+      data: input.parsed.payloads[index]!
     }
-  }
-  return true;
+  })).sort((left, right) => left.object_id < right.object_id ? -1 : left.object_id > right.object_id ? 1 : 0);
+  const schema = "living-atlas-resolution-request-fingerprint:v1" as const;
+  return {
+    schema,
+    candidate_id: input.candidateId,
+    digest: sha256(JSON.stringify(stableJsonValue({
+      schema,
+      candidate_id: input.candidateId,
+      expected_generation: input.expectedGeneration,
+      expected_review_version: input.expectedReviewVersion,
+      objects
+    })))
+  };
 }
 
 async function validateCanonicalMutationSet(input: {
@@ -789,31 +803,33 @@ async function validateCanonicalMutationSet(input: {
       && existing.object_type === objectType
     );
   };
-  const canonicalReferenceCache = new Map<string, boolean>();
-  const activeCanonicalReference = async (objectId: string): Promise<boolean> => {
+  const canonicalReferenceCache = new Map<string, CanonicalPayload | null>();
+  const activeCanonicalPayload = async (objectId: string): Promise<CanonicalPayload | undefined> => {
     const proposed = draftsById.get(objectId);
-    if (proposed) return !proposed.draft.visible_metadata.tombstone;
+    if (proposed) return proposed.draft.visible_metadata.tombstone ? undefined : proposed.payload;
     const cached = canonicalReferenceCache.get(objectId);
-    if (cached !== undefined) return cached;
+    if (cached !== undefined) return cached ?? undefined;
     const existing = input.context.graphStore!.readObject(ObjectIdSchema.parse(objectId));
     if (!existing || existing.visible_metadata.tombstone) {
-      canonicalReferenceCache.set(objectId, false);
-      return false;
+      canonicalReferenceCache.set(objectId, null);
+      return undefined;
     }
     let payload = existing.payload;
     if (payload.kind !== "plaintext-json") {
       payload = await input.context.decryptPayload?.(existing).catch(() => undefined) ?? payload;
     }
     if (payload.kind !== "plaintext-json") {
-      canonicalReferenceCache.set(objectId, false);
-      return false;
+      canonicalReferenceCache.set(objectId, null);
+      return undefined;
     }
     const canonical = CanonicalWriteSchema.safeParse({
       object_type: existing.object_type,
       payload: payload.data
     });
-    const valid = canonical.success && canonicalPayloadObjectId(canonical.data.payload) === existing.object_id;
-    canonicalReferenceCache.set(objectId, valid);
+    const valid = canonical.success && canonicalPayloadObjectId(canonical.data.payload) === existing.object_id
+      ? canonical.data.payload
+      : undefined;
+    canonicalReferenceCache.set(objectId, valid ?? null);
     return valid;
   };
 
@@ -865,7 +881,7 @@ async function validateCanonicalMutationSet(input: {
 
   const parityTargetIds = new Set(parityRecords.flatMap((parity) => parity.canonical_object_ids));
   for (const objectId of review.proposed_object_ids) {
-    if (!await activeCanonicalReference(objectId)) {
+    if (!await activeCanonicalPayload(objectId)) {
       return {
         ok: false,
         reason: parityTargetIds.has(objectId) ? "resolution-parity-mismatch" : "resolution-missing-reference"
@@ -873,9 +889,22 @@ async function validateCanonicalMutationSet(input: {
     }
   }
   const proposedIds = new Set(review.proposed_object_ids);
+  const parityKindMatches = (
+    representationKind: typeof parityRecords[number]["representation_kind"],
+    payload: CanonicalPayload
+  ): boolean => {
+    switch (representationKind) {
+      case "fact": return payload.schema === "atlas.fact:v1";
+      case "relationship": return payload.schema === "atlas.relationship:v2";
+      case "observation": return payload.schema === "atlas.observation:v1";
+      case "occurrence": return false;
+      default: return false;
+    }
+  };
   for (const parity of parityRecords) {
     for (const objectId of parity.canonical_object_ids) {
-      if (!proposedIds.has(objectId) || !await activeCanonicalReference(objectId)) {
+      const payload = await activeCanonicalPayload(objectId);
+      if (!proposedIds.has(objectId) || !payload || !parityKindMatches(parity.representation_kind, payload)) {
         return { ok: false, reason: "resolution-parity-mismatch" };
       }
     }
@@ -884,12 +913,66 @@ async function validateCanonicalMutationSet(input: {
   return { ok: true, value: { ...input.parsed, review } };
 }
 
+function resolutionOperationPairs(record: LocalGraphOperationRecord): Array<{
+  object: GraphObjectEnvelope;
+  change: LocalGraphOperationRecord["changes"][number];
+}> | undefined {
+  if (record.objects.length !== record.changes.length) return undefined;
+  const objectIds = new Set(record.objects.map((object) => object.object_id));
+  const changeObjectIds = new Set(record.changes.map((change) => change.object_id));
+  const changeIds = new Set(record.changes.map((change) => change.change_id));
+  if (
+    objectIds.size !== record.objects.length
+    || changeObjectIds.size !== record.changes.length
+    || changeIds.size !== record.changes.length
+    || objectIds.size !== changeObjectIds.size
+    || [...objectIds].some((objectId) => !changeObjectIds.has(objectId))
+  ) return undefined;
+
+  const changesByObjectId = new Map(record.changes.map((change) => [change.object_id, change]));
+  const pairs: Array<{
+    object: GraphObjectEnvelope;
+    change: LocalGraphOperationRecord["changes"][number];
+  }> = [];
+  for (const object of record.objects) {
+    const change = changesByObjectId.get(object.object_id);
+    if (
+      !change
+      || (change.operation !== "create" && change.operation !== "update")
+      || change.operation_id !== record.operation_id
+      || change.actor_id !== record.actor_id
+      || change.generation !== record.generation
+      || change.authority_id !== object.authority_id
+      || change.content_hash !== object.content_hash
+      || change.access_class !== object.access_class
+      || change.new_version !== object.version
+    ) return undefined;
+    pairs.push({ object, change });
+  }
+  return pairs;
+}
+
 async function reconcileResolutionRecord(input: {
   context: LocalMcpContext;
   authenticated: LocalMcpAuthenticatedClient;
   operationRecord: LocalGraphOperationRecord;
   candidateIds: string[];
 }): Promise<LocalGraphToolResult<LocalResolutionReceipt>> {
+  const pairs = resolutionOperationPairs(input.operationRecord);
+  if (!pairs) {
+    return {
+      ok: true,
+      result: {
+        local_commit: "committed",
+        audit: "reconciliation-required",
+        sync_queue: input.context.outboxSink ? "reconciliation-required" : "not-configured",
+        committed_object_ids: input.operationRecord.objects.map((object) => object.object_id),
+        resolved_candidate_ids: input.candidateIds,
+        generation: input.operationRecord.generation,
+        journal_sequence: input.operationRecord.journal_sequence
+      }
+    };
+  }
   let audit: LocalResolutionReceipt["audit"] = "recorded";
   try {
     if (!input.context.auditSink) throw new Error("audit-not-configured");
@@ -910,11 +993,7 @@ async function reconcileResolutionRecord(input: {
   let syncQueue: LocalResolutionReceipt["sync_queue"] = input.context.outboxSink ? "queued" : "not-configured";
   if (input.context.outboxSink) {
     try {
-      for (const [index, object] of input.operationRecord.objects.entries()) {
-        const change = input.operationRecord.changes[index];
-        if (!change || change.object_id !== object.object_id) {
-          throw new Error("resolution-operation-record-mismatch");
-        }
+      for (const { object, change } of pairs) {
         await input.context.outboxSink.enqueue({
           mutation: change.operation === "update" ? "updated" : "created",
           object,
@@ -994,18 +1073,21 @@ export async function localResolutionApply(
   if (objectIds.size !== parsedDrafts.length) {
     return { ok: false, reason: "resolution-duplicate-object" };
   }
+  const parsed = { drafts: parsedDrafts, payloads };
+  const requestFingerprint = resolutionRequestFingerprint({
+    candidateId: input.candidate_id,
+    expectedGeneration: input.expected_generation,
+    expectedReviewVersion: input.expected_review_version,
+    parsed
+  });
 
   const prior = context.graphStore.operationRecordForIdempotency(input.idempotency_key);
   if (prior) {
-    const retryReviews = payloads.filter((payload): payload is CanonicalReviewItemPayload => (
-      payload.schema === "atlas.review-item:v1"
-    ));
     if (
       prior.operation_id !== input.operation_id
       || prior.actor_id !== auth.authenticated.client.client_id
-      || retryReviews.length !== 1
-      || retryReviews[0]!.candidate_id !== input.candidate_id
-      || !await operationRecordMatchesDrafts(context, prior, parsedDrafts)
+      || !prior.request_fingerprint
+      || JSON.stringify(prior.request_fingerprint) !== JSON.stringify(requestFingerprint)
     ) {
       return { ok: false, reason: "idempotency-conflict" };
     }
@@ -1020,7 +1102,7 @@ export async function localResolutionApply(
   const validation = await validateCanonicalMutationSet({
     context,
     candidateId: input.candidate_id,
-    parsed: { drafts: parsedDrafts, payloads }
+    parsed
   });
   if (!validation.ok) return { ok: false, reason: validation.reason };
   const { review } = validation.value;
@@ -1062,6 +1144,7 @@ export async function localResolutionApply(
     actor_id: auth.authenticated.client.client_id,
     operation_id: input.operation_id,
     idempotency_key: input.idempotency_key,
+    request_fingerprint: requestFingerprint,
     recorded_at: nowForMutation(context),
     writes: parsedDrafts.map((draft) => {
       const existing = context.graphStore!.readObject(draft.object_id);

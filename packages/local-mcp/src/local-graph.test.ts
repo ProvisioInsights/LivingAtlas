@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
+import { chmodSync } from "node:fs";
+import { mkdtemp, readFile, readdir, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import type { ControlPlaneSnapshot, GraphObjectEnvelope } from "@living-atlas/contracts";
@@ -572,6 +573,45 @@ describe("local fixture graph tools", () => {
       await rm(directory, { recursive: true, force: true });
     }
   });
+
+  it.each(["relationship", "observation", "occurrence"] as const)(
+    "rejects %s parity when its target is a canonical fact",
+    async (representationKind) => {
+      const token = `local-token-resolution-parity-kind-${representationKind}-0001`;
+      const directory = await mkdtemp(join(tmpdir(), "living-atlas-local-resolution-parity-kind-"));
+      try {
+        const controlState = await createFixtureLocalControlState(token);
+        const keyring = createDefaultLocalKeyring({ authorityId: controlState.authority_id, createdAt: now });
+        const graphStore = await FileLocalGraphStore.open({
+          directory,
+          authorityId: controlState.authority_id,
+          plaintextPersistence: "encrypt",
+          keyring
+        });
+        const drafts = canonicalResolutionDrafts(1);
+        const context = createLocalMcpContextFromControlState({ controlState, graphStore, now });
+
+        await expect(localResolutionApply(context, {
+          authorization: `Bearer ${token}`,
+          operation_id: `la_operation_resolutionparitykind${representationKind}0001`,
+          idempotency_key: `la_idem_resolutionparitykind${representationKind}0001`,
+          candidate_id: drafts.candidateId,
+          expected_generation: 0,
+          expected_review_version: 1,
+          objects: [
+            drafts.entity,
+            drafts.evidence,
+            drafts.fact,
+            drafts.review,
+            withResolutionPayload(drafts.parity, { representation_kind: representationKind })
+          ]
+        })).resolves.toEqual({ ok: false, reason: "resolution-parity-mismatch" });
+        expect(graphStore.status()).toMatchObject({ generation: 0, object_count: 0 });
+      } finally {
+        await rm(directory, { recursive: true, force: true });
+      }
+    }
+  );
 
   it("accepts represented parity backed by an existing active canonical object omitted from the drafts", async () => {
     const token = "local-token-resolution-existing-parity-0001";
@@ -1452,6 +1492,27 @@ describe("local fixture graph tools", () => {
         }
       });
 
+      await expect(localResolutionApply(context, {
+        ...request,
+        objects: [...request.objects].reverse()
+      })).resolves.toMatchObject({
+        ok: true,
+        result: { generation: 1, journal_sequence: 1 }
+      });
+      const changedEntity = {
+        ...drafts.entity,
+        visible_metadata: { ...drafts.entity.visible_metadata, size_class: "small" as const }
+      };
+      const changedReview = withResolutionPayload(drafts.review, { resolution_state: "owner-review" });
+      await expect(localResolutionApply(context, {
+        ...request,
+        objects: [changedEntity, drafts.evidence, drafts.fact, drafts.review, drafts.parity]
+      })).resolves.toEqual({ ok: false, reason: "idempotency-conflict" });
+      await expect(localResolutionApply(context, {
+        ...request,
+        objects: [drafts.entity, drafts.evidence, drafts.fact, changedReview, drafts.parity]
+      })).resolves.toEqual({ ok: false, reason: "idempotency-conflict" });
+
       expect(graphStore.status()).toMatchObject({ generation: 1, object_count: 5 });
       expect(outboxSink.records).toHaveLength(5);
       expect(new Set(outboxSink.records.map((record) => record.object.object_id)).size).toBe(5);
@@ -1533,6 +1594,72 @@ describe("local fixture graph tools", () => {
       expect(recordedAudit.events.filter((event) => (
         event.tool_name === "resolution_apply" && event.reason_code === "resolution-committed"
       ))).toHaveLength(1);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("performs no resolution audit or outbox side effect for a malformed operation record", async () => {
+    const token = "local-token-resolution-malformed-record-0001";
+    const directory = await mkdtemp(join(tmpdir(), "living-atlas-local-resolution-malformed-record-"));
+    try {
+      const controlState = await createFixtureLocalControlState(token);
+      const keyring = createDefaultLocalKeyring({ authorityId: controlState.authority_id, createdAt: now });
+      const graphStore = await FileLocalGraphStore.open({
+        directory,
+        authorityId: controlState.authority_id,
+        plaintextPersistence: "encrypt",
+        keyring
+      });
+      const drafts = canonicalResolutionDrafts(1);
+      const request = {
+        authorization: `Bearer ${token}`,
+        operation_id: "la_operation_resolutionmalformed0001",
+        idempotency_key: "la_idem_resolutionmalformed0001",
+        candidate_id: drafts.candidateId,
+        expected_generation: 0,
+        expected_review_version: 1,
+        objects: [drafts.entity, drafts.evidence, drafts.fact, drafts.review, drafts.parity]
+      };
+      const initialContext = createLocalMcpContextFromControlState({
+        controlState,
+        graphStore,
+        decryptPayload: decryptWithKeyring(keyring),
+        now
+      });
+      await expect(localResolutionApply(initialContext, request)).resolves.toMatchObject({
+        ok: true,
+        result: { local_commit: "committed", generation: 1, journal_sequence: 1 }
+      });
+
+      const prior = graphStore.operationRecordForIdempotency(request.idempotency_key)!;
+      graphStore.operationRecordForIdempotency = () => ({
+        ...prior,
+        changes: prior.changes.slice(0, 1)
+      });
+      const auditSink = new InMemoryLocalMcpAuditSink();
+      const outboxSink = new InMemoryLocalMcpMutationOutboxSink();
+      const retryContext = createLocalMcpContextFromControlState({
+        controlState,
+        graphStore,
+        decryptPayload: decryptWithKeyring(keyring),
+        auditSink,
+        outboxSink,
+        now
+      });
+
+      await expect(localResolutionApply(retryContext, request)).resolves.toMatchObject({
+        ok: true,
+        result: {
+          local_commit: "committed",
+          audit: "reconciliation-required",
+          sync_queue: "reconciliation-required",
+          generation: 1,
+          journal_sequence: 1
+        }
+      });
+      expect(auditSink.events.filter((event) => event.tool_name === "resolution_apply")).toHaveLength(0);
+      expect(outboxSink.records).toHaveLength(0);
     } finally {
       await rm(directory, { recursive: true, force: true });
     }
@@ -2613,6 +2740,44 @@ describe("local fixture graph tools", () => {
         idempotency_key: idempotencyKey,
         change_id: outboxRecord.change_id
       });
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("repairs audit permissions after an uncertain post-append failure without appending twice", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "living-atlas-local-resolution-audit-repair-"));
+    const auditPath = join(directory, "audit", "events.jsonl");
+    try {
+      let fileChmodAttempts = 0;
+      const auditSink = new FileLocalMcpAuditSink(auditPath, {
+        chmod(target, mode) {
+          if (String(target) === auditPath) {
+            fileChmodAttempts += 1;
+            if (fileChmodAttempts === 1) throw new Error("synthetic post-append chmod failure");
+          }
+          chmodSync(target, mode);
+        }
+      });
+      const audit = createLocalMcpAuditEvent({
+        event_type: "tool.allowed",
+        client_id: fixtureLocalClientId,
+        profile: "local-full",
+        operation: "create",
+        tool_name: "resolution_apply",
+        reason_code: "resolution-committed",
+        summary: "Local MCP tool call allowed",
+        operation_id: "la_operation_resolutionauditrepair0001",
+        idempotency_key: "la_idem_resolutionauditrepair0001"
+      });
+
+      expect(() => auditSink.record(audit)).toThrow("synthetic post-append chmod failure");
+      expect(auditSink.read(10)).toHaveLength(1);
+      auditSink.record(audit);
+
+      expect(auditSink.read(10)).toHaveLength(1);
+      expect(fileChmodAttempts).toBe(2);
+      expect((await stat(auditPath)).mode & 0o777).toBe(0o600);
     } finally {
       await rm(directory, { recursive: true, force: true });
     }
