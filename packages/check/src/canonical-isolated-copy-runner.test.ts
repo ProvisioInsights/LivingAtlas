@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { mkdtemp, readFile, readdir, rm, stat, truncate, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, stat, symlink, truncate, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -99,7 +99,8 @@ describe("canonical isolated-copy runner guard", () => {
           hidden: 1,
           oversize: 0,
           unreadable: 0,
-          cap: 0
+          cap: 0,
+          symlink: 0
         },
         typed_projection_omissions: {
           ambiguous_typed_entity_ids: 0,
@@ -338,6 +339,47 @@ describe("canonical isolated-copy runner guard", () => {
     expect(report.integrity.missing_evidence_references).toBeGreaterThan(0);
     expect(report.integrity.missing_entity_references).toBeGreaterThan(0);
     expect(() => assertCanonicalConversionIntegrity(report)).toThrow("canonical isolated-copy integrity check failed");
+  });
+
+  it("counts observation supersedes as lineage references", () => {
+    const pathRedactionSecret = "synthetic-observation-lineage-secret";
+    const source = {
+      source_path: "pages/Synthetic Observation Lineage.md",
+      markdown: "- Original observation.\n- Successor observation.",
+      source_kind: "logseq" as const
+    };
+    const exported = createCanonicalMarkdownMigrationExport(createCanonicalMarkdownMigration([source], {
+      authority_id: "la_authority_fixture0001",
+      created_at: "2026-07-10T12:00:00.000Z",
+      path_redaction_secret: pathRedactionSecret
+    }));
+    const observations = exported.records.filter((record) => record.payload.schema === "atlas.observation:v1");
+    expect(observations).toHaveLength(2);
+    const predecessor = observations[0]!;
+    if (predecessor.payload.schema !== "atlas.observation:v1") throw new Error("expected observation predecessor");
+    const predecessorId = predecessor.payload.assertion_id;
+    const successorId = observations[1]!.object_id;
+    const withSupersedes = (predecessor: string): CanonicalExportRecord[] => exported.records.map((record) => (
+      record.object_id === successorId
+        ? { ...record, payload: { ...record.payload, supersedes: [predecessor] } } as CanonicalExportRecord
+        : record
+    ));
+    const analyze = (records: CanonicalExportRecord[]) => analyzeCanonicalConversion({
+      records,
+      authority_id: "la_authority_fixture0001",
+      sources: [{
+        source_path: source.source_path,
+        markdown: source.markdown,
+        byte_count: Buffer.byteLength(source.markdown)
+      }],
+      path_redaction_secret: pathRedactionSecret,
+      reopened_manifest_mismatches: 0
+    });
+
+    expect(analyze(withSupersedes(predecessorId)).integrity.missing_lineage_references).toBe(0);
+    const missingReport = analyze(withSupersedes("la_object_missinglineage0001"));
+    expect(missingReport.integrity.missing_lineage_references).toBe(1);
+    expect(() => assertCanonicalConversionIntegrity(missingReport)).toThrow("canonical isolated-copy integrity check failed");
   });
 
   it("binds each long meaningful-unit occurrence only to its exact source parity", () => {
@@ -828,7 +870,42 @@ describe("canonical isolated-copy runner guard", () => {
         path_redaction_secret: "synthetic-oversize-path-secret",
         source_kind: "logseq",
         source_mode: "logseq-notes"
-      })).rejects.toThrow("semantic source discovery incomplete: oversize=1 unreadable=0 cap=0");
+      })).rejects.toThrow("semantic source discovery incomplete: oversize=1 unreadable=0 cap=0 symlink=0");
+      await expect(readFile(join(output, "conversion-report.json"), "utf8")).rejects.toThrow();
+      await expect(readFile(join(output, "canonical-manifest.json"), "utf8")).rejects.toThrow();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("fails before success artifacts when discovery finds file and directory symlinks", async () => {
+    const root = await mkdtemp(join(tmpdir(), "living-atlas-symlink-discovery-"));
+    const source = join(root, "source-copy");
+    const pages = join(source, "pages");
+    const output = join(root, "output", ".atlas-isolated-copy");
+    try {
+      await (await import("node:fs/promises")).mkdir(pages, { recursive: true });
+      const sourceFile = join(pages, "Synthetic Source.md");
+      await writeFile(sourceFile, "- Synthetic source.", "utf8");
+      try {
+        await symlink(sourceFile, join(pages, "Synthetic File Link.md"), "file");
+        await symlink(pages, join(source, "Synthetic Directory Link"), "dir");
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "EPERM") return;
+        throw error;
+      }
+
+      await expect(runCanonicalIsolatedCopy({
+        copy_dir: output,
+        source_dir: source,
+        acknowledgement: "run-canonical-isolated-copy",
+        live_paths: [],
+        authority_id: "la_authority_fixture0001",
+        keyring_passphrase: "synthetic-symlink-passphrase",
+        path_redaction_secret: "synthetic-symlink-path-secret",
+        source_kind: "logseq",
+        source_mode: "logseq-notes"
+      })).rejects.toThrow("semantic source discovery incomplete: oversize=0 unreadable=0 cap=0 symlink=2");
       await expect(readFile(join(output, "conversion-report.json"), "utf8")).rejects.toThrow();
       await expect(readFile(join(output, "canonical-manifest.json"), "utf8")).rejects.toThrow();
     } finally {

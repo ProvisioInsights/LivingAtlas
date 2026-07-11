@@ -33,6 +33,7 @@ export type SemanticSourceDiscoveryCounts = {
   oversize: number;
   unreadable: number;
   cap: number;
+  symlink: number;
 };
 
 export type SemanticSourceDiscovery = {
@@ -75,12 +76,17 @@ export function isLikelyTextBuffer(buffer: Buffer): boolean {
 
 export async function walkAllSemanticSourceFiles(root: string): Promise<string[]> {
   const files: string[] = [];
+  let symlinks = 0;
   const queue = [root];
   while (queue.length > 0) {
     const dir = queue.shift()!;
     const entries = await readdir(dir, { withFileTypes: true }).catch(() => []);
     for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
       const path = join(dir, entry.name);
+      if (entry.isSymbolicLink()) {
+        symlinks += 1;
+        continue;
+      }
       if (entry.isDirectory()) {
         if (!ignoredDirectories.has(entry.name) && !isHiddenFilesystemArtifact(entry.name)) {
           queue.push(path);
@@ -92,6 +98,7 @@ export async function walkAllSemanticSourceFiles(root: string): Promise<string[]
       }
     }
   }
+  if (symlinks > 0) throw new Error(`semantic source discovery incomplete: symlink=${symlinks}`);
   return files.sort((left, right) => relative(root, left).localeCompare(relative(root, right)));
 }
 
@@ -110,7 +117,8 @@ export async function discoverImportableSemanticSourceFiles(input: {
     hidden: 0,
     oversize: 0,
     unreadable: 0,
-    cap: 0
+    cap: 0,
+    symlink: 0
   };
   const files: string[] = [];
   const queue = [input.root];
@@ -123,6 +131,10 @@ export async function discoverImportableSemanticSourceFiles(input: {
     }
     for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
       const path = join(dir, entry.name);
+      if (entry.isSymbolicLink()) {
+        counts.symlink += 1;
+        continue;
+      }
       if (isHiddenFilesystemArtifact(entry.name)) {
         counts.hidden += 1;
         continue;
@@ -187,8 +199,8 @@ export async function discoverImportableSemanticSourceFiles(input: {
 }
 
 export function assertSemanticSourceDiscoveryComplete(counts: SemanticSourceDiscoveryCounts): void {
-  if (counts.oversize > 0 || counts.unreadable > 0 || counts.cap > 0) {
-    throw new Error(`semantic source discovery incomplete: oversize=${counts.oversize} unreadable=${counts.unreadable} cap=${counts.cap}`);
+  if (counts.oversize > 0 || counts.unreadable > 0 || counts.cap > 0 || counts.symlink > 0) {
+    throw new Error(`semantic source discovery incomplete: oversize=${counts.oversize} unreadable=${counts.unreadable} cap=${counts.cap} symlink=${counts.symlink}`);
   }
 }
 

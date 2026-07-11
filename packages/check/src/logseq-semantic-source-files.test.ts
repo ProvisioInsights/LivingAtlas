@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -50,6 +50,13 @@ describe("semantic source file walker", () => {
       await chmod(unreadable, 0o000);
       await writeFile(join(pages, "Unsupported.txt"), "unsupported", "utf8");
       await writeFile(join(pages, ".Hidden.md"), "- hidden", "utf8");
+      try {
+        await symlink(join(pages, "A Selected.md"), join(pages, "Linked File.md"), "file");
+        await symlink(pages, join(root, "Linked Directory"), "dir");
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "EPERM") return;
+        throw error;
+      }
 
       const discovery = await discoverImportableSemanticSourceFiles({
         root,
@@ -66,10 +73,11 @@ describe("semantic source file walker", () => {
         hidden: 1,
         oversize: 1,
         unreadable: 1,
-        cap: 1
+        cap: 1,
+        symlink: 2
       });
       expect(() => assertSemanticSourceDiscoveryComplete(discovery.counts)).toThrow(
-        "semantic source discovery incomplete: oversize=1 unreadable=1 cap=1"
+        "semantic source discovery incomplete: oversize=1 unreadable=1 cap=1 symlink=2"
       );
       try {
         assertSemanticSourceDiscoveryComplete(discovery.counts);
@@ -102,6 +110,34 @@ describe("semantic source file walker", () => {
 
       expect(discovery.selected_paths).toEqual([join(root, "pages", "B.md")]);
       expect(discovery.counts).toMatchObject({ selected: 1, cap: 1 });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("fails the legacy walker closed instead of silently omitting a symlink", async () => {
+    const root = await mkdtemp(join(tmpdir(), "living-atlas-source-walker-symlink-"));
+    const pages = join(root, "pages");
+    try {
+      await mkdir(pages, { recursive: true });
+      const source = join(pages, "Synthetic Source.md");
+      await writeFile(source, "- source", "utf8");
+      try {
+        await symlink(source, join(pages, "Synthetic Link.md"), "file");
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "EPERM") return;
+        throw error;
+      }
+
+      await expect(walkImportableSemanticSourceFiles({
+        root,
+        sourceKind: "logseq",
+        mode: "logseq-notes",
+        maxFiles: 10,
+        offset: 0,
+        maxFileBytes: 1024,
+        include_empty: true
+      })).rejects.toThrow("semantic source discovery incomplete: symlink=1");
     } finally {
       await rm(root, { recursive: true, force: true });
     }

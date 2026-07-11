@@ -248,6 +248,7 @@ export function analyzeCanonicalConversion(input: {
       case "atlas.observation:v1":
         entityReferences.push(...payload.candidate_entity_ids);
         evidenceReferences.push(...payload.evidence_refs);
+        lineageReferences.push(...(payload.supersedes ?? []));
         break;
       case "atlas.relationship:v2":
         entityReferences.push(payload.source_entity_id, payload.target_entity_id);
@@ -412,7 +413,8 @@ export function analyzeCanonicalConversion(input: {
       hidden: 0,
       oversize: 0,
       unreadable: 0,
-      cap: 0
+      cap: 0,
+      symlink: 0
     },
     typed_projection_omissions: input.typed_projection_omissions ?? {
       ambiguous_typed_entity_ids: 0,
