@@ -687,6 +687,105 @@ describe("local fixture graph tools", () => {
     }
   });
 
+  it.each(["refuting-evidence", "correction", "identity-resolution"] as const)(
+    "rejects review-only auto-apply with stored %s intent",
+    async (mode) => {
+      const token = `local-token-resolution-unsafe-intent-${mode}-0001`;
+      const directory = await mkdtemp(join(tmpdir(), "living-atlas-local-resolution-unsafe-intent-"));
+      try {
+        const controlState = await createFixtureLocalControlState(token);
+        const keyring = createDefaultLocalKeyring({ authorityId: controlState.authority_id, createdAt: now });
+        const graphStore = await FileLocalGraphStore.open({
+          directory,
+          authorityId: controlState.authority_id,
+          plaintextPersistence: "encrypt",
+          keyring
+        });
+        const drafts = canonicalResolutionDrafts(2);
+        const identityResolutionId = "la_object_resolutionunsafeidentity0001";
+        const unsafeFact = mode === "refuting-evidence"
+          ? withResolutionPayload(drafts.fact, {
+              evidence_links: [{ evidence_id: drafts.evidence.object_id, stance: "refutes" }]
+            })
+          : mode === "correction"
+            ? withResolutionPayload(drafts.fact, {
+                lineage_action: "correct",
+                supersedes: ["la_object_resolutionunsafepriorfact0001"]
+              })
+            : drafts.fact;
+        const identityResolution = {
+          ...drafts.review,
+          object_id: identityResolutionId,
+          object_type: "review",
+          version: 1,
+          content_hash: fixedHash("1"),
+          payload: {
+            kind: "plaintext-json" as const,
+            data: {
+              schema: "atlas.entity-resolution:v1",
+              resolution_id: identityResolutionId,
+              actor_id: "synthetic-resolution-boundary-test",
+              observed_identifiers: ["synthetic-unsafe-identity"],
+              candidate_entity_ids: [drafts.entity.object_id],
+              decision: "defer",
+              evidence_refs: [drafts.evidence.object_id],
+              evidence_links: [{ evidence_id: drafts.evidence.object_id, stance: "context" }],
+              confidence: {
+                band: "high",
+                assessment_kind: "identity",
+                method: "synthetic-fixture",
+                assessed_at: now,
+                evidence_refs: [drafts.evidence.object_id]
+              },
+              recorded_at: now,
+              supersedes: []
+            }
+          }
+        };
+        const proposedObjectIds = mode === "identity-resolution"
+          ? [...(drafts.review.payload.data.proposed_object_ids as string[]), identityResolutionId]
+          : drafts.review.payload.data.proposed_object_ids;
+        const storedReview = withResolutionPayload({ ...drafts.review, version: 1 }, {
+          recommendation: "owner-review",
+          resolution_state: "owner-review",
+          proposed_object_ids: proposedObjectIds
+        });
+        const submittedReview = withResolutionPayload(drafts.review, {
+          recommendation: "auto-apply",
+          resolution_state: "auto-applied",
+          proposed_object_ids: proposedObjectIds
+        });
+        await expect(graphStore.initializeFromObjects([
+          drafts.entity,
+          drafts.evidence,
+          unsafeFact,
+          ...(mode === "identity-resolution" ? [identityResolution] : []),
+          storedReview,
+          drafts.parity
+        ] as never)).resolves.toMatchObject({ ok: true });
+        const context = createLocalMcpContextFromControlState({
+          controlState,
+          graphStore,
+          decryptPayload: decryptWithKeyring(keyring),
+          now
+        });
+
+        await expect(localResolutionApply(context, {
+          authorization: `Bearer ${token}`,
+          operation_id: `la_operation_resolutionunsafe${mode.replaceAll("-", "")}0001`,
+          idempotency_key: `la_idem_resolutionunsafe${mode.replaceAll("-", "")}0001`,
+          candidate_id: drafts.candidateId,
+          expected_generation: 0,
+          expected_review_version: 1,
+          objects: [submittedReview]
+        })).resolves.toEqual({ ok: false, reason: "resolution-review-mismatch" });
+        expect(graphStore.status()).toMatchObject({ generation: 0 });
+      } finally {
+        await rm(directory, { recursive: true, force: true });
+      }
+    }
+  );
+
   it("auto-applies a rich exact-source review without rewriting its existing evidence, assertions, entities, or parity", async () => {
     const token = "local-token-resolution-rich-review-only-0001";
     const directory = await mkdtemp(join(tmpdir(), "living-atlas-local-resolution-rich-review-only-"));

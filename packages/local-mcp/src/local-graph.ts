@@ -934,6 +934,30 @@ async function validateCanonicalMutationSet(input: {
     }
   }
 
+  if (usesExistingParity) {
+    for (const objectId of review.proposed_object_ids) {
+      const payload = await activeCanonicalPayload(objectId);
+      if (!payload) return { ok: false, reason: "resolution-missing-reference" };
+      const unsafeIntent = (() => {
+        switch (payload.schema) {
+          case "atlas.entity:v1":
+          case "atlas.evidence:v1":
+            return false;
+          case "atlas.fact:v1":
+          case "atlas.relationship:v2":
+            return payload.lineage_action !== "assert"
+              || payload.supersedes.length > 0
+              || payload.evidence_links.some((link) => link.stance === "refutes");
+          case "atlas.observation:v1":
+            return (payload.supersedes?.length ?? 0) > 0;
+          default:
+            return true;
+        }
+      })();
+      if (unsafeIntent) return { ok: false, reason: "resolution-review-mismatch" };
+    }
+  }
+
   return { ok: true, value: { ...input.parsed, review } };
 }
 
