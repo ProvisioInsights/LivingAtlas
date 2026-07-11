@@ -897,7 +897,7 @@ async function validateCanonicalMutationSet(input: {
       case "fact": return payload.schema === "atlas.fact:v1";
       case "relationship": return payload.schema === "atlas.relationship:v2";
       case "observation": return payload.schema === "atlas.observation:v1";
-      case "occurrence": return false;
+      case "occurrence": return payload.schema === "atlas.entity:v1" && payload.type === "occurrence";
       default: return false;
     }
   };

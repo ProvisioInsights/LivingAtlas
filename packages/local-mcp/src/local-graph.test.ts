@@ -613,6 +613,61 @@ describe("local fixture graph tools", () => {
     }
   );
 
+  it.each([
+    {
+      label: "accepts",
+      entityPatch: { type: "occurrence", subtype: "meeting" },
+      accepted: true
+    },
+    {
+      label: "rejects",
+      entityPatch: {},
+      accepted: false
+    }
+  ])("$label occurrence parity for the corresponding canonical entity type", async ({ entityPatch, accepted }) => {
+    const token = `local-token-resolution-occurrence-parity-${accepted ? "valid" : "invalid"}-0001`;
+    const directory = await mkdtemp(join(tmpdir(), "living-atlas-local-resolution-occurrence-parity-"));
+    try {
+      const controlState = await createFixtureLocalControlState(token);
+      const keyring = createDefaultLocalKeyring({ authorityId: controlState.authority_id, createdAt: now });
+      const graphStore = await FileLocalGraphStore.open({
+        directory,
+        authorityId: controlState.authority_id,
+        plaintextPersistence: "encrypt",
+        keyring
+      });
+      const drafts = canonicalResolutionDrafts(1);
+      const entity = withResolutionPayload(drafts.entity, entityPatch);
+      const parity = withResolutionPayload(drafts.parity, {
+        representation_kind: "occurrence",
+        canonical_object_ids: [drafts.entity.object_id]
+      });
+      const context = createLocalMcpContextFromControlState({ controlState, graphStore, now });
+      const result = await localResolutionApply(context, {
+        authorization: `Bearer ${token}`,
+        operation_id: `la_operation_resolutionoccurrenceparity${accepted ? "valid" : "invalid"}0001`,
+        idempotency_key: `la_idem_resolutionoccurrenceparity${accepted ? "valid" : "invalid"}0001`,
+        candidate_id: drafts.candidateId,
+        expected_generation: 0,
+        expected_review_version: 1,
+        objects: [entity, drafts.evidence, drafts.fact, drafts.review, parity]
+      });
+
+      if (accepted) {
+        expect(result).toMatchObject({
+          ok: true,
+          result: { local_commit: "committed", generation: 1, journal_sequence: 1 }
+        });
+        expect(graphStore.status()).toMatchObject({ generation: 1, object_count: 5 });
+      } else {
+        expect(result).toEqual({ ok: false, reason: "resolution-parity-mismatch" });
+        expect(graphStore.status()).toMatchObject({ generation: 0, object_count: 0 });
+      }
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
   it("accepts represented parity backed by an existing active canonical object omitted from the drafts", async () => {
     const token = "local-token-resolution-existing-parity-0001";
     const directory = await mkdtemp(join(tmpdir(), "living-atlas-local-resolution-existing-parity-"));
