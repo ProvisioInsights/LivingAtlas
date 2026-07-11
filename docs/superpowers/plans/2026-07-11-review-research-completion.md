@@ -73,6 +73,10 @@ Commit: `fix(review): gate bulk decisions by exact effects`
 **Files:**
 - Modify: `packages/contracts/src/knowledge.ts`
 - Modify: `packages/contracts/src/knowledge.test.ts`
+- Modify: `packages/importer/src/canonical-markdown-migration.ts`
+- Modify: `packages/importer/src/canonical-markdown-migration.test.ts`
+- Modify: `packages/local-mcp/src/local-graph.ts`
+- Modify: `packages/local-mcp/src/local-graph.test.ts`
 - Create: `packages/local-review-site/src/review-auto-apply.ts`
 - Create: `packages/local-review-site/src/review-auto-apply.test.ts`
 - Modify: `packages/local-review-site/src/server.ts`
@@ -95,13 +99,13 @@ expect(receipt).not.toHaveProperty("source_text");
 
 - [ ] **Step 2: Verify RED**
 
-Run: `pnpm vitest run packages/contracts/src/knowledge.test.ts packages/local-review-site/src/review-auto-apply.test.ts packages/check/src/canonical-isolated-copy-runner.test.ts`
+Run: `pnpm vitest run packages/contracts/src/knowledge.test.ts packages/importer/src/canonical-markdown-migration.test.ts packages/local-mcp/src/local-graph.test.ts packages/local-review-site/src/review-auto-apply.test.ts packages/check/src/canonical-isolated-copy-runner.test.ts`
 
 - [ ] **Step 3: Implement deterministic selection**
 
 Auto-apply only when the candidate has exact encrypted source preservation, at least one meaningful unit, complete proposed records and references, represented parity for every unit, no typed omission affecting the candidate, no merge/edit intent, and no conflicting evidence. The operation updates the review to `recommendation="auto-apply"` and `resolution_state="auto-applied"`; it does not rewrite any assertion or entity.
 
-For zero-meaning sources, retain unrepresented parity with an explicit non-meaningful marker and allow an auto-applied review only when source accounting proves there is nothing semantic to represent. `resolution_apply` must reject unrepresented parity for every meaningful source.
+For zero-meaning sources, have the importer retain unrepresented parity with an explicit non-meaningful marker and allow an auto-applied review only when source accounting proves there is nothing semantic to represent. `resolution_apply` must reject unrepresented parity for every meaningful source and must reject a non-meaningful marker when the same candidate names any canonical representation.
 
 - [ ] **Step 4: Apply through `localResolutionApply` only**
 
@@ -109,7 +113,7 @@ Use stable per-candidate operation/idempotency keys and the current review versi
 
 - [ ] **Step 5: Verify GREEN and commit**
 
-Run: `pnpm vitest run packages/contracts/src/knowledge.test.ts packages/local-review-site/src/review-auto-apply.test.ts packages/check/src/canonical-isolated-copy-runner.test.ts && pnpm check`
+Run: `pnpm vitest run packages/contracts/src/knowledge.test.ts packages/importer/src/canonical-markdown-migration.test.ts packages/local-mcp/src/local-graph.test.ts packages/local-review-site/src/review-auto-apply.test.ts packages/check/src/canonical-isolated-copy-runner.test.ts && pnpm check`
 
 Commit: `feat(review): auto-apply exact source preservation`
 
