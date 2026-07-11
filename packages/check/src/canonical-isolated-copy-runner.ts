@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
+import { existsSync, realpathSync } from "node:fs";
 import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
-import { basename, join, relative, resolve } from "node:path";
+import { basename, dirname, join, relative, resolve } from "node:path";
 import {
   accountSourceMeaning,
   createCanonicalMarkdownMigration,
@@ -105,8 +106,13 @@ export function validateCanonicalIsolatedCopyRun(input: CanonicalIsolatedCopyRun
   if (pathsOverlap(copyDir, sourceDir)) {
     throw new Error("canonical isolated-copy source and output paths must not overlap");
   }
-  for (const livePath of input.live_paths.map((path) => resolve(path))) {
-    if (isWithin(copyDir, livePath) || isWithin(sourceDir, livePath)) {
+  const realCopyDir = resolveRealPathWithMissingLeaf(copyDir);
+  const realSourceDir = resolveRealPathWithMissingLeaf(sourceDir);
+  if (pathsOverlap(realCopyDir, realSourceDir)) {
+    throw new Error("canonical isolated-copy source and output paths must not overlap");
+  }
+  for (const livePath of input.live_paths.map((path) => resolveRealPathWithMissingLeaf(path))) {
+    if (isWithin(realCopyDir, livePath) || isWithin(realSourceDir, livePath)) {
       throw new Error("canonical isolated-copy path is a configured live path");
     }
   }
@@ -589,6 +595,19 @@ async function writePrivateJson(path: string, value: unknown): Promise<void> {
 
 function pathsOverlap(left: string, right: string): boolean {
   return isWithin(left, right) || isWithin(right, left);
+}
+
+function resolveRealPathWithMissingLeaf(path: string): string {
+  let existing = resolve(path);
+  const missing: string[] = [];
+  while (!existsSync(existing)) {
+    const parent = dirname(existing);
+    if (parent === existing) break;
+    missing.unshift(basename(existing));
+    existing = parent;
+  }
+  const realExisting = existsSync(existing) ? realpathSync(existing) : existing;
+  return resolve(realExisting, ...missing);
 }
 
 function isWithin(path: string, parent: string): boolean {

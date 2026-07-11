@@ -1,4 +1,4 @@
-import { open, readFile, readdir, stat } from "node:fs/promises";
+import { lstat, open, readFile, readdir, stat } from "node:fs/promises";
 import { join, relative } from "node:path";
 import {
   classifyMarkdownSourcePath,
@@ -75,6 +75,9 @@ export function isLikelyTextBuffer(buffer: Buffer): boolean {
 }
 
 export async function walkAllSemanticSourceFiles(root: string): Promise<string[]> {
+  if ((await lstat(root).catch(() => undefined))?.isSymbolicLink()) {
+    throw new Error("semantic source root must not be a symlink");
+  }
   const files: string[] = [];
   let symlinks = 0;
   const queue = [root];
@@ -111,6 +114,9 @@ export async function discoverImportableSemanticSourceFiles(input: {
   maxFileBytes: number;
   include_empty?: boolean;
 }): Promise<SemanticSourceDiscovery> {
+  if ((await lstat(input.root).catch(() => undefined))?.isSymbolicLink()) {
+    throw new Error("semantic source root must not be a symlink");
+  }
   const counts: SemanticSourceDiscoveryCounts = {
     selected: 0,
     unsupported: 0,

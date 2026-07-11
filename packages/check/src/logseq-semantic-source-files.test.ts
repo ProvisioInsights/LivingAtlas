@@ -142,4 +142,41 @@ describe("semantic source file walker", () => {
       await rm(root, { recursive: true, force: true });
     }
   });
+
+  it("fails closed when the discovery root itself is a symlink", async () => {
+    const root = await mkdtemp(join(tmpdir(), "living-atlas-source-root-symlink-"));
+    const realRoot = join(root, "real-source");
+    const linkedRoot = join(root, "linked-source");
+    try {
+      await mkdir(join(realRoot, "pages"), { recursive: true });
+      await writeFile(join(realRoot, "pages", "Synthetic.md"), "- source", "utf8");
+      try {
+        await symlink(realRoot, linkedRoot, "dir");
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "EPERM") return;
+        throw error;
+      }
+
+      await expect(discoverImportableSemanticSourceFiles({
+        root: linkedRoot,
+        sourceKind: "logseq",
+        mode: "logseq-notes",
+        maxFiles: 10,
+        offset: 0,
+        maxFileBytes: 1024,
+        include_empty: true
+      })).rejects.toThrow("semantic source root must not be a symlink");
+      await expect(walkImportableSemanticSourceFiles({
+        root: linkedRoot,
+        sourceKind: "logseq",
+        mode: "logseq-notes",
+        maxFiles: 10,
+        offset: 0,
+        maxFileBytes: 1024,
+        include_empty: true
+      })).rejects.toThrow("semantic source root must not be a symlink");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 });

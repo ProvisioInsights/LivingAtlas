@@ -912,4 +912,37 @@ describe("canonical isolated-copy runner guard", () => {
       await rm(root, { recursive: true, force: true });
     }
   });
+
+  it("rejects a symlink-ancestor alias of a configured live source before creating output", async () => {
+    const root = await mkdtemp(join(tmpdir(), "living-atlas-live-alias-"));
+    const realParent = join(root, "real-parent");
+    const liveSource = join(realParent, "live-source");
+    const aliasParent = join(root, "alias-parent");
+    const output = join(root, "output", ".atlas-isolated-copy");
+    try {
+      await (await import("node:fs/promises")).mkdir(join(liveSource, "pages"), { recursive: true });
+      await writeFile(join(liveSource, "pages", "Synthetic.md"), "- live source", "utf8");
+      try {
+        await symlink(realParent, aliasParent, "dir");
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "EPERM") return;
+        throw error;
+      }
+
+      await expect(runCanonicalIsolatedCopy({
+        copy_dir: output,
+        source_dir: join(aliasParent, "live-source"),
+        acknowledgement: "run-canonical-isolated-copy",
+        live_paths: [liveSource],
+        authority_id: "la_authority_fixture0001",
+        keyring_passphrase: "synthetic-live-alias-passphrase",
+        path_redaction_secret: "synthetic-live-alias-path-secret",
+        source_kind: "logseq",
+        source_mode: "logseq-notes"
+      })).rejects.toThrow("configured live path");
+      await expect(readdir(output)).rejects.toThrow();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 });
