@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import type {
   CanonicalFactPayload,
   CanonicalRelationshipPayload,
+  CanonicalResearchConnectorKind,
   CanonicalResearchResultPayload
 } from "@living-atlas/contracts";
 
@@ -45,6 +46,50 @@ function stableValue(value: unknown): unknown {
 
 function sha256(value: string): `sha256:${string}` {
   return `sha256:${createHash("sha256").update(value).digest("hex")}`;
+}
+
+function canonicalResearchId(prefix: "la_object" | "la_research_run", value: unknown): string {
+  return `${prefix}_${sha256(JSON.stringify(stableValue(value))).slice("sha256:".length, "sha256:".length + 24)}`;
+}
+
+export function canonicalResearchRunId(input: {
+  candidate_id: string;
+  source_unit_id: string;
+  connector_kind: CanonicalResearchConnectorKind;
+  normalized_query_hash: string;
+  algorithm_version: string;
+}): string {
+  return canonicalResearchId("la_research_run", {
+    candidate_id: input.candidate_id,
+    source_unit_id: input.source_unit_id,
+    connector_kind: input.connector_kind,
+    normalized_query_hash: input.normalized_query_hash,
+    algorithm_version: input.algorithm_version
+  });
+}
+
+export function canonicalResearchEvidenceId(input: {
+  upstream_identity: string;
+  locator: string;
+  content_hash: string;
+}): string {
+  return canonicalResearchId("la_object", {
+    upstream_identity: input.upstream_identity,
+    locator: input.locator,
+    content_hash: input.content_hash
+  });
+}
+
+export function canonicalResearchResultId(input: {
+  run_id: string;
+  evidence_id: string;
+  proposed_mutation_hash: string;
+}): string {
+  return canonicalResearchId("la_object", {
+    run_id: input.run_id,
+    evidence_id: input.evidence_id,
+    proposed_mutation_hash: input.proposed_mutation_hash
+  });
 }
 
 function normalizedMutation(proposal: CanonicalResearchProposal): Record<string, unknown> {

@@ -5,7 +5,10 @@ import type {
   CanonicalResearchResultPayload
 } from "@living-atlas/contracts";
 import {
+  canonicalResearchEvidenceId,
   canonicalResearchMutationFingerprint,
+  canonicalResearchResultId,
+  canonicalResearchRunId,
   evaluateResearchRecommendation
 } from "./canonical-recommendation";
 
@@ -89,6 +92,7 @@ function result(input: {
     evidence_content_hash: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
     retrieved_at: now,
     stance: input.stance ?? "supports",
+    identity_state: "resolved",
     identity_confidence: {
       band: input.confidence ?? "high",
       assessment_kind: "identity",
@@ -103,6 +107,35 @@ function result(input: {
 }
 
 describe("canonical research recommendation", () => {
+  it("derives stable run, evidence, and result IDs from their complete provenance inputs", () => {
+    const run = canonicalResearchRunId({
+      candidate_id: "la_candidate_research0001",
+      source_unit_id: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      connector_kind: "public-web",
+      normalized_query_hash: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      algorithm_version: "canonical-research-v1"
+    });
+    const evidence = canonicalResearchEvidenceId({
+      upstream_identity: "synthetic-upstream-0001",
+      locator: "https://synthetic.invalid/research/0001",
+      content_hash: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    });
+    const researchResult = canonicalResearchResultId({
+      run_id: run,
+      evidence_id: evidence,
+      proposed_mutation_hash: "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+    });
+
+    expect(run).toMatch(/^la_research_run_[a-f0-9]{24}$/);
+    expect(evidence).toMatch(/^la_object_[a-f0-9]{24}$/);
+    expect(researchResult).toMatch(/^la_object_[a-f0-9]{24}$/);
+    expect(canonicalResearchResultId({
+      run_id: run,
+      evidence_id: evidence,
+      proposed_mutation_hash: "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+    })).not.toBe(researchResult);
+  });
+
   it("fingerprints only stable semantic fact fields", () => {
     const first = fact();
     const changedEnvelope = {

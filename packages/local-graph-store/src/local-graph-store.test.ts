@@ -15,7 +15,10 @@ import {
   createDefaultLocalKeyring,
   decryptGraphObjectPayload
 } from "@living-atlas/local-keyring";
-import { FileLocalGraphStore } from "./local-graph-store";
+import {
+  FileLocalGraphStore,
+  type LocalGraphResearchAuditSummary
+} from "./local-graph-store";
 
 const now = "2026-06-22T12:00:00.000Z";
 
@@ -252,19 +255,36 @@ describe("file local graph store", () => {
       candidate_id: "la_candidate_resolutionfingerprint0001",
       digest: fixedHash("c")
     };
+    const researchAudit = {
+      connector_kinds: ["organization", "public-web"],
+      outcome: "auto-apply",
+      independence_group_count: 2,
+      result_set_hash: fixedHash("e")
+    } satisfies LocalGraphResearchAuditSummary;
     const transaction = {
       expected_generation: 0,
       actor_id: fixtureLocalClientId,
       operation_id: "la_operation_resolutionfingerprint0001",
       idempotency_key: "la_idem_resolutionfingerprint0001",
       request_fingerprint: requestFingerprint,
+      research_audit: researchAudit,
       recorded_at: now,
       writes: [{ kind: "create" as const, object }]
     };
 
     await expect(store.commitTransaction(transaction)).resolves.toMatchObject({ ok: true, generation: 1 });
     expect(store.operationRecordForIdempotency(transaction.idempotency_key)).toMatchObject({
-      request_fingerprint: requestFingerprint
+      request_fingerprint: requestFingerprint,
+      research_audit: researchAudit
+    });
+
+    await expect(store.commitTransaction({
+      ...transaction,
+      research_audit: { ...researchAudit, result_set_hash: fixedHash("f") }
+    })).resolves.toEqual({
+      ok: false,
+      reason: "idempotency-conflict",
+      current_generation: 1
     });
 
     await expect(store.commitTransaction({
@@ -290,7 +310,8 @@ describe("file local graph store", () => {
       now: () => now
     });
     expect(reopened.operationRecordForIdempotency(transaction.idempotency_key)).toMatchObject({
-      request_fingerprint: requestFingerprint
+      request_fingerprint: requestFingerprint,
+      research_audit: researchAudit
     });
   });
 

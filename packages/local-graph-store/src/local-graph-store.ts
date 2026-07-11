@@ -10,6 +10,7 @@ import type {
 } from "@living-atlas/contracts";
 import {
   AuthorityIdSchema,
+  CanonicalResearchConnectorKindSchema,
   GraphObjectEnvelopeSchema,
   IsoTimestampSchema,
   ObjectIdSchema,
@@ -34,11 +35,29 @@ export const LocalGraphResolutionRequestFingerprintSchema = z.object({
 }).strict();
 export type LocalGraphResolutionRequestFingerprint = z.infer<typeof LocalGraphResolutionRequestFingerprintSchema>;
 
+export const LocalGraphResearchAuditSummarySchema = z.object({
+  connector_kinds: z.array(CanonicalResearchConnectorKindSchema).min(1).max(4),
+  outcome: z.enum(["auto-apply", "owner-review", "research"]),
+  independence_group_count: z.number().int().nonnegative(),
+  result_set_hash: Sha256HashSchema
+}).strict().superRefine((summary, context) => {
+  const normalized = [...new Set(summary.connector_kinds)].sort();
+  if (JSON.stringify(summary.connector_kinds) !== JSON.stringify(normalized)) {
+    context.addIssue({
+      code: "custom",
+      path: ["connector_kinds"],
+      message: "research connector kinds must be sorted and unique"
+    });
+  }
+});
+export type LocalGraphResearchAuditSummary = z.infer<typeof LocalGraphResearchAuditSummarySchema>;
+
 export const LocalGraphOperationRecordSchema = z
   .object({
     operation_id: OperationIdSchema,
     idempotency_key: z.string().min(1),
     request_fingerprint: LocalGraphResolutionRequestFingerprintSchema.optional(),
+    research_audit: LocalGraphResearchAuditSummarySchema.optional(),
     actor_id: z.string().min(1),
     recorded_at: IsoTimestampSchema,
     generation: z.number().int().positive(),
@@ -148,6 +167,7 @@ export type LocalGraphTransactionInput = LocalGraphMutationInputBase & {
   operation_id: string;
   idempotency_key: string;
   request_fingerprint?: LocalGraphResolutionRequestFingerprint;
+  research_audit?: LocalGraphResearchAuditSummary;
   writes: LocalGraphTransactionWrite[];
 };
 
@@ -874,11 +894,19 @@ export class FileLocalGraphStore {
       const requestFingerprint = input.request_fingerprint
         ? LocalGraphResolutionRequestFingerprintSchema.parse(input.request_fingerprint)
         : undefined;
+      const researchAudit = input.research_audit
+        ? LocalGraphResearchAuditSummarySchema.parse(input.research_audit)
+        : undefined;
       const existingRecord = this.state.operationRecords.find((record) => record.idempotency_key === idempotencyKey);
       if (existingRecord) {
         const fingerprintConflict = Boolean(existingRecord.request_fingerprint || requestFingerprint)
           && JSON.stringify(existingRecord.request_fingerprint) !== JSON.stringify(requestFingerprint);
-        if (existingRecord.operation_id !== operationId || existingRecord.actor_id !== actorId || fingerprintConflict) {
+        const researchAuditConflict = Boolean(existingRecord.research_audit || researchAudit)
+          && JSON.stringify(existingRecord.research_audit) !== JSON.stringify(researchAudit);
+        if (existingRecord.operation_id !== operationId
+          || existingRecord.actor_id !== actorId
+          || fingerprintConflict
+          || researchAuditConflict) {
           return {
             ok: false,
             reason: "idempotency-conflict",
@@ -1001,6 +1029,7 @@ export class FileLocalGraphStore {
         operation_id: operationId,
         idempotency_key: idempotencyKey,
         ...(requestFingerprint ? { request_fingerprint: requestFingerprint } : {}),
+        ...(researchAudit ? { research_audit: researchAudit } : {}),
         actor_id: actorId,
         recorded_at: recordedAt,
         generation,

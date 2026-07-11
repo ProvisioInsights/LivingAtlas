@@ -43,6 +43,7 @@ function transportResult(index: number, overrides: Partial<CanonicalResearchTran
     retrieved_at: now,
     excerpt: `Synthetic bounded public evidence ${suffix}.`,
     stance: "supports",
+    identity_state: "resolved",
     identity_confidence: { band: "high", method: "synthetic-identity" },
     proposal: {
       kind: "fact",
@@ -130,6 +131,43 @@ describe("canonical research runner", () => {
     expect(serializedReceipt).not.toMatch(/query\"|locator|excerpt|snapshot|proposal/i);
   });
 
+  it("persists identity state and explicit relationship basis for boundary evaluation", async () => {
+    const proposal = {
+      kind: "relationship" as const,
+      source_entity_id: "la_object_researchperson0001",
+      source_type: "person" as const,
+      target_entity_id: "la_object_researchorganization0001",
+      target_type: "organization" as const,
+      predicate: "advises" as const,
+      valid_from: "2026"
+    };
+    const output = await runCanonicalResearchCandidate(runnerInput({
+      run: async () => [
+        transportResult(1, { proposal, relationship_basis: "explicit" }),
+        transportResult(2, { proposal, relationship_basis: "explicit" })
+      ]
+    }));
+
+    expect(output.recommendation).toBe("auto-apply");
+    expect(output.records).toHaveLength(2);
+    expect(output.records.every((record) => record.result.identity_state === "resolved")).toBe(true);
+    expect(output.records.every((record) => record.result.relationship_basis === "explicit")).toBe(true);
+  });
+
+  it("persists ambiguous identity state and keeps the candidate in owner review", async () => {
+    const output = await runCanonicalResearchCandidate(runnerInput({
+      run: async () => [
+        transportResult(1, { identity_state: "ambiguous" }),
+        transportResult(2, { identity_state: "ambiguous" })
+      ]
+    }));
+
+    expect(output.records).toHaveLength(2);
+    expect(output.records.every((record) => record.result.identity_state === "ambiguous")).toBe(true);
+    expect(output.recommendation).toBe("owner-review");
+    expect(output.receipt.reason_codes).toContain("identity-ambiguous");
+  });
+
   it("returns exact prior bytes without replacement drafts on replay", async () => {
     const transport = { run: async () => [transportResult(1), transportResult(2)] };
     const first = await runCanonicalResearchCandidate(runnerInput(transport));
@@ -166,6 +204,29 @@ describe("canonical research runner", () => {
     });
     result.research_result_id = `la_object_${hashText(resultIdentity).slice("sha256:".length, "sha256:".length + 24)}`;
     const run = vi.fn(async () => [transportResult(1)]);
+
+    await expect(runCanonicalResearchCandidate(runnerInput({ run }, { prior_records: forged })))
+      .rejects.toThrow("prior research record is invalid");
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  it("rejects a prior relationship record with a forged deterministic edge ID", async () => {
+    const proposal = {
+      kind: "relationship" as const,
+      source_entity_id: "la_object_researchperson0001",
+      source_type: "person" as const,
+      target_entity_id: "la_object_researchorganization0001",
+      target_type: "organization" as const,
+      predicate: "advises" as const,
+      valid_from: "2026"
+    };
+    const source = transportResult(1, { proposal, relationship_basis: "explicit" });
+    const first = await runCanonicalResearchCandidate(runnerInput({ run: async () => [source] }));
+    const forged = structuredClone(first.records);
+    const storedProposal = forged[0]!.proposal;
+    if (storedProposal.schema !== "atlas.relationship:v2") throw new Error("expected relationship proposal");
+    storedProposal.edge_id = "la_edge_researchforgedprior0001";
+    const run = vi.fn(async () => [source]);
 
     await expect(runCanonicalResearchCandidate(runnerInput({ run }, { prior_records: forged })))
       .rejects.toThrow("prior research record is invalid");
@@ -227,6 +288,24 @@ describe("canonical research runner", () => {
       result: transportResult(1, {
         content_hash: "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
       })
+    },
+    {
+      label: "a missing identity-state marker",
+      result: { ...transportResult(1), identity_state: undefined }
+    },
+    {
+      label: "a relationship without a basis marker",
+      result: transportResult(1, {
+        proposal: {
+          kind: "relationship",
+          source_entity_id: "la_object_researchperson0001",
+          source_type: "person",
+          target_entity_id: "la_object_researchorganization0001",
+          target_type: "organization",
+          predicate: "advises",
+          valid_from: "2026"
+        }
+      } as never)
     },
     {
       label: "an extra whole-profile field",

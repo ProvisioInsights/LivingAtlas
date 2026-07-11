@@ -64,6 +64,7 @@ function researchResultInput() {
     evidence_content_hash: hash,
     retrieved_at: timestamp,
     stance: "supports",
+    identity_state: "resolved",
     identity_confidence: {
       band: "high",
       assessment_kind: "identity",
@@ -530,6 +531,25 @@ describe("canonical knowledge payload contracts", () => {
         ...researchResultInput().identity_confidence,
         evidence_refs: ["la_object_otherresearchvidence0001"]
       }
+    }).success).toBe(false);
+  });
+
+  it("persists strict research identity state and relationship basis markers", () => {
+    expect(CanonicalResearchResultPayloadSchema.safeParse({
+      ...researchResultInput(),
+      identity_state: undefined
+    }).success).toBe(false);
+    expect(CanonicalResearchResultPayloadSchema.safeParse({
+      ...researchResultInput(),
+      identity_state: "synthetic-unknown"
+    }).success).toBe(false);
+    expect(CanonicalResearchResultPayloadSchema.safeParse({
+      ...researchResultInput(),
+      relationship_basis: "explicit"
+    }).success).toBe(true);
+    expect(CanonicalResearchResultPayloadSchema.safeParse({
+      ...researchResultInput(),
+      relationship_basis: "synthetic-unknown"
     }).success).toBe(false);
   });
 

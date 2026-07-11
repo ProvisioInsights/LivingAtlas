@@ -26,7 +26,10 @@ import {
   type CanonicalReviewItemPayload
 } from "@living-atlas/contracts";
 import {
+  canonicalResearchEvidenceId,
   canonicalResearchMutationFingerprint,
+  canonicalResearchResultId,
+  canonicalResearchRunId,
   summarizeResearchRecommendation,
   type CanonicalResearchProposal,
   type ResearchRecommendationReasonCode
@@ -70,6 +73,7 @@ const CanonicalResearchTransportResultSchema = z.object({
   excerpt: z.string().max(4_096).optional(),
   snapshot_ref: ObjectIdSchema.optional(),
   stance: EvidenceStanceSchema,
+  identity_state: z.enum(["resolved", "ambiguous"]),
   identity_confidence: z.object({
     band: z.enum(["high", "medium", "low"]),
     method: boundedIdentifier,
@@ -90,6 +94,13 @@ const CanonicalResearchTransportResultSchema = z.object({
       code: "custom",
       path: ["relationship_basis"],
       message: "relationship_basis is valid only for relationship proposals"
+    });
+  }
+  if (result.proposal.kind === "relationship" && result.relationship_basis === undefined) {
+    context.addIssue({
+      code: "custom",
+      path: ["relationship_basis"],
+      message: "relationship proposals require relationship_basis"
     });
   }
 });
@@ -165,20 +176,6 @@ function sha256(value: string): `sha256:${string}` {
   return `sha256:${createHash("sha256").update(value).digest("hex")}`;
 }
 
-function atlasId(prefix: "la_object" | "la_edge" | "la_research_run", value: unknown): string {
-  return `${prefix}_${sha256(stableJson(value)).slice("sha256:".length, "sha256:".length + 24)}`;
-}
-
-function canonicalResearchRunId(input: {
-  candidate_id: string;
-  source_unit_id: string;
-  connector_kind: CanonicalResearchConnectorKind;
-  normalized_query_hash: string;
-  algorithm_version: string;
-}): string {
-  return atlasId("la_research_run", input);
-}
-
 export function normalizeCanonicalResearchQuery(value: string): string {
   return value.normalize("NFKC").trim().replace(/\s+/g, " ").toLowerCase();
 }
@@ -199,16 +196,8 @@ function connectorEvidenceKind(connector: CanonicalResearchConnectorKind): Canon
   }
 }
 
-function canonicalEvidenceId(input: { upstream_identity: string; locator: string; content_hash: string }): string {
-  return atlasId("la_object", {
-    upstream_identity: input.upstream_identity,
-    locator: input.locator,
-    content_hash: input.content_hash
-  });
-}
-
 function evidenceId(result: CanonicalResearchTransportResult): string {
-  return canonicalEvidenceId(result);
+  return canonicalResearchEvidenceId(result);
 }
 
 function evidencePayload(
@@ -317,17 +306,21 @@ function validatePriorRecord(value: CanonicalResearchRecord): CanonicalResearchR
     normalized_query_hash: result.normalized_query_hash,
     algorithm_version: result.algorithm_version
   });
-  const expectedResultId = atlasId("la_object", {
+  const expectedResultId = canonicalResearchResultId({
     run_id: result.run_id,
     evidence_id: result.evidence_id,
     proposed_mutation_hash: result.proposed_mutation_hash
   });
   const evidenceLinks = proposal.evidence_links;
   if (result.run_id !== expectedRunId
+    || (proposal.schema === "atlas.fact:v1" && result.relationship_basis !== undefined)
+    || (proposal.schema === "atlas.relationship:v2" && result.relationship_basis === undefined)
+    || (proposal.schema === "atlas.relationship:v2"
+      && proposal.edge_id !== `la_edge_${fingerprint.proposed_mutation_hash.slice("sha256:".length, "sha256:".length + 24)}`)
     || (proposal.schema === "atlas.relationship:v2" && Object.keys(proposal.attrs).length > 0)
     || result.research_result_id !== expectedResultId
     || result.evidence_id !== evidence.evidence_id
-    || evidence.evidence_id !== canonicalEvidenceId({
+    || evidence.evidence_id !== canonicalResearchEvidenceId({
       upstream_identity: result.upstream_identity,
       locator: evidence.locator,
       content_hash: evidence.content_hash
@@ -364,6 +357,7 @@ function replaySignature(record: CanonicalResearchRecord): string {
       evidence_content_hash: record.result.evidence_content_hash,
       retrieved_at: record.result.retrieved_at,
       stance: record.result.stance,
+      identity_state: record.result.identity_state,
       identity_confidence: {
         band: record.result.identity_confidence.band,
         method: record.result.identity_confidence.method,
@@ -373,7 +367,10 @@ function replaySignature(record: CanonicalResearchRecord): string {
           : {})
       },
       proposed_object_id: record.result.proposed_object_id,
-      proposed_mutation_hash: record.result.proposed_mutation_hash
+      proposed_mutation_hash: record.result.proposed_mutation_hash,
+      ...(record.result.relationship_basis
+        ? { relationship_basis: record.result.relationship_basis }
+        : {})
     },
     evidence: record.evidence,
     proposal: canonicalResearchMutationFingerprint(record.proposal)
@@ -577,7 +574,7 @@ export async function runCanonicalResearchCandidate(input: {
       rejectedReasons.push("invalid-transport-result");
     }
   }
-  const resultIdForSeed = (seed: CurrentSeed) => atlasId("la_object", {
+  const resultIdForSeed = (seed: CurrentSeed) => canonicalResearchResultId({
     run_id: runId,
     evidence_id: seed.evidence.evidence_id,
     proposed_mutation_hash: seed.fingerprint.proposed_mutation_hash
@@ -639,6 +636,7 @@ export async function runCanonicalResearchCandidate(input: {
       evidence_content_hash: seed.evidence.content_hash,
       retrieved_at: seed.transport.retrieved_at,
       stance: seed.transport.stance,
+      identity_state: seed.transport.identity_state,
       identity_confidence: {
         band: seed.transport.identity_confidence.band,
         method: seed.transport.identity_confidence.method,
@@ -648,7 +646,10 @@ export async function runCanonicalResearchCandidate(input: {
           : {})
       },
       proposed_object_id: seed.fingerprint.proposed_object_id,
-      proposed_mutation_hash: seed.fingerprint.proposed_mutation_hash
+      proposed_mutation_hash: seed.fingerprint.proposed_mutation_hash,
+      ...(seed.transport.relationship_basis
+        ? { relationship_basis: seed.transport.relationship_basis }
+        : {})
     },
     evidence: seed.evidence,
     proposal: seed.fingerprint
@@ -730,6 +731,7 @@ export async function runCanonicalResearchCandidate(input: {
       evidence_content_hash: seed.evidence.content_hash,
       retrieved_at: seed.transport.retrieved_at,
       stance: seed.transport.stance,
+      identity_state: seed.transport.identity_state,
       identity_confidence: {
         band: seed.transport.identity_confidence.band,
         assessment_kind: "identity",
@@ -742,6 +744,9 @@ export async function runCanonicalResearchCandidate(input: {
       },
       proposed_object_id: seed.fingerprint.proposed_object_id,
       proposed_mutation_hash: seed.fingerprint.proposed_mutation_hash,
+      ...(seed.transport.relationship_basis
+        ? { relationship_basis: seed.transport.relationship_basis }
+        : {}),
       recorded_at: recordedAt
     });
     const record = { result, evidence: seed.evidence, proposal };
@@ -775,13 +780,16 @@ export async function runCanonicalResearchCandidate(input: {
     const groupRecords = records.filter((record) => record.result.proposed_mutation_hash === groupKey);
     const proposal = proposalByHash.get(groupKey) ?? groupRecords[0]?.proposal;
     if (!proposal || groupRecords.length === 0) return [];
-    const relationshipBasis = currentSeeds.some((seed) => (
-      seed.fingerprint.proposed_mutation_hash === groupKey && seed.transport.relationship_basis === "inferred-sensitive"
-    )) ? "inferred-sensitive" as const : "explicit" as const;
+    const identityState = groupRecords.some((record) => record.result.identity_state === "ambiguous")
+      ? "ambiguous" as const
+      : "resolved" as const;
+    const relationshipBasis = groupRecords.some((record) => record.result.relationship_basis === "inferred-sensitive")
+      ? "inferred-sensitive" as const
+      : "explicit" as const;
     return [summarizeResearchRecommendation({
       proposal,
       ...canonicalResearchMutationFingerprint(proposal),
-      identity_state: "resolved",
+      identity_state: identityState,
       ...(proposal.schema === "atlas.relationship:v2" ? { relationship_basis: relationshipBasis } : {}),
       results: groupRecords.map((record) => record.result)
     })];

@@ -396,7 +396,9 @@ export const CanonicalResearchResultPayloadSchema = z.object({
   evidence_content_hash: Sha256HashSchema,
   retrieved_at: IsoTimestampSchema,
   stance: EvidenceStanceSchema,
+  identity_state: z.enum(["resolved", "ambiguous"]),
   identity_confidence: ConfidenceAssessmentSchema,
+  relationship_basis: z.enum(["explicit", "inferred-sensitive"]).optional(),
   proposed_object_id: ObjectIdSchema,
   proposed_mutation_hash: Sha256HashSchema,
   recorded_at: IsoTimestampSchema

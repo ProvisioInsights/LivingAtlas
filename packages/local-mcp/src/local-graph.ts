@@ -12,8 +12,11 @@ import {
   AccessClassSchema,
   CanonicalWriteSchema,
   type CanonicalEvidencePayload,
+  type CanonicalFactPayload,
   type CanonicalParityRecordPayload,
   type CanonicalPayload,
+  type CanonicalRelationshipPayload,
+  type CanonicalResearchResultPayload,
   type CanonicalReviewItemPayload,
   EncryptionClassSchema,
   GraphObjectEnvelopeSchema,
@@ -29,6 +32,13 @@ import {
   type TemporalEdge
 } from "@living-atlas/contracts";
 import { controlPlaneFixture, syntheticGraphObjects } from "@living-atlas/fixtures";
+import {
+  canonicalResearchEvidenceId,
+  canonicalResearchMutationFingerprint,
+  canonicalResearchResultId,
+  canonicalResearchRunId,
+  summarizeResearchRecommendation
+} from "@living-atlas/graph-service";
 import { accountSourceMeaning } from "@living-atlas/importer";
 import type {
   FileLocalGraphStore,
@@ -45,7 +55,11 @@ import {
   createLocalMcpLiveActivityEvent,
   type LocalMcpActivitySink
 } from "./activity";
-import { createLocalMcpAuditEvent, type LocalMcpAuditSink } from "./audit";
+import {
+  createLocalMcpAuditEvent,
+  type LocalMcpAuditSink,
+  type LocalMcpResearchAuditSummary
+} from "./audit";
 import {
   authenticateLocalMcp,
   InMemoryLocalMcpCredentialStore,
@@ -353,6 +367,7 @@ function recordToolDecision(input: {
   reason: string;
   operationId?: string;
   idempotencyKey?: string;
+  research?: LocalMcpResearchAuditSummary;
 }): void {
   input.context.auditSink?.record(
     createLocalMcpAuditEvent({
@@ -365,6 +380,7 @@ function recordToolDecision(input: {
       access_class: input.object?.access_class,
       operation_id: input.operationId,
       idempotency_key: input.idempotencyKey,
+      research: input.research,
       reason_code: input.reason,
       summary: input.allowed ? "Local MCP tool call allowed" : "Local MCP tool call denied"
     })
@@ -397,6 +413,65 @@ type LocalMcpAuthenticationResult = Awaited<ReturnType<typeof authenticateLocalM
 
 function nowForMutation(context: LocalMcpContext): string {
   return context.now ?? new Date().toISOString();
+}
+
+async function canonicalPayloadForMutationGuard(
+  context: LocalMcpContext,
+  object: GraphObjectEnvelope
+): Promise<CanonicalPayload | undefined> {
+  let payload = object.payload;
+  if (payload.kind !== "plaintext-json") {
+    payload = await context.decryptPayload?.(object).catch(() => undefined) ?? payload;
+  }
+  if (payload.kind !== "plaintext-json") return undefined;
+  const canonical = CanonicalWriteSchema.safeParse({
+    object_type: object.object_type,
+    payload: payload.data
+  });
+  return canonical.success && canonicalPayloadObjectId(canonical.data.payload) === object.object_id
+    ? canonical.data.payload
+    : undefined;
+}
+
+async function isImmutableResearchRecord(
+  context: LocalMcpContext,
+  object: GraphObjectEnvelope
+): Promise<boolean> {
+  const payload = await canonicalPayloadForMutationGuard(context, object);
+  if (!payload
+    && object.encryption_class === "client-encrypted"
+    && (object.object_type === "review"
+      || object.object_type === "evidence"
+      || object.object_type === "assertion"
+      || object.object_type === "edge")) {
+    return true;
+  }
+  if (payload?.schema === "atlas.research-result:v1"
+    || (payload?.schema === "atlas.evidence:v1"
+      && Boolean(researchConnectorKindForEvidence(payload)))) {
+    return true;
+  }
+  if (payload?.schema !== "atlas.fact:v1" && payload?.schema !== "atlas.relationship:v2") {
+    return false;
+  }
+  for (const link of payload.evidence_links) {
+    const evidenceObject = readContextObject(context, ObjectIdSchema.parse(link.evidence_id));
+    if (!evidenceObject || evidenceObject.visible_metadata.tombstone) continue;
+    const evidence = await canonicalPayloadForMutationGuard(context, evidenceObject);
+    if (!evidence && evidenceObject.encryption_class === "client-encrypted") return true;
+    if (evidence?.schema === "atlas.evidence:v1" && researchConnectorKindForEvidence(evidence)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+async function isCanonicalReviewItem(
+  context: LocalMcpContext,
+  object: GraphObjectEnvelope
+): Promise<boolean> {
+  const payload = await canonicalPayloadForMutationGuard(context, object);
+  return payload?.schema === "atlas.review-item:v1";
 }
 
 function syntheticStoreLimits(context: LocalMcpContext): LocalGraphSyntheticStoreLimits {
@@ -711,6 +786,15 @@ type ValidatedResolutionMutationSet = ParsedResolutionMutationSet & {
   review: CanonicalReviewItemPayload;
 };
 
+type ResearchGateFailureReason =
+  | "resolution-missing-reference"
+  | "research-evidence-insufficient"
+  | "research-evidence-conflict";
+
+type ResearchGateResult =
+  | { ok: true; audit?: LocalMcpResearchAuditSummary }
+  | { ok: false; reason: ResearchGateFailureReason; audit?: LocalMcpResearchAuditSummary };
+
 function stableJsonValue(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(stableJsonValue);
   if (!value || typeof value !== "object") return value;
@@ -746,6 +830,488 @@ function resolutionRequestFingerprint(input: {
       objects
     })))
   };
+}
+
+function researchAuditSummaryForResults(
+  results: readonly CanonicalResearchResultPayload[],
+  outcome: LocalMcpResearchAuditSummary["outcome"]
+): LocalMcpResearchAuditSummary {
+  return {
+    connector_kinds: [...new Set(results.map((result) => result.connector_kind))].sort(),
+    outcome,
+    independence_group_count: new Set(results.map((result) => result.independence_key)).size,
+    result_set_hash: sha256(JSON.stringify(stableJsonValue(results.map((result) => ({
+      research_result_id: result.research_result_id,
+      evidence_id: result.evidence_id,
+      proposed_object_id: result.proposed_object_id,
+      proposed_mutation_hash: result.proposed_mutation_hash
+    })).sort((left, right) => left.research_result_id.localeCompare(right.research_result_id)))))
+  };
+}
+
+function researchConnectorKindForEvidence(
+  evidence: CanonicalEvidencePayload
+): CanonicalResearchResultPayload["connector_kind"] | undefined {
+  switch (evidence.source_kind) {
+    case "public-web": return "public-web";
+    case "linkedin": return "linkedin";
+    case "connector":
+    case "other": return "local-corpus";
+    default: {
+      const extractionMatch = evidence.extraction_method?.match(
+        /^canonical-research-(public-web|linkedin|organization|local-corpus)-v1$/
+      );
+      return extractionMatch
+        ? extractionMatch[1] as CanonicalResearchResultPayload["connector_kind"]
+        : undefined;
+    }
+  }
+}
+
+function researchAuditSummaryForEvidence(
+  entries: readonly { evidence: CanonicalEvidencePayload; proposed_object_id: string }[],
+  outcome: LocalMcpResearchAuditSummary["outcome"]
+): LocalMcpResearchAuditSummary | undefined {
+  const connectorKinds = [...new Set(entries.flatMap(({ evidence }) => {
+    const connectorKind = researchConnectorKindForEvidence(evidence);
+    return connectorKind ? [connectorKind] : [];
+  }))].sort();
+  if (connectorKinds.length === 0) return undefined;
+  return {
+    connector_kinds: connectorKinds,
+    outcome,
+    independence_group_count: new Set(entries.map(({ evidence }) => evidence.independence_key)).size,
+    result_set_hash: sha256(JSON.stringify(stableJsonValue(entries.map(({ evidence, proposed_object_id }) => ({
+      evidence_id: evidence.evidence_id,
+      proposed_object_id,
+      evidence_content_hash: evidence.content_hash
+    })).sort((left, right) => (
+      left.proposed_object_id.localeCompare(right.proposed_object_id)
+      || left.evidence_id.localeCompare(right.evidence_id)
+    )))))
+  };
+}
+
+async function validateResearchAutoApply(input: {
+  context: LocalMcpContext;
+  candidateId: string;
+  currentReview?: CanonicalReviewItemPayload;
+  parsed: ParsedResolutionMutationSet;
+  review: CanonicalReviewItemPayload;
+}): Promise<ResearchGateResult> {
+  const autoApplying = input.review.recommendation === "auto-apply"
+    && input.review.resolution_state === "auto-applied";
+  const draftedResults = input.parsed.payloads.filter((payload): payload is CanonicalResearchResultPayload => (
+    payload.schema === "atlas.research-result:v1"
+  ));
+  const reviewOnlyAutoApply = input.parsed.drafts.length === 1
+    && input.parsed.drafts[0]!.object_id === input.review.review_id;
+  const draftsById = new Map(input.parsed.drafts.map((draft, index) => [
+    draft.object_id,
+    { draft, payload: input.parsed.payloads[index]! }
+  ]));
+  const durableCache = new Map<string, CanonicalPayload | null>();
+  const durablePayload = async (objectId: string): Promise<CanonicalPayload | undefined> => {
+    const cached = durableCache.get(objectId);
+    if (cached !== undefined) return cached ?? undefined;
+    const object = input.context.graphStore!.readObject(ObjectIdSchema.parse(objectId));
+    if (!object || object.visible_metadata.tombstone) {
+      durableCache.set(objectId, null);
+      return undefined;
+    }
+    let payload = object.payload;
+    if (payload.kind !== "plaintext-json") {
+      payload = await input.context.decryptPayload?.(object).catch(() => undefined) ?? payload;
+    }
+    if (payload.kind !== "plaintext-json") {
+      durableCache.set(objectId, null);
+      return undefined;
+    }
+    const canonical = CanonicalWriteSchema.safeParse({ object_type: object.object_type, payload: payload.data });
+    const value = canonical.success && canonicalPayloadObjectId(canonical.data.payload) === object.object_id
+      ? canonical.data.payload
+      : undefined;
+    durableCache.set(objectId, value ?? null);
+    return value;
+  };
+  const activePayload = async (objectId: string): Promise<CanonicalPayload | undefined> => {
+    const draft = draftsById.get(objectId);
+    if (draft) return draft.draft.visible_metadata.tombstone ? undefined : draft.payload;
+    return durablePayload(objectId);
+  };
+  const proposedIds = new Set(input.review.proposed_object_ids);
+  const resultsById = new Map(draftedResults.map((result) => [result.research_result_id, result]));
+  for (const objectId of proposedIds) {
+    const payload = await activePayload(objectId);
+    if (payload?.schema === "atlas.research-result:v1") {
+      resultsById.set(payload.research_result_id, payload);
+    }
+  }
+  let unreadableDurableReview = false;
+  let durableResultDraftCollision = false;
+  for (const object of input.context.graphStore!.listObjects()) {
+    if (object.object_type !== "review" || object.visible_metadata.tombstone) continue;
+    const payload = await durablePayload(object.object_id);
+    if (!payload) {
+      unreadableDurableReview = true;
+      continue;
+    }
+    if (payload?.schema === "atlas.research-result:v1" && payload.candidate_id === input.candidateId) {
+      if (draftsById.has(object.object_id)) durableResultDraftCollision = true;
+      resultsById.set(payload.research_result_id, payload);
+    }
+  }
+  const results = [...resultsById.values()]
+    .sort((left, right) => left.research_result_id.localeCompare(right.research_result_id));
+  if (autoApplying && (unreadableDurableReview || durableResultDraftCollision)) {
+    return {
+      ok: false,
+      reason: "research-evidence-conflict",
+      ...(results.length > 0
+        ? { audit: researchAuditSummaryForResults(results, "owner-review") }
+        : {})
+    };
+  }
+  if (!autoApplying) {
+    const outcome = input.review.recommendation === "research" ? "research" : "owner-review";
+    if (draftedResults.length > 0) {
+      return {
+        ok: false,
+        reason: outcome === "research" ? "research-evidence-insufficient" : "research-evidence-conflict",
+        audit: researchAuditSummaryForResults(results, outcome)
+      };
+    }
+    const standaloneResearchEvidence = input.parsed.payloads
+      .filter((payload): payload is CanonicalEvidencePayload => (
+        payload.schema === "atlas.evidence:v1" && Boolean(researchConnectorKindForEvidence(payload))
+      ))
+      .map((evidence) => ({ evidence, proposed_object_id: evidence.evidence_id }));
+    if (standaloneResearchEvidence.length > 0) {
+      const audit = researchAuditSummaryForEvidence(standaloneResearchEvidence, outcome);
+      return {
+        ok: false,
+        reason: outcome === "research" ? "research-evidence-insufficient" : "research-evidence-conflict",
+        ...(audit ? { audit } : {})
+      };
+    }
+    const draftsResearchProposal = results.some((result) => {
+      const proposed = draftsById.get(result.proposed_object_id)?.payload;
+      return proposed?.schema === "atlas.fact:v1" || proposed?.schema === "atlas.relationship:v2";
+    });
+    if (draftsResearchProposal) {
+      return {
+        ok: false,
+        reason: outcome === "research" ? "research-evidence-insufficient" : "research-evidence-conflict",
+        audit: researchAuditSummaryForResults(results, outcome)
+      };
+    }
+    const draftedResearchEvidence: Array<{
+      evidence: CanonicalEvidencePayload;
+      proposed_object_id: string;
+    }> = [];
+    for (const proposal of input.parsed.payloads) {
+      if (proposal.schema !== "atlas.fact:v1" && proposal.schema !== "atlas.relationship:v2") continue;
+      const evidenceIds = new Set([
+        ...proposal.evidence_links.map((link) => link.evidence_id),
+        ...proposal.confidence.evidence_refs
+      ]);
+      for (const evidenceId of evidenceIds) {
+        const evidence = await activePayload(evidenceId);
+        if (evidence?.schema === "atlas.evidence:v1" && researchConnectorKindForEvidence(evidence)) {
+          draftedResearchEvidence.push({
+            evidence,
+            proposed_object_id: canonicalPayloadObjectId(proposal)
+          });
+        }
+      }
+    }
+    if (draftedResearchEvidence.length === 0) return { ok: true };
+    const audit = researchAuditSummaryForEvidence(draftedResearchEvidence, outcome);
+    return {
+      ok: false,
+      reason: outcome === "research" ? "research-evidence-insufficient" : "research-evidence-conflict",
+      ...(audit ? { audit } : {})
+    };
+  }
+  if (results.length === 0) {
+    const omittedEvidence: Array<{
+      evidence: CanonicalEvidencePayload;
+      proposed_object_id: string;
+    }> = [];
+    const ownerSourceIndependenceKeys = new Set<string>();
+    for (const evidenceId of input.currentReview?.source_evidence_ids ?? []) {
+      const evidence = await activePayload(evidenceId);
+      if (evidence?.schema === "atlas.evidence:v1"
+        && evidence.source_kind === "migration"
+        && evidence.extraction_method === "canonical-markdown-lossless-v1") {
+        ownerSourceIndependenceKeys.add(evidence.independence_key);
+      }
+    }
+    for (const objectId of proposedIds) {
+      const proposal = await activePayload(objectId);
+      if (proposal?.schema !== "atlas.fact:v1" && proposal?.schema !== "atlas.relationship:v2") continue;
+      const linkedEvidenceIds = new Set(proposal.evidence_links.map((link) => link.evidence_id));
+      const proposalEvidenceIds = new Set([
+        ...linkedEvidenceIds,
+        ...proposal.confidence.evidence_refs
+      ]);
+      const researchEvidence: CanonicalEvidencePayload[] = [];
+      let ownerSourceMarked = false;
+      for (const evidenceId of proposalEvidenceIds) {
+        const evidence = await activePayload(evidenceId);
+        if (evidence?.schema === "atlas.evidence:v1"
+          && researchConnectorKindForEvidence(evidence)) {
+          researchEvidence.push(evidence);
+        }
+        if (linkedEvidenceIds.has(evidenceId)
+          && evidence?.schema === "atlas.evidence:v1"
+          && evidence.source_kind === "migration"
+          && (evidence.extraction_method === "canonical-markdown-lossless-v1"
+            || evidence.extraction_method === "canonical-source-unit-v1")
+          && ownerSourceIndependenceKeys.has(evidence.independence_key)) {
+          ownerSourceMarked = true;
+        }
+      }
+      if (researchEvidence.length > 0 && (!reviewOnlyAutoApply || !ownerSourceMarked)) {
+        omittedEvidence.push(...researchEvidence.map((evidence) => ({
+          evidence,
+          proposed_object_id: objectId
+        })));
+      }
+    }
+    if (omittedEvidence.length > 0) {
+      const audit = researchAuditSummaryForEvidence(omittedEvidence, "research");
+      return {
+        ok: false,
+        reason: "research-evidence-insufficient",
+        ...(audit ? { audit } : {})
+      };
+    }
+    return { ok: true };
+  }
+  const auditSummary = (outcome: LocalMcpResearchAuditSummary["outcome"]) => (
+    researchAuditSummaryForResults(results, outcome)
+  );
+  const conflict = (): ResearchGateResult => ({
+    ok: false,
+    reason: "research-evidence-conflict",
+    audit: auditSummary("owner-review")
+  });
+  const missing = (): ResearchGateResult => ({
+    ok: false,
+    reason: "resolution-missing-reference",
+    audit: auditSummary("owner-review")
+  });
+  if (!input.currentReview) return conflict();
+  for (const draftedResult of draftedResults) {
+    if (input.context.graphStore!.readObject(ObjectIdSchema.parse(draftedResult.research_result_id))) {
+      return conflict();
+    }
+  }
+  const groups = new Map<string, {
+    proposal: CanonicalFactPayload | CanonicalRelationshipPayload;
+    results: CanonicalResearchResultPayload[];
+  }>();
+  const proposalHashesByUnit = new Map<string, Set<string>>();
+  const expectedEvidenceKind = (result: CanonicalResearchResultPayload): CanonicalEvidencePayload["source_kind"] => (
+    result.connector_kind === "linkedin"
+      ? "linkedin"
+      : result.connector_kind === "local-corpus"
+        ? "connector"
+        : "public-web"
+  );
+
+  for (const result of results) {
+    if (!proposedIds.has(result.research_result_id)
+      || !proposedIds.has(result.evidence_id)
+      || !proposedIds.has(result.proposed_object_id)) {
+      return conflict();
+    }
+    if (result.candidate_id !== input.candidateId
+      || (!input.currentReview.research_requested_all
+        && !input.currentReview.research_requested_unit_hashes?.includes(result.source_unit_id))) {
+      return conflict();
+    }
+    if (draftsById.has(result.evidence_id)
+      && input.context.graphStore!.readObject(ObjectIdSchema.parse(result.evidence_id))) {
+      return conflict();
+    }
+    const evidence = await activePayload(result.evidence_id);
+    const proposal = await activePayload(result.proposed_object_id);
+    if (!evidence || evidence.schema !== "atlas.evidence:v1"
+      || !proposal || (proposal.schema !== "atlas.fact:v1" && proposal.schema !== "atlas.relationship:v2")) {
+      return missing();
+    }
+    if (draftsById.has(result.proposed_object_id)) {
+      const existingProposalObject = input.context.graphStore!.readObject(
+        ObjectIdSchema.parse(result.proposed_object_id)
+      );
+      if (existingProposalObject) {
+        const existingProposal = await durablePayload(result.proposed_object_id);
+        if (!existingProposal
+          || (existingProposal.schema !== "atlas.fact:v1" && existingProposal.schema !== "atlas.relationship:v2")
+          || JSON.stringify(stableJsonValue(existingProposal)) !== JSON.stringify(stableJsonValue(proposal))) {
+          return conflict();
+        }
+      }
+    }
+    for (const evidenceRef of result.identity_confidence.evidence_refs) {
+      const referencedEvidence = await activePayload(evidenceRef);
+      if (!referencedEvidence || referencedEvidence.schema !== "atlas.evidence:v1") return missing();
+    }
+    if (evidence.snapshot_ref) {
+      const snapshot = input.context.graphStore!.readObject(ObjectIdSchema.parse(evidence.snapshot_ref));
+      if (!snapshot
+        || snapshot.visible_metadata.tombstone
+        || snapshot.object_type !== "attachment"
+        || snapshot.access_class !== "local-private"
+        || snapshot.encryption_class !== "client-encrypted") {
+        return missing();
+      }
+    }
+    const fingerprint = canonicalResearchMutationFingerprint(proposal);
+    const expectedRunId = canonicalResearchRunId({
+      candidate_id: result.candidate_id,
+      source_unit_id: result.source_unit_id,
+      connector_kind: result.connector_kind,
+      normalized_query_hash: result.normalized_query_hash,
+      algorithm_version: result.algorithm_version
+    });
+    const expectedEvidenceId = canonicalResearchEvidenceId({
+      upstream_identity: result.upstream_identity,
+      locator: evidence.locator,
+      content_hash: evidence.content_hash
+    });
+    const expectedResultId = canonicalResearchResultId({
+      run_id: result.run_id,
+      evidence_id: result.evidence_id,
+      proposed_mutation_hash: result.proposed_mutation_hash
+    });
+    if (result.run_id !== expectedRunId
+      || result.evidence_id !== expectedEvidenceId
+      || result.research_result_id !== expectedResultId
+      || evidence.content_hash !== result.evidence_content_hash
+      || evidence.retrieved_at !== result.retrieved_at
+      || evidence.independence_key !== result.independence_key
+      || evidence.source_kind !== expectedEvidenceKind(result)
+      || evidence.extraction_method !== `canonical-research-${result.connector_kind}-v1`
+      || (evidence.excerpt !== undefined && sha256(evidence.excerpt) !== evidence.content_hash)
+      || fingerprint.proposed_object_id !== result.proposed_object_id
+      || fingerprint.proposed_mutation_hash !== result.proposed_mutation_hash
+      || (proposal.schema === "atlas.relationship:v2"
+        && proposal.edge_id !== `la_edge_${fingerprint.proposed_mutation_hash.slice("sha256:".length, "sha256:".length + 24)}`)
+      || (proposal.schema === "atlas.relationship:v2" && Object.keys(proposal.attrs).length > 0)
+      || !proposal.evidence_links.some((link) => (
+        link.evidence_id === result.evidence_id && link.stance === result.stance
+      ))
+      || !proposal.confidence.evidence_refs.includes(result.evidence_id)
+      || (proposal.schema === "atlas.fact:v1" && result.relationship_basis !== undefined)
+      || (proposal.schema === "atlas.relationship:v2" && result.relationship_basis === undefined)) {
+      return conflict();
+    }
+    const group = groups.get(result.proposed_mutation_hash);
+    if (group && canonicalPayloadObjectId(group.proposal) !== result.proposed_object_id) {
+      return conflict();
+    }
+    if (group) group.results.push(result);
+    else groups.set(result.proposed_mutation_hash, { proposal, results: [result] });
+    const unitProposals = proposalHashesByUnit.get(result.source_unit_id) ?? new Set<string>();
+    unitProposals.add(result.proposed_mutation_hash);
+    proposalHashesByUnit.set(result.source_unit_id, unitProposals);
+  }
+
+  for (const objectId of proposedIds) {
+    const proposal = await activePayload(objectId);
+    if (proposal?.schema !== "atlas.fact:v1" && proposal?.schema !== "atlas.relationship:v2") continue;
+    for (const link of proposal.evidence_links) {
+      const evidence = await activePayload(link.evidence_id);
+      if (!evidence || evidence.schema !== "atlas.evidence:v1") return missing();
+      const researchDerived = evidence.source_kind === "public-web"
+        || evidence.source_kind === "linkedin"
+        || evidence.source_kind === "connector"
+        || evidence.source_kind === "other"
+        || evidence.extraction_method?.startsWith("canonical-research-") === true;
+      if (researchDerived && !results.some((result) => (
+        result.proposed_object_id === objectId
+        && result.evidence_id === link.evidence_id
+        && result.stance === link.stance
+      ))) {
+        return conflict();
+      }
+    }
+  }
+
+  if ([...proposalHashesByUnit.values()].some((proposalHashes) => proposalHashes.size > 1)) {
+    return conflict();
+  }
+
+  for (const payload of input.parsed.payloads) {
+    if (payload.schema !== "atlas.fact:v1" && payload.schema !== "atlas.relationship:v2") continue;
+    const proposalId = canonicalPayloadObjectId(payload);
+    if (!results.some((result) => result.proposed_object_id === proposalId)) {
+      return conflict();
+    }
+  }
+
+  let hasInsufficientGroup = false;
+  for (const { proposal, results: groupResults } of groups.values()) {
+    const identityStates = new Set(groupResults.map((result) => result.identity_state));
+    const relationshipBases = new Set(groupResults.map((result) => result.relationship_basis ?? ""));
+    const resultEvidenceStances = new Map<string, CanonicalResearchResultPayload["stance"]>();
+    let stanceConflict = false;
+    for (const result of groupResults) {
+      const existingStance = resultEvidenceStances.get(result.evidence_id);
+      if (existingStance && existingStance !== result.stance) stanceConflict = true;
+      resultEvidenceStances.set(result.evidence_id, result.stance);
+    }
+    const confidenceEvidenceRefs = new Set(proposal.confidence.evidence_refs);
+    const sortedEvidenceLinks = [...proposal.evidence_links].sort((left, right) => (
+      left.evidence_id.localeCompare(right.evidence_id) || left.stance.localeCompare(right.stance)
+    ));
+    const canonicalEvidenceOrder = proposal.evidence_links.every((link, index) => (
+      link.evidence_id === sortedEvidenceLinks[index]?.evidence_id
+      && link.stance === sortedEvidenceLinks[index]?.stance
+    )) && proposal.confidence.evidence_refs.every((evidenceId, index) => (
+      evidenceId === [...proposal.confidence.evidence_refs].sort()[index]
+    ));
+    const exactEvidenceUnion = canonicalEvidenceOrder
+      && proposal.evidence_links.length === resultEvidenceStances.size
+      && proposal.evidence_links.every((link) => resultEvidenceStances.get(link.evidence_id) === link.stance)
+      && confidenceEvidenceRefs.size === proposal.confidence.evidence_refs.length
+      && confidenceEvidenceRefs.size === resultEvidenceStances.size
+      && [...resultEvidenceStances.keys()].every((evidenceId) => confidenceEvidenceRefs.has(evidenceId));
+    if (identityStates.size !== 1
+      || relationshipBases.size !== 1
+      || stanceConflict
+      || !exactEvidenceUnion
+      || proposal.confidence.band !== "high"
+      || proposal.confidence.assessment_kind !== "assertion") {
+      return conflict();
+    }
+    const summary = summarizeResearchRecommendation({
+      proposal,
+      ...canonicalResearchMutationFingerprint(proposal),
+      identity_state: groupResults[0]!.identity_state,
+      ...(proposal.schema === "atlas.relationship:v2"
+        ? { relationship_basis: groupResults[0]!.relationship_basis }
+        : {}),
+      results: groupResults
+    });
+    if (summary.recommendation === "owner-review") {
+      return conflict();
+    }
+    if (summary.recommendation === "research") {
+      hasInsufficientGroup = true;
+    }
+  }
+  if (hasInsufficientGroup) {
+    return {
+      ok: false,
+      reason: "research-evidence-insufficient",
+      audit: auditSummary("research")
+    };
+  }
+  return { ok: true, audit: auditSummary("auto-apply") };
 }
 
 async function validateCanonicalMutationSet(input: {
@@ -907,6 +1473,15 @@ async function validateCanonicalMutationSet(input: {
           ...payload.supersedes.map((objectId) => ({ objectId, objectType: "review" as const }))
         );
         break;
+      case "atlas.research-result:v1":
+        typedReferences.push(
+          { objectId: payload.evidence_id, objectType: "evidence" },
+          ...payload.identity_confidence.evidence_refs.map((objectId) => ({
+            objectId,
+            objectType: "evidence" as const
+          }))
+        );
+        break;
       case "atlas.review-item:v1":
         typedReferences.push(
           ...(payload.source_evidence_ids ?? []).map((objectId) => ({ objectId, objectType: "evidence" as const }))
@@ -1020,6 +1595,7 @@ async function reconcileResolutionRecord(input: {
   authenticated: LocalMcpAuthenticatedClient;
   operationRecord: LocalGraphOperationRecord;
   candidateIds: string[];
+  researchAudit?: LocalMcpResearchAuditSummary;
 }): Promise<LocalGraphToolResult<LocalResolutionReceipt>> {
   const pairs = resolutionOperationPairs(input.operationRecord);
   if (!pairs) {
@@ -1047,7 +1623,8 @@ async function reconcileResolutionRecord(input: {
       allowed: true,
       reason: "resolution-committed",
       operationId: input.operationRecord.operation_id,
-      idempotencyKey: input.operationRecord.idempotency_key
+      idempotencyKey: input.operationRecord.idempotency_key,
+      research: input.researchAudit
     });
   } catch {
     audit = "reconciliation-required";
@@ -1158,7 +1735,8 @@ export async function localResolutionApply(
       context,
       authenticated: auth.authenticated,
       operationRecord: prior,
-      candidateIds: [input.candidate_id]
+      candidateIds: [input.candidate_id],
+      ...(prior.research_audit ? { researchAudit: prior.research_audit } : {})
     });
   }
 
@@ -1196,10 +1774,109 @@ export async function localResolutionApply(
       return { ok: false, reason: "resolution-review-mismatch" };
     }
   }
+  if (existingReview && existingReview.version !== input.expected_review_version) {
+    return { ok: false, reason: "resolution-review-version-conflict" };
+  }
+  if (context.graphStore.status().generation !== input.expected_generation) {
+    return { ok: false, reason: "generation-conflict" };
+  }
+  if (review.recommendation === "auto-apply"
+    && review.resolution_state === "auto-applied"
+    && (existingReviewPayload?.auto_apply_blockers?.length ?? 0) > 0) {
+    return { ok: false, reason: "resolution-review-mismatch" };
+  }
+  const parsedPayloadById = new Map(parsedDrafts.map((draft, index) => [
+    draft.object_id,
+    payloads[index]!
+  ]));
+  for (const [index, draft] of parsedDrafts.entries()) {
+    const existing = context.graphStore.readObject(ObjectIdSchema.parse(draft.object_id));
+    if (existing && await isImmutableResearchRecord(context, existing)) {
+      const attemptedPayload = payloads[index]!;
+      const existingPayload = await canonicalPayloadForMutationGuard(context, existing);
+      const auditPayloads = [existingPayload, attemptedPayload]
+        .filter((payload): payload is CanonicalPayload => Boolean(payload));
+      let researchAudit: LocalMcpResearchAuditSummary | undefined;
+      const resultPayloads = auditPayloads.filter((payload): payload is CanonicalResearchResultPayload => (
+        payload.schema === "atlas.research-result:v1"
+      ));
+      if (resultPayloads.length > 0) {
+        researchAudit = researchAuditSummaryForResults(resultPayloads, "owner-review");
+      } else {
+        const entries: Array<{ evidence: CanonicalEvidencePayload; proposed_object_id: string }> = [];
+        for (const auditPayload of auditPayloads) {
+          if (auditPayload.schema === "atlas.evidence:v1"
+            && researchConnectorKindForEvidence(auditPayload)) {
+            entries.push({ evidence: auditPayload, proposed_object_id: auditPayload.evidence_id });
+            continue;
+          }
+          if (auditPayload.schema !== "atlas.fact:v1" && auditPayload.schema !== "atlas.relationship:v2") {
+            continue;
+          }
+          for (const link of auditPayload.evidence_links) {
+            const evidenceCandidates: CanonicalEvidencePayload[] = [];
+            const draftedEvidence = parsedPayloadById.get(link.evidence_id);
+            if (draftedEvidence?.schema === "atlas.evidence:v1") evidenceCandidates.push(draftedEvidence);
+            const evidenceObject = context.graphStore.readObject(ObjectIdSchema.parse(link.evidence_id));
+            if (evidenceObject && !evidenceObject.visible_metadata.tombstone) {
+              const durableEvidence = await canonicalPayloadForMutationGuard(context, evidenceObject);
+              if (durableEvidence?.schema === "atlas.evidence:v1") evidenceCandidates.push(durableEvidence);
+            }
+            for (const evidence of evidenceCandidates) {
+              if (researchConnectorKindForEvidence(evidence)) {
+                entries.push({ evidence, proposed_object_id: canonicalPayloadObjectId(auditPayload) });
+              }
+            }
+          }
+        }
+        researchAudit = researchAuditSummaryForEvidence(entries, "owner-review");
+      }
+      recordToolDecision({
+        context,
+        authenticated: auth.authenticated,
+        toolName: "resolution_apply",
+        operation: "update",
+        object: existing,
+        allowed: false,
+        reason: "research-evidence-conflict",
+        operationId: input.operation_id,
+        idempotencyKey: input.idempotency_key,
+        ...(researchAudit ? { research: researchAudit } : {})
+      });
+      return { ok: false, reason: "research-evidence-conflict" };
+    }
+  }
+  const researchGate = await validateResearchAutoApply({
+    context,
+    candidateId: input.candidate_id,
+    currentReview: existingReviewPayload,
+    parsed,
+    review
+  });
+  if (!researchGate.ok) {
+    recordToolDecision({
+      context,
+      authenticated: auth.authenticated,
+      toolName: "resolution_apply",
+      operation: "create",
+      allowed: false,
+      reason: researchGate.reason,
+      operationId: input.operation_id,
+      idempotencyKey: input.idempotency_key,
+      ...(researchGate.audit ? { research: researchGate.audit } : {})
+    });
+    return { ok: false, reason: researchGate.reason };
+  }
   const reviewOnlyAutoApply = parsedDrafts.length === 1
     && parsedDrafts[0]!.object_id === review.review_id
     && review.recommendation === "auto-apply"
     && review.resolution_state === "auto-applied";
+  if (review.recommendation === "auto-apply"
+    && review.resolution_state === "auto-applied"
+    && !reviewOnlyAutoApply
+    && !researchGate.audit) {
+    return { ok: false, reason: "resolution-review-mismatch" };
+  }
   if (reviewOnlyAutoApply) {
     if (!existingReview || !existingReviewPayload || existingReview.visible_metadata.tombstone) {
       return { ok: false, reason: "resolution-review-mismatch" };
@@ -1245,12 +1922,6 @@ export async function localResolutionApply(
       return { ok: false, reason: "resolution-review-mismatch" };
     }
   }
-  if (existingReview && existingReview.version !== input.expected_review_version) {
-    return { ok: false, reason: "resolution-review-version-conflict" };
-  }
-  if (context.graphStore.status().generation !== input.expected_generation) {
-    return { ok: false, reason: "generation-conflict" };
-  }
   for (const draft of parsedDrafts) {
     const operation: Operation = context.graphStore.readObject(draft.object_id) ? "update" : "create";
     const decision = evaluatePolicy({
@@ -1282,6 +1953,7 @@ export async function localResolutionApply(
     operation_id: input.operation_id,
     idempotency_key: input.idempotency_key,
     request_fingerprint: requestFingerprint,
+    ...(researchGate.audit ? { research_audit: researchGate.audit } : {}),
     recorded_at: nowForMutation(context),
     writes: parsedDrafts.map((draft) => {
       const existing = context.graphStore!.readObject(draft.object_id);
@@ -1297,7 +1969,8 @@ export async function localResolutionApply(
     context,
     authenticated: auth.authenticated,
     operationRecord: transaction.operation_record,
-    candidateIds: [input.candidate_id]
+    candidateIds: [input.candidate_id],
+    researchAudit: researchGate.audit
   });
 }
 
@@ -1441,6 +2114,97 @@ export async function localCreateObject(
       reason: "object-authority-mismatch"
     });
     return { ok: false, reason: "object-authority-mismatch" };
+  }
+
+  let canonicalCreatePayload: CanonicalPayload | undefined;
+  const plaintextSchema = object.payload.kind === "plaintext-json"
+    && typeof object.payload.data.schema === "string"
+    ? object.payload.data.schema
+    : undefined;
+  const canonicalObjectType = object.object_type === "entity"
+    || object.object_type === "evidence"
+    || object.object_type === "assertion"
+    || object.object_type === "edge"
+    || object.object_type === "review"
+    || object.object_type === "manifest";
+  const requiresCanonicalValidation = (
+    plaintextSchema?.startsWith("atlas.") === true
+    || object.visible_metadata.schema_namespace?.startsWith("atlas/") === true
+    || (object.access_class === "local-private" && canonicalObjectType)
+  );
+  if (requiresCanonicalValidation) {
+    if (object.payload.kind === "plaintext-json") {
+      const canonical = CanonicalWriteSchema.safeParse({
+        object_type: object.object_type,
+        payload: object.payload.data
+      });
+      if (canonical.success && canonicalPayloadObjectId(canonical.data.payload) === object.object_id) {
+        canonicalCreatePayload = canonical.data.payload;
+      }
+    } else {
+      const envelope = GraphObjectEnvelopeSchema.safeParse(object);
+      if (envelope.success) {
+        canonicalCreatePayload = await canonicalPayloadForMutationGuard(context, envelope.data);
+      }
+    }
+    if (!canonicalCreatePayload) {
+      recordToolDecision({
+        context,
+        authenticated: auth.authenticated,
+        toolName: "object_create",
+        operation: "create",
+        object: policyObject,
+        allowed: false,
+        reason: "invalid-canonical-write"
+      });
+      return { ok: false, reason: "invalid-canonical-write" };
+    }
+  }
+  if (canonicalCreatePayload?.schema === "atlas.review-item:v1") {
+    recordToolDecision({
+      context,
+      authenticated: auth.authenticated,
+      toolName: "object_create",
+      operation: "create",
+      object: policyObject,
+      allowed: false,
+      reason: "review-record-requires-resolution"
+    });
+    return { ok: false, reason: "review-record-requires-resolution" };
+  }
+  let researchRecordRequiresResolution = canonicalCreatePayload?.schema === "atlas.research-result:v1"
+    || (canonicalCreatePayload?.schema === "atlas.evidence:v1"
+      && Boolean(researchConnectorKindForEvidence(canonicalCreatePayload)));
+  if (canonicalCreatePayload?.schema === "atlas.fact:v1"
+    || canonicalCreatePayload?.schema === "atlas.relationship:v2") {
+    for (const link of canonicalCreatePayload.evidence_links) {
+      const evidenceObject = readContextObject(context, ObjectIdSchema.parse(link.evidence_id));
+      if (!evidenceObject || evidenceObject.visible_metadata.tombstone) {
+        researchRecordRequiresResolution = true;
+        break;
+      }
+      const evidence = await canonicalPayloadForMutationGuard(context, evidenceObject);
+      if (!evidence && evidenceObject.encryption_class === "client-encrypted") {
+        researchRecordRequiresResolution = true;
+        break;
+      }
+      if (evidence?.schema === "atlas.evidence:v1" && researchConnectorKindForEvidence(evidence)) {
+        researchRecordRequiresResolution = true;
+        break;
+      }
+    }
+  }
+  if (researchRecordRequiresResolution) {
+    recordToolDecision({
+      context,
+      authenticated: auth.authenticated,
+      toolName: "object_create",
+      operation: "create",
+      object: policyObject,
+      allowed: false,
+      reason: "research-record-requires-resolution"
+    });
+    return { ok: false, reason: "research-record-requires-resolution" };
   }
 
   if (readContextObject(context, object.object_id)) {
@@ -1659,7 +2423,31 @@ export async function localUpdateObject(
     });
     return { ok: false, reason: "version-conflict" };
   }
-
+  if ((existingObject.object_type === "review" || existingObject.object_type === "evidence")
+    && await isImmutableResearchRecord(context, existingObject)) {
+    recordToolDecision({
+      context,
+      authenticated: auth.authenticated,
+      toolName: "object_update",
+      operation: "update",
+      object: existingObject,
+      allowed: false,
+      reason: "research-record-immutable"
+    });
+    return { ok: false, reason: "research-record-immutable" };
+  }
+  if (await isCanonicalReviewItem(context, existingObject)) {
+    recordToolDecision({
+      context,
+      authenticated: auth.authenticated,
+      toolName: "object_update",
+      operation: "update",
+      object: existingObject,
+      allowed: false,
+      reason: "review-record-requires-resolution"
+    });
+    return { ok: false, reason: "review-record-requires-resolution" };
+  }
   const patch = parsedPatch.data;
   const existingDecision = evaluatePolicy({
     profile: auth.authenticated.capability.profile,
@@ -1713,6 +2501,18 @@ export async function localUpdateObject(
       reason: "plaintext-not-available-through-local-mcp"
     });
     return { ok: false, reason: "plaintext-not-available-through-local-mcp" };
+  }
+  if (await isImmutableResearchRecord(context, existingObject)) {
+    recordToolDecision({
+      context,
+      authenticated: auth.authenticated,
+      toolName: "object_update",
+      operation: "update",
+      object: existingObject,
+      allowed: false,
+      reason: "research-record-immutable"
+    });
+    return { ok: false, reason: "research-record-immutable" };
   }
   const nextPayload = patch.payload ?? decryptedExistingPayload ?? existingObject.payload;
   const candidateInput = {
@@ -1927,6 +2727,30 @@ export async function localTombstoneObject(
       reason: "version-conflict"
     });
     return { ok: false, reason: "version-conflict" };
+  }
+  if (await isImmutableResearchRecord(context, existingObject)) {
+    recordToolDecision({
+      context,
+      authenticated: auth.authenticated,
+      toolName: "object_delete",
+      operation: "delete",
+      object: existingObject,
+      allowed: false,
+      reason: "research-record-immutable"
+    });
+    return { ok: false, reason: "research-record-immutable" };
+  }
+  if (await isCanonicalReviewItem(context, existingObject)) {
+    recordToolDecision({
+      context,
+      authenticated: auth.authenticated,
+      toolName: "object_delete",
+      operation: "delete",
+      object: existingObject,
+      allowed: false,
+      reason: "review-record-requires-resolution"
+    });
+    return { ok: false, reason: "review-record-requires-resolution" };
   }
 
   const decision = evaluatePolicy({

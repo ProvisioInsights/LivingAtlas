@@ -440,6 +440,7 @@ describe("canonical isolated-copy runner guard", () => {
       evidence_content_hash: evidence.payload.content_hash,
       retrieved_at: evidence.payload.retrieved_at,
       stance: "supports",
+      identity_state: "resolved",
       identity_confidence: {
         band: "high",
         assessment_kind: "identity",
