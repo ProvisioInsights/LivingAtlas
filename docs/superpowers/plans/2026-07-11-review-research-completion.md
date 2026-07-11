@@ -285,20 +285,25 @@ Commit: `feat(review): add reversible edits and merges`
 ### Task 7: Browser QA And Private Isolated-Copy Reduction
 
 **Files:**
+- Create: `packages/check/src/canonical-source-refresh.ts`
+- Create: `packages/check/src/canonical-source-refresh.test.ts`
+- Modify: `package.json`
 - Private runtime artifacts only for the isolated copy and counts-only receipts.
 - No personal source or research content is committed.
 
 **Interfaces:**
 - Consumes: the new loopback review launcher from the production-cutover plan, the frozen working copy, and private research packets.
-- Produces: a new versioned isolated candidate, counts-only research/auto-apply report, and screenshots outside the repository.
+- Produces: `canonical:refresh-source`, a new versioned isolated candidate, counts-only research/auto-apply report, and screenshots outside the repository.
 
 - [ ] **Step 1: Verify synthetic browser flows**
 
 Use 1440×900, 1024×768, 390×844, and 640 CSS px/200% zoom. Prove page identity, nonblank rendering, no framework overlay, console health, source-to-destination hover/focus, graph/evidence display, batch preview, edit, merge, research, defer, and partial-result recovery.
 
-- [ ] **Step 2: Refresh the disposable working copy and record the delta**
+- [ ] **Step 2: Three-way refresh into a new disposable copy and record the delta**
 
-Run the existing read-only-source refresh script. Require live-source before/after manifests to match and write the working-copy delta manifest. Never write to the live source or frozen baseline.
+Create the new copy from the current live source, then apply the prior working copy's tracked and untracked delta against their common Git base with a three-way merge. Never overwrite the current working copy in place. Require live-source before/after manifests to match, write counts-and-hashes-only manifests for the live delta and preserved working delta, and stop with both variants intact when the same path overlaps instead of choosing one. Never write to the live source, frozen baseline, prior working copy, or its preserved snapshot.
+
+Run: `pnpm vitest run packages/check/src/canonical-source-refresh.test.ts`
 
 - [ ] **Step 3: Build a fresh encrypted candidate**
 
