@@ -23,11 +23,13 @@ function resolution(input: Pick<CanonicalEntityResolutionPayload, "resolution_id
   return {
     schema: "atlas.entity-resolution:v1",
     resolution_id,
+    actor_id: "synthetic-reviewer",
     observed_identifiers: ["synthetic-identity"],
     candidate_entity_ids: [entityA, entityB],
     decision,
     canonical_entity_id: decision === "merge" || decision === "link" ? entityA : undefined,
     evidence_refs: [evidenceId],
+    evidence_links: [{ evidence_id: evidenceId, stance: "supports" }],
     confidence: {
       band: "high",
       assessment_kind: "identity",
@@ -84,6 +86,47 @@ function decryptCanonicalPayload(keyring: ReturnType<typeof createDefaultLocalKe
 }
 
 describe("canonical entity-resolution projection", () => {
+  it("keeps the first direct redirect and rejects a competing active merge", () => {
+    const first = resolution({ resolution_id: "la_object_resolutioncompete0001", decision: "merge" });
+    const competing = resolution({
+      resolution_id: "la_object_resolutioncompete0002",
+      decision: "merge",
+      candidate_entity_ids: [entityB, entityC],
+      canonical_entity_id: entityC,
+      recorded_at: "2026-07-10T12:01:00.000Z"
+    });
+
+    expect(projectCanonicalEntityResolutions([first, competing])).toEqual({
+      redirects: { [entityB]: entityA },
+      active_resolution_ids: [first.resolution_id],
+      superseded_resolution_ids: [],
+      invalid_resolution_ids: [competing.resolution_id]
+    });
+  });
+
+  it("replaces an active redirect only when the new merge explicitly supersedes it", () => {
+    const first = resolution({
+      resolution_id: "la_object_resolutionreplace0001",
+      decision: "merge",
+      candidate_entity_ids: [entityA, entityB, entityC]
+    });
+    const replacement = resolution({
+      resolution_id: "la_object_resolutionreplace0002",
+      decision: "merge",
+      candidate_entity_ids: [entityB, entityC],
+      canonical_entity_id: entityC,
+      supersedes: [first.resolution_id],
+      recorded_at: "2026-07-10T12:01:00.000Z"
+    });
+
+    expect(projectCanonicalEntityResolutions([first, replacement])).toEqual({
+      redirects: { [entityB]: entityC },
+      active_resolution_ids: [replacement.resolution_id],
+      superseded_resolution_ids: [first.resolution_id],
+      invalid_resolution_ids: []
+    });
+  });
+
   it("derives redirects without rewriting identities and reverses only a superseded merge", () => {
     const mergeBIntoA = resolution({ resolution_id: "la_object_resolutionmerge0001", decision: "merge" });
     const mergeCIntoB = resolution({
@@ -129,6 +172,7 @@ describe("canonical entity-resolution projection", () => {
     const projection = projectCanonicalEntityResolutions([first, cycle]);
 
     expect(projection.invalid_resolution_ids).toEqual([cycle.resolution_id]);
+    expect(projection.active_resolution_ids).toEqual([first.resolution_id]);
     expect(resolveCanonicalEntityId(entityB, projection).canonical_entity_id).toBe(entityA);
     expect(projectCanonicalEntityResolutions([first, cycle], { known_at: now }).invalid_resolution_ids).toEqual([]);
   });

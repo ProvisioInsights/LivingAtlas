@@ -30,6 +30,22 @@ const confidence = {
 
 const evidenceLinks = [{ evidence_id: evidenceId, stance: "supports" }] as const;
 
+function entityResolutionInput() {
+  return {
+    schema: "atlas.entity-resolution:v1",
+    resolution_id: "la_object_resolution0001",
+    actor_id: "synthetic-reviewer",
+    observed_identifiers: ["synthetic-identifier"],
+    candidate_entity_ids: ["la_object_entity0001", "la_object_entity0002"],
+    decision: "merge",
+    canonical_entity_id: "la_object_entity0001",
+    evidence_refs: [evidenceId],
+    evidence_links: [...evidenceLinks],
+    confidence,
+    recorded_at: timestamp
+  } as const;
+}
+
 describe("canonical knowledge payload contracts", () => {
   it("expands mixed-precision valid time and rejects empty canonical intervals", () => {
     expect(canonicalWorldTimeInterval("2026")).toEqual({
@@ -214,18 +230,74 @@ describe("canonical knowledge payload contracts", () => {
     expect(CanonicalEvidencePayloadSchema.safeParse({ ...emptyEvidence, excerpt: undefined }).success).toBe(false);
   });
 
-  it("requires durable identity, review, and parity records", () => {
-    const resolution = CanonicalEntityResolutionPayloadSchema.parse({
-      schema: "atlas.entity-resolution:v1",
-      resolution_id: "la_object_resolution0001",
-      observed_identifiers: ["synthetic-identifier"],
-      candidate_entity_ids: ["la_object_entity0001", "la_object_entity0002"],
-      decision: "merge",
-      canonical_entity_id: "la_object_entity0001",
-      evidence_refs: [evidenceId],
-      confidence,
-      recorded_at: timestamp
+  it("requires a bounded actor on every entity resolution", () => {
+    const { actor_id: _actorId, ...missingActor } = entityResolutionInput();
+    const missingResult = CanonicalEntityResolutionPayloadSchema.safeParse(missingActor);
+
+    expect(missingResult.success).toBe(false);
+    if (!missingResult.success) {
+      expect(missingResult.error.issues).toEqual(expect.arrayContaining([
+        expect.objectContaining({ path: ["actor_id"] })
+      ]));
+    }
+    expect(CanonicalEntityResolutionPayloadSchema.safeParse({
+      ...entityResolutionInput(),
+      actor_id: ""
+    }).success).toBe(false);
+    expect(CanonicalEntityResolutionPayloadSchema.safeParse({
+      ...entityResolutionInput(),
+      actor_id: "x".repeat(513)
+    }).success).toBe(false);
+  });
+
+  it("requires nonempty resolution evidence links whose IDs exactly match evidence refs", () => {
+    const { evidence_links: _evidenceLinks, ...missingLinks } = entityResolutionInput();
+    const missingResult = CanonicalEntityResolutionPayloadSchema.safeParse(missingLinks);
+    const emptyResult = CanonicalEntityResolutionPayloadSchema.safeParse({
+      ...entityResolutionInput(),
+      evidence_links: []
     });
+    const mismatchResult = CanonicalEntityResolutionPayloadSchema.safeParse({
+      ...entityResolutionInput(),
+      evidence_links: [{ evidence_id: "la_object_otherresolutionevidence0001", stance: "supports" }]
+    });
+
+    for (const result of [missingResult, emptyResult, mismatchResult]) {
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error.issues).toEqual(expect.arrayContaining([
+          expect.objectContaining({ path: ["evidence_links"] })
+        ]));
+      }
+    }
+  });
+
+  it("accepts support, refute, and context resolution evidence stances with exact evidence IDs", () => {
+    const linkedEvidenceIds = [
+      "la_object_resolutionevidence0001",
+      "la_object_resolutionevidence0002",
+      "la_object_resolutionevidence0003"
+    ];
+    const resolution = CanonicalEntityResolutionPayloadSchema.parse({
+      ...entityResolutionInput(),
+      evidence_refs: [...linkedEvidenceIds, linkedEvidenceIds[0]],
+      evidence_links: [
+        { evidence_id: linkedEvidenceIds[0], stance: "supports" },
+        { evidence_id: linkedEvidenceIds[1], stance: "refutes" },
+        { evidence_id: linkedEvidenceIds[2], stance: "context" }
+      ],
+      confidence: {
+        ...confidence,
+        evidence_refs: ["la_object_confidenceevidence0001"]
+      }
+    });
+
+    expect(resolution.evidence_links.map((link) => link.stance)).toEqual(["supports", "refutes", "context"]);
+    expect(resolution.confidence.evidence_refs).toEqual(["la_object_confidenceevidence0001"]);
+  });
+
+  it("requires durable identity, review, and parity records", () => {
+    const resolution = CanonicalEntityResolutionPayloadSchema.parse(entityResolutionInput());
     const review = CanonicalReviewItemPayloadSchema.parse({
       schema: "atlas.review-item:v1",
       review_id: "la_object_review0001",

@@ -306,11 +306,13 @@ export const EntityResolutionDecisionSchema = z.enum(["link", "merge", "split", 
 export const CanonicalEntityResolutionPayloadSchema = z.object({
   schema: z.literal(`${CanonicalSchemaNamespace}.entity-resolution:v1`),
   resolution_id: ObjectIdSchema,
+  actor_id: BoundedIdentifierSchema,
   observed_identifiers: z.array(BoundedIdentifierSchema).min(1),
   candidate_entity_ids: z.array(ObjectIdSchema).min(1),
   decision: EntityResolutionDecisionSchema,
   canonical_entity_id: ObjectIdSchema.optional(),
   evidence_refs: z.array(ObjectIdSchema).min(1),
+  evidence_links: z.array(AssertionEvidenceLinkSchema).min(1),
   confidence: ConfidenceAssessmentSchema,
   recorded_at: IsoTimestampSchema,
   supersedes: z.array(ObjectIdSchema).default([])
@@ -336,6 +338,16 @@ export const CanonicalEntityResolutionPayloadSchema = z.object({
       code: "custom",
       path: ["supersedes"],
       message: "split decisions must supersede one or more prior resolutions"
+    });
+  }
+  const evidenceRefIds = new Set(resolution.evidence_refs);
+  const linkedEvidenceIds = new Set(resolution.evidence_links.map((link) => link.evidence_id));
+  if (evidenceRefIds.size !== linkedEvidenceIds.size
+    || [...evidenceRefIds].some((evidenceId) => !linkedEvidenceIds.has(evidenceId))) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["evidence_links"],
+      message: "evidence link IDs must exactly match the unique evidence refs"
     });
   }
 });

@@ -42,6 +42,7 @@ export function projectCanonicalEntityResolutions(
   query: CanonicalEntityResolutionQuery = {}
 ): CanonicalEntityResolutionProjection {
   const direct = new Map<string, string>();
+  const directOwners = new Map<string, string>();
   const activeMerges = new Map<string, ActiveMerge>();
   const superseded = new Set<string>();
   const invalid = new Set<string>();
@@ -57,7 +58,10 @@ export function projectCanonicalEntityResolutions(
         const merge = activeMerges.get(supersededId);
         if (!merge) continue;
         for (const redirect of merge.redirects) {
-          if (direct.get(redirect.source) === redirect.target) direct.delete(redirect.source);
+          if (directOwners.get(redirect.source) === supersededId) {
+            direct.delete(redirect.source);
+            directOwners.delete(redirect.source);
+          }
         }
         activeMerges.delete(supersededId);
       }
@@ -70,12 +74,38 @@ export function projectCanonicalEntityResolutions(
       .filter((candidate) => candidate !== resolution.canonical_entity_id)
       .map((source) => ({ source, target }));
     const candidateDirect = new Map(direct);
+    const supersededMerges = resolution.supersedes.flatMap((supersededId) => {
+      const merge = activeMerges.get(supersededId);
+      return merge ? [{ supersededId, merge }] : [];
+    });
+    for (const { supersededId, merge } of supersededMerges) {
+      for (const redirect of merge.redirects) {
+        if (directOwners.get(redirect.source) === supersededId) candidateDirect.delete(redirect.source);
+      }
+    }
+    if (redirects.some((redirect) => candidateDirect.has(redirect.source))) {
+      invalid.add(resolution.resolution_id);
+      continue;
+    }
     for (const redirect of redirects) candidateDirect.set(redirect.source, redirect.target);
     if (redirects.some((redirect) => followsTo(candidateDirect, redirect.target, redirect.source))) {
       invalid.add(resolution.resolution_id);
       continue;
     }
-    for (const redirect of redirects) direct.set(redirect.source, redirect.target);
+    for (const { supersededId, merge } of supersededMerges) {
+      superseded.add(supersededId);
+      for (const redirect of merge.redirects) {
+        if (directOwners.get(redirect.source) === supersededId) {
+          direct.delete(redirect.source);
+          directOwners.delete(redirect.source);
+        }
+      }
+      activeMerges.delete(supersededId);
+    }
+    for (const redirect of redirects) {
+      direct.set(redirect.source, redirect.target);
+      directOwners.set(redirect.source, resolution.resolution_id);
+    }
     activeMerges.set(resolution.resolution_id, { redirects });
   }
 
