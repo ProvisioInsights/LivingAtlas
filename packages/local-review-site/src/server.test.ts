@@ -559,7 +559,8 @@ describe("local review site server", () => {
         ...originalObservations.get(editedObservationId),
         assertion_id: successor!.object_id,
         statement: intentionalWhitespaceEdit,
-        recorded_at: now
+        recorded_at: now,
+        supersedes: [editedObservationId]
       });
       expect(keptObservations.get(untouchedObservationId)?.statement).toBe(originalObservations.get(untouchedObservationId)?.statement);
       expect(keptObservations.get(untouchedObservationId)?.recorded_at).toBe(migrationRecordedAt);

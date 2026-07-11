@@ -229,8 +229,18 @@ export const CanonicalObservationPayloadSchema = z.object({
   candidate_entity_ids: z.array(ObjectIdSchema).default([]),
   resolution_state: ObservationResolutionStateSchema,
   recorded_at: IsoTimestampSchema,
-  evidence_refs: z.array(ObjectIdSchema).min(1)
-}).strict();
+  evidence_refs: z.array(ObjectIdSchema).min(1),
+  supersedes: z.array(AssertionIdSchema).min(1).optional()
+}).strict().superRefine((observation, ctx) => {
+  if (!observation.supersedes) return;
+  if (observation.supersedes.includes(observation.assertion_id)) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["supersedes"],
+      message: "an observation cannot supersede itself"
+    });
+  }
+});
 export type CanonicalObservationPayload = z.infer<typeof CanonicalObservationPayloadSchema>;
 
 export const CanonicalRelationshipPayloadSchema = z.object({
@@ -317,6 +327,16 @@ export const CanonicalEntityResolutionPayloadSchema = z.object({
   recorded_at: IsoTimestampSchema,
   supersedes: z.array(ObjectIdSchema).default([])
 }).strict().superRefine((resolution, ctx) => {
+  if (resolution.decision === "merge") {
+    const distinctCandidateIds = new Set(resolution.candidate_entity_ids);
+    if (distinctCandidateIds.size < 2 || distinctCandidateIds.size !== resolution.candidate_entity_ids.length) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["candidate_entity_ids"],
+        message: "merge decisions require at least two unique candidate entity IDs"
+      });
+    }
+  }
   if ((resolution.decision === "link" || resolution.decision === "merge") && !resolution.canonical_entity_id) {
     ctx.addIssue({
       code: "custom",

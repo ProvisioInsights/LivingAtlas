@@ -368,7 +368,8 @@ function buildReviewDecision(
           ...payload,
           assertion_id: successorObservationId(payload.assertion_id, editedStatement),
           statement: editedStatement,
-          recorded_at: recordedAt
+          recorded_at: recordedAt,
+          supersedes: [payload.assertion_id]
         }
       }];
     })

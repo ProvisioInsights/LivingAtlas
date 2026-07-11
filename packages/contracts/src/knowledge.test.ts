@@ -164,6 +164,31 @@ describe("canonical knowledge payload contracts", () => {
     }).success).toBe(false);
   });
 
+  it("keeps observation correction lineage optional but validates explicit predecessors", () => {
+    const original = CanonicalObservationPayloadSchema.parse({
+      schema: "atlas.observation:v1",
+      assertion_id: "la_object_observationlineage0001",
+      statement: "Synthetic original observation.",
+      resolution_state: "owner-review",
+      recorded_at: timestamp,
+      evidence_refs: [evidenceId]
+    });
+    const successor = CanonicalObservationPayloadSchema.parse({
+      ...original,
+      assertion_id: "la_object_observationlineage0002",
+      statement: "Synthetic corrected observation.",
+      supersedes: [original.assertion_id]
+    });
+
+    expect(original).not.toHaveProperty("supersedes");
+    expect(successor.supersedes).toEqual([original.assertion_id]);
+    expect(CanonicalObservationPayloadSchema.safeParse({ ...successor, supersedes: [] }).success).toBe(false);
+    expect(CanonicalObservationPayloadSchema.safeParse({
+      ...successor,
+      supersedes: [successor.assertion_id]
+    }).success).toBe(false);
+  });
+
   it("accepts a canonical relationship with temporal and evidence lineage", () => {
     const relationship = CanonicalRelationshipPayloadSchema.parse({
       schema: "atlas.relationship:v2",
@@ -270,6 +295,31 @@ describe("canonical knowledge payload contracts", () => {
         ]));
       }
     }
+  });
+
+  it("requires merge decisions to identify at least two distinct candidates", () => {
+    const singleton = CanonicalEntityResolutionPayloadSchema.safeParse({
+      ...entityResolutionInput(),
+      candidate_entity_ids: ["la_object_entity0001"]
+    });
+    const duplicate = CanonicalEntityResolutionPayloadSchema.safeParse({
+      ...entityResolutionInput(),
+      candidate_entity_ids: ["la_object_entity0001", "la_object_entity0001"]
+    });
+
+    for (const result of [singleton, duplicate]) {
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error.issues).toEqual(expect.arrayContaining([
+          expect.objectContaining({ path: ["candidate_entity_ids"] })
+        ]));
+      }
+    }
+    expect(CanonicalEntityResolutionPayloadSchema.safeParse({
+      ...entityResolutionInput(),
+      decision: "link",
+      candidate_entity_ids: ["la_object_entity0001"]
+    }).success).toBe(true);
   });
 
   it("accepts support, refute, and context resolution evidence stances with exact evidence IDs", () => {

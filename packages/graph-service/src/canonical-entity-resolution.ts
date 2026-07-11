@@ -70,9 +70,16 @@ export function projectCanonicalEntityResolutions(
     const target = resolution.canonical_entity_id;
     if (resolution.decision !== "merge" || !target) continue;
 
-    const redirects = resolution.candidate_entity_ids
+    const distinctCandidateIds = new Set(resolution.candidate_entity_ids);
+    const redirects = [...distinctCandidateIds]
       .filter((candidate) => candidate !== resolution.canonical_entity_id)
       .map((source) => ({ source, target }));
+    if (distinctCandidateIds.size < 2
+      || distinctCandidateIds.size !== resolution.candidate_entity_ids.length
+      || redirects.length === 0) {
+      invalid.add(resolution.resolution_id);
+      continue;
+    }
     const candidateDirect = new Map(direct);
     const supersededMerges = resolution.supersedes.flatMap((supersededId) => {
       const merge = activeMerges.get(supersededId);

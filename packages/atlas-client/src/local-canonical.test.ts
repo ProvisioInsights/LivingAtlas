@@ -24,6 +24,22 @@ function entityDraft() {
   };
 }
 
+function observationDraft(input: { objectId: string; statement: string; supersedes?: string[] }) {
+  return {
+    schema_version: 1 as const, authority_id: fixtureAuthorityId, object_id: input.objectId,
+    object_type: "assertion" as const, version: 1, access_class: "local-private" as const,
+    encryption_class: "plaintext" as const, created_at: now, updated_at: now,
+    content_hash: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    visible_metadata: { tombstone: false, remote_indexable: false },
+    payload: { kind: "plaintext-json" as const, data: {
+      schema: "atlas.observation:v1", assertion_id: input.objectId, statement: input.statement,
+      candidate_entity_ids: [], resolution_state: "owner-review", recorded_at: now,
+      evidence_refs: ["la_object_localclientevidence0001"],
+      ...(input.supersedes ? { supersedes: input.supersedes } : {})
+    } }
+  };
+}
+
 describe("local canonical Atlas client", () => {
   it("rejects a canonical import whose declared content hash does not match its payload", async () => {
     const sourceDir = await mkdtemp(join(tmpdir(), "living-atlas-local-forged-source-"));
@@ -86,6 +102,51 @@ describe("local canonical Atlas client", () => {
       await expect(targetClient.exportCanonical()).resolves.toEqual(exported);
       await expect(targetClient.importCanonical({ exported, expected_generation: 1, actor_id: fixtureLocalClientId, operation_id: "la_operation_localimport0002", idempotency_key: "la_idem_localimport0002" })).resolves.toMatchObject({ ok: false, reason: "object-already-exists", current_generation: 1 });
       expect(target.status()).toMatchObject({ generation: 1, object_count: 1 });
+    } finally {
+      await Promise.all([rm(sourceDir, { recursive: true, force: true }), rm(targetDir, { recursive: true, force: true })]);
+    }
+  });
+
+  it("preserves inspectable observation correction lineage through export and import", async () => {
+    const sourceDir = await mkdtemp(join(tmpdir(), "living-atlas-local-lineage-source-"));
+    const targetDir = await mkdtemp(join(tmpdir(), "living-atlas-local-lineage-target-"));
+    try {
+      const originalId = "la_object_localobservation0001";
+      const successorId = "la_object_localobservation0002";
+      const sourceKeyring = createDefaultLocalKeyring({ authorityId: fixtureAuthorityId, createdAt: now });
+      const source = await FileLocalGraphStore.open({ directory: sourceDir, authorityId: fixtureAuthorityId, plaintextPersistence: "encrypt", keyring: sourceKeyring });
+      await source.initializeFromObjects([
+        observationDraft({ objectId: originalId, statement: "Synthetic original observation." }),
+        observationDraft({ objectId: successorId, statement: "Synthetic corrected observation.", supersedes: [originalId] })
+      ]);
+      const decrypt = async (object: Parameters<typeof decryptGraphObjectPayload>[0]) => {
+        const payload = await decryptGraphObjectPayload(object, sourceKeyring);
+        return payload?.kind === "plaintext-json" ? payload.data : undefined;
+      };
+      const exported = await createLocalCanonicalAtlasClient({ graphStore: source, decryptPayload: decrypt, now }).exportCanonical();
+      const successor = exported.records.find((record) => record.object_id === successorId);
+
+      expect(successor?.payload).toMatchObject({
+        schema: "atlas.observation:v1",
+        assertion_id: successorId,
+        supersedes: [originalId]
+      });
+
+      const targetKeyring = createDefaultLocalKeyring({ authorityId: fixtureAuthorityId, createdAt: now });
+      const target = await FileLocalGraphStore.open({ directory: targetDir, authorityId: fixtureAuthorityId, plaintextPersistence: "encrypt", keyring: targetKeyring });
+      const targetDecrypt = async (object: Parameters<typeof decryptGraphObjectPayload>[0]) => {
+        const payload = await decryptGraphObjectPayload(object, targetKeyring);
+        return payload?.kind === "plaintext-json" ? payload.data : undefined;
+      };
+      const targetClient = createLocalCanonicalAtlasClient({ graphStore: target, decryptPayload: targetDecrypt, now });
+      await expect(targetClient.importCanonical({
+        exported,
+        expected_generation: 0,
+        actor_id: fixtureLocalClientId,
+        operation_id: "la_operation_locallineage0001",
+        idempotency_key: "la_idem_locallineage0001"
+      })).resolves.toMatchObject({ ok: true, generation: 1 });
+      await expect(targetClient.exportCanonical()).resolves.toEqual(exported);
     } finally {
       await Promise.all([rm(sourceDir, { recursive: true, force: true }), rm(targetDir, { recursive: true, force: true })]);
     }

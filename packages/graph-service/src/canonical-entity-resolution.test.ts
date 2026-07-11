@@ -127,6 +127,33 @@ describe("canonical entity-resolution projection", () => {
     });
   });
 
+  it("keeps active redirects when a singleton or duplicate merge tries to supersede them", () => {
+    const first = resolution({ resolution_id: "la_object_resolutionempty0001", decision: "merge" });
+    const singleton = resolution({
+      resolution_id: "la_object_resolutionempty0002",
+      decision: "merge",
+      candidate_entity_ids: [entityA],
+      supersedes: [first.resolution_id],
+      recorded_at: "2026-07-10T12:01:00.000Z"
+    });
+    const duplicate = resolution({
+      resolution_id: "la_object_resolutionempty0003",
+      decision: "merge",
+      candidate_entity_ids: [entityA, entityA],
+      supersedes: [first.resolution_id],
+      recorded_at: "2026-07-10T12:01:00.000Z"
+    });
+
+    for (const invalidMerge of [singleton, duplicate]) {
+      expect(projectCanonicalEntityResolutions([first, invalidMerge])).toEqual({
+        redirects: { [entityB]: entityA },
+        active_resolution_ids: [first.resolution_id],
+        superseded_resolution_ids: [],
+        invalid_resolution_ids: [invalidMerge.resolution_id]
+      });
+    }
+  });
+
   it("derives redirects without rewriting identities and reverses only a superseded merge", () => {
     const mergeBIntoA = resolution({ resolution_id: "la_object_resolutionmerge0001", decision: "merge" });
     const mergeCIntoB = resolution({
