@@ -1,4 +1,4 @@
-import { readFile, readdir, stat } from "node:fs/promises";
+import { open, readFile, readdir, stat } from "node:fs/promises";
 import { join, relative } from "node:path";
 import {
   classifyMarkdownSourcePath,
@@ -25,6 +25,20 @@ export type SemanticSourceClassification =
       supported: false;
       reason_code: "ignored-extension" | "unsupported-extensionless";
     };
+
+export type SemanticSourceDiscoveryCounts = {
+  selected: number;
+  unsupported: number;
+  hidden: number;
+  oversize: number;
+  unreadable: number;
+  cap: number;
+};
+
+export type SemanticSourceDiscovery = {
+  selected_paths: string[];
+  counts: SemanticSourceDiscoveryCounts;
+};
 
 export function classifySemanticSourcePath(input: {
   root: string;
@@ -79,6 +93,103 @@ export async function walkAllSemanticSourceFiles(root: string): Promise<string[]
     }
   }
   return files.sort((left, right) => relative(root, left).localeCompare(relative(root, right)));
+}
+
+export async function discoverImportableSemanticSourceFiles(input: {
+  root: string;
+  sourceKind: MarkdownImportSourceKind;
+  mode: SemanticSourceMode;
+  maxFiles: number;
+  offset: number;
+  maxFileBytes: number;
+  include_empty?: boolean;
+}): Promise<SemanticSourceDiscovery> {
+  const counts: SemanticSourceDiscoveryCounts = {
+    selected: 0,
+    unsupported: 0,
+    hidden: 0,
+    oversize: 0,
+    unreadable: 0,
+    cap: 0
+  };
+  const files: string[] = [];
+  const queue = [input.root];
+  while (queue.length > 0) {
+    const dir = queue.shift()!;
+    const entries = await readdir(dir, { withFileTypes: true }).catch(() => undefined);
+    if (!entries) {
+      counts.unreadable += 1;
+      continue;
+    }
+    for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
+      const path = join(dir, entry.name);
+      if (isHiddenFilesystemArtifact(entry.name)) {
+        counts.hidden += 1;
+        continue;
+      }
+      if (entry.isDirectory()) {
+        if (ignoredDirectories.has(entry.name)) counts.hidden += 1;
+        else queue.push(path);
+        continue;
+      }
+      if (entry.isFile()) files.push(path);
+    }
+  }
+
+  const eligible: string[] = [];
+  for (const path of files.sort((left, right) => relative(input.root, left).localeCompare(relative(input.root, right)))) {
+    const classification = classifySemanticSourcePath({
+      root: input.root,
+      path,
+      sourceKind: input.sourceKind,
+      mode: input.mode
+    });
+    if (!classification.supported) {
+      counts.unsupported += 1;
+      continue;
+    }
+    const info = await stat(path).catch(() => undefined);
+    if (!info) {
+      counts.unreadable += 1;
+      continue;
+    }
+    if (info.size > input.maxFileBytes) {
+      counts.oversize += 1;
+      continue;
+    }
+    if (info.size === 0 && !input.include_empty) {
+      counts.unsupported += 1;
+      continue;
+    }
+    const handle = await open(path, "r").catch(() => undefined);
+    if (!handle) {
+      counts.unreadable += 1;
+      continue;
+    }
+    await handle.close();
+    if (classification.reason_code === "logseq-extensionless-note") {
+      const content = await readFile(path).catch(() => undefined);
+      if (!content) {
+        counts.unreadable += 1;
+        continue;
+      }
+      if (!isLikelyTextBuffer(content)) {
+        counts.unsupported += 1;
+        continue;
+      }
+    }
+    eligible.push(path);
+  }
+  const selectedPaths = eligible.slice(input.offset, input.offset + input.maxFiles);
+  counts.selected = selectedPaths.length;
+  counts.cap = Math.max(0, eligible.length - (input.offset + selectedPaths.length));
+  return { selected_paths: selectedPaths, counts };
+}
+
+export function assertSemanticSourceDiscoveryComplete(counts: SemanticSourceDiscoveryCounts): void {
+  if (counts.oversize > 0 || counts.unreadable > 0 || counts.cap > 0) {
+    throw new Error(`semantic source discovery incomplete: oversize=${counts.oversize} unreadable=${counts.unreadable} cap=${counts.cap}`);
+  }
 }
 
 export async function walkImportableSemanticSourceFiles(input: {

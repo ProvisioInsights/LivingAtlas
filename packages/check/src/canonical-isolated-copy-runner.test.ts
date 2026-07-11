@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, stat, truncate, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -74,6 +74,8 @@ describe("canonical isolated-copy runner guard", () => {
       await writeFile(personPath, personContent, "utf8");
       await writeFile(organizationPath, organizationContent, "utf8");
       await writeFile(researchPath, researchContent, "utf8");
+      await writeFile(join(source, "pages", "Unsupported.txt"), "unsupported", "utf8");
+      await writeFile(join(source, "pages", ".Synthetic Hidden.md"), "- hidden", "utf8");
       const result = await runCanonicalIsolatedCopy({
         copy_dir: output,
         source_dir: source,
@@ -91,6 +93,22 @@ describe("canonical isolated-copy runner guard", () => {
       expect(hasOnlyNumberLeaves(report)).toBe(true);
       expect(report).toEqual({
         sources: { files: 3, bytes: sourceBytes },
+        source_discovery: {
+          selected: 3,
+          unsupported: 1,
+          hidden: 1,
+          oversize: 0,
+          unreadable: 0,
+          cap: 0
+        },
+        typed_projection_omissions: {
+          ambiguous_typed_entity_ids: 0,
+          missing_edge_endpoints: 0,
+          endpoint_type_mismatches: 0,
+          ambiguous_endpoint_edges: 0,
+          duplicate_edge_ids: 0,
+          other_edge_omissions: 0
+        },
         schemas: {
           "atlas.entity:v1": 2,
           "atlas.fact:v1": 1,
@@ -181,6 +199,8 @@ describe("canonical isolated-copy runner guard", () => {
         "Synthetic Person.md",
         "Synthetic Org.md",
         "Synthetic Research.md",
+        "Unsupported.txt",
+        ".Synthetic Hidden.md",
         personPath,
         organizationPath,
         researchPath
@@ -198,7 +218,7 @@ describe("canonical isolated-copy runner guard", () => {
       await (await import("node:fs/promises")).mkdir(source, { recursive: true });
       await (await import("node:fs/promises")).mkdir(output, { recursive: true });
       await writeFile(join(output, "existing"), "do-not-overwrite");
-      await expect(runCanonicalIsolatedCopy({ copy_dir: output, source_dir: source, acknowledgement: "run-canonical-isolated-copy", live_paths: [], authority_id: "la_authority_fixture0001", keyring_passphrase: "synthetic-isolated-copy-passphrase", source_kind: "logseq", source_mode: "logseq-notes" })).rejects.toThrow("output must be empty");
+      await expect(runCanonicalIsolatedCopy({ copy_dir: output, source_dir: source, acknowledgement: "run-canonical-isolated-copy", live_paths: [], authority_id: "la_authority_fixture0001", keyring_passphrase: "synthetic-isolated-copy-passphrase", path_redaction_secret: "synthetic-existing-output-path-secret", source_kind: "logseq", source_mode: "logseq-notes" })).rejects.toThrow("output must be empty");
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 
@@ -724,5 +744,95 @@ describe("canonical isolated-copy runner guard", () => {
       actionable_zero_unit_source_reviews: 1
     });
     expect(() => assertCanonicalConversionIntegrity(report)).toThrow("canonical isolated-copy integrity check failed");
+  });
+
+  it("surfaces metadata-safe typed projection omission counts", () => {
+    const authorityId = "la_authority_fixture0001";
+    const pathRedactionSecret = "synthetic-typed-report-secret";
+    const source = {
+      source_path: "pages/Synthetic Typed Report.md",
+      markdown: "- Synthetic report unit.",
+      source_kind: "logseq" as const
+    };
+    const migration = createCanonicalMarkdownMigration([source], {
+      authority_id: authorityId,
+      created_at: "2026-07-10T12:00:00.000Z",
+      path_redaction_secret: pathRedactionSecret
+    });
+    const typedProjectionOmissions = {
+      ambiguous_typed_entity_ids: 1,
+      missing_edge_endpoints: 2,
+      endpoint_type_mismatches: 3,
+      ambiguous_endpoint_edges: 4,
+      duplicate_edge_ids: 5,
+      other_edge_omissions: 6
+    };
+    const report = analyzeCanonicalConversion({
+      records: createCanonicalMarkdownMigrationExport(migration).records,
+      authority_id: authorityId,
+      sources: [{
+        source_path: source.source_path,
+        markdown: source.markdown,
+        byte_count: Buffer.byteLength(source.markdown)
+      }],
+      path_redaction_secret: pathRedactionSecret,
+      typed_projection_omissions: typedProjectionOmissions,
+      reopened_manifest_mismatches: 0
+    });
+
+    expect(report.typed_projection_omissions).toEqual(typedProjectionOmissions);
+    expect(hasOnlyNumberLeaves(report.typed_projection_omissions)).toBe(true);
+  });
+
+  it("requires an independent nonempty path-redaction secret", async () => {
+    const root = await mkdtemp(join(tmpdir(), "living-atlas-required-path-secret-"));
+    const source = join(root, "source-copy");
+    const output = join(root, "output", ".atlas-isolated-copy");
+    try {
+      await (await import("node:fs/promises")).mkdir(join(source, "pages"), { recursive: true });
+      await writeFile(join(source, "pages", "Synthetic Secret.md"), "- Synthetic secret unit.", "utf8");
+      await expect(runCanonicalIsolatedCopy({
+        copy_dir: output,
+        source_dir: source,
+        acknowledgement: "run-canonical-isolated-copy",
+        live_paths: [],
+        authority_id: "la_authority_fixture0001",
+        keyring_passphrase: "synthetic-keyring-passphrase",
+        path_redaction_secret: "",
+        source_kind: "logseq",
+        source_mode: "logseq-notes"
+      })).rejects.toThrow("path_redaction_secret is required");
+      await expect(readFile(join(output, "conversion-report.json"), "utf8")).rejects.toThrow();
+      await expect(readFile(join(output, "canonical-manifest.json"), "utf8")).rejects.toThrow();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("fails before success artifacts when source discovery finds an oversize file", async () => {
+    const root = await mkdtemp(join(tmpdir(), "living-atlas-oversize-discovery-"));
+    const source = join(root, "source-copy");
+    const output = join(root, "output", ".atlas-isolated-copy");
+    const oversizePath = join(source, "pages", "Synthetic Oversize.md");
+    try {
+      await (await import("node:fs/promises")).mkdir(join(source, "pages"), { recursive: true });
+      await writeFile(oversizePath, "", "utf8");
+      await truncate(oversizePath, (16 * 1024 * 1024) + 1);
+      await expect(runCanonicalIsolatedCopy({
+        copy_dir: output,
+        source_dir: source,
+        acknowledgement: "run-canonical-isolated-copy",
+        live_paths: [],
+        authority_id: "la_authority_fixture0001",
+        keyring_passphrase: "synthetic-oversize-passphrase",
+        path_redaction_secret: "synthetic-oversize-path-secret",
+        source_kind: "logseq",
+        source_mode: "logseq-notes"
+      })).rejects.toThrow("semantic source discovery incomplete: oversize=1 unreadable=0 cap=0");
+      await expect(readFile(join(output, "conversion-report.json"), "utf8")).rejects.toThrow();
+      await expect(readFile(join(output, "canonical-manifest.json"), "utf8")).rejects.toThrow();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 });

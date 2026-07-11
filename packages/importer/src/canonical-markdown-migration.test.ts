@@ -282,6 +282,44 @@ describe("canonical markdown migration", () => {
       && review.proposed_object_ids.every((id) => payloadById.get(id)?.schema === "atlas.observation:v1"))).toBe(true);
   });
 
+  it("counts typed projection omissions without inventing edges or dropping observations", () => {
+    const migration = createCanonicalMarkdownMigration([
+      { source_path: "pages/Synthetic Person.md", markdown: "type:: person", source_kind: "logseq" },
+      { source_path: "pages/Synthetic Project.md", markdown: "type:: project", source_kind: "logseq" },
+      { source_path: "pages/Synthetic Organization.md", markdown: "type:: organization", source_kind: "logseq" },
+      { source_path: "one/Synthetic Collision.md", markdown: "type:: person", source_kind: "logseq" },
+      { source_path: "two/Synthetic Collision.md", markdown: "type:: project", source_kind: "logseq" },
+      {
+        source_path: "pages/Synthetic Omitted Edges.md",
+        markdown: [
+          "## Edges",
+          "- [[Synthetic Person]] (person) advises [[Synthetic Missing]] (project) from 2025",
+          "- [[Synthetic Person]] (organization) customer-of [[Synthetic Organization]] (organization) from 2025",
+          "- [[Synthetic Collision]] (person) advises [[Synthetic Project]] (project) from 2025",
+          "- [[Synthetic Person]] (alien) advises [[Synthetic Project]] (project) from 2025"
+        ].join("\n"),
+        source_kind: "logseq"
+      }
+    ], {
+      authority_id: "la_authority_fixture0001",
+      created_at: "2026-07-10T12:00:00.000Z",
+      path_redaction_secret: "synthetic-typed-omission-secret"
+    });
+
+    expect(migration.typed_projection_omissions).toEqual({
+      ambiguous_typed_entity_ids: 1,
+      missing_edge_endpoints: 1,
+      endpoint_type_mismatches: 1,
+      ambiguous_endpoint_edges: 1,
+      duplicate_edge_ids: 0,
+      other_edge_omissions: 1
+    });
+    expect(migration.payloads.filter((payload) => payload.schema === "atlas.relationship:v2")).toEqual([]);
+    const observations = migration.payloads.filter((payload) => payload.schema === "atlas.observation:v1");
+    expect(observations.some((observation) => observation.statement.includes("Synthetic Missing"))).toBe(true);
+    expect(observations.some((observation) => observation.statement.includes("alien"))).toBe(true);
+  });
+
   it("emits only parseable measured direct fields as typed facts backed by unit evidence", () => {
     const migration = createCanonicalMarkdownMigration([{
       source_path: "pages/Synthetic Contact.md",

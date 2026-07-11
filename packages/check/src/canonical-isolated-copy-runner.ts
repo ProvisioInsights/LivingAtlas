@@ -6,6 +6,7 @@ import {
   createCanonicalMarkdownMigration,
   createCanonicalMarkdownMigrationExport,
   createMarkdownSourceRef,
+  type CanonicalTypedProjectionOmissions,
   type MarkdownImportSourceKind,
   type MarkdownSourceMode
 } from "@living-atlas/importer";
@@ -18,7 +19,11 @@ import {
   FileLocalKeyringStore
 } from "@living-atlas/local-keyring";
 import { createLocalCanonicalAtlasClient } from "@living-atlas/atlas-client";
-import { walkImportableSemanticSourceFiles } from "./logseq-semantic-source-files";
+import {
+  assertSemanticSourceDiscoveryComplete,
+  discoverImportableSemanticSourceFiles,
+  type SemanticSourceDiscoveryCounts
+} from "./logseq-semantic-source-files";
 
 export const canonicalIsolatedCopyAcknowledgement = "run-canonical-isolated-copy";
 
@@ -44,6 +49,8 @@ export type CanonicalManifestEntry = Pick<CanonicalExportRecord, "object_id" | "
 
 export type CanonicalConversionReport = {
   sources: { files: number; bytes: number };
+  source_discovery: SemanticSourceDiscoveryCounts;
+  typed_projection_omissions: CanonicalTypedProjectionOmissions;
   schemas: Record<CanonicalPayload["schema"], number>;
   objects: {
     total: number;
@@ -109,14 +116,17 @@ export function validateCanonicalIsolatedCopyRun(input: CanonicalIsolatedCopyRun
 export async function runCanonicalIsolatedCopy(input: CanonicalIsolatedCopyRun & {
   authority_id: string;
   keyring_passphrase: string;
-  path_redaction_secret?: string;
+  path_redaction_secret: string;
   source_kind: MarkdownImportSourceKind;
   source_mode: MarkdownSourceMode;
 }): Promise<{ source_file_count: number; canonical_object_count: number; generation: number }> {
+  if (input.path_redaction_secret.trim().length === 0) {
+    throw new Error("canonical isolated-copy path_redaction_secret is required");
+  }
   const paths = validateCanonicalIsolatedCopyRun(input);
   await mkdir(paths.copy_dir, { recursive: true, mode: 0o700 });
   if ((await readdir(paths.copy_dir)).length > 0) throw new Error("canonical isolated-copy output must be empty");
-  const sourcePaths = await walkImportableSemanticSourceFiles({
+  const discovery = await discoverImportableSemanticSourceFiles({
     root: paths.source_dir,
     sourceKind: input.source_kind,
     mode: input.source_mode,
@@ -125,18 +135,23 @@ export async function runCanonicalIsolatedCopy(input: CanonicalIsolatedCopyRun &
     maxFileBytes: 16 * 1024 * 1024,
     include_empty: true
   });
-  const files = await Promise.all(sourcePaths.map(async (path) => {
-    const bytes = await readFile(path);
-    return {
-      source_path: relative(paths.source_dir, path),
-      markdown: bytes.toString("utf8"),
-      source_kind: input.source_kind,
-      byte_count: bytes.byteLength
-    };
+  assertSemanticSourceDiscoveryComplete(discovery.counts);
+  const files = await Promise.all(discovery.selected_paths.map(async (path) => {
+    try {
+      const bytes = await readFile(path);
+      return {
+        source_path: relative(paths.source_dir, path),
+        markdown: bytes.toString("utf8"),
+        source_kind: input.source_kind,
+        byte_count: bytes.byteLength
+      };
+    } catch {
+      throw new Error("semantic source discovery incomplete: oversize=0 unreadable=1 cap=0");
+    }
   }));
   const migration = createCanonicalMarkdownMigration(files.map(({ byte_count: _byteCount, ...file }) => file), {
     authority_id: input.authority_id,
-    path_redaction_secret: input.path_redaction_secret ?? input.keyring_passphrase
+    path_redaction_secret: input.path_redaction_secret
   });
   const exported = createCanonicalMarkdownMigrationExport(migration);
   const keyring = createDefaultLocalKeyring({ authorityId: input.authority_id, createdAt: migration.created_at });
@@ -171,7 +186,9 @@ export async function runCanonicalIsolatedCopy(input: CanonicalIsolatedCopyRun &
     records: exported.records,
     authority_id: input.authority_id,
     sources: files.map(({ source_path, markdown, byte_count }) => ({ source_path, markdown, byte_count })),
-    path_redaction_secret: input.path_redaction_secret ?? input.keyring_passphrase,
+    source_discovery: discovery.counts,
+    path_redaction_secret: input.path_redaction_secret,
+    typed_projection_omissions: migration.typed_projection_omissions,
     reopened_manifest_mismatches: reopenedManifestMismatches
   });
   await persistCanonicalConversionArtifacts({ copy_dir: paths.copy_dir, report, manifest });
@@ -188,7 +205,9 @@ export function analyzeCanonicalConversion(input: {
   records: CanonicalExportRecord[];
   authority_id: string;
   sources: Array<{ source_path: string; markdown: string; byte_count: number }>;
+  source_discovery?: SemanticSourceDiscoveryCounts;
   path_redaction_secret: string;
+  typed_projection_omissions?: CanonicalTypedProjectionOmissions;
   reopened_manifest_mismatches: number;
 }): CanonicalConversionReport {
   const payloads = input.records.map((record) => record.payload);
@@ -386,6 +405,22 @@ export function analyzeCanonicalConversion(input: {
     sources: {
       files: input.sources.length,
       bytes: input.sources.reduce((total, source) => total + source.byte_count, 0)
+    },
+    source_discovery: input.source_discovery ?? {
+      selected: input.sources.length,
+      unsupported: 0,
+      hidden: 0,
+      oversize: 0,
+      unreadable: 0,
+      cap: 0
+    },
+    typed_projection_omissions: input.typed_projection_omissions ?? {
+      ambiguous_typed_entity_ids: 0,
+      missing_edge_endpoints: 0,
+      endpoint_type_mismatches: 0,
+      ambiguous_endpoint_edges: 0,
+      duplicate_edge_ids: 0,
+      other_edge_omissions: 0
     },
     schemas,
     objects: {

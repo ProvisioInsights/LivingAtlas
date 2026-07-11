@@ -40,11 +40,21 @@ export type CreateCanonicalMarkdownMigrationOptions = MarkdownPathRedactionOptio
   created_at?: string;
 };
 
+export type CanonicalTypedProjectionOmissions = {
+  ambiguous_typed_entity_ids: number;
+  missing_edge_endpoints: number;
+  endpoint_type_mismatches: number;
+  ambiguous_endpoint_edges: number;
+  duplicate_edge_ids: number;
+  other_edge_omissions: number;
+};
+
 export type CanonicalMarkdownMigration = {
   migration_schema: "living-atlas-canonical-markdown-migration:v1";
   authority_id: string;
   created_at: string;
   plaintext_policy: "canonical-evidence-in-memory-until-local-encryption";
+  typed_projection_omissions: CanonicalTypedProjectionOmissions;
   payloads: CanonicalPayload[];
 };
 
@@ -256,6 +266,7 @@ export function createCanonicalMarkdownMigration(
     authority_id: authorityId,
     created_at: createdAt,
     plaintext_policy: "canonical-evidence-in-memory-until-local-encryption",
+    typed_projection_omissions: typed.omissions,
     payloads
   };
 }
@@ -286,6 +297,7 @@ function extractCollisionSafeTypedSemantics(
   endpoints: Array<{ endpoint: EndpointRecord; source_path_ref: string }>;
   edges: Array<{ edge: TemporalEdge; source_path_ref: string }>;
   typedSourceRefs: Set<string>;
+  omissions: CanonicalTypedProjectionOmissions;
 } {
   const parsed = createLogseqSemanticPlaintextGraphObjects(files, options);
   const endpointCandidates: Array<{ endpoint: EndpointRecord; source_path_ref: string }> = [];
@@ -324,17 +336,45 @@ function extractCollisionSafeTypedSemantics(
     ...edgeCandidates.map((candidate) => candidate.source_path_ref)
   ]);
   const edgeById = new Map<string, { edge: TemporalEdge; source_path_ref: string }>();
+  let missingEdgeEndpoints = 0;
+  let endpointTypeMismatches = 0;
+  let ambiguousEndpointEdges = 0;
+  let duplicateEdgeIds = 0;
   for (const candidate of edgeCandidates) {
+    const sourceRefs = sourceRefsByEndpointId.get(candidate.edge.source_object_id);
+    const targetRefs = sourceRefsByEndpointId.get(candidate.edge.target_object_id);
+    if (!sourceRefs || !targetRefs) {
+      missingEdgeEndpoints += 1;
+      continue;
+    }
+    if (sourceRefs.size > 1 || targetRefs.size > 1) {
+      ambiguousEndpointEdges += 1;
+      continue;
+    }
     const source = endpointById.get(candidate.edge.source_object_id)?.endpoint;
     const target = endpointById.get(candidate.edge.target_object_id)?.endpoint;
-    if (source?.type === candidate.edge.source_type && target?.type === candidate.edge.target_type) {
-      edgeById.set(candidate.edge.edge_id, candidate);
+    if (source?.type !== candidate.edge.source_type || target?.type !== candidate.edge.target_type) {
+      endpointTypeMismatches += 1;
+      continue;
     }
+    if (edgeById.has(candidate.edge.edge_id)) duplicateEdgeIds += 1;
+    else edgeById.set(candidate.edge.edge_id, candidate);
   }
+  const otherEdgeOmissions = parsed.ledger.files.reduce((total, file) => total + file.objects.filter((object) => (
+    object.semantic_kind === "edge-candidate" && object.decision === "quarantined"
+  )).length, 0);
   return {
     endpoints: [...endpointById.values()].sort((left, right) => left.endpoint.object_id.localeCompare(right.endpoint.object_id)),
     edges: [...edgeById.values()].sort((left, right) => left.edge.edge_id.localeCompare(right.edge.edge_id)),
-    typedSourceRefs
+    typedSourceRefs,
+    omissions: {
+      ambiguous_typed_entity_ids: [...sourceRefsByEndpointId.values()].filter((sourceRefs) => sourceRefs.size > 1).length,
+      missing_edge_endpoints: missingEdgeEndpoints,
+      endpoint_type_mismatches: endpointTypeMismatches,
+      ambiguous_endpoint_edges: ambiguousEndpointEdges,
+      duplicate_edge_ids: duplicateEdgeIds,
+      other_edge_omissions: otherEdgeOmissions
+    }
   };
 }
 
