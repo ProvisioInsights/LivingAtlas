@@ -336,12 +336,17 @@ type BulkEvidenceIndependenceGroup = {
   source_kinds: string[];
   evidence_count: number;
 };
+type BulkCandidateStateFingerprint = {
+  candidate_id: string;
+  fingerprint: `sha256:${string}`;
+};
 type BulkPreviewPayload = {
   action: ReviewDecisionAction;
   candidate_ids: string[];
   review_versions: Array<{ candidate_id: string; review_id: string; version: number }>;
   object_mutations: BulkObjectMutation[];
   evidence_independence_groups: BulkEvidenceIndependenceGroup[];
+  candidate_state_fingerprints: BulkCandidateStateFingerprint[];
   counts: {
     candidates: number;
     object_mutations: number;
@@ -442,6 +447,92 @@ function summarizeBulkMutation(
   };
 }
 
+function stateEvidenceLinks(payload: CanonicalPayload): Array<{ evidence_id: string; stance: "supports" | "refutes" | "context" }> {
+  if (payload.schema === "atlas.observation:v1") {
+    return payload.evidence_refs.map((evidence_id) => ({ evidence_id, stance: "supports" }));
+  }
+  if (payload.schema === "atlas.fact:v1"
+    || payload.schema === "atlas.relationship:v2"
+    || payload.schema === "atlas.entity-resolution:v1") {
+    return payload.evidence_links;
+  }
+  return [];
+}
+
+function payloadConfidence(payload: CanonicalPayload): unknown {
+  return payload.schema === "atlas.fact:v1"
+    || payload.schema === "atlas.relationship:v2"
+    || payload.schema === "atlas.entity-resolution:v1"
+    ? payload.confidence
+    : null;
+}
+
+function stateReferencedEvidenceIds(payload: CanonicalPayload): string[] {
+  const linked = stateEvidenceLinks(payload).map((link) => link.evidence_id);
+  const confidence = payload.schema === "atlas.fact:v1"
+    || payload.schema === "atlas.relationship:v2"
+    || payload.schema === "atlas.entity-resolution:v1"
+    ? payload.confidence.evidence_refs
+    : [];
+  return [...new Set([...linked, ...confidence])].sort();
+}
+
+function candidateStateFingerprint(
+  context: LocalMcpContext,
+  item: LocalReviewQueueItem
+): BulkCandidateStateFingerprint | undefined {
+  if (!context.graphStore || item.proposed_records.length !== item.proposed_object_ids.length) return undefined;
+  const proposed = item.proposed_records.map((payload) => {
+    const canonicalId = canonicalPayloadObjectId(payload);
+    const envelope = context.graphStore!.readObject(canonicalId);
+    if (!envelope) return undefined;
+    return {
+      canonical_id: canonicalId,
+      envelope_version: envelope.version,
+      envelope_content_hash: envelope.content_hash,
+      semantic_payload_hash: sha256(stableJson(payload)),
+      confidence: payloadConfidence(payload),
+      evidence_links: stateEvidenceLinks(payload)
+        .map((link) => ({ evidence_id: link.evidence_id, stance: link.stance }))
+        .sort((left, right) => left.evidence_id.localeCompare(right.evidence_id) || left.stance.localeCompare(right.stance))
+    };
+  });
+  if (proposed.some((entry) => entry === undefined)) return undefined;
+
+  const stancesByEvidence = new Map<string, Set<"supports" | "refutes" | "context">>();
+  for (const link of item.proposed_records.flatMap(stateEvidenceLinks)) {
+    const stances = stancesByEvidence.get(link.evidence_id) ?? new Set();
+    stances.add(link.stance);
+    stancesByEvidence.set(link.evidence_id, stances);
+  }
+  const referencedEvidenceIds = [...new Set(item.proposed_records.flatMap(stateReferencedEvidenceIds))].sort();
+  const evidenceById = new Map(item.evidence.map((payload) => [payload.evidence_id, payload]));
+  if (referencedEvidenceIds.length !== item.evidence_ids.length
+    || referencedEvidenceIds.some((evidenceId) => !evidenceById.has(evidenceId))) return undefined;
+  const evidence = referencedEvidenceIds.map((evidenceId) => {
+    const payload = evidenceById.get(evidenceId)!;
+    const envelope = context.graphStore!.readObject(evidenceId);
+    if (!envelope) return undefined;
+    return {
+      canonical_id: evidenceId,
+      envelope_version: envelope.version,
+      envelope_content_hash: envelope.content_hash,
+      semantic_payload_hash: sha256(stableJson(payload)),
+      independence_group: payload.independence_key,
+      stances: [...(stancesByEvidence.get(evidenceId) ?? [])].sort()
+    };
+  });
+  if (evidence.some((entry) => entry === undefined)) return undefined;
+  const normalizedState = {
+    candidate_id: item.candidate_id,
+    proposed: (proposed as Array<NonNullable<(typeof proposed)[number]>>)
+      .sort((left, right) => left.canonical_id.localeCompare(right.canonical_id)),
+    evidence: (evidence as Array<NonNullable<(typeof evidence)[number]>>)
+      .sort((left, right) => left.canonical_id.localeCompare(right.canonical_id))
+  };
+  return { candidate_id: item.candidate_id, fingerprint: sha256(stableJson(normalizedState)) };
+}
+
 function evidenceIndependenceGroups(item: LocalReviewQueueItem): BulkEvidenceIndependenceGroup[] {
   const grouped = new Map<string, typeof item.evidence>();
   for (const evidence of item.evidence) {
@@ -482,6 +573,7 @@ function prepareBulkPreview(input: {
   const reviewVersions: BulkPreviewPayload["review_versions"] = [];
   const objectMutations: BulkObjectMutation[] = [];
   const evidenceGroups: BulkEvidenceIndependenceGroup[] = [];
+  const candidateStateFingerprints: BulkCandidateStateFingerprint[] = [];
   const decisions = new Map<string, { expectedReviewVersion: number; objects: unknown[] }>();
   for (const item of items) {
     const expectedReviewVersion = input.context.graphStore.readObject(item.review_id)?.version;
@@ -490,9 +582,12 @@ function prepareBulkPreview(input: {
     if (!objects) return { ok: false, reason: "candidate-records-incomplete" };
     const mutations = objects.map((object) => summarizeBulkMutation(input.context, item.candidate_id, object));
     if (mutations.some((mutation) => mutation === undefined)) return { ok: false, reason: "candidate-records-incomplete" };
+    const stateFingerprint = candidateStateFingerprint(input.context, item);
+    if (!stateFingerprint) return { ok: false, reason: "candidate-records-incomplete" };
     reviewVersions.push({ candidate_id: item.candidate_id, review_id: item.review_id, version: expectedReviewVersion });
     objectMutations.push(...mutations as BulkObjectMutation[]);
     evidenceGroups.push(...evidenceIndependenceGroups(item));
+    candidateStateFingerprints.push(stateFingerprint);
     decisions.set(item.candidate_id, { expectedReviewVersion, objects });
   }
   objectMutations.sort((left, right) => left.candidate_id.localeCompare(right.candidate_id)
@@ -505,6 +600,7 @@ function prepareBulkPreview(input: {
     review_versions: reviewVersions,
     object_mutations: objectMutations,
     evidence_independence_groups: evidenceGroups,
+    candidate_state_fingerprints: candidateStateFingerprints,
     counts: {
       candidates: candidateIds.length,
       object_mutations: objectMutations.length,

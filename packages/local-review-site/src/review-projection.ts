@@ -149,13 +149,55 @@ function normalizedMutationKind(payload: CanonicalPayload): string {
   }
 }
 
-function evidenceRuleKind(evidence: CanonicalEvidencePayload[]): string {
-  const kinds = [...new Set(evidence.map((item) => item.source_kind))].sort();
-  if (kinds.length === 0) return "no-evidence";
-  if (kinds.every((kind) => kind === "migration" || kind === "manual")) return "owner-source";
-  if (kinds.includes("migration") || kinds.includes("manual")) return "owner-plus-third-party";
-  if (kinds.includes("linkedin")) return "linkedin-plus-independent-source";
-  return "independent-third-party";
+function payloadEvidenceStances(payload: CanonicalPayload): Array<{ evidence_id: string; stance: "supports" | "refutes" | "context" }> {
+  if (payload.schema === "atlas.observation:v1") {
+    return payload.evidence_refs.map((evidence_id) => ({ evidence_id, stance: "supports" }));
+  }
+  if (payload.schema === "atlas.fact:v1"
+    || payload.schema === "atlas.relationship:v2"
+    || payload.schema === "atlas.entity-resolution:v1") {
+    return payload.evidence_links;
+  }
+  return [];
+}
+
+function evidenceRuleDescriptor(proposedRecords: CanonicalPayload[], evidence: CanonicalEvidencePayload[]) {
+  const stancesByEvidence = new Map<string, Set<"supports" | "refutes" | "context">>();
+  for (const link of proposedRecords.flatMap(payloadEvidenceStances)) {
+    const stances = stancesByEvidence.get(link.evidence_id) ?? new Set();
+    stances.add(link.stance);
+    stancesByEvidence.set(link.evidence_id, stances);
+  }
+  const ownerEvidence = evidence.filter((item) => item.source_kind === "migration" || item.source_kind === "manual");
+  const thirdPartyEvidence = evidence.filter((item) => item.source_kind !== "migration" && item.source_kind !== "manual");
+  const evidenceForRule = thirdPartyEvidence.length > 0 ? thirdPartyEvidence : ownerEvidence;
+  const stances = new Set(evidenceForRule.flatMap((item) => [...(stancesByEvidence.get(item.evidence_id) ?? [])]));
+  const groups = new Map<string, CanonicalEvidencePayload[]>();
+  for (const item of evidenceForRule) {
+    const group = groups.get(item.independence_key) ?? [];
+    group.push(item);
+    groups.set(item.independence_key, group);
+  }
+  const normalizedGroups = [...groups.values()].map((group) => ({
+    source_kinds: [...new Set(group.map((item) => item.source_kind))].sort(),
+    stances: [...new Set(group.flatMap((item) => [...(stancesByEvidence.get(item.evidence_id) ?? [])]))].sort(),
+    evidence_count: group.length
+  })).sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right)));
+  const linkedinGroups = normalizedGroups.filter((group) => group.source_kinds.includes("linkedin"));
+  const independentNonLinkedinGroups = normalizedGroups.filter((group) => !group.source_kinds.includes("linkedin"));
+  const kind = evidenceForRule.length > 0 && stances.size === 0 ? "confidence-only-unlinked"
+    : stances.has("refutes") ? "conflicting"
+    : stances.size > 0 && !stances.has("supports") ? "context-only"
+      : thirdPartyEvidence.length === 0 ? (ownerEvidence.length > 0 ? "owner-source" : "no-evidence")
+        : linkedinGroups.length > 0
+          ? (independentNonLinkedinGroups.length > 0 ? "linkedin-plus-independent" : "linkedin-only")
+          : normalizedGroups.length >= 2 ? "two-independent-public-groups" : "one-public-group";
+  return {
+    kind,
+    owner_source_present: ownerEvidence.length > 0,
+    independence_group_count: normalizedGroups.length,
+    groups: normalizedGroups
+  };
 }
 
 function bulkCompatibilityKey(input: {
@@ -175,7 +217,7 @@ function bulkCompatibilityKey(input: {
       "update:review-decision",
       ...input.parityRecords.map((parity) => `update:source-coverage:${parity.representation_kind ?? "unrepresented"}`)
     ].sort(),
-    evidence_rule_kind: evidenceRuleKind(input.evidence),
+    evidence_rule: evidenceRuleDescriptor(input.proposedRecords, input.evidence),
     source_preservation_mode: `${input.sourceAccounting.exact_source_preserved ? "exact" : "unavailable"}:${input.resolutionMode}`,
     edit_requirement: input.resolutionMode === "rich" ? "observation-edit-optional"
       : input.resolutionMode === "legacy" ? "source-unit-edit-optional"
@@ -281,7 +323,14 @@ export async function projectLocalReviewQueue(input: {
     for (const id of proposed) {
       const payload = payloads.get(id);
       if (payload?.schema === "atlas.observation:v1") payload.evidence_refs.forEach((evidence) => evidenceIds.add(evidence));
-      if (payload?.schema === "atlas.fact:v1" || payload?.schema === "atlas.relationship:v2") payload.evidence_links.forEach((link) => evidenceIds.add(link.evidence_id));
+      if (payload?.schema === "atlas.fact:v1" || payload?.schema === "atlas.relationship:v2") {
+        payload.evidence_links.forEach((link) => evidenceIds.add(link.evidence_id));
+        payload.confidence.evidence_refs.forEach((evidence) => evidenceIds.add(evidence));
+      }
+      if (payload?.schema === "atlas.entity-resolution:v1") {
+        payload.evidence_links.forEach((link) => evidenceIds.add(link.evidence_id));
+        payload.confidence.evidence_refs.forEach((evidence) => evidenceIds.add(evidence));
+      }
     }
     const parityIds = [...payloads.values()]
       .filter((payload): payload is Extract<CanonicalPayload, { schema: "atlas.parity-record:v1" }> => payload.schema === "atlas.parity-record:v1" && review.source_coverage_keys.includes(payload.source_coverage_key))

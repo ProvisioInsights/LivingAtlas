@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   canonicalObjectTypeForPayload,
   canonicalPayloadObjectId,
+  type CanonicalPayload,
   type GraphObjectEnvelope
 } from "@living-atlas/contracts";
 import { createCanonicalMarkdownMigration } from "@living-atlas/importer";
@@ -58,6 +59,95 @@ describe("local review projection", () => {
     expect(left.bulk_compatibility_key).toMatch(/^sha256:[a-f0-9]{64}$/);
     expect(left.bulk_compatibility_key).toBe(sameTemplate.bulk_compatibility_key);
     expect(left.bulk_compatibility_key).not.toBe(differentTemplate.bulk_compatibility_key);
+  });
+
+  it("separates bulk evidence rules by independent groups and evidence stance", async () => {
+    const cases = [
+      { name: "Synthetic LinkedIn Only", evidence: [{ source_kind: "linkedin", group: "linkedin-only", stance: "supports" }] },
+      { name: "Synthetic LinkedIn Plus", evidence: [
+        { source_kind: "linkedin", group: "linkedin-plus", stance: "supports" },
+        { source_kind: "public-web", group: "linkedin-independent", stance: "supports" }
+      ] },
+      { name: "Synthetic One Public", evidence: [{ source_kind: "public-web", group: "public-one", stance: "supports" }] },
+      { name: "Synthetic Two Public", evidence: [
+        { source_kind: "public-web", group: "public-two-a", stance: "supports" },
+        { source_kind: "public-web", group: "public-two-b", stance: "supports" }
+      ] },
+      { name: "Synthetic Supported", evidence: [{ source_kind: "public-web", group: "public-stance", stance: "supports" }] },
+      { name: "Synthetic Refuted", evidence: [{ source_kind: "public-web", group: "public-stance-other", stance: "refutes" }] },
+      { name: "Synthetic Context Only", evidence: [{ source_kind: "public-web", group: "public-context", stance: "context" }] },
+      { name: "Synthetic Confidence Only", evidence: [{ source_kind: "public-web", group: "public-confidence-only", stance: "supports", reference: "confidence" }] },
+      { name: "Synthetic Owner Source", evidence: [] }
+    ] as const;
+    const migration = createCanonicalMarkdownMigration(cases.map((entry, index) => ({
+      source_path: `pages/${entry.name}.md`,
+      markdown: `type:: person\nphone:: +1 555 02${String(index).padStart(2, "0")}`,
+      source_kind: "logseq" as const
+    })), {
+      authority_id: "la_authority_reviewsite0001",
+      created_at: now,
+      path_redaction_secret: "synthetic-evidence-rule-secret"
+    });
+    const entityNames = new Map(migration.payloads.flatMap((payload) => (
+      payload.schema === "atlas.entity:v1" ? [[payload.entity_id, payload.name] as const] : []
+    )));
+    const evidenceByName = new Map(cases.map((entry) => [String(entry.name), entry.evidence] as const));
+    const addedEvidence: CanonicalPayload[] = [];
+    let evidenceIndex = 0;
+    const withResearchEvidence = migration.payloads.map((payload): CanonicalPayload => {
+      if (payload.schema !== "atlas.fact:v1") return payload;
+      const definitions = evidenceByName.get(entityNames.get(payload.subject_entity_id) ?? "") ?? [];
+      const evidenceReferences = definitions.map((definition) => {
+        evidenceIndex += 1;
+        const evidence_id = `la_object_ruleevidence${String(evidenceIndex).padStart(4, "0")}`;
+        addedEvidence.push({
+          schema: "atlas.evidence:v1",
+          evidence_id,
+          source_kind: definition.source_kind,
+          locator: `synthetic://evidence-rule/${evidenceIndex}`,
+          content_hash: `sha256:${String(evidenceIndex % 10).repeat(64)}`,
+          retrieved_at: now,
+          independence_key: definition.group,
+          excerpt: `Synthetic evidence rule ${evidenceIndex}.`
+        });
+        return { evidence_id, stance: definition.stance, confidenceOnly: "reference" in definition };
+      });
+      return {
+        ...payload,
+        evidence_links: [
+          ...payload.evidence_links,
+          ...evidenceReferences.filter((reference) => !reference.confidenceOnly)
+            .map(({ evidence_id, stance }) => ({ evidence_id, stance }))
+        ],
+        confidence: {
+          ...payload.confidence,
+          evidence_refs: [
+            ...payload.confidence.evidence_refs,
+            ...evidenceReferences.filter((reference) => reference.confidenceOnly).map((reference) => reference.evidence_id)
+          ]
+        }
+      };
+    });
+    const payloadList = [...withResearchEvidence, ...addedEvidence];
+    const payloads = new Map(payloadList.map((payload) => [canonicalPayloadObjectId(payload), payload]));
+    const queue = await projectLocalReviewQueue({
+      objects: payloadList.map((payload) => envelope(canonicalPayloadObjectId(payload), canonicalObjectTypeForPayload(payload))),
+      decryptPayload: async (object) => payloads.get(object.object_id)
+    });
+    const keyFor = (name: string) => queue.owner_review.find((item) => item.proposed_records.some((payload) => (
+      payload.schema === "atlas.entity:v1" && payload.name === name
+    )))!.bulk_compatibility_key;
+
+    expect(keyFor("Synthetic LinkedIn Only")).not.toBe(keyFor("Synthetic LinkedIn Plus"));
+    expect(keyFor("Synthetic One Public")).not.toBe(keyFor("Synthetic Two Public"));
+    expect(keyFor("Synthetic Supported")).not.toBe(keyFor("Synthetic Refuted"));
+    expect(keyFor("Synthetic Supported")).not.toBe(keyFor("Synthetic Context Only"));
+    const confidenceOnly = queue.owner_review.find((item) => item.proposed_records.some((payload) => (
+      payload.schema === "atlas.entity:v1" && payload.name === "Synthetic Confidence Only"
+    )))!;
+    expect(confidenceOnly.evidence.some((evidence) => evidence.independence_key === "public-confidence-only")).toBe(true);
+    expect(confidenceOnly.bulk_compatibility_key).not.toBe(keyFor("Synthetic Supported"));
+    expect(confidenceOnly.bulk_compatibility_key).not.toBe(keyFor("Synthetic Owner Source"));
   });
 
   it("maps repeated source-unit occurrences to their real canonical destination graph", async () => {

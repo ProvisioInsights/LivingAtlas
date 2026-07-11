@@ -2,7 +2,11 @@ import { afterEach, describe, expect, it } from "vitest";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { canonicalObjectTypeForPayload, canonicalPayloadObjectId } from "@living-atlas/contracts";
+import {
+  canonicalObjectTypeForPayload,
+  canonicalPayloadObjectId,
+  type CanonicalPayload
+} from "@living-atlas/contracts";
 import { fixtureLocalClientId } from "@living-atlas/fixtures";
 import { createCanonicalMarkdownMigration } from "@living-atlas/importer";
 import { createFixtureLocalMcpContext, createLocalMcpContextFromControlState } from "@living-atlas/local-mcp";
@@ -11,10 +15,160 @@ import { createFixtureLocalControlState } from "../../local-control-store/src";
 import { FileLocalGraphStore } from "../../local-graph-store/src/local-graph-store";
 import { createDefaultLocalKeyring, decryptGraphObjectPayload } from "../../local-keyring/src";
 import { createLocalReviewSiteServer } from "./server";
-import type { LocalReviewQueue } from "./review-projection";
+import type { LocalReviewQueue, LocalReviewQueueItem } from "./review-projection";
 
 const servers: Array<ReturnType<typeof createLocalReviewSiteServer>> = [];
 afterEach(() => servers.splice(0).forEach((server) => server.close()));
+
+const evidenceRuleCases = [
+  { name: "Synthetic Server LinkedIn Only", evidence: [{ source_kind: "linkedin", group: "server-linkedin-only", stance: "supports" }] },
+  { name: "Synthetic Server LinkedIn Plus", evidence: [
+    { source_kind: "linkedin", group: "server-linkedin-plus", stance: "supports" },
+    { source_kind: "public-web", group: "server-linkedin-independent", stance: "supports" }
+  ] },
+  { name: "Synthetic Server One Public", evidence: [{ source_kind: "public-web", group: "server-public-one", stance: "supports" }] },
+  { name: "Synthetic Server Two Public", evidence: [
+    { source_kind: "public-web", group: "server-public-two-a", stance: "supports" },
+    { source_kind: "public-web", group: "server-public-two-b", stance: "supports" }
+  ] },
+  { name: "Synthetic Server Supported", evidence: [{ source_kind: "public-web", group: "server-public-stance", stance: "supports" }] },
+  { name: "Synthetic Server Refuted", evidence: [{ source_kind: "public-web", group: "server-public-stance-other", stance: "refutes" }] },
+  { name: "Synthetic Fingerprint Fact", evidence: [{ source_kind: "public-web", group: "server-fingerprint-fact", stance: "supports" }] },
+  { name: "Synthetic Fingerprint Evidence", evidence: [{ source_kind: "public-web", group: "server-fingerprint-evidence", stance: "supports", reference: "confidence" }] }
+] as const;
+
+function evidenceRulePayloads(authorityId: string, recordedAt: string): CanonicalPayload[] {
+  const migration = createCanonicalMarkdownMigration(evidenceRuleCases.map((entry, index) => ({
+    source_path: `pages/${entry.name}.md`,
+    markdown: `type:: person\nphone:: +1 555 03${String(index).padStart(2, "0")}`,
+    source_kind: "logseq" as const
+  })), {
+    authority_id: authorityId,
+    created_at: recordedAt,
+    path_redaction_secret: "synthetic-server-evidence-rule-secret"
+  });
+  const entityNames = new Map(migration.payloads.flatMap((payload) => (
+    payload.schema === "atlas.entity:v1" ? [[payload.entity_id, payload.name] as const] : []
+  )));
+  const definitionsByName = new Map(evidenceRuleCases.map((entry) => [String(entry.name), entry.evidence] as const));
+  const addedEvidence: CanonicalPayload[] = [];
+  let evidenceIndex = 0;
+  const payloads = migration.payloads.map((payload): CanonicalPayload => {
+    if (payload.schema !== "atlas.fact:v1") return payload;
+    const definitions = definitionsByName.get(entityNames.get(payload.subject_entity_id) ?? "") ?? [];
+    const evidenceReferences = definitions.map((definition) => {
+      evidenceIndex += 1;
+      const evidence_id = `la_object_serverruleevidence${String(evidenceIndex).padStart(4, "0")}`;
+      addedEvidence.push({
+        schema: "atlas.evidence:v1",
+        evidence_id,
+        source_kind: definition.source_kind,
+        locator: `synthetic://server-evidence-rule/${evidenceIndex}`,
+        content_hash: `sha256:${String(evidenceIndex % 10).repeat(64)}`,
+        retrieved_at: recordedAt,
+        independence_key: definition.group,
+        excerpt: `Synthetic server evidence rule ${evidenceIndex}.`
+      });
+      return { evidence_id, stance: definition.stance, confidenceOnly: "reference" in definition };
+    });
+    return {
+      ...payload,
+      evidence_links: [
+        ...payload.evidence_links,
+        ...evidenceReferences.filter((reference) => !reference.confidenceOnly)
+          .map(({ evidence_id, stance }) => ({ evidence_id, stance }))
+      ],
+      confidence: {
+        ...payload.confidence,
+        evidence_refs: [
+          ...payload.confidence.evidence_refs,
+          ...evidenceReferences.filter((reference) => reference.confidenceOnly).map((reference) => reference.evidence_id)
+        ]
+      }
+    };
+  });
+  return [...payloads, ...addedEvidence];
+}
+
+async function startEvidenceRuleServer(token: string) {
+  const now = "2026-07-10T12:00:00.000Z";
+  const directory = await mkdtemp(join(tmpdir(), "living-atlas-review-evidence-rule-"));
+  const controlState = await createFixtureLocalControlState(token);
+  const keyring = createDefaultLocalKeyring({ authorityId: controlState.authority_id, createdAt: now });
+  const graphStore = await FileLocalGraphStore.open({
+    directory,
+    authorityId: controlState.authority_id,
+    plaintextPersistence: "encrypt",
+    keyring,
+    now: () => now
+  });
+  const payloads = evidenceRulePayloads(controlState.authority_id, now);
+  await graphStore.initializeFromObjects(payloads.map((payload) => ({
+    schema_version: 1,
+    authority_id: controlState.authority_id,
+    object_id: canonicalPayloadObjectId(payload),
+    object_type: canonicalObjectTypeForPayload(payload),
+    version: 1,
+    access_class: "local-private",
+    encryption_class: "plaintext",
+    created_at: now,
+    updated_at: now,
+    content_hash: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    visible_metadata: { schema_namespace: "atlas/review-evidence-rule-test", tombstone: false, size_class: "small", remote_indexable: false },
+    payload: { kind: "plaintext-json", data: payload }
+  })));
+  const context = createLocalMcpContextFromControlState({
+    controlState,
+    graphStore,
+    decryptPayload: async (object) => decryptGraphObjectPayload(object, keyring),
+    now
+  });
+  const server = createLocalReviewSiteServer({ context, browserSessionAuthorization: `Bearer ${token}` });
+  servers.push(server);
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("expected loopback address");
+  const origin = `http://127.0.0.1:${address.port}`;
+  const session = await fetch(origin);
+  const cookie = session.headers.get("set-cookie")!.split(";")[0]!;
+  const queue = await fetch(`${origin}/api/review-queue`, { headers: { cookie } }).then((response) => response.json()) as LocalReviewQueue;
+  return { now, directory, graphStore, origin, cookie, queue };
+}
+
+function reviewItemNamed(queue: LocalReviewQueue, name: string): LocalReviewQueueItem {
+  const item = [...queue.owner_review, ...queue.research].find((candidate) => candidate.proposed_records.some((payload) => (
+    payload.schema === "atlas.entity:v1" && payload.name === name
+  )));
+  if (!item) throw new Error(`missing synthetic review item ${name}`);
+  return item;
+}
+
+async function updateStoredCanonicalPayload(input: {
+  graphStore: FileLocalGraphStore;
+  objectId: string;
+  payload: CanonicalPayload;
+  now: string;
+  hashCharacter: string;
+}) {
+  const current = input.graphStore.readObject(input.objectId);
+  if (!current) throw new Error(`missing synthetic object ${input.objectId}`);
+  const { key_ref: _keyRef, ...withoutKeyRef } = current;
+  const result = await input.graphStore.updateObject({
+    object: {
+      ...withoutKeyRef,
+      version: current.version + 1,
+      encryption_class: "plaintext",
+      updated_at: input.now,
+      content_hash: `sha256:${input.hashCharacter.repeat(64)}`,
+      payload: { kind: "plaintext-json", data: input.payload }
+    },
+    expected_generation: input.graphStore.status().generation,
+    expected_version: current.version,
+    actor_id: fixtureLocalClientId,
+    recorded_at: input.now
+  });
+  expect(result).toMatchObject({ ok: true });
+}
 
 describe("local review site server", () => {
   it("serves a human decision workspace instead of raw JSON controls", async () => {
@@ -109,6 +263,7 @@ describe("local review site server", () => {
     expect(bulkPreviewSource).not.toContain("mutation.object_id");
     expect(bulkPreviewSource).not.toContain("mutation.schema");
     expect(bulkPreviewSource).not.toContain("mutation.mutation_hash");
+    expect(bulkPreviewSource).not.toContain("candidate_state_fingerprints");
     expect(app.match(/&& isActionableReviewItem\(item\)/g)).toHaveLength(2);
     expect(styles).toContain(".destination-record");
     expect(styles).toContain(".record-entity");
@@ -668,6 +823,90 @@ describe("local review site server", () => {
       }
     } finally {
       await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects heterogeneous evidence rules before the first bulk commit", async () => {
+    const fixture = await startEvidenceRuleServer("local-review-site-evidence-rules-token-0001");
+    try {
+      const pairs = [
+        ["Synthetic Server LinkedIn Only", "Synthetic Server LinkedIn Plus"],
+        ["Synthetic Server One Public", "Synthetic Server Two Public"],
+        ["Synthetic Server Supported", "Synthetic Server Refuted"]
+      ] as const;
+      for (const [leftName, rightName] of pairs) {
+        const left = reviewItemNamed(fixture.queue, leftName);
+        const right = reviewItemNamed(fixture.queue, rightName);
+        const beforeGeneration = fixture.graphStore.status().generation;
+        const response = await fetch(`${fixture.origin}/api/review/bulk/preview`, {
+          method: "POST",
+          headers: { cookie: fixture.cookie, "content-type": "application/json" },
+          body: JSON.stringify({ candidate_ids: [left.candidate_id, right.candidate_id], action: "keep" })
+        });
+        expect(response.status).toBe(409);
+        await expect(response.json()).resolves.toMatchObject({ ok: false, reason: "heterogeneous-bulk-selection" });
+        expect(fixture.graphStore.status().generation).toBe(beforeGeneration);
+      }
+    } finally {
+      await rm(fixture.directory, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    { label: "proposed fact", itemName: "Synthetic Fingerprint Fact", mutation: "fact" as const, hashCharacter: "b" },
+    { label: "referenced evidence", itemName: "Synthetic Fingerprint Evidence", mutation: "evidence" as const, hashCharacter: "c" }
+  ])("rejects a preview after $label state changes without a review-version change", async ({ itemName, mutation, hashCharacter }) => {
+    const fixture = await startEvidenceRuleServer(`local-review-site-state-${mutation}-token-0001`);
+    try {
+      const item = reviewItemNamed(fixture.queue, itemName);
+      const reviewBefore = fixture.graphStore.readObject(item.review_id)!;
+      const previewResponse = await fetch(`${fixture.origin}/api/review/bulk/preview`, {
+        method: "POST",
+        headers: { cookie: fixture.cookie, "content-type": "application/json" },
+        body: JSON.stringify({ candidate_ids: [item.candidate_id], action: "keep" })
+      });
+      expect(previewResponse.status).toBe(200);
+      const previewBody = await previewResponse.json() as { result: Record<string, unknown> };
+
+      if (mutation === "fact") {
+        const fact = item.proposed_records.find((payload) => payload.schema === "atlas.fact:v1");
+        if (fact?.schema !== "atlas.fact:v1" || fact.value.kind !== "text") throw new Error("expected synthetic text fact");
+        await updateStoredCanonicalPayload({
+          graphStore: fixture.graphStore,
+          objectId: fact.assertion_id,
+          payload: { ...fact, value: { kind: "text", value: "+1 555 0399" } },
+          now: fixture.now,
+          hashCharacter
+        });
+      } else {
+        const evidence = item.evidence.find((payload) => payload.source_kind === "public-web");
+        expect(evidence).toBeDefined();
+        if (!evidence) return;
+        await updateStoredCanonicalPayload({
+          graphStore: fixture.graphStore,
+          objectId: evidence.evidence_id,
+          payload: { ...evidence, excerpt: `${evidence.excerpt ?? "Synthetic evidence."} Changed after preview.` },
+          now: fixture.now,
+          hashCharacter
+        });
+      }
+
+      expect(fixture.graphStore.readObject(item.review_id)).toEqual(reviewBefore);
+      const beforeApplyGeneration = fixture.graphStore.status().generation;
+      const decision = await fetch(`${fixture.origin}/api/review/bulk/decision`, {
+        method: "POST",
+        headers: { cookie: fixture.cookie, "content-type": "application/json" },
+        body: JSON.stringify(previewBody.result)
+      });
+      expect(decision.status).toBe(409);
+      await expect(decision.json()).resolves.toMatchObject({ ok: false, reason: "bulk-preview-stale" });
+      expect(fixture.graphStore.status().generation).toBe(beforeApplyGeneration);
+      expect(fixture.graphStore.readObject(item.review_id)).toEqual(reviewBefore);
+      expect(previewBody.result).toMatchObject({
+        candidate_state_fingerprints: [{ candidate_id: item.candidate_id, fingerprint: expect.stringMatching(/^sha256:[a-f0-9]{64}$/) }]
+      });
+    } finally {
+      await rm(fixture.directory, { recursive: true, force: true });
     }
   });
 
