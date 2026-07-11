@@ -30,8 +30,11 @@ describe("canonical markdown migration", () => {
     })]);
     expect(observations).toEqual([]);
     expect(review).toMatchObject({ recommendation: "research", resolution_state: "research", proposed_object_ids: [] });
+    expect(review?.schema === "atlas.review-item:v1" ? review.source_evidence_ids : undefined)
+      .toEqual(evidence.map((item) => item.evidence_id));
     expect(parity).toEqual(expect.objectContaining({
       coverage_state: "unrepresented",
+      meaning_state: "non-meaningful",
       canonical_object_ids: []
     }));
     expect(parity).not.toHaveProperty("representation_kind");
@@ -318,6 +321,47 @@ describe("canonical markdown migration", () => {
     const observations = migration.payloads.filter((payload) => payload.schema === "atlas.observation:v1");
     expect(observations.some((observation) => observation.statement.includes("Synthetic Missing"))).toBe(true);
     expect(observations.some((observation) => observation.statement.includes("alien"))).toBe(true);
+    const reviews = migration.payloads.filter((payload) => payload.schema === "atlas.review-item:v1");
+    const omittedEdgeReview = reviews.find((review) => review.proposed_object_ids.some((objectId) => {
+      const payload = migration.payloads.find((candidate) => canonicalPayloadObjectId(candidate) === objectId);
+      return payload?.schema === "atlas.observation:v1" && payload.statement.includes("Synthetic Missing");
+    }));
+    expect(omittedEdgeReview?.auto_apply_blockers).toEqual([
+      "typed-projection-ambiguous-edge-endpoint",
+      "typed-projection-endpoint-type-mismatch",
+      "typed-projection-missing-edge-endpoint",
+      "typed-projection-other-edge-omission"
+    ]);
+    const personReview = reviews.find((review) => review.proposed_object_ids.some((objectId) => {
+      const payload = migration.payloads.find((candidate) => canonicalPayloadObjectId(candidate) === objectId);
+      return payload?.schema === "atlas.observation:v1" && payload.statement === "Type: person";
+    }));
+    expect(personReview?.auto_apply_blockers).toBeUndefined();
+    const collisionReviews = reviews.filter((review) => review.proposed_object_ids.some((objectId) => {
+      const payload = migration.payloads.find((candidate) => canonicalPayloadObjectId(candidate) === objectId);
+      return payload?.schema === "atlas.observation:v1"
+        && payload.statement.startsWith("Type:")
+        && review !== personReview;
+    }));
+    expect(collisionReviews).toEqual(expect.arrayContaining([
+      expect.objectContaining({ auto_apply_blockers: ["typed-projection-ambiguous-entity"] })
+    ]));
+  });
+
+  it("does not label meaningful source parity as non-meaningful", () => {
+    const migration = createCanonicalMarkdownMigration([{
+      source_path: "pages/Synthetic Meaningful.md",
+      markdown: "- Synthetic meaningful statement.",
+      source_kind: "logseq"
+    }], {
+      authority_id: "la_authority_fixture0001",
+      created_at: "2026-07-10T12:00:00.000Z",
+      path_redaction_secret: "synthetic-meaningful-secret"
+    });
+    const parity = migration.payloads.find((payload) => payload.schema === "atlas.parity-record:v1");
+
+    expect(parity).toMatchObject({ coverage_state: "represented" });
+    expect(parity).not.toHaveProperty("meaning_state");
   });
 
   it("emits only parseable measured direct fields as typed facts backed by unit evidence", () => {

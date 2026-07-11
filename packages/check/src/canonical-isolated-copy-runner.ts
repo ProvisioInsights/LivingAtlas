@@ -13,6 +13,7 @@ import {
 } from "@living-atlas/importer";
 import type { CanonicalEvidencePayload, CanonicalExportRecord, CanonicalPayload } from "@living-atlas/contracts";
 import { fixtureLocalClientId } from "@living-atlas/fixtures";
+import { createFixtureLocalControlState } from "@living-atlas/local-control-store";
 import { FileLocalGraphStore } from "@living-atlas/local-graph-store";
 import {
   createDefaultLocalKeyring,
@@ -20,6 +21,13 @@ import {
   FileLocalKeyringStore
 } from "@living-atlas/local-keyring";
 import { createLocalCanonicalAtlasClient } from "@living-atlas/atlas-client";
+import {
+  createLocalMcpContextFromControlState,
+  InMemoryLocalMcpAuditSink,
+  InMemoryLocalMcpMutationOutboxSink
+} from "@living-atlas/local-mcp";
+import { projectLocalReviewQueue } from "@living-atlas/local-review-site/review-projection";
+import { applyExactPreservation, planExactPreservation } from "@living-atlas/local-review-site/review-auto-apply";
 import {
   assertSemanticSourceDiscoveryComplete,
   discoverImportableSemanticSourceFiles,
@@ -65,7 +73,7 @@ export type CanonicalConversionReport = {
     reviews: number;
     parity_records: number;
   };
-  review_queue: { owner_review: number; research: number; incomplete: number };
+  review_queue: { owner_review: number; research: number; automatic: number; incomplete: number };
   integrity: {
     duplicate_object_ids: number;
     missing_evidence_references: number;
@@ -125,7 +133,12 @@ export async function runCanonicalIsolatedCopy(input: CanonicalIsolatedCopyRun &
   path_redaction_secret: string;
   source_kind: MarkdownImportSourceKind;
   source_mode: MarkdownSourceMode;
-}): Promise<{ source_file_count: number; canonical_object_count: number; generation: number }> {
+}): Promise<{
+  source_file_count: number;
+  canonical_object_count: number;
+  generation: number;
+  auto_apply: { planned: number; committed: number; retry_committed: number; retry_idempotent: number };
+}> {
   if (input.path_redaction_secret.trim().length === 0) {
     throw new Error("canonical isolated-copy path_redaction_secret is required");
   }
@@ -168,7 +181,78 @@ export async function runCanonicalIsolatedCopy(input: CanonicalIsolatedCopyRun &
   const result = await client.importCanonical({ exported, expected_generation: 0, actor_id: fixtureLocalClientId, operation_id: "la_operation_isolatedcopy0001", idempotency_key: "la_idem_isolatedcopy0001", recorded_at: migration.created_at });
   if (!result.ok) throw new Error(`canonical isolated-copy import failed: ${result.reason}`);
 
-  const manifest = canonicalManifest(exported.records);
+  const localToken = sha256(`isolated-copy-local-mcp:${input.authority_id}:${migration.created_at}`).slice("sha256:".length);
+  const fixtureControlState = await createFixtureLocalControlState(localToken);
+  const controlState = {
+    ...fixtureControlState,
+    authority_id: input.authority_id,
+    control_plane: {
+      ...fixtureControlState.control_plane,
+      authority: { ...fixtureControlState.control_plane.authority, authority_id: input.authority_id },
+      users: fixtureControlState.control_plane.users.map((record) => ({ ...record, authority_id: input.authority_id })),
+      devices: fixtureControlState.control_plane.devices.map((record) => ({ ...record, authority_id: input.authority_id })),
+      clients: fixtureControlState.control_plane.clients.map((record) => ({ ...record, authority_id: input.authority_id })),
+      capabilities: fixtureControlState.control_plane.capabilities.map((record) => ({ ...record, authority_id: input.authority_id })),
+      keys: fixtureControlState.control_plane.keys.map((record) => ({ ...record, authority_id: input.authority_id }))
+    }
+  };
+  const decryptStoredPayload = (object: Parameters<typeof decryptGraphObjectPayload>[0]) => (
+    decryptGraphObjectPayload(object, keyring)
+  );
+  const queue = await projectLocalReviewQueue({
+    objects: store.listObjects(),
+    decryptPayload: async (object) => {
+      const payload = await decryptStoredPayload(object);
+      return payload?.kind === "plaintext-json" ? payload.data : undefined;
+    }
+  });
+  const autoApplyPlan = planExactPreservation(queue);
+  const autoApplyAuditSink = new InMemoryLocalMcpAuditSink();
+  const autoApplyOutboxSink = new InMemoryLocalMcpMutationOutboxSink();
+  const autoApplyContext = createLocalMcpContextFromControlState({
+    controlState,
+    graphStore: store,
+    decryptPayload: decryptStoredPayload,
+    auditSink: autoApplyAuditSink,
+    outboxSink: autoApplyOutboxSink,
+    now: migration.created_at
+  });
+  const autoApplyAcknowledgement = { authorization: `Bearer ${localToken}`, plan_hash: autoApplyPlan.plan_hash };
+  const autoApply = await applyExactPreservation(autoApplyContext, autoApplyPlan, autoApplyAcknowledgement);
+  const autoApplyRetry = await applyExactPreservation(autoApplyContext, autoApplyPlan, autoApplyAcknowledgement);
+  if (autoApply.failed > 0
+    || autoApply.committed !== autoApplyPlan.auto_apply.length
+    || autoApplyRetry.failed > 0
+    || autoApplyRetry.committed !== 0
+    || autoApplyRetry.idempotent !== autoApplyPlan.auto_apply.length) {
+    const failureCodes = [...autoApply.outcomes, ...autoApplyRetry.outcomes]
+      .filter((outcome) => outcome.outcome === "failed")
+      .reduce<Record<string, number>>((counts, outcome) => {
+        const code = outcome.reason_code ?? "unknown";
+        counts[code] = (counts[code] ?? 0) + 1;
+        return counts;
+      }, {});
+    throw new Error(`canonical isolated-copy exact-preservation auto-apply failed: planned=${autoApplyPlan.auto_apply.length} committed=${autoApply.committed} failed=${autoApply.failed} retry_committed=${autoApplyRetry.committed} retry_idempotent=${autoApplyRetry.idempotent} retry_failed=${autoApplyRetry.failed} failure_codes=${JSON.stringify(failureCodes)}`);
+  }
+  const committedResolutionAuditEvents = autoApplyAuditSink.events.filter((event) => (
+    event.tool_name === "resolution_apply" && event.reason_code === "resolution-committed"
+  ));
+  if (committedResolutionAuditEvents.length !== autoApplyPlan.auto_apply.length
+    || autoApplyOutboxSink.records.length !== autoApplyPlan.auto_apply.length) {
+    throw new Error("canonical isolated-copy exact-preservation retry duplicated reconciliation records");
+  }
+
+  const postApplyClient = createLocalCanonicalAtlasClient({
+    graphStore: store,
+    decryptPayload: async (object) => {
+      const payload = await decryptStoredPayload(object);
+      return payload?.kind === "plaintext-json" ? payload.data : undefined;
+    },
+    now: migration.created_at
+  });
+  const postApplyExport = await postApplyClient.exportCanonical({ exported_at: migration.created_at });
+
+  const manifest = canonicalManifest(postApplyExport.records);
   const persistedKeyring = await keyringStore.read(input.keyring_passphrase);
   const reopenedStore = await FileLocalGraphStore.open({
     directory: join(paths.copy_dir, "graph"),
@@ -189,7 +273,7 @@ export async function runCanonicalIsolatedCopy(input: CanonicalIsolatedCopyRun &
   if (reopenedManifestMismatches > 0) throw new Error("canonical isolated-copy reopened manifest mismatch");
 
   const report = analyzeCanonicalConversion({
-    records: exported.records,
+    records: postApplyExport.records,
     authority_id: input.authority_id,
     sources: files.map(({ source_path, markdown, byte_count }) => ({ source_path, markdown, byte_count })),
     source_discovery: discovery.counts,
@@ -198,7 +282,17 @@ export async function runCanonicalIsolatedCopy(input: CanonicalIsolatedCopyRun &
     reopened_manifest_mismatches: reopenedManifestMismatches
   });
   await persistCanonicalConversionArtifacts({ copy_dir: paths.copy_dir, report, manifest });
-  return { source_file_count: files.length, canonical_object_count: result.objects.length, generation: result.generation };
+  return {
+    source_file_count: files.length,
+    canonical_object_count: postApplyExport.records.length,
+    generation: store.status().generation,
+    auto_apply: {
+      planned: autoApplyPlan.auto_apply.length,
+      committed: autoApply.committed,
+      retry_committed: autoApplyRetry.committed,
+      retry_idempotent: autoApplyRetry.idempotent
+    }
+  };
 }
 
 function canonicalManifest(records: CanonicalExportRecord[]): CanonicalManifestEntry[] {
@@ -272,6 +366,7 @@ export function analyzeCanonicalConversion(input: {
         break;
       case "atlas.review-item:v1":
         proposedReferences.push(...payload.proposed_object_ids);
+        evidenceReferences.push(...(payload.source_evidence_ids ?? []));
         reviewCoverageReferences.push(...payload.source_coverage_keys);
         break;
       case "atlas.parity-record:v1":
@@ -345,12 +440,32 @@ export function analyzeCanonicalConversion(input: {
       && parity.canonical_object_ids.every((id) => observationIds.has(id) && review.proposed_object_ids.includes(id))
       && review.proposed_object_ids.every((id) => objectIds.has(id));
   };
+  const isValidZeroUnitParity = (coverageKey: string): boolean => {
+    const coverageParity = parityByCoverage.get(coverageKey) ?? [];
+    if (coverageParity.length !== 1) return false;
+    const parity = coverageParity[0]!;
+    return parity.coverage_state === "unrepresented"
+      && parity.meaning_state === "non-meaningful"
+      && parity.representation_kind === undefined
+      && parity.canonical_object_ids.length === 0;
+  };
+  const isValidZeroUnitReview = (coverageKey: string, review: typeof reviews[number]): boolean => (
+    review.source_coverage_keys.length === 1
+    && review.source_coverage_keys[0] === coverageKey
+    && review.proposed_object_ids.length === 0
+    && ((review.recommendation === "research" && review.resolution_state === "research")
+      || (review.recommendation === "auto-apply"
+        && review.resolution_state === "auto-applied"
+        && (review.source_evidence_ids?.length ?? 0) > 0))
+  );
   const incompleteReviews = reviews.filter((review) => {
     if (review.source_coverage_keys.length !== 1) return true;
     const coverageKey = review.source_coverage_keys[0]!;
     const sourceCoverage = expectedSourcesByCoverage.get(coverageKey);
     if (!sourceCoverage || sourceCoverage.length !== 1) return true;
-    if (sourceCoverage[0]!.meaningful_unit_occurrences.length === 0) return true;
+    if (sourceCoverage[0]!.meaningful_unit_occurrences.length === 0) {
+      return !isValidZeroUnitParity(coverageKey) || !isValidZeroUnitReview(coverageKey, review);
+    }
     return !isCompleteNonzeroReview(coverageKey, review);
   }).length;
   let invalidMeaningfulSourceParityRecords = 0;
@@ -374,16 +489,13 @@ export function analyzeCanonicalConversion(input: {
     if (coverageParity.length === 1) {
       const parity = coverageParity[0]!;
       if (parity.coverage_state !== "unrepresented"
+        || parity.meaning_state !== "non-meaningful"
         || parity.representation_kind !== undefined
         || parity.canonical_object_ids.length > 0) invalidZeroUnitSourceParityRecords += 1;
     }
     if (coverageReviews.length === 1) {
       const review = coverageReviews[0]!;
-      if (review.source_coverage_keys.length !== 1
-        || review.source_coverage_keys[0] !== coverageKey
-        || review.proposed_object_ids.length > 0
-        || review.recommendation !== "research"
-        || review.resolution_state !== "research") actionableZeroUnitSourceReviews += 1;
+      if (!isValidZeroUnitReview(coverageKey, review)) actionableZeroUnitSourceReviews += 1;
     }
   }
   const duplicateExpectedCoverageKeys = [...expectedSourcesByCoverage.values()]
@@ -449,6 +561,8 @@ export function analyzeCanonicalConversion(input: {
     review_queue: {
       owner_review: reviews.filter((review) => review.resolution_state === "owner-review").length,
       research: reviews.filter((review) => review.resolution_state === "research").length,
+      automatic: reviews.filter((review) => review.resolution_state === "auto-applied"
+        || review.resolution_state === "resolved").length,
       incomplete: incompleteReviews
     },
     integrity: {

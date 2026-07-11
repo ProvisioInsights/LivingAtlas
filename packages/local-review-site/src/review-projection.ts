@@ -57,6 +57,7 @@ export type LocalReviewResolutionMode = "rich" | "legacy" | "incomplete";
 
 export type LocalReviewQueueItem = {
   review_id: string;
+  review_version: number;
   candidate_id: string;
   review_record: CanonicalReviewItemPayload;
   recommendation: CanonicalReviewItemPayload["recommendation"];
@@ -80,6 +81,7 @@ export type LocalReviewQueueItem = {
   source_accounting: SourceMeaningAccounting;
   missing_references: string[];
   context_unavailable: boolean;
+  exact_source_encrypted: boolean;
   bulk_compatibility_key: `sha256:${string}`;
 };
 
@@ -309,6 +311,7 @@ export async function projectLocalReviewQueue(input: {
   objects: GraphObjectEnvelope[];
   decryptPayload: CanonicalPayloadDecryptor;
 }): Promise<LocalReviewQueue> {
+  const envelopesById = new Map(input.objects.map((object) => [object.object_id, object]));
   const payloads = new Map<string, CanonicalPayload>();
   for (const object of input.objects.filter((item) => DecryptableTypes.has(item.object_type) && !item.visible_metadata.tombstone)) {
     const payload = await input.decryptPayload(object);
@@ -319,7 +322,7 @@ export async function projectLocalReviewQueue(input: {
   const reviews = [...payloads.values()].filter((payload): payload is CanonicalReviewItemPayload => payload.schema === "atlas.review-item:v1");
   const itemFor = (review: CanonicalReviewItemPayload): LocalReviewQueueItem => {
     const proposed = review.proposed_object_ids;
-    const evidenceIds = new Set<string>();
+    const evidenceIds = new Set<string>(review.source_evidence_ids ?? []);
     for (const id of proposed) {
       const payload = payloads.get(id);
       if (payload?.schema === "atlas.observation:v1") payload.evidence_refs.forEach((evidence) => evidenceIds.add(evidence));
@@ -422,6 +425,7 @@ export async function projectLocalReviewQueue(input: {
     const researchRequestedUnits = sourceAccounting.meaningful_units.filter((unit) => requestedUnitHashes.has(unit.unit_id));
     return {
       review_id: review.review_id,
+      review_version: envelopesById.get(review.review_id)?.version ?? 0,
       candidate_id: review.candidate_id,
       review_record: review,
       recommendation: review.recommendation,
@@ -445,6 +449,9 @@ export async function projectLocalReviewQueue(input: {
       source_accounting: sourceAccounting,
       missing_references: referenced.filter((id) => !payloads.has(id)).sort(),
       context_unavailable: sourceContext.length === 0,
+      exact_source_encrypted: sourceContext.length > 0 && sourceContext.every((evidence) => (
+        envelopesById.get(evidence.evidence_id)?.encryption_class === "client-encrypted"
+      )),
       bulk_compatibility_key: bulkCompatibilityKey({
         proposedRecords,
         parityRecords,

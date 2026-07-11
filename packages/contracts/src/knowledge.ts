@@ -382,6 +382,14 @@ export const ReviewResolutionStateSchema = z.enum([
   "owner-review",
   "deferred-unknown"
 ]);
+export const ReviewAutoApplyBlockerSchema = z.enum([
+  "typed-projection-ambiguous-entity",
+  "typed-projection-missing-edge-endpoint",
+  "typed-projection-endpoint-type-mismatch",
+  "typed-projection-ambiguous-edge-endpoint",
+  "typed-projection-duplicate-edge",
+  "typed-projection-other-edge-omission"
+]);
 export const CanonicalReviewItemPayloadSchema = z.object({
   schema: z.literal(`${CanonicalSchemaNamespace}.review-item:v1`),
   review_id: ObjectIdSchema,
@@ -390,11 +398,21 @@ export const CanonicalReviewItemPayloadSchema = z.object({
   recommendation: ReviewRecommendationSchema,
   resolution_state: ReviewResolutionStateSchema,
   proposed_object_ids: z.array(ObjectIdSchema).default([]),
+  source_evidence_ids: z.array(ObjectIdSchema).min(1).optional(),
+  auto_apply_blockers: z.array(ReviewAutoApplyBlockerSchema).min(1).optional(),
   research_requested_at: IsoTimestampSchema.optional(),
   research_requested_all: z.boolean().optional(),
   research_requested_unit_hashes: z.array(Sha256HashSchema).optional(),
   recorded_at: IsoTimestampSchema
-}).strict();
+}).strict().superRefine((review, ctx) => {
+  if (review.resolution_state === "auto-applied" && review.recommendation !== "auto-apply") {
+    ctx.addIssue({
+      code: "custom",
+      path: ["recommendation"],
+      message: "auto-applied reviews require an auto-apply recommendation"
+    });
+  }
+});
 export type CanonicalReviewItemPayload = z.infer<typeof CanonicalReviewItemPayloadSchema>;
 
 export const ParityCoverageStateSchema = z.enum(["unrepresented", "represented"]);
@@ -404,6 +422,7 @@ export const CanonicalParityRecordPayloadSchema = z.object({
   parity_id: ObjectIdSchema,
   source_coverage_key: CoverageKeySchema,
   coverage_state: ParityCoverageStateSchema,
+  meaning_state: z.literal("non-meaningful").optional(),
   representation_kind: ParityRepresentationKindSchema.optional(),
   canonical_object_ids: z.array(ObjectIdSchema).default([]),
   idempotency_key: IdempotencyKeySchema,
@@ -428,6 +447,16 @@ export const CanonicalParityRecordPayloadSchema = z.object({
       code: "custom",
       path: ["canonical_object_ids"],
       message: "unrepresented coverage cannot name canonical objects"
+    });
+  }
+  if (record.meaning_state === "non-meaningful"
+    && (record.coverage_state !== "unrepresented"
+      || record.representation_kind !== undefined
+      || record.canonical_object_ids.length > 0)) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["meaning_state"],
+      message: "non-meaningful coverage must stay unrepresented without a representation kind or canonical objects"
     });
   }
 });

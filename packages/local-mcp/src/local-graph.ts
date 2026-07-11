@@ -11,6 +11,7 @@ import type {
 import {
   AccessClassSchema,
   CanonicalWriteSchema,
+  type CanonicalParityRecordPayload,
   type CanonicalPayload,
   type CanonicalReviewItemPayload,
   EncryptionClassSchema,
@@ -768,18 +769,6 @@ async function validateCanonicalMutationSet(input: {
   if (reviewCoverage.size !== review.source_coverage_keys.length) {
     return { ok: false, reason: "resolution-review-mismatch" };
   }
-  const parityRecords = input.parsed.payloads.filter((payload) => payload.schema === "atlas.parity-record:v1");
-  const parityCoverage = new Set(parityRecords.map((record) => record.source_coverage_key));
-  if (
-    parityRecords.length === 0
-    || parityCoverage.size !== parityRecords.length
-    || parityCoverage.size !== reviewCoverage.size
-    || [...reviewCoverage].some((coverageKey) => !parityCoverage.has(coverageKey))
-    || parityRecords.some((record) => record.coverage_state !== "represented")
-  ) {
-    return { ok: false, reason: "resolution-parity-mismatch" };
-  }
-
   const draftsById = new Map(input.parsed.drafts.map((draft, index) => [
     draft.object_id,
     { draft, payload: input.parsed.payloads[index]! }
@@ -826,6 +815,43 @@ async function validateCanonicalMutationSet(input: {
     return valid;
   };
 
+  const draftedParityRecords = input.parsed.payloads.filter((payload) => payload.schema === "atlas.parity-record:v1");
+  const usesExistingParity = draftedParityRecords.length === 0;
+  const parityRecords: CanonicalParityRecordPayload[] = [...draftedParityRecords];
+  if (usesExistingParity) {
+    if (input.parsed.payloads.length !== 1
+      || review.recommendation !== "auto-apply"
+      || review.resolution_state !== "auto-applied") {
+      return { ok: false, reason: "resolution-parity-mismatch" };
+    }
+    for (const object of input.context.graphStore!.listObjects()) {
+      if (object.object_type !== "manifest") continue;
+      const payload = await activeCanonicalPayload(object.object_id);
+      if (payload?.schema === "atlas.parity-record:v1" && reviewCoverage.has(payload.source_coverage_key)) {
+        parityRecords.push(payload);
+      }
+    }
+  }
+  const parityCoverage = new Set(parityRecords.map((record) => record.source_coverage_key));
+  const validParityState = parityRecords.every((record) => (
+    record.coverage_state === "represented"
+    || (usesExistingParity
+      && record.coverage_state === "unrepresented"
+      && record.meaning_state === "non-meaningful"
+      && record.representation_kind === undefined
+      && record.canonical_object_ids.length === 0
+      && review.proposed_object_ids.length === 0)
+  ));
+  if (
+    parityRecords.length === 0
+    || parityCoverage.size !== parityRecords.length
+    || parityCoverage.size !== reviewCoverage.size
+    || [...reviewCoverage].some((coverageKey) => !parityCoverage.has(coverageKey))
+    || !validParityState
+  ) {
+    return { ok: false, reason: "resolution-parity-mismatch" };
+  }
+
   const typedReferences: Array<{ objectId: string; objectType: ObjectType }> = [];
   for (const payload of input.parsed.payloads) {
     switch (payload.schema) {
@@ -864,6 +890,11 @@ async function validateCanonicalMutationSet(input: {
           ...payload.evidence_links.map((link) => ({ objectId: link.evidence_id, objectType: "evidence" as const })),
           ...payload.confidence.evidence_refs.map((objectId) => ({ objectId, objectType: "evidence" as const })),
           ...payload.supersedes.map((objectId) => ({ objectId, objectType: "review" as const }))
+        );
+        break;
+      case "atlas.review-item:v1":
+        typedReferences.push(
+          ...(payload.source_evidence_ids ?? []).map((objectId) => ({ objectId, objectType: "evidence" as const }))
         );
         break;
     }
@@ -1101,6 +1132,60 @@ export async function localResolutionApply(
   const { review } = validation.value;
 
   const existingReview = context.graphStore.readObject(review.review_id);
+  const reviewOnlyAutoApply = parsedDrafts.length === 1
+    && parsedDrafts[0]!.object_id === review.review_id
+    && review.recommendation === "auto-apply"
+    && review.resolution_state === "auto-applied";
+  if (reviewOnlyAutoApply) {
+    if (!existingReview || existingReview.visible_metadata.tombstone) {
+      return { ok: false, reason: "resolution-review-mismatch" };
+    }
+    let existingPayload = existingReview.payload;
+    if (existingPayload.kind !== "plaintext-json") {
+      existingPayload = await context.decryptPayload?.(existingReview).catch(() => undefined) ?? existingPayload;
+    }
+    const existingCanonical = existingPayload.kind === "plaintext-json"
+      ? CanonicalWriteSchema.safeParse({ object_type: existingReview.object_type, payload: existingPayload.data })
+      : undefined;
+    const existingReviewPayload = existingCanonical?.success
+      && existingCanonical.data.payload.schema === "atlas.review-item:v1"
+      ? existingCanonical.data.payload
+      : undefined;
+    if (!existingReviewPayload || (existingReviewPayload.auto_apply_blockers?.length ?? 0) > 0) {
+      return { ok: false, reason: "resolution-review-mismatch" };
+    }
+    if (!existingReviewPayload.source_evidence_ids?.length) {
+      return { ok: false, reason: "resolution-review-mismatch" };
+    }
+    for (const evidenceId of existingReviewPayload.source_evidence_ids) {
+      const evidenceObject = context.graphStore.readObject(evidenceId);
+      if (!evidenceObject
+        || evidenceObject.visible_metadata.tombstone
+        || evidenceObject.object_type !== "evidence"
+        || evidenceObject.encryption_class !== "client-encrypted") {
+        return { ok: false, reason: "resolution-review-mismatch" };
+      }
+      let evidencePayload = evidenceObject.payload;
+      if (evidencePayload.kind !== "plaintext-json") {
+        evidencePayload = await context.decryptPayload?.(evidenceObject).catch(() => undefined) ?? evidencePayload;
+      }
+      const canonicalEvidence = evidencePayload.kind === "plaintext-json"
+        ? CanonicalWriteSchema.safeParse({ object_type: evidenceObject.object_type, payload: evidencePayload.data })
+        : undefined;
+      if (!canonicalEvidence?.success
+        || canonicalEvidence.data.payload.schema !== "atlas.evidence:v1"
+        || canonicalEvidence.data.payload.evidence_id !== evidenceId
+        || canonicalEvidence.data.payload.source_kind !== "migration"
+        || canonicalEvidence.data.payload.extraction_method !== "canonical-markdown-lossless-v1") {
+        return { ok: false, reason: "resolution-review-mismatch" };
+      }
+    }
+    const { recommendation: _existingRecommendation, resolution_state: _existingState, ...existingStable } = existingReviewPayload;
+    const { recommendation: _submittedRecommendation, resolution_state: _submittedState, ...submittedStable } = review;
+    if (JSON.stringify(stableJsonValue(existingStable)) !== JSON.stringify(stableJsonValue(submittedStable))) {
+      return { ok: false, reason: "resolution-review-mismatch" };
+    }
+  }
   if (existingReview && existingReview.version !== input.expected_review_version) {
     return { ok: false, reason: "resolution-review-version-conflict" };
   }

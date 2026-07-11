@@ -9,7 +9,12 @@ import {
 } from "@living-atlas/contracts";
 import { fixtureLocalClientId } from "@living-atlas/fixtures";
 import { createCanonicalMarkdownMigration } from "@living-atlas/importer";
-import { createFixtureLocalMcpContext, createLocalMcpContextFromControlState } from "@living-atlas/local-mcp";
+import {
+  createFixtureLocalMcpContext,
+  createLocalMcpContextFromControlState,
+  InMemoryLocalMcpAuditSink,
+  InMemoryLocalMcpMutationOutboxSink
+} from "@living-atlas/local-mcp";
 import { hashLocalMcpToken, InMemoryLocalMcpCredentialStore } from "@living-atlas/local-mcp";
 import { createFixtureLocalControlState } from "../../local-control-store/src";
 import { FileLocalGraphStore } from "../../local-graph-store/src/local-graph-store";
@@ -117,10 +122,14 @@ async function startEvidenceRuleServer(token: string) {
     visible_metadata: { schema_namespace: "atlas/review-evidence-rule-test", tombstone: false, size_class: "small", remote_indexable: false },
     payload: { kind: "plaintext-json", data: payload }
   })));
+  const auditSink = new InMemoryLocalMcpAuditSink();
+  const outboxSink = new InMemoryLocalMcpMutationOutboxSink();
   const context = createLocalMcpContextFromControlState({
     controlState,
     graphStore,
     decryptPayload: async (object) => decryptGraphObjectPayload(object, keyring),
+    auditSink,
+    outboxSink,
     now
   });
   const server = createLocalReviewSiteServer({ context, browserSessionAuthorization: `Bearer ${token}` });
@@ -132,7 +141,7 @@ async function startEvidenceRuleServer(token: string) {
   const session = await fetch(origin);
   const cookie = session.headers.get("set-cookie")!.split(";")[0]!;
   const queue = await fetch(`${origin}/api/review-queue`, { headers: { cookie } }).then((response) => response.json()) as LocalReviewQueue;
-  return { now, directory, graphStore, origin, cookie, queue };
+  return { now, directory, graphStore, auditSink, outboxSink, origin, cookie, queue };
 }
 
 function reviewItemNamed(queue: LocalReviewQueue, name: string): LocalReviewQueueItem {
@@ -171,6 +180,109 @@ async function updateStoredCanonicalPayload(input: {
 }
 
 describe("local review site server", () => {
+  it("keeps queue reads and browser reloads strictly read-only", async () => {
+    const fixture = await startEvidenceRuleServer("local-review-site-read-only-token-0001");
+    try {
+      const before = fixture.graphStore.status();
+      const reviewVersions = fixture.queue.owner_review.concat(fixture.queue.research)
+        .map((item) => [item.review_id, fixture.graphStore.readObject(item.review_id)?.version] as const);
+
+      await expect(fetch(`${fixture.origin}/api/review-queue`, { headers: { cookie: fixture.cookie } }))
+        .resolves.toMatchObject({ status: 200 });
+      await expect(fetch(fixture.origin, { headers: { cookie: fixture.cookie } }))
+        .resolves.toMatchObject({ status: 200 });
+      await expect(fetch(`${fixture.origin}/api/review-queue`, { headers: { cookie: fixture.cookie } }))
+        .resolves.toMatchObject({ status: 200 });
+
+      expect(fixture.graphStore.status()).toEqual(before);
+      for (const [reviewId, version] of reviewVersions) {
+        expect(fixture.graphStore.readObject(reviewId)?.version).toBe(version);
+      }
+    } finally {
+      await rm(fixture.directory, { recursive: true, force: true });
+    }
+  });
+
+  it("requires a server-minted exact-preservation plan and applies it only after explicit acknowledgement", async () => {
+    const fixture = await startEvidenceRuleServer("local-review-site-auto-apply-token-0001");
+    try {
+      const initialStatus = fixture.graphStore.status();
+      const missingPlan = await fetch(`${fixture.origin}/api/review/auto-apply/apply`, {
+        method: "POST",
+        headers: { cookie: fixture.cookie, "content-type": "application/json" },
+        body: JSON.stringify({ plan_hash: "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff" })
+      });
+      expect(missingPlan.status).toBe(409);
+      await expect(missingPlan.json()).resolves.toMatchObject({ ok: false, reason: "exact-preservation-plan-stale" });
+      expect(fixture.graphStore.status()).toEqual(initialStatus);
+
+      const planResponse = await fetch(`${fixture.origin}/api/review/auto-apply/plan`, {
+        method: "POST",
+        headers: { cookie: fixture.cookie }
+      });
+      expect(planResponse.status).toBe(200);
+      const planBody = await planResponse.json() as {
+        result: { plan_hash: string; auto_apply: string[]; manual: string[] };
+      };
+      expect(planBody.result.plan_hash).toMatch(/^sha256:[a-f0-9]{64}$/);
+      expect(planBody.result.auto_apply.length).toBeGreaterThan(0);
+      expect(fixture.graphStore.status()).toEqual(initialStatus);
+
+      const forged = await fetch(`${fixture.origin}/api/review/auto-apply/apply`, {
+        method: "POST",
+        headers: { cookie: fixture.cookie, "content-type": "application/json" },
+        body: JSON.stringify({
+          plan_hash: `${planBody.result.plan_hash.slice(0, -1)}${planBody.result.plan_hash.endsWith("0") ? "1" : "0"}`
+        })
+      });
+      expect(forged.status).toBe(409);
+      expect(fixture.graphStore.status()).toEqual(initialStatus);
+
+      const applyResponse = await fetch(`${fixture.origin}/api/review/auto-apply/apply`, {
+        method: "POST",
+        headers: { cookie: fixture.cookie, "content-type": "application/json" },
+        body: JSON.stringify({ plan_hash: planBody.result.plan_hash })
+      });
+      expect(applyResponse.status).toBe(200);
+      const applyBody = await applyResponse.json() as {
+        result: { committed: number; idempotent: number; failed: number; outcomes: unknown[] };
+      };
+      expect(applyBody.result).toMatchObject({
+        committed: planBody.result.auto_apply.length,
+        idempotent: 0,
+        failed: 0
+      });
+      const afterFirst = fixture.graphStore.status();
+      const auditCount = fixture.auditSink.events.filter((event) => (
+        event.tool_name === "resolution_apply" && event.reason_code === "resolution-committed"
+      )).length;
+      const outboxCount = fixture.outboxSink.records.length;
+      expect(afterFirst.generation).toBe(initialStatus.generation + planBody.result.auto_apply.length);
+      expect(JSON.stringify(applyBody)).not.toMatch(/source_text|excerpt|locator|path|name|url/i);
+
+      const retryResponse = await fetch(`${fixture.origin}/api/review/auto-apply/apply`, {
+        method: "POST",
+        headers: { cookie: fixture.cookie, "content-type": "application/json" },
+        body: JSON.stringify({ plan_hash: planBody.result.plan_hash })
+      });
+      expect(retryResponse.status).toBe(200);
+      await expect(retryResponse.json()).resolves.toMatchObject({
+        result: {
+          committed: 0,
+          idempotent: planBody.result.auto_apply.length,
+          failed: 0
+        }
+      });
+      expect(fixture.graphStore.status()).toEqual(afterFirst);
+      expect(fixture.auditSink.events.filter((event) => (
+        event.tool_name === "resolution_apply" && event.reason_code === "resolution-committed"
+      ))).toHaveLength(auditCount);
+      expect(fixture.outboxSink.records).toHaveLength(outboxCount);
+    } finally {
+      await rm(fixture.directory, { recursive: true, force: true });
+    }
+  });
+
   it("serves a human decision workspace instead of raw JSON controls", async () => {
     const token = "local-review-site-ui-token-0001";
     const context = createFixtureLocalMcpContext({ credentialStore: new InMemoryLocalMcpCredentialStore([{

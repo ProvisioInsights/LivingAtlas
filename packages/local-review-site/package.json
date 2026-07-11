@@ -3,6 +3,10 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "exports": {
+    "./review-auto-apply": "./src/review-auto-apply.ts",
+    "./review-projection": "./src/review-projection.ts"
+  },
   "dependencies": {
     "@living-atlas/contracts": "workspace:*",
     "@living-atlas/graph-service": "workspace:*",

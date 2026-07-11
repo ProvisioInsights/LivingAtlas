@@ -11,6 +11,11 @@ import {
 } from "@living-atlas/contracts";
 import { authenticateLocalMcp, localResolutionApply, type LocalMcpContext } from "@living-atlas/local-mcp";
 import { projectLocalReviewQueue, type LocalReviewQueueItem } from "./review-projection";
+import {
+  applyExactPreservation,
+  planExactPreservation,
+  type ExactPreservationPlan
+} from "./review-auto-apply";
 
 const browserSessionCookie = "atlas_review_session";
 
@@ -20,8 +25,9 @@ export function createLocalReviewSiteServer(input: {
 }) {
   const browserSessions = new Map<string, string>();
   const bulkPreviews = new Map<string, string>();
+  const exactPreservationPlans = new Map<string, ExactPreservationPlan>();
   return createServer((request, response) => {
-    void handleRequest(request, response, input.context, browserSessions, bulkPreviews, input.browserSessionAuthorization).catch((error: unknown) => {
+    void handleRequest(request, response, input.context, browserSessions, bulkPreviews, exactPreservationPlans, input.browserSessionAuthorization).catch((error: unknown) => {
       const status = error instanceof JsonBodyError ? error.status : 500;
       const reason = error instanceof JsonBodyError ? error.reason : "internal-error";
       if (!response.headersSent) sendJson(response, status, { ok: false, reason });
@@ -36,6 +42,7 @@ async function handleRequest(
   context: LocalMcpContext,
   browserSessions: Map<string, string>,
   bulkPreviews: Map<string, string>,
+  exactPreservationPlans: Map<string, ExactPreservationPlan>,
   browserSessionAuthorization: string | undefined
 ): Promise<void> {
   const pathname = new URL(request.url ?? "/", "http://127.0.0.1").pathname;
@@ -92,6 +99,39 @@ async function handleRequest(
   const queue = await projectLocalReviewQueue({ objects, decryptPayload });
   if (request.method === "GET" && pathname === "/api/review-queue") {
     sendJson(response, 200, queue);
+    return;
+  }
+  if (request.method === "POST" && pathname === "/api/review/auto-apply/plan") {
+    if (!context.graphStore) {
+      sendJson(response, 409, { ok: false, reason: "resolution-requires-durable-local-store" });
+      return;
+    }
+    const plan = planExactPreservation(queue);
+    if (exactPreservationPlans.size >= 512) {
+      exactPreservationPlans.delete(exactPreservationPlans.keys().next().value as string);
+    }
+    exactPreservationPlans.set(plan.plan_hash, plan);
+    sendJson(response, 200, { ok: true, result: plan });
+    return;
+  }
+  if (request.method === "POST" && pathname === "/api/review/auto-apply/apply") {
+    const body = await readJson(request);
+    const planHash = body && typeof body === "object" && !Array.isArray(body)
+      ? (body as { plan_hash?: unknown }).plan_hash
+      : undefined;
+    const plan = typeof planHash === "string" ? exactPreservationPlans.get(planHash) : undefined;
+    if (!plan || !context.graphStore) {
+      sendJson(response, 409, { ok: false, reason: "exact-preservation-plan-stale" });
+      return;
+    }
+    const receipt = await applyExactPreservation(context, plan, {
+      authorization: authorization ?? "",
+      plan_hash: plan.plan_hash
+    });
+    sendJson(response, receipt.failed === 0 ? 200 : 409, {
+      ok: receipt.failed === 0,
+      ...(receipt.failed === 0 ? { result: receipt } : { reason: "exact-preservation-apply-failed", receipt })
+    });
     return;
   }
   const decisionMatch = /^\/api\/review\/(la_candidate_[A-Za-z0-9_-]{8,})\/decision$/.exec(pathname);

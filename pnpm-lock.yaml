@@ -106,6 +106,9 @@ importers:
       '@living-atlas/local-mcp':
         specifier: workspace:*
         version: link:../local-mcp
+      '@living-atlas/local-review-site':
+        specifier: workspace:*
+        version: link:../local-review-site
       '@living-atlas/policy':
         specifier: workspace:*
         version: link:../policy

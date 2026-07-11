@@ -159,7 +159,8 @@ function canonicalResolutionDrafts(reviewVersion: number) {
     content_hash: fixedHash("e"),
     retrieved_at: now,
     independence_key: "synthetic-resolution-source",
-    excerpt: "Synthetic evidence for one canonical assertion."
+    excerpt: "Synthetic evidence for one canonical assertion.",
+    extraction_method: "canonical-markdown-lossless-v1"
   });
   const fact = draft(factId, "assertion", 1, {
     schema: "atlas.fact:v1",
@@ -187,6 +188,7 @@ function canonicalResolutionDrafts(reviewVersion: number) {
     recommendation: "auto-apply",
     resolution_state: "resolved",
     proposed_object_ids: [entityId, evidenceId, factId],
+    source_evidence_ids: [evidenceId],
     recorded_at: now
   });
   const parity = draft(parityId, "manifest", 1, {
@@ -201,6 +203,40 @@ function canonicalResolutionDrafts(reviewVersion: number) {
   });
 
   return { entity, evidence, fact, review, parity, candidateId };
+}
+
+function nonMeaningfulResolutionDrafts(reviewVersion: number, parityVersion: number) {
+  const drafts = canonicalResolutionDrafts(reviewVersion);
+  return {
+    ...drafts,
+    review: {
+      ...drafts.review,
+      version: reviewVersion,
+      payload: {
+        ...drafts.review.payload,
+        data: {
+          ...drafts.review.payload.data,
+          recommendation: "auto-apply",
+          resolution_state: "auto-applied",
+          proposed_object_ids: []
+        }
+      }
+    },
+    parity: {
+      ...drafts.parity,
+      version: parityVersion,
+      payload: {
+        ...drafts.parity.payload,
+        data: {
+          ...drafts.parity.payload.data,
+          coverage_state: "unrepresented",
+          meaning_state: "non-meaningful",
+          representation_kind: undefined,
+          canonical_object_ids: []
+        }
+      }
+    }
+  };
 }
 
 type ResolutionDrafts = ReturnType<typeof canonicalResolutionDrafts>;
@@ -539,6 +575,326 @@ describe("local fixture graph tools", () => {
       })).resolves.toEqual({ ok: false, reason: "resolution-parity-mismatch" });
 
       expect(graphStore.status()).toMatchObject({ generation: 0, object_count: 0 });
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("auto-applies a pre-existing immutable non-meaningful parity marker without inventing graph objects", async () => {
+    const token = "local-token-resolution-nonmeaningful-0001";
+    const directory = await mkdtemp(join(tmpdir(), "living-atlas-local-resolution-nonmeaningful-"));
+    try {
+      const controlState = await createFixtureLocalControlState(token);
+      const keyring = createDefaultLocalKeyring({ authorityId: controlState.authority_id, createdAt: now });
+      const graphStore = await FileLocalGraphStore.open({
+        directory,
+        authorityId: controlState.authority_id,
+        plaintextPersistence: "encrypt",
+        keyring
+      });
+      const pending = nonMeaningfulResolutionDrafts(1, 1);
+      const resolved = nonMeaningfulResolutionDrafts(2, 2);
+      await expect(graphStore.initializeFromObjects([
+        pending.evidence,
+        {
+          ...pending.review,
+          payload: {
+            ...pending.review.payload,
+            data: { ...pending.review.payload.data, recommendation: "research", resolution_state: "research" }
+          }
+        },
+        pending.parity
+      ] as never)).resolves.toMatchObject({ ok: true });
+      const context = createLocalMcpContextFromControlState({
+        controlState,
+        graphStore,
+        decryptPayload: decryptWithKeyring(keyring),
+        now
+      });
+
+      await expect(localResolutionApply(context, {
+        authorization: `Bearer ${token}`,
+        operation_id: "la_operation_resolutionnonmeaningful0001",
+        idempotency_key: "la_idem_resolutionnonmeaningful0001",
+        candidate_id: resolved.candidateId,
+        expected_generation: 0,
+        expected_review_version: 1,
+        objects: [resolved.review]
+      })).resolves.toMatchObject({
+        ok: true,
+        result: {
+          local_commit: "committed",
+          committed_object_ids: [resolved.review.object_id]
+        }
+      });
+      expect(graphStore.status()).toMatchObject({ generation: 1, object_count: 3 });
+      expect(graphStore.readObject(resolved.evidence.object_id)).toMatchObject({ version: 1 });
+      expect(graphStore.readObject(resolved.parity.object_id)).toMatchObject({ version: 1 });
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects review-only auto-apply when the stored review has an auto-apply blocker deleted from the draft", async () => {
+    const token = "local-token-resolution-stored-blocker-0001";
+    const directory = await mkdtemp(join(tmpdir(), "living-atlas-local-resolution-stored-blocker-"));
+    try {
+      const controlState = await createFixtureLocalControlState(token);
+      const keyring = createDefaultLocalKeyring({ authorityId: controlState.authority_id, createdAt: now });
+      const graphStore = await FileLocalGraphStore.open({
+        directory,
+        authorityId: controlState.authority_id,
+        plaintextPersistence: "encrypt",
+        keyring
+      });
+      const drafts = canonicalResolutionDrafts(2);
+      const storedReview = withResolutionPayload({ ...drafts.review, version: 1 }, {
+        recommendation: "owner-review",
+        resolution_state: "owner-review",
+        auto_apply_blockers: ["typed-projection-missing-edge-endpoint"]
+      });
+      const submittedReview = withResolutionPayload(drafts.review, {
+        recommendation: "auto-apply",
+        resolution_state: "auto-applied"
+      });
+      await expect(graphStore.initializeFromObjects([
+        drafts.entity,
+        drafts.evidence,
+        drafts.fact,
+        storedReview,
+        drafts.parity
+      ] as never)).resolves.toMatchObject({ ok: true });
+      const context = createLocalMcpContextFromControlState({
+        controlState,
+        graphStore,
+        decryptPayload: decryptWithKeyring(keyring),
+        now
+      });
+
+      await expect(localResolutionApply(context, {
+        authorization: `Bearer ${token}`,
+        operation_id: "la_operation_resolutionstoredblocker0001",
+        idempotency_key: "la_idem_resolutionstoredblocker0001",
+        candidate_id: drafts.candidateId,
+        expected_generation: 0,
+        expected_review_version: 1,
+        objects: [submittedReview]
+      })).resolves.toEqual({ ok: false, reason: "resolution-review-mismatch" });
+      expect(graphStore.status()).toMatchObject({ generation: 0 });
+      expect(graphStore.readObject(drafts.review.object_id)).toMatchObject({ version: 1 });
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("auto-applies a rich exact-source review without rewriting its existing evidence, assertions, entities, or parity", async () => {
+    const token = "local-token-resolution-rich-review-only-0001";
+    const directory = await mkdtemp(join(tmpdir(), "living-atlas-local-resolution-rich-review-only-"));
+    try {
+      const controlState = await createFixtureLocalControlState(token);
+      const keyring = createDefaultLocalKeyring({ authorityId: controlState.authority_id, createdAt: now });
+      const graphStore = await FileLocalGraphStore.open({
+        directory,
+        authorityId: controlState.authority_id,
+        plaintextPersistence: "encrypt",
+        keyring
+      });
+      const drafts = canonicalResolutionDrafts(2);
+      const storedReview = withResolutionPayload({ ...drafts.review, version: 1 }, {
+        recommendation: "owner-review",
+        resolution_state: "owner-review"
+      });
+      const submittedReview = withResolutionPayload(drafts.review, {
+        recommendation: "auto-apply",
+        resolution_state: "auto-applied"
+      });
+      await expect(graphStore.initializeFromObjects([
+        drafts.entity,
+        drafts.evidence,
+        drafts.fact,
+        storedReview,
+        drafts.parity
+      ] as never)).resolves.toMatchObject({ ok: true });
+      const context = createLocalMcpContextFromControlState({
+        controlState,
+        graphStore,
+        decryptPayload: decryptWithKeyring(keyring),
+        now
+      });
+
+      await expect(localResolutionApply(context, {
+        authorization: `Bearer ${token}`,
+        operation_id: "la_operation_resolutionrichreviewonly0001",
+        idempotency_key: "la_idem_resolutionrichreviewonly0001",
+        candidate_id: drafts.candidateId,
+        expected_generation: 0,
+        expected_review_version: 1,
+        objects: [submittedReview]
+      })).resolves.toMatchObject({
+        ok: true,
+        result: { committed_object_ids: [drafts.review.object_id] }
+      });
+      expect(graphStore.readObject(drafts.review.object_id)).toMatchObject({ version: 2 });
+      for (const objectId of [drafts.entity.object_id, drafts.evidence.object_id, drafts.fact.object_id, drafts.parity.object_id]) {
+        expect(graphStore.readObject(objectId)).toMatchObject({ version: 1 });
+      }
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it.each(["missing-source-ids", "wrong-extraction", "plaintext-source"] as const)(
+    "rejects review-only auto-apply with %s",
+    async (mode) => {
+      const token = `local-token-resolution-source-origin-${mode}-0001`;
+      const directory = await mkdtemp(join(tmpdir(), "living-atlas-local-resolution-source-origin-"));
+      try {
+        const controlState = await createFixtureLocalControlState(token);
+        const keyring = createDefaultLocalKeyring({ authorityId: controlState.authority_id, createdAt: now });
+        const graphStore = await FileLocalGraphStore.open({
+          directory,
+          authorityId: controlState.authority_id,
+          plaintextPersistence: mode === "plaintext-source" ? "allow" : "encrypt",
+          keyring
+        });
+        const drafts = canonicalResolutionDrafts(2);
+        const evidence = mode === "wrong-extraction"
+          ? withResolutionPayload(drafts.evidence, { extraction_method: "synthetic-other-extraction" })
+          : drafts.evidence;
+        const storedReview = withResolutionPayload({ ...drafts.review, version: 1 }, {
+          recommendation: "owner-review",
+          resolution_state: "owner-review",
+          ...(mode === "missing-source-ids" ? { source_evidence_ids: undefined } : {})
+        });
+        const submittedReview = withResolutionPayload(drafts.review, {
+          recommendation: "auto-apply",
+          resolution_state: "auto-applied",
+          ...(mode === "missing-source-ids" ? { source_evidence_ids: undefined } : {})
+        });
+        const seedObjects = [
+          drafts.entity,
+          evidence,
+          drafts.fact,
+          storedReview,
+          drafts.parity
+        ].map((object) => mode === "plaintext-source" ? {
+          ...object,
+          access_class: "remote-safe",
+          encryption_class: "plaintext"
+        } : object);
+        await expect(graphStore.initializeFromObjects(seedObjects as never)).resolves.toMatchObject({ ok: true });
+        const context = createLocalMcpContextFromControlState({
+          controlState,
+          graphStore,
+          decryptPayload: decryptWithKeyring(keyring),
+          now
+        });
+
+        await expect(localResolutionApply(context, {
+          authorization: `Bearer ${token}`,
+          operation_id: `la_operation_resolutionsourceorigin${mode.replaceAll("-", "")}0001`,
+          idempotency_key: `la_idem_resolutionsourceorigin${mode.replaceAll("-", "")}0001`,
+          candidate_id: drafts.candidateId,
+          expected_generation: 0,
+          expected_review_version: 1,
+          objects: [submittedReview]
+        })).resolves.toEqual({ ok: false, reason: "resolution-review-mismatch" });
+        expect(graphStore.status()).toMatchObject({ generation: 0 });
+      } finally {
+        await rm(directory, { recursive: true, force: true });
+      }
+    }
+  );
+
+  it.each([
+    {
+      label: "originating a non-meaningful marker during resolution",
+      seed: (drafts: ReturnType<typeof nonMeaningfulResolutionDrafts>) => [
+        {
+          ...drafts.review,
+          version: 1,
+          payload: {
+            ...drafts.review.payload,
+            data: { ...drafts.review.payload.data, recommendation: "research", resolution_state: "research" }
+          }
+        }
+      ],
+      proposedObjectIds: []
+    },
+    {
+      label: "relabeling represented meaningful coverage as non-meaningful",
+      seed: (drafts: ReturnType<typeof nonMeaningfulResolutionDrafts>) => {
+        const represented = canonicalResolutionDrafts(1);
+        return [
+          represented.entity,
+          represented.evidence,
+          represented.fact,
+          {
+            ...drafts.review,
+            version: 1,
+            payload: {
+              ...drafts.review.payload,
+              data: { ...drafts.review.payload.data, recommendation: "research", resolution_state: "research" }
+            }
+          },
+          represented.parity
+        ];
+      },
+      proposedObjectIds: []
+    },
+    {
+      label: "attaching canonical objects to non-meaningful coverage",
+      seed: (drafts: ReturnType<typeof nonMeaningfulResolutionDrafts>) => {
+        const represented = canonicalResolutionDrafts(1);
+        return [
+          represented.entity,
+          represented.evidence,
+          represented.fact,
+          {
+            ...drafts.review,
+            version: 1,
+            payload: {
+              ...drafts.review.payload,
+              data: { ...drafts.review.payload.data, recommendation: "research", resolution_state: "research" }
+            }
+          },
+          { ...drafts.parity, version: 1 }
+        ];
+      },
+      proposedObjectIds: ["la_object_resolutionfact0001"]
+    }
+  ])("rejects $label", async ({ seed, proposedObjectIds }) => {
+    const token = "local-token-resolution-nonmeaningful-reject-0001";
+    const directory = await mkdtemp(join(tmpdir(), "living-atlas-local-resolution-nonmeaningful-reject-"));
+    try {
+      const controlState = await createFixtureLocalControlState(token);
+      const keyring = createDefaultLocalKeyring({ authorityId: controlState.authority_id, createdAt: now });
+      const graphStore = await FileLocalGraphStore.open({
+        directory,
+        authorityId: controlState.authority_id,
+        plaintextPersistence: "encrypt",
+        keyring
+      });
+      const drafts = nonMeaningfulResolutionDrafts(2, 2);
+      await expect(graphStore.initializeFromObjects(seed(drafts) as never)).resolves.toMatchObject({ ok: true });
+      const context = createLocalMcpContextFromControlState({
+        controlState,
+        graphStore,
+        decryptPayload: decryptWithKeyring(keyring),
+        now
+      });
+      const review = withResolutionPayload(drafts.review, { proposed_object_ids: proposedObjectIds });
+
+      await expect(localResolutionApply(context, {
+        authorization: `Bearer ${token}`,
+        operation_id: "la_operation_resolutionnonmeaningfulreject0001",
+        idempotency_key: "la_idem_resolutionnonmeaningfulreject0001",
+        candidate_id: drafts.candidateId,
+        expected_generation: 0,
+        expected_review_version: 1,
+        objects: [review]
+      })).resolves.toEqual({ ok: false, reason: "resolution-parity-mismatch" });
+      expect(graphStore.status()).toMatchObject({ generation: 0 });
     } finally {
       await rm(directory, { recursive: true, force: true });
     }
@@ -924,6 +1280,20 @@ describe("local fixture graph tools", () => {
             evidence_links: [{ evidence_id: "la_object_missingevidence0001", stance: "supports" }]
           }),
           drafts.review,
+          drafts.parity
+        ]
+      })
+    },
+    {
+      label: "a missing review source evidence reference",
+      build: (drafts: ResolutionDrafts) => ({
+        objects: [
+          drafts.entity,
+          drafts.evidence,
+          drafts.fact,
+          withResolutionPayload(drafts.review, {
+            source_evidence_ids: ["la_object_missingreviewevidence0001"]
+          }),
           drafts.parity
         ]
       })

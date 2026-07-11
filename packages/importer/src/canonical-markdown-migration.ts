@@ -49,6 +49,14 @@ export type CanonicalTypedProjectionOmissions = {
   other_edge_omissions: number;
 };
 
+type CanonicalAutoApplyBlocker =
+  | "typed-projection-ambiguous-entity"
+  | "typed-projection-missing-edge-endpoint"
+  | "typed-projection-endpoint-type-mismatch"
+  | "typed-projection-ambiguous-edge-endpoint"
+  | "typed-projection-duplicate-edge"
+  | "typed-projection-other-edge-omission";
+
 export type CanonicalMarkdownMigration = {
   migration_schema: "living-atlas-canonical-markdown-migration:v1";
   authority_id: string;
@@ -127,7 +135,8 @@ export function createCanonicalMarkdownMigration(
     const unitPayloads: CanonicalPayload[] = [];
     const observationIds: string[] = [];
     const unitEvidenceProjections: UnitEvidenceProjection[] = [];
-    for (const unit of accountSourceMeaning(evidence).meaningful_units) {
+    const sourceAccounting = accountSourceMeaning(evidence);
+    for (const unit of sourceAccounting.meaningful_units) {
       const occurrence = (occurrenceByUnitId.get(unit.unit_id) ?? 0) + 1;
       occurrenceByUnitId.set(unit.unit_id, occurrence);
       const unitBase = `${stableBase}:unit:${unit.unit_id}:occurrence:${occurrence}`;
@@ -236,6 +245,10 @@ export function createCanonicalMarkdownMigration(
       recommendation: resolutionState,
       resolution_state: resolutionState,
       proposed_object_ids: proposedObjectIds,
+      source_evidence_ids: evidence.map((item) => item.evidence_id),
+      ...(typed.autoApplyBlockersBySourceRef.get(sourceRef)?.size
+        ? { auto_apply_blockers: [...typed.autoApplyBlockersBySourceRef.get(sourceRef)!].sort() }
+        : {}),
       recorded_at: createdAt
     });
     const parity = CanonicalPayloadSchema.parse({
@@ -244,6 +257,7 @@ export function createCanonicalMarkdownMigration(
       source_coverage_key: coverageKey,
       coverage_state: observationIds.length > 0 ? "represented" : "unrepresented",
       ...(observationIds.length > 0 ? { representation_kind: "observation" } : {}),
+      ...(sourceAccounting.meaningful_units.length === 0 ? { meaning_state: "non-meaningful" } : {}),
       canonical_object_ids: observationIds,
       idempotency_key: stableIdentifier("la_idem", `${stableBase}:parity`),
       recorded_at: createdAt
@@ -297,6 +311,7 @@ function extractCollisionSafeTypedSemantics(
   endpoints: Array<{ endpoint: EndpointRecord; source_path_ref: string }>;
   edges: Array<{ edge: TemporalEdge; source_path_ref: string }>;
   typedSourceRefs: Set<string>;
+  autoApplyBlockersBySourceRef: Map<string, Set<CanonicalAutoApplyBlocker>>;
   omissions: CanonicalTypedProjectionOmissions;
 } {
   const parsed = createLogseqSemanticPlaintextGraphObjects(files, options);
@@ -326,9 +341,20 @@ function extractCollisionSafeTypedSemantics(
     sourceRefsByEndpointId.set(candidate.endpoint.object_id, sourceRefs);
   }
   const endpointById = new Map<string, { endpoint: EndpointRecord; source_path_ref: string }>();
+  const autoApplyBlockersBySourceRef = new Map<string, Set<CanonicalAutoApplyBlocker>>();
+  const block = (sourceRef: string, blocker: CanonicalAutoApplyBlocker) => {
+    const blockers = autoApplyBlockersBySourceRef.get(sourceRef) ?? new Set<CanonicalAutoApplyBlocker>();
+    blockers.add(blocker);
+    autoApplyBlockersBySourceRef.set(sourceRef, blockers);
+  };
   for (const candidate of endpointCandidates) {
     if (sourceRefsByEndpointId.get(candidate.endpoint.object_id)!.size === 1) {
       endpointById.set(candidate.endpoint.object_id, candidate);
+    }
+  }
+  for (const sourceRefs of sourceRefsByEndpointId.values()) {
+    if (sourceRefs.size > 1) {
+      for (const sourceRef of sourceRefs) block(sourceRef, "typed-projection-ambiguous-entity");
     }
   }
   const typedSourceRefs = new Set<string>([
@@ -345,28 +371,43 @@ function extractCollisionSafeTypedSemantics(
     const targetRefs = sourceRefsByEndpointId.get(candidate.edge.target_object_id);
     if (!sourceRefs || !targetRefs) {
       missingEdgeEndpoints += 1;
+      block(candidate.source_path_ref, "typed-projection-missing-edge-endpoint");
       continue;
     }
     if (sourceRefs.size > 1 || targetRefs.size > 1) {
       ambiguousEndpointEdges += 1;
+      block(candidate.source_path_ref, "typed-projection-ambiguous-edge-endpoint");
       continue;
     }
     const source = endpointById.get(candidate.edge.source_object_id)?.endpoint;
     const target = endpointById.get(candidate.edge.target_object_id)?.endpoint;
     if (source?.type !== candidate.edge.source_type || target?.type !== candidate.edge.target_type) {
       endpointTypeMismatches += 1;
+      block(candidate.source_path_ref, "typed-projection-endpoint-type-mismatch");
       continue;
     }
-    if (edgeById.has(candidate.edge.edge_id)) duplicateEdgeIds += 1;
-    else edgeById.set(candidate.edge.edge_id, candidate);
+    const existingEdge = edgeById.get(candidate.edge.edge_id);
+    if (existingEdge) {
+      duplicateEdgeIds += 1;
+      block(existingEdge.source_path_ref, "typed-projection-duplicate-edge");
+      block(candidate.source_path_ref, "typed-projection-duplicate-edge");
+    } else edgeById.set(candidate.edge.edge_id, candidate);
   }
-  const otherEdgeOmissions = parsed.ledger.files.reduce((total, file) => total + file.objects.filter((object) => (
-    object.semantic_kind === "edge-candidate" && object.decision === "quarantined"
-  )).length, 0);
+  let otherEdgeOmissions = 0;
+  for (const file of parsed.ledger.files) {
+    const omissions = file.objects.filter((object) => (
+      object.semantic_kind === "edge-candidate" && object.decision === "quarantined"
+    )).length;
+    if (omissions > 0) {
+      otherEdgeOmissions += omissions;
+      block(file.source_path_ref, "typed-projection-other-edge-omission");
+    }
+  }
   return {
     endpoints: [...endpointById.values()].sort((left, right) => left.endpoint.object_id.localeCompare(right.endpoint.object_id)),
     edges: [...edgeById.values()].sort((left, right) => left.edge.edge_id.localeCompare(right.edge.edge_id)),
     typedSourceRefs,
+    autoApplyBlockersBySourceRef,
     omissions: {
       ambiguous_typed_entity_ids: [...sourceRefsByEndpointId.values()].filter((sourceRefs) => sourceRefs.size > 1).length,
       missing_edge_endpoints: missingEdgeEndpoints,

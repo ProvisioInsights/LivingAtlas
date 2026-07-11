@@ -87,7 +87,17 @@ describe("canonical isolated-copy runner guard", () => {
         source_kind: "logseq",
         source_mode: "logseq-notes"
       });
-      expect(result).toMatchObject({ source_file_count: 3, canonical_object_count: 27, generation: 1 });
+      expect(result).toMatchObject({
+        source_file_count: 3,
+        canonical_object_count: 27,
+        generation: 4,
+        auto_apply: {
+          planned: 3,
+          committed: 3,
+          retry_committed: 0,
+          retry_idempotent: 3
+        }
+      });
 
       const report = await readJson(join(output, "conversion-report.json"));
       expect(hasOnlyNumberLeaves(report)).toBe(true);
@@ -132,7 +142,7 @@ describe("canonical isolated-copy runner guard", () => {
           reviews: 3,
           parity_records: 3
         },
-        review_queue: { owner_review: 2, research: 1, incomplete: 0 },
+        review_queue: { owner_review: 0, research: 0, automatic: 3, incomplete: 0 },
         integrity: {
           duplicate_object_ids: 0,
           missing_evidence_references: 0,
@@ -176,6 +186,19 @@ describe("canonical isolated-copy runner guard", () => {
       expect((manifest as Array<Record<string, unknown>>).every((item) => (
         Object.keys(item).sort().join(",") === "content_hash,object_id,object_type"
       ))).toBe(true);
+
+      const reopenedRecords = await reopenCanonicalRecords(
+        output,
+        "la_authority_fixture0001",
+        "synthetic-isolated-copy-passphrase"
+      );
+      expect(reopenedRecords.filter((record) => record.payload.schema === "atlas.review-item:v1"))
+        .toHaveLength(3);
+      expect(reopenedRecords.every((record) => record.payload.schema === "atlas.review-item:v1"
+        ? record.version === 2 && record.payload.resolution_state === "auto-applied"
+        : record.version === 1)).toBe(true);
+      expect(reopenedRecords.filter((record) => record.payload.schema === "atlas.parity-record:v1")
+        .every((record) => record.version === 1)).toBe(true);
 
       expect(await readFile(personPath, "utf8")).toBe(personContent);
       expect(await readFile(organizationPath, "utf8")).toBe(organizationContent);
@@ -552,7 +575,17 @@ describe("canonical isolated-copy runner guard", () => {
         source_kind: "logseq",
         source_mode: "logseq-notes"
       });
-      expect(result).toEqual({ source_file_count: 2, canonical_object_count: 6, generation: 1 });
+      expect(result).toEqual({
+        source_file_count: 2,
+        canonical_object_count: 6,
+        generation: 3,
+        auto_apply: {
+          planned: 2,
+          committed: 2,
+          retry_committed: 0,
+          retry_idempotent: 2
+        }
+      });
       const report = await readJson(join(output, "conversion-report.json")) as {
         sources: { files: number; bytes: number };
         objects: Record<string, number>;
@@ -567,7 +600,7 @@ describe("canonical isolated-copy runner guard", () => {
         reviews: 2,
         parity_records: 2
       });
-      expect(report.review_queue).toEqual({ owner_review: 0, research: 2, incomplete: 2 });
+      expect(report.review_queue).toEqual({ owner_review: 0, research: 0, automatic: 2, incomplete: 0 });
       expect(report.integrity).toMatchObject({
         invalid_meaningful_source_parity_records: 0,
         invalid_zero_unit_source_parity_records: 0,
@@ -590,10 +623,11 @@ describe("canonical isolated-copy runner guard", () => {
         && record.payload.extraction_method === "canonical-markdown-lossless-v1")).toBe(true);
       expect(records.some((record) => record.payload.schema === "atlas.observation:v1")).toBe(false);
       expect(reviews.every((record) => record.payload.schema === "atlas.review-item:v1"
-        && record.payload.resolution_state === "research"
+        && record.payload.resolution_state === "auto-applied"
         && record.payload.proposed_object_ids.length === 0)).toBe(true);
       expect(parity.every((record) => record.payload.schema === "atlas.parity-record:v1"
         && record.payload.coverage_state === "unrepresented"
+        && record.payload.meaning_state === "non-meaningful"
         && record.payload.canonical_object_ids.length === 0)).toBe(true);
       expect(await readFile(emptyPath, "utf8")).toBe("");
       expect(await readFile(excludedPath, "utf8")).toBe(excludedContent);
@@ -748,7 +782,7 @@ describe("canonical isolated-copy runner guard", () => {
     expect(() => assertCanonicalConversionIntegrity(report)).toThrow("canonical isolated-copy integrity check failed");
   });
 
-  it("rejects an empty-proposal auto-applied review for a zero-unit source", () => {
+  it("accepts an empty-proposal auto-applied review only with explicit non-meaningful parity", () => {
     const authorityId = "la_authority_fixture0001";
     const pathRedactionSecret = "synthetic-zero-auto-apply-secret";
     const source = {
@@ -783,9 +817,10 @@ describe("canonical isolated-copy runner guard", () => {
     });
     expect(report.integrity).toMatchObject({
       invalid_review_coverage_cardinality: 0,
-      actionable_zero_unit_source_reviews: 1
+      invalid_zero_unit_source_parity_records: 0,
+      actionable_zero_unit_source_reviews: 0
     });
-    expect(() => assertCanonicalConversionIntegrity(report)).toThrow("canonical isolated-copy integrity check failed");
+    expect(() => assertCanonicalConversionIntegrity(report)).not.toThrow();
   });
 
   it("surfaces metadata-safe typed projection omission counts", () => {

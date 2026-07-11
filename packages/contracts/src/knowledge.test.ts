@@ -388,6 +388,69 @@ describe("canonical knowledge payload contracts", () => {
     }).success).toBe(false);
   });
 
+  it("allows backwards-compatible review blockers for typed-projection omissions", () => {
+    const review = {
+      schema: "atlas.review-item:v1",
+      review_id: "la_object_reviewblocker0001",
+      candidate_id: "la_candidate_reviewblocker0001",
+      source_coverage_keys: ["la_coverage_reviewblocker0001"],
+      recommendation: "owner-review",
+      resolution_state: "owner-review",
+      proposed_object_ids: [],
+      source_evidence_ids: ["la_object_reviewblockerevidence0001"],
+      auto_apply_blockers: [
+        "typed-projection-ambiguous-entity",
+        "typed-projection-missing-edge-endpoint",
+        "typed-projection-endpoint-type-mismatch",
+        "typed-projection-ambiguous-edge-endpoint",
+        "typed-projection-duplicate-edge",
+        "typed-projection-other-edge-omission"
+      ],
+      recorded_at: timestamp
+    };
+
+    expect(CanonicalReviewItemPayloadSchema.parse(review).auto_apply_blockers).toEqual(review.auto_apply_blockers);
+    expect(CanonicalReviewItemPayloadSchema.parse(review).source_evidence_ids).toEqual(review.source_evidence_ids);
+    expect(CanonicalReviewItemPayloadSchema.safeParse({
+      ...review,
+      auto_apply_blockers: ["synthetic-unknown-blocker"]
+    }).success).toBe(false);
+    expect(CanonicalReviewItemPayloadSchema.safeParse({
+      ...review,
+      recommendation: "research",
+      resolution_state: "auto-applied"
+    }).success).toBe(false);
+  });
+
+  it("marks only empty, unrepresented parity as explicitly non-meaningful", () => {
+    const parity = {
+      schema: "atlas.parity-record:v1",
+      parity_id: "la_object_paritynonmeaningful0001",
+      source_coverage_key: "la_coverage_nonmeaningful0001",
+      coverage_state: "unrepresented",
+      meaning_state: "non-meaningful",
+      canonical_object_ids: [],
+      idempotency_key: "la_idem_paritynonmeaningful0001",
+      recorded_at: timestamp
+    } as const;
+
+    expect(CanonicalParityRecordPayloadSchema.parse(parity)).toEqual(parity);
+    expect(CanonicalParityRecordPayloadSchema.safeParse({
+      ...parity,
+      coverage_state: "represented",
+      representation_kind: "observation",
+      canonical_object_ids: ["la_object_observationnonmeaningful0001"]
+    }).success).toBe(false);
+    expect(CanonicalParityRecordPayloadSchema.safeParse({
+      ...parity,
+      canonical_object_ids: ["la_object_observationnonmeaningful0001"]
+    }).success).toBe(false);
+    expect(CanonicalParityRecordPayloadSchema.safeParse({
+      ...parity,
+      representation_kind: "observation"
+    }).success).toBe(false);
+  });
+
   it("derives canonical write object types and rejects a legacy object-type override", () => {
     const write = CanonicalWriteSchema.parse({
       payload: {
