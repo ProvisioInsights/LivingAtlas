@@ -17,6 +17,7 @@
 - Empty or source-system-only files are accounted for explicitly as non-meaningful source units and cannot masquerade as unresolved knowledge.
 - Production promotion is additive, idempotent, generation-checked, authority-checked, manifest-checked, and fail-closed.
 - Cloud backfill uses the existing stage then arm workflow; staging cannot sync, and arming remains a separate acknowledged mutation.
+- Production backups are daily full backups until journal-differential chain restore exists; the automated writer receives only an asymmetric recovery public key.
 - Logs and committed docs contain counts, hashes, reason codes, and opaque identifiers only—never plaintext knowledge, secrets, private source paths, or decrypted payloads.
 - Ordinary Praxis/client paths use typed canonical entities, assertions, observations, relationships, provenance, timeline, and redirects; raw object CRUD remains an administrative recovery surface.
 
@@ -201,6 +202,8 @@ Commit: `feat(canonical): add guarded production promotion`
 
 ### Task 5: Promote and prove the production authority
 
+**Execution dependency:** Steps 1–2 may run after Task 4, but Steps 3–6 are blocked until Task 6 has completed and its production restore drill is green.
+
 **Files:**
 - Runtime artifacts only under the private LivingAtlas application-support directory and private deploy overlay.
 - No source-corpus or personal graph content is committed.
@@ -228,3 +231,76 @@ Run the usage gate, stage the full live snapshot through `real-data:backfill-out
 - [ ] **Step 6: Final verification and merge**
 
 Run `pnpm check`, focused production/cutover suites, provenance verification, live authenticated health/usage/ops reports, canonical decrypt coverage, and a final fresh backup/restore manifest comparison. Merge `codex/local-first-mvp` into local `main` only after every gate is green; do not delete rollback material.
+
+---
+
+### Task 6: Make disaster recovery independently recoverable and immutable
+
+**Files:**
+- Modify: `packages/backup/src/cloud/r2-objectlock.ts`
+- Modify: `packages/backup/src/cloud/r2-objectlock.test.ts`
+- Modify: `packages/backup/src/escrow.ts`
+- Modify: `packages/backup/src/escrow.test.ts`
+- Modify: `packages/check/src/backup-run.ts`
+- Modify: `packages/check/src/backup-run.test.ts`
+- Modify: `packages/check/src/backup-restore.ts`
+- Modify: `packages/check/src/backup-restore.test.ts`
+- Modify in the private deploy overlay: `terraform/main.tf`
+- Modify in the private deploy overlay: `terraform/variables.tf`
+- Modify in the private deploy overlay: `terraform/outputs.tf`
+- Create in the private deploy overlay: `scripts/install-local-backup-agent.sh`
+- Create in the private deploy overlay: `scripts/run-local-backup-agent.sh`
+- Modify in the private deploy overlay: `RUNBOOK.md`
+
+**Interfaces:**
+- Consumes: Cloudflare R2 bucket-lock REST verification, ordinary S3-compatible object reads/writes, a recovery X25519 public key, and Keychain-resolved production keyring passphrase.
+- Produces: a self-sufficient encrypted recovery bundle, bucket-lock-verified remote full backups, read-only remote restore, and an hourly LaunchAgent that creates at most one daily full backup.
+
+- [ ] **Step 1: Write failing provider-contract and recovery tests**
+
+```ts
+expect(putRequest).not.toHaveProperty("ObjectLockMode");
+expect(lockRule.retentionDays).toBeGreaterThanOrEqual(90);
+expect(() => createRecoveryBundle({ recoveryPublicKey: undefined })).toThrow("recovery-public-key-required");
+expect(restored.keyringPassphrase).toBe("synthetic-passphrase");
+```
+
+- [ ] **Step 2: Verify RED**
+
+Run: `pnpm vitest run packages/backup/src/cloud/r2-objectlock.test.ts packages/backup/src/escrow.test.ts packages/check/src/backup-run.test.ts packages/check/src/backup-restore.test.ts`
+
+Expected: the current adapter emits unsupported AWS Object Lock fields, the writer requires a symmetric master, and restore cannot recover the keyring passphrase.
+
+- [ ] **Step 3: Implement bucket-lock-aware remote storage**
+
+Use ordinary conditional object writes plus read-back SHA-256 verification. Verify a whole-bucket or matching-prefix Cloudflare lock rule before and after writes; fail closed if its retention age is shorter than the requested retention. Do not send `x-amz-object-lock-*` headers or call per-object retention APIs.
+
+- [ ] **Step 4: Implement asymmetric self-sufficient recovery bundles**
+
+```ts
+type RecoveryBundleV2 = {
+  schema: "living-atlas-recovery-bundle:v2";
+  authority_id: string;
+  sealed_keyring_json: string;
+  keyring_passphrase: string;
+  keyring_sha256: `sha256:${string}`;
+};
+```
+
+Seal this bundle to an X25519 recovery public key. The automated writer reads only that public key and the current keyring passphrase; the private recovery key is required only by the interactive restore command. Restore writes the sealed keyring, installs the recovered passphrase into an explicitly named new Keychain service, and runs full decrypt coverage before reporting success.
+
+- [ ] **Step 5: Provision a dedicated unbound locked backup bucket**
+
+Add `living-atlas-personal-prod-backups` with `prevent_destroy = true`, no Worker binding or public domain, and a 90-day whole-bucket `cloudflare_r2_bucket_lock`. Do not add lifecycle deletion until repeated restore drills pass, and then keep deletion strictly later than the lock window.
+
+- [ ] **Step 6: Ship full-only scheduling and remote restore discovery**
+
+Replace serial-only IDs with timestamp-plus-random IDs, expose explicit `full-only` mode, resolve writer credentials and public recovery key from Keychain, and install an hourly LaunchAgent whose runner creates at most one full backup per 24 hours. Remote restore lists and verifies manifests through a separate read-only credential.
+
+- [ ] **Step 7: Verify GREEN, run a restore drill, and commit each repository**
+
+Run the focused suites and `pnpm check`; run Terraform format/validate/plan; apply through the private provenance guardrails; create one production full backup; verify remote hashes and the active lock; restore into a new empty directory; recover the keyring/passphrase; and require canonical manifest, generation, object counts, restart parity, and full decrypt coverage to match before enabling the LaunchAgent.
+
+Commits:
+- LivingAtlas: `feat(backup): make production recovery self sufficient`
+- LivingAtlas-Deploy: `feat(backup): provision locked production recovery`
