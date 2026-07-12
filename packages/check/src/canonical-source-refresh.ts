@@ -379,6 +379,16 @@ async function copyLiveContent(live: string, destination: string) {
   }
 }
 
+async function importExplicitHead(source: string, destination: string, label: "live" | "prior") {
+  const bundlePath = join(destination, ".git", `atlas-${label}-head.bundle`);
+  try {
+    await runGit(["-C", source, "bundle", "create", bundlePath, "HEAD"]);
+    await runGit(["-C", destination, "fetch", "--quiet", "--no-tags", bundlePath, "HEAD"]);
+  } finally {
+    await rm(bundlePath, { force: true });
+  }
+}
+
 function assertDestinationPath(destination: string, relativePath: string) {
   const target = resolve(destination, relativePath);
   if (!isWithinOrEqual(target, destination) || target === destination) {
@@ -474,14 +484,25 @@ export async function refreshCanonicalSource(
       }
       throw error;
     }
-    await runGit(["clone", "--quiet", "--no-local", "--no-checkout", paths.live, paths.destination]);
+    await runGit([
+      "-C",
+      paths.destination,
+      "init",
+      "--quiet",
+      "--initial-branch=main",
+      `--object-format=${objectFormat}`
+    ]);
+    await importExplicitHead(paths.live, paths.destination, "live");
+    await runGit(["-C", paths.destination, "update-ref", "refs/heads/main", liveHead]);
+    await runGit(["-C", paths.destination, "symbolic-ref", "HEAD", "refs/heads/main"]);
+    await runGit(["-C", paths.destination, "read-tree", liveHead]);
     await copyLiveContent(paths.live, paths.destination);
     const copiedLive = await scanContent(paths.destination, objectFormat);
     if (!sameManifest(copiedLive.public, liveBefore.public)) {
       throw new CanonicalSourceRefreshError("source-changed-during-refresh");
     }
 
-    await runGit(["-C", paths.destination, "fetch", "--quiet", "--no-tags", paths.prior, "HEAD"]);
+    await importExplicitHead(paths.prior, paths.destination, "prior");
     let commonBase: string;
     try {
       commonBase = await runGit(["-C", paths.destination, "merge-base", liveHead, priorHead]);

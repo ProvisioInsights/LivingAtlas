@@ -144,6 +144,36 @@ describe("canonical source refresh", () => {
     await expect(readFile(join(fixture.prior, "prior-tracked.md"), "utf8")).resolves.toBe(priorBefore);
   });
 
+  it("copies only the explicit live HEAD when an unrelated broken ref exists", async () => {
+    const fixture = await makeSharedCopies();
+    const liveHead = (await git(fixture.live, "rev-parse", "HEAD")).stdout.trim();
+    const brokenRef = join(fixture.live, ".git", "refs", "heads", "junk-broken");
+    const brokenRefBytes = `${"0".repeat(40)}\n`;
+    await writeFile(brokenRef, brokenRefBytes);
+    await writeFile(join(fixture.live, "live-tracked.md"), "current live with broken ref\n");
+    const sourceBytesBefore = await readFile(join(fixture.live, "live-tracked.md"));
+
+    const result = await refreshCanonicalSource({
+      live_source_dir: fixture.live,
+      prior_working_dir: fixture.prior,
+      destination_dir: fixture.destination,
+      receipt_path: fixture.receipt
+    });
+
+    expect(result.outcome).toBe("refreshed");
+    await expect(git(fixture.destination, "rev-parse", "HEAD"))
+      .resolves.toMatchObject({ stdout: `${liveHead}\n` });
+    await expect(git(fixture.destination, "diff", "--cached", "--quiet"))
+      .resolves.toMatchObject({ stdout: "" });
+    await expect(git(fixture.destination, "ls-files", "live-tracked.md"))
+      .resolves.toMatchObject({ stdout: "live-tracked.md\n" });
+    await expect(readFile(join(fixture.destination, "live-tracked.md")))
+      .resolves.toEqual(sourceBytesBefore);
+    await expect(readFile(join(fixture.live, "live-tracked.md")))
+      .resolves.toEqual(sourceBytesBefore);
+    await expect(readFile(brokenRef, "utf8")).resolves.toBe(brokenRefBytes);
+  });
+
   it("stops on a same-path overlap and leaves both byte variants intact", async () => {
     const fixture = await makeSharedCopies();
     await writeFile(join(fixture.live, "shared.md"), "live variant\n");
