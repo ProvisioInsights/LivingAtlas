@@ -6,6 +6,12 @@ import {
   type CanonicalExport,
   type GraphObjectEnvelope
 } from "@living-atlas/contracts";
+import {
+  loadCanonicalEntityResolutionsFromObjects,
+  projectCanonicalEntityResolutions,
+  resolveCanonicalEntityId,
+  type CanonicalEntityRedirect
+} from "@living-atlas/graph-service";
 import type { FileLocalGraphStore, LocalGraphTransactionResult } from "@living-atlas/local-graph-store";
 import type { PlaintextGraphObjectDraft } from "@living-atlas/local-keyring";
 
@@ -14,6 +20,7 @@ export type LocalCanonicalPayloadDecryptor = (object: GraphObjectEnvelope) => Pr
 export type LocalCanonicalAtlasClient = {
   exportCanonical(input?: { exported_at?: string }): Promise<CanonicalExport>;
   entityGet(entity_id: string): Promise<Record<string, unknown> | undefined>;
+  resolveEntityId(entity_id: string): Promise<CanonicalEntityRedirect>;
   importCanonical(input: {
     exported: unknown;
     expected_generation: number;
@@ -45,6 +52,13 @@ export function createLocalCanonicalAtlasClient(input: {
       const payload = await input.decryptPayload(object);
       const parsed = CanonicalWriteSchema.safeParse({ object_type: object.object_type, payload });
       return parsed.success && parsed.data.payload.schema === "atlas.entity:v1" ? parsed.data.payload : undefined;
+    },
+    async resolveEntityId(entity_id) {
+      const resolutions = await loadCanonicalEntityResolutionsFromObjects(
+        input.graphStore.listObjects(),
+        input.decryptPayload
+      );
+      return resolveCanonicalEntityId(entity_id, projectCanonicalEntityResolutions(resolutions));
     },
     async exportCanonical(options = {}) {
       const records = [];

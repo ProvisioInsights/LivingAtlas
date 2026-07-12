@@ -60,6 +60,8 @@ describe("local canonical Atlas client", () => {
         entity_id: entityId,
         name: "Synthetic local canonical export"
       });
+      await expect((client as unknown as { resolveEntityId(id: string): Promise<unknown> }).resolveEntityId(entityId))
+        .resolves.toEqual({ entity_id: entityId, canonical_entity_id: entityId, redirect_path: [entityId] });
     } finally {
       await rm(directory, { recursive: true, force: true });
     }

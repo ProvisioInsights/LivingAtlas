@@ -8,6 +8,7 @@
   },
   "dependencies": {
     "@living-atlas/contracts": "workspace:*",
+    "@living-atlas/graph-service": "workspace:*",
     "@living-atlas/local-graph-store": "workspace:*",
     "@living-atlas/local-keyring": "workspace:*",
     "@living-atlas/mcp-contract": "workspace:*"

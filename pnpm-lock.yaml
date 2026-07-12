@@ -48,6 +48,9 @@ importers:
       '@living-atlas/contracts':
         specifier: workspace:*
         version: link:../contracts
+      '@living-atlas/graph-service':
+        specifier: workspace:*
+        version: link:../graph-service
       '@living-atlas/local-graph-store':
         specifier: workspace:*
         version: link:../local-graph-store
