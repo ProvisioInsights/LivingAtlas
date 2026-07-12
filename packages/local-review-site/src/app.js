@@ -1,6 +1,6 @@
 const pageSize = 24;
 const state = {
-  tab: "research",
+  tab: "owner_review",
   queue: null,
   query: "",
   page: 1,
@@ -61,14 +61,7 @@ function kindLabel(kind) {
 }
 
 function recommendationText(item) {
-  const count = item.source_accounting.meaningful_units.length;
-  if (item.recommendation === "research") {
-    return `Research may improve identity or typing. Preserving now keeps all ${count} extracted item${count === 1 ? "" : "s"} as source-backed observations without inventing nodes or edges.`;
-  }
-  if (item.recommendation === "owner-review") {
-    return `Review the ${count} extracted item${count === 1 ? "" : "s"}. Anything not safely typed remains an unresolved observation.`;
-  }
-  return `All ${count} extracted item${count === 1 ? "" : "s"} are accounted for.`;
+  return item.recommendation_rationale?.summary || "Review how this source maps into the graph before deciding.";
 }
 
 function recordText(record, fallback) {
@@ -93,21 +86,64 @@ function recordTypeLabel(recordType) {
   }[recordType] || recordType;
 }
 
-function destinationRecordNode(destination, fallback) {
+function relatedAttributes(element, mappingIds, destinationIds) {
+  const mappings = [...new Set((Array.isArray(mappingIds) ? mappingIds : [mappingIds]).filter(Boolean))];
+  const destinations = [...new Set((Array.isArray(destinationIds) ? destinationIds : [destinationIds]).filter(Boolean))];
+  if (mappings.length) element.setAttribute("data-mapping-id", mappings.join(" "));
+  if (destinations.length) element.setAttribute("data-destination-id", destinations.join(" "));
+  return element;
+}
+
+function evidenceDate(value) {
+  const date = new Date(value);
+  return Number.isNaN(date.valueOf()) ? value : date.toLocaleDateString(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "numeric"
+  });
+}
+
+function evidenceDetails(summary) {
+  if (!summary?.evidence?.length) return node("small", "evidence-empty", "No linked evidence details");
+  const list = node("div", "evidence-list");
+  summary.evidence.forEach((evidence) => {
+    const details = node("details", "evidence-detail");
+    details.append(node("summary", "", `${evidence.source_label} · ${evidence.stance} · ${evidenceDate(evidence.retrieved_at)} · ${evidence.confidence}`));
+    const privateDetail = node("div", "evidence-private");
+    privateDetail.append(node("strong", "", "Source location"), node("p", "evidence-locator", evidence.private_detail.locator));
+    if (evidence.private_detail.excerpt) {
+      privateDetail.append(node("strong", "", "Source excerpt"), node("blockquote", "", evidence.private_detail.excerpt));
+    }
+    if (evidence.private_detail.snapshot_ref) {
+      privateDetail.append(node("strong", "", "Saved source"), node("p", "", "An encrypted source snapshot is attached."));
+    }
+    details.append(privateDetail);
+    list.append(details);
+  });
+  return list;
+}
+
+function destinationRecordNode(destination, summary, fallback, mappingId) {
   const entry = node("article", `destination-record record-${destination.record_type}`);
+  relatedAttributes(entry, mappingId, destination.object_id);
+  entry.tabIndex = 0;
   const header = node("header", "destination-record-header");
   const type = node("span", "destination-record-type", recordTypeLabel(destination.record_type));
-  const id = node("code", "destination-record-id", destination.object_id);
-  id.title = destination.object_id;
-  header.append(type, id);
-  entry.append(header, node("p", "destination-record-copy", recordText(destination.record, fallback)));
+  const coverage = node("span", `coverage coverage-${summary?.parity || "uncovered"}`, summary?.parity === "covered" ? "Source covered" : "Needs mapping");
+  header.append(type, coverage);
+  entry.append(
+    header,
+    node("p", "destination-record-copy", summary?.label || recordText(destination.record, fallback)),
+    node("p", "destination-rationale", summary?.rationale || "This destination needs more source context."),
+    evidenceDetails(summary)
+  );
   return entry;
 }
 
 function searchableText(item) {
   return [
     item.headline,
-    ...item.source_context.flatMap((evidence) => [evidence.excerpt, evidence.locator, evidence.publisher]),
+    ...item.source_context.flatMap((evidence) => [evidence.excerpt, evidence.publisher]),
     ...item.source_accounting.meaningful_units.flatMap((unit) => [unit.atlas_text, unit.kind]),
     ...item.source_accounting.excluded_units.map((unit) => unit.source_text),
     ...item.proposed_records.map((record) => recordText(record, item.headline))
@@ -146,6 +182,40 @@ function selectedItem(items) {
   state.activeCandidate = selected?.candidate_id ?? null;
   return selected;
 }
+
+function relatedTokens(element, attribute) {
+  return new Set((element?.getAttribute?.(attribute) || "").split(/\s+/).filter(Boolean));
+}
+
+function intersects(left, right) {
+  return [...left].some((value) => right.has(value));
+}
+
+function clearRelated() {
+  root.querySelectorAll(".is-related, .is-related-origin").forEach((element) => {
+    element.classList.remove("is-related", "is-related-origin");
+  });
+}
+
+function activateRelated(target) {
+  const origin = target?.closest?.("[data-mapping-id], [data-destination-id]");
+  clearRelated();
+  if (!origin || !root.contains(origin)) return;
+  const mappingIds = relatedTokens(origin, "data-mapping-id");
+  const destinationIds = relatedTokens(origin, "data-destination-id");
+  root.querySelectorAll("[data-mapping-id], [data-destination-id]").forEach((element) => {
+    if (intersects(mappingIds, relatedTokens(element, "data-mapping-id"))
+      || intersects(destinationIds, relatedTokens(element, "data-destination-id"))) {
+      element.classList.add("is-related");
+    }
+  });
+  origin.classList.add("is-related-origin");
+}
+
+root.addEventListener("pointerenter", (event) => activateRelated(event.target), true);
+root.addEventListener("pointerleave", (event) => activateRelated(event.relatedTarget), true);
+root.addEventListener("focusin", (event) => activateRelated(event.target));
+root.addEventListener("focusout", () => queueMicrotask(() => activateRelated(document.activeElement)));
 
 function sourceRow(item, active) {
   const row = node("div", `source-row${active ? " active" : ""}`);
@@ -189,26 +259,31 @@ function sourceBrowser(items, selected) {
   return aside;
 }
 
-function mappingRow(item, unit, index) {
-  const mapping = item.unit_mappings[index];
+function mappingRow(item, mapping, index) {
+  const unit = mapping.unit;
+  const destinationIds = mapping.destination_records.map((destination) => destination.object_id);
   const row = node("article", `mapping-row kind-${unit.kind}`);
   row.dataset.unitIndex = String(index);
+  relatedAttributes(row, mapping.mapping_id, destinationIds);
   const source = node("div", "mapping-source");
+  relatedAttributes(source, mapping.mapping_id, destinationIds);
   source.tabIndex = 0;
   source.title = unit.source_text;
-  source.append(node("span", "mapping-cell-label", "Original"), node("p", "mapping-copy", unit.source_text));
+  source.append(node("span", "mapping-cell-label", "Source says"), node("p", "mapping-copy", unit.source_text));
 
   const connector = node("div", "mapping-connector");
+  relatedAttributes(connector, mapping.mapping_id, destinationIds);
   connector.ariaHidden = "true";
   connector.append(node("span", "", "maps to"));
 
   const destination = node("div", "mapping-destination");
+  relatedAttributes(destination, mapping.mapping_id, destinationIds);
   destination.tabIndex = 0;
-  destination.title = mapping?.destination_records.map((record) => record.object_id).join(", ") || unit.atlas_text;
+  destination.title = mapping.destination_summaries.map((summary) => summary.label).join(", ") || unit.atlas_text;
   const destinationHeader = node("header", "mapping-destination-header");
-  const destinationCount = mapping?.destination_records.length || 0;
+  const destinationCount = mapping.destination_records.length;
   destinationHeader.append(node("span", `meaning-kind kind-${unit.kind}`, destinationCount
-    ? `${destinationCount} canonical record${destinationCount === 1 ? "" : "s"}`
+    ? `${destinationCount} kept item${destinationCount === 1 ? "" : "s"}`
     : kindLabel(unit.kind)));
   if ((state.tab === "owner_review" || state.tab === "research") && isActionableReviewItem(item)) {
     const queued = item.research_requested_all || item.research_requested_units.some((requested) => requested.unit_id === unit.unit_id);
@@ -216,20 +291,54 @@ function mappingRow(item, unit, index) {
     research.type = "button";
     research.dataset.researchUnit = unit.unit_id;
     research.disabled = queued;
-    research.title = queued ? "Queued for Codex research." : "Queue only this extracted item for Codex research.";
+    research.title = queued ? "Research is queued." : "Queue research for only this extracted item.";
     destinationHeader.append(research);
   }
   destination.append(destinationHeader);
-  if (mapping?.destination_records.length) {
+  if (mapping.destination_records.length) {
     const records = node("div", "destination-records");
-    mapping.destination_records.forEach((destination) => records.append(destinationRecordNode(destination, unit.atlas_text)));
+    mapping.destination_records.forEach((record) => {
+      const summary = mapping.destination_summaries.find((candidate) => candidate.destination_object_id === record.object_id);
+      records.append(destinationRecordNode(record, summary, unit.atlas_text, mapping.mapping_id));
+    });
     destination.append(records);
   } else {
     destination.append(
       node("p", "mapping-copy", unit.atlas_text),
-      node("small", "storage-kind", "Legacy source fragment; preserving expands it to a provenance-linked observation")
+      node("small", "storage-kind", "This source fragment will be kept as a sourced observation")
     );
   }
+  row.append(source, connector, destination);
+  return row;
+}
+
+function sourceContextRow(item) {
+  const mappingId = `source-context:${item.candidate_id}`;
+  const records = item.source_context_mapping.destination_records;
+  const destinationIds = records.map((destination) => destination.object_id);
+  const row = node("article", "source-context-row mapping-row");
+  relatedAttributes(row, mappingId, destinationIds);
+  const source = node("div", "mapping-source");
+  relatedAttributes(source, mappingId, destinationIds);
+  source.tabIndex = 0;
+  source.append(
+    node("span", "mapping-cell-label", "Complete source"),
+    node("p", "mapping-copy", "Complete-source context that cannot be assigned to only one fragment")
+  );
+  const connector = node("div", "mapping-connector");
+  relatedAttributes(connector, mappingId, destinationIds);
+  connector.ariaHidden = "true";
+  connector.append(node("span", "", "supports"));
+  const destination = node("div", "mapping-destination");
+  relatedAttributes(destination, mappingId, destinationIds);
+  destination.tabIndex = 0;
+  const recordsNode = node("div", "destination-records");
+  records.forEach((record) => {
+    const summary = item.source_context_mapping.destination_summaries
+      .find((candidate) => candidate.destination_object_id === record.object_id);
+    recordsNode.append(destinationRecordNode(record, summary, item.headline, mappingId));
+  });
+  destination.append(recordsNode);
   row.append(source, connector, destination);
   return row;
 }
@@ -238,7 +347,7 @@ function excludedDetails(item) {
   const excluded = item.source_accounting.excluded_units;
   if (!excluded.length) return undefined;
   const details = node("details", "excluded-details");
-  details.append(node("summary", "", `Not Atlas knowledge (${excluded.length})`));
+  details.append(node("summary", "", `Not kept as graph knowledge (${excluded.length})`));
   const list = node("ul", "excluded-list");
   excluded.forEach((unit) => {
     const entry = node("li", "");
@@ -263,11 +372,12 @@ function mappingPanel(item) {
   panel.append(untouched);
 
   const labels = node("div", "mapping-labels");
-  labels.append(node("span", "", "Original source fragment"), node("span", "", "Atlas output"));
+  labels.append(node("span", "", "What the source says"), node("span", "", "What will be kept"));
   panel.append(labels);
 
   const scroll = node("div", "mapping-scroll");
-  item.source_accounting.meaningful_units.forEach((unit, index) => scroll.append(mappingRow(item, unit, index)));
+  if (item.source_context_mapping.destination_records.length) scroll.append(sourceContextRow(item));
+  item.unit_mappings.forEach((mapping, index) => scroll.append(mappingRow(item, mapping, index)));
   if (!item.source_accounting.meaningful_units.length) {
     scroll.append(node("p", "empty-copy", "No meaningful source units were extracted."));
   }
@@ -278,31 +388,75 @@ function mappingPanel(item) {
 }
 
 function miniGraph(item) {
-  const recordCount = item.destination_graph.entities.length
-    + item.destination_graph.facts.length
-    + item.destination_graph.relationships.length
-    + item.destination_graph.observations.length;
+  const recordCount = item.graph.nodes.length + item.graph.edges.filter((edge) => edge.kind === "relationship").length;
   const graph = node("details", "mini-graph");
-  graph.append(node("summary", "", `Proposed mini graph (${recordCount})`));
-  graph.append(node("p", "graph-note", "Actual canonical records are shown below. Dashed observations remain unresolved; endpoint entities may be owned by another source review."));
+  graph.append(node("summary", "", `Source mini graph (${recordCount})`));
+  graph.append(node("p", "graph-note", "Context explains why. Nodes are people, organizations, projects, places, or events. Lines show relationships."));
   const canvas = node("div", "graph-scroll");
-  const origin = node("div", "graph-origin", "Encrypted source evidence");
-  canvas.append(origin);
-  const appendRecord = (destination, edgeLabel) => {
-    const branch = node("div", `graph-branch record-${destination.record_type}`);
-    const graphNode = node("div", `graph-node record-${destination.record_type}`);
-    graphNode.append(
-      node("strong", "", `${recordTypeLabel(destination.record_type)} · ${recordText(destination.record, item.headline)}`),
-      node("code", "", destination.object_id)
-    );
-    branch.append(node("span", "graph-edge", edgeLabel), graphNode);
-    canvas.append(branch);
+  const nodesById = new Map(item.graph.nodes.map((graphNode) => [graphNode.node_id, graphNode]));
+  const entityNode = (entityId) => nodesById.get(entityId);
+  const mappingIdsForDestination = (destinationId) => {
+    const mappingIds = item.unit_mappings
+      .filter((mapping) => mapping.destination_records.some((destination) => destination.object_id === destinationId))
+      .map((mapping) => mapping.mapping_id);
+    if (item.source_context_mapping.destination_records.some((destination) => destination.object_id === destinationId)) {
+      mappingIds.push(`source-context:${item.candidate_id}`);
+    }
+    return mappingIds.length ? mappingIds : [`unmapped:${destinationId}`];
   };
-  item.destination_graph.entities.forEach((destination) => appendRecord(destination, "contains"));
-  item.destination_graph.facts.forEach((destination) => appendRecord(destination, "asserts"));
-  item.destination_graph.relationships.forEach((destination) => appendRecord(destination, "links"));
-  item.destination_graph.observations.forEach((destination) => appendRecord(destination, "supports"));
-  if (recordCount === 0) canvas.append(node("p", "empty-copy", "No canonical destination records are available."));
+  const chip = (graphNode, mappingIds, destinationId, extraClass = "") => {
+    const element = node("span", `graph-chip ${extraClass}`.trim(), graphNode?.label || "Unavailable endpoint");
+    element.tabIndex = 0;
+    element.title = graphNode?.label || "Unavailable endpoint";
+    relatedAttributes(element, mappingIds, destinationId);
+    return element;
+  };
+  item.graph.edges.forEach((edge) => {
+    const mappingIds = mappingIdsForDestination(edge.assertion_id);
+    const row = node("div", `graph-adjacency graph-${edge.kind}`);
+    relatedAttributes(row, mappingIds, edge.assertion_id);
+    row.tabIndex = 0;
+    if (edge.kind === "relationship") {
+      row.append(
+        chip(entityNode(edge.source_entity_id), mappingIds, edge.source_entity_id, "graph-entity"),
+        node("span", "graph-predicate", `— ${edge.predicate.replaceAll("-", " ")} →`),
+        chip(entityNode(edge.target_entity_id), mappingIds, edge.target_entity_id, "graph-entity")
+      );
+    } else if (edge.kind === "fact") {
+      row.append(
+        chip(entityNode(edge.source_entity_id), mappingIds, edge.source_entity_id, "graph-entity"),
+        node("span", "graph-predicate", `— ${edge.predicate.replaceAll("-", " ")} →`),
+        chip(nodesById.get(edge.target_node_id), mappingIds, edge.assertion_id, "graph-fact-value")
+      );
+    } else {
+      if (edge.source_entity_id) {
+        row.append(chip(entityNode(edge.source_entity_id), mappingIds, edge.source_entity_id, "graph-entity"));
+      } else {
+        const source = node("span", "graph-chip graph-source", "Source context");
+        relatedAttributes(source, mappingIds, edge.assertion_id);
+        row.append(source);
+      }
+      row.append(
+        node("span", "graph-predicate graph-unresolved", "┄ unresolved ⇢"),
+        chip(nodesById.get(edge.target_node_id), mappingIds, edge.assertion_id, "graph-observation")
+      );
+    }
+    canvas.append(row);
+  });
+  const connectedNodeIds = new Set(item.graph.edges.flatMap((edge) => {
+    if (edge.kind === "relationship") return [edge.source_entity_id, edge.target_entity_id];
+    if (edge.kind === "fact") return [edge.source_entity_id, edge.target_node_id];
+    return [edge.target_node_id, ...(edge.source_entity_id ? [edge.source_entity_id] : [])];
+  }));
+  item.graph.nodes.filter((graphNode) => !connectedNodeIds.has(graphNode.node_id)).forEach((graphNode) => {
+    const mappingIds = mappingIdsForDestination(graphNode.object_id);
+    const row = node("div", `graph-adjacency graph-isolated graph-${graphNode.kind}`);
+    relatedAttributes(row, mappingIds, graphNode.object_id);
+    row.tabIndex = 0;
+    row.append(chip(graphNode, mappingIds, graphNode.object_id, `graph-${graphNode.kind}`));
+    canvas.append(row);
+  });
+  if (recordCount === 0) canvas.append(node("p", "empty-copy", "No destination records are available."));
   graph.append(canvas);
   return graph;
 }
@@ -318,24 +472,22 @@ function decisionPanel(item) {
   const panel = node("aside", "decision-panel");
   panel.append(node("p", "lane-label", "Your decision"), node("p", "recommendation", recommendationText(item)));
   const truth = node("section", "storage-truth");
-  const typedCount = item.proposed_records.filter((record) => (
-    record.schema === "atlas.entity:v1" || record.schema === "atlas.fact:v1" || record.schema === "atlas.relationship:v2"
-  )).length;
-  const observationCount = item.destination_graph.observations.length;
+  const typedCount = item.decision_summaries.filter((summary) => summary.destination_kind !== "observation").length;
+  const observationCount = item.graph.nodes.filter((graphNode) => graphNode.kind === "observation").length;
   const incomplete = item.resolution_mode === "incomplete";
   truth.append(
-    node("strong", "", "What Preserve does"),
+    node("strong", "", "What Keep does"),
     node("p", incomplete ? "warning" : "", incomplete
       ? item.resolution_mode_explanation
       : item.resolution_mode === "rich"
-        ? `Keeps ${typedCount} typed canonical record${typedCount === 1 ? "" : "s"} and ${observationCount} parity observation${observationCount === 1 ? "" : "s"}. Editing changes only the addressed observations.`
-        : "Keeps the mapped observations. This legacy one-placeholder source expands into one provenance-linked observation per extracted item.")
+        ? `Keeps ${typedCount} typed item${typedCount === 1 ? "" : "s"} and ${observationCount} sourced observation${observationCount === 1 ? "" : "s"}. Editing changes only the addressed observations.`
+        : "Keeps the mapped observations and expands the general source destination into one sourced observation per extracted item.")
   );
   panel.append(truth);
 
   if (item.resolution_mode === "incomplete") {
     panel.append(
-      node("p", "warning", `Incomplete parity: ${item.resolution_mode_explanation} No review action is available until parity is repaired.`),
+      node("p", "warning", `Mapping incomplete: ${item.resolution_mode_explanation} No decision is available until the mapping is repaired.`),
       miniGraph(item)
     );
     return panel;
@@ -352,19 +504,22 @@ function decisionPanel(item) {
       : item.research_requested_units.length
         ? `${item.research_requested_units.length} extracted item${item.research_requested_units.length === 1 ? "" : "s"} queued.`
         : "Research suggested, but nothing is queued.";
-    panel.append(node("p", "research-state", `${queued} Research is not running; Codex processes the queue only during an active task.`));
+    panel.append(node("p", "research-state", `${queued} Research waits for the next active Atlas research task.`));
   }
 
   const actions = node("div", "decision-actions");
-  const preserve = actionButton("Preserve all now", "keep", "primary");
-  const edit = actionButton("Review / edit extraction", "edit");
+  const preserve = actionButton("Keep", "keep", "primary");
+  const edit = actionButton("Edit", "edit");
+  const merge = actionButton("Merge", "merge");
+  merge.disabled = true;
+  merge.title = "Merge will be available after identity comparison is added.";
   preserve.disabled = incomplete || !item.source_accounting.exact_source_preserved || item.source_accounting.meaningful_units.length === 0;
   edit.disabled = incomplete;
   preserve.title = incomplete ? item.resolution_mode_explanation : "";
   edit.title = incomplete ? item.resolution_mode_explanation : "";
-  actions.append(preserve, edit);
-  if (state.tab === "owner_review" || !item.research_requested_all) actions.append(actionButton("Request research for all", "research"));
-  actions.append(actionButton("Decide later", "defer", "quiet"));
+  actions.append(preserve, edit, merge);
+  if (state.tab === "owner_review" || !item.research_requested_all) actions.append(actionButton("Research", "research"));
+  actions.append(actionButton("Later", "defer", "quiet"));
   panel.append(actions, miniGraph(item));
   return panel;
 }
@@ -377,7 +532,9 @@ function technicalDetails(item) {
     ["Candidate", item.candidate_id],
     ["Review record", item.review_id],
     ["Evidence", item.evidence_ids.join(", ") || "None"],
-    ["Parity", item.parity_ids.join(", ") || "None"],
+    ["Coverage records", item.parity_ids.join(", ") || "None"],
+    ["Destinations", item.decision_summaries.map((entry) => entry.destination_object_id).join(", ") || "None"],
+    ["Reason codes", item.recommendation_rationale.reason_codes.join(", ") || "None"],
     ["Dependencies", item.missing_references.join(", ") || "Complete"]
   ];
   entries.forEach(([term, value]) => {
@@ -442,7 +599,7 @@ function editForm(item) {
     };
   });
   const actions = node("div", "editor-actions");
-  const save = node("button", "primary", "Save all and preserve");
+  const save = node("button", "primary", "Save and Keep");
   save.type = "submit";
   const cancel = node("button", "", "Cancel");
   cancel.type = "button";
@@ -594,7 +751,7 @@ async function load(message) {
     .filter(isActionableReviewItem).map((item) => item.candidate_id));
   state.selected = new Set([...state.selected].filter((candidate) => actionable.has(candidate)));
   state.bulkPreview = null;
-  status.textContent = message || "Ready. Decisions write atomically to your local Atlas; research requests wait for an active Codex task.";
+  status.textContent = message || "Ready. Decisions save atomically to your local Atlas; research requests wait for an active research task.";
   render();
 }
 
@@ -619,7 +776,7 @@ async function decide(candidate, action, statements, unitIds, observationEdits) 
     if (!response.ok) throw new Error(result.reason || "decision-not-saved");
     state.editing = null;
     state.selected.delete(candidate);
-    await load(action === "keep" ? "All extracted meaning was preserved in Atlas." : action === "research" ? "Research request queued for a future Codex task." : "Set aside for later.");
+    await load(action === "keep" ? "All extracted meaning was kept in Atlas." : action === "research" ? "Research request queued for the next active research task." : "Set aside for later.");
   } catch (error) {
     status.textContent = `Nothing changed: ${String(error.message || error).replaceAll("-", " ")}.`;
   } finally {
@@ -666,7 +823,7 @@ function showBulkPreview(preview) {
   bulkPreviewDetails.hidden = false;
   bulkPreviewApply.hidden = false;
   bulkPreviewCancel.hidden = false;
-  bulkPreviewTitle.textContent = `${preview.action === "keep" ? "Keep" : preview.action === "research" ? "Research" : "Defer"} ${preview.counts.candidates} selected source${preview.counts.candidates === 1 ? "" : "s"}`;
+  bulkPreviewTitle.textContent = `${preview.action === "keep" ? "Keep" : preview.action === "research" ? "Research" : "Later"} ${preview.counts.candidates} selected source${preview.counts.candidates === 1 ? "" : "s"}`;
   bulkPreviewSummary.textContent = `${preview.counts.object_mutations} exact object change${preview.counts.object_mutations === 1 ? "" : "s"}: ${preview.counts.creates} create, ${preview.counts.updates} update. No source material is deleted.`;
 
   const mutationCounts = new Map();
@@ -685,7 +842,7 @@ function showBulkPreview(preview) {
   if (preview.evidence_independence_groups.length === 0) {
     bulkPreviewEvidence.append(node("li", "", "No evidence group is attached to these changes."));
   }
-  bulkPreviewApply.textContent = `Apply ${preview.action === "keep" ? "Keep" : preview.action === "research" ? "Research" : "Defer"}`;
+  bulkPreviewApply.textContent = `Apply ${preview.action === "keep" ? "Keep" : preview.action === "research" ? "Research" : "Later"}`;
 }
 
 async function applyBulkPreview() {

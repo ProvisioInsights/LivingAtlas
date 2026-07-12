@@ -328,12 +328,40 @@ describe("local review site server", () => {
     }]);
     expect(html).toContain('id="search"');
     expect(html).toContain('id="queue-summary"');
-    expect(app).toContain("Preserve all now");
+    expect(html).toContain("Choose a source, compare what it says with what will be kept, then decide.");
+    expect(html).toContain('placeholder="Search source text or proposed knowledge"');
+    expect(app).toContain('tab: "owner_review"');
+    expect(app).toContain("Context explains why. Nodes are people, organizations, projects, places, or events. Lines show relationships.");
+    expect(app).toContain('actionButton("Keep", "keep"');
+    expect(app).toContain('actionButton("Edit", "edit"');
+    expect(app).toContain('actionButton("Merge", "merge"');
+    expect(app).toContain('actionButton("Research", "research"');
+    expect(app).toContain('actionButton("Later", "defer"');
+    expect(app).toContain("item.graph.edges");
+    expect(app).toContain("destination_summaries");
+    expect(app).toContain("private_detail");
+    expect(app).toContain("data-mapping-id");
+    expect(app).toContain("data-destination-id");
+    expect(app).toContain("pointerenter");
+    expect(app).toContain("pointerleave");
+    expect(app).toContain("focusin");
+    expect(app).toContain("focusout");
+    const searchableTextStart = app.indexOf("function searchableText");
+    const searchableTextSource = app.slice(searchableTextStart, app.indexOf("function filteredItems", searchableTextStart));
+    expect(searchableTextSource).not.toContain("evidence.locator");
+    const destinationNodeStart = app.indexOf("function destinationRecordNode");
+    const destinationNodeSource = app.slice(destinationNodeStart, app.indexOf("function searchableText", destinationNodeStart));
+    expect(destinationNodeSource).not.toContain('node("code"');
+    const graphStart = app.indexOf("function miniGraph");
+    const graphSource = app.slice(graphStart, app.indexOf("function actionButton", graphStart));
+    expect(graphSource).not.toContain('node("code"');
+    expect(styles).toMatch(/button[^}]*min-height:\s*44px/s);
+    expect(styles).toContain(".is-related");
+    expect(styles).toContain("overflow-x: hidden");
     expect(app).toContain("Extracted meaning");
-    expect(app).toContain("Not Atlas knowledge");
+    expect(app).toContain("Not kept as graph knowledge");
     expect(app).toContain("Full source retained as encrypted evidence");
-    expect(app).toContain("Proposed mini graph");
-    expect(app).toContain("Request research");
+    expect(app).toContain("Source mini graph");
     expect(app).toContain("source-browser");
     expect(app).toContain("mapping-scroll");
     expect(app).toContain("mapping-connector");
@@ -342,10 +370,11 @@ describe("local review site server", () => {
     expect(app).toContain("Unresolved observation");
     expect(app).toContain("mapping.destination_records");
     expect(app).toContain("destination.object_id");
-    expect(app).toContain("item.destination_graph.entities");
-    expect(app).toContain("item.destination_graph.facts");
-    expect(app).toContain("item.destination_graph.relationships");
-    expect(app).toContain("item.destination_graph.observations");
+    expect(app).toContain("item.graph.nodes");
+    expect(app).toContain("item.graph.edges");
+    expect(app).toContain("connectedNodeIds");
+    expect(app).toContain("graph-isolated");
+    expect(app).toContain("source_context_mapping.destination_summaries");
     expect(app).toContain("observation_edits");
     expect(app).toContain("observation_id");
     expect(app).toContain("function changedObservationEdits");
@@ -354,7 +383,7 @@ describe("local review site server", () => {
     expect(app).toContain("field.original_statement");
     expect(app).toContain("const observationEdits = changedObservationEdits(fields)");
     expect(app).toContain("observationEdits.length ? observationEdits : undefined");
-    expect(app).toContain("Research is not running");
+    expect(app).toContain("Research waits for the next active Atlas research task");
     expect(app).toContain("committed_candidate_ids");
     expect(app).toContain('item.resolution_mode === "rich"');
     expect(app).toContain('item.resolution_mode === "incomplete"');
@@ -363,8 +392,8 @@ describe("local review site server", () => {
     expect(app).toContain('item.resolution_mode !== "incomplete"');
     expect(app).toContain("visibleItems().filter(isActionableReviewItem)");
     expect(app).toContain("filter(isActionableReviewItem).map");
-    expect(app).toContain("Incomplete parity:");
-    expect(app).toContain("No review action is available until parity is repaired.");
+    expect(app).toContain("Mapping incomplete:");
+    expect(app).toContain("No decision is available until the mapping is repaired.");
     const decisionPanelStart = app.indexOf("function decisionPanel");
     const decisionPanelSource = app.slice(decisionPanelStart, app.indexOf("function technicalDetails", decisionPanelStart));
     expect(decisionPanelSource.indexOf('if (item.resolution_mode === "incomplete")')).toBeLessThan(decisionPanelSource.indexOf('const actions = node("div", "decision-actions")'));
@@ -383,9 +412,11 @@ describe("local review site server", () => {
     expect(styles).toContain(".record-relationship");
     expect(styles).toContain(".record-observation");
     expect(app).not.toContain("mapping-lines");
-    expect(app).toContain("Review / edit extraction");
-    expect(app).toContain("Request research");
-    expect(app).toContain("Decide later");
+    expect(app).not.toContain("Preserve all now");
+    expect(app).not.toContain("canonical record");
+    expect(app).not.toContain("Legacy source");
+    expect(app).not.toContain("Incomplete parity");
+    expect(app).not.toContain("Codex");
     expect(html).toContain('id="bulk-preview"');
     expect(app).toContain("/api/review/bulk/preview");
     expect(app).toContain("/api/review/bulk/decision");
@@ -481,6 +512,7 @@ describe("local review site server", () => {
           recommendation: "research",
           resolution_state: "research",
           proposed_object_ids: [observationId],
+          source_evidence_ids: [evidenceId],
           recorded_at: now
         }),
         draft(parityId, "manifest", {
@@ -521,6 +553,7 @@ describe("local review site server", () => {
           recommendation: "research",
           resolution_state: "research",
           proposed_object_ids: [observationId2],
+          source_evidence_ids: [evidenceId2],
           recorded_at: now
         }),
         draft(parityId2, "manifest", {
@@ -743,7 +776,7 @@ describe("local review site server", () => {
       expect(boundaryRich).toBeDefined();
       expect(richOrg).toMatchObject({
         resolution_mode: "incomplete",
-        resolution_mode_explanation: expect.stringContaining("parity")
+        resolution_mode_explanation: expect.stringContaining("source coverage")
       });
       const longMapping = rich!.unit_mappings.find((mapping) => mapping.unit.atlas_text === longMeaning);
       expect(longMapping?.unit_evidence).toHaveLength(3);
@@ -1100,6 +1133,7 @@ describe("local review site server", () => {
           recommendation: "owner-review",
           resolution_state: "owner-review",
           proposed_object_ids: observationIds,
+          source_evidence_ids: [evidenceId],
           recorded_at: now
         }));
         drafts.push(draft(parityId, "manifest", {

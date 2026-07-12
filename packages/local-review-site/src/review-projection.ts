@@ -9,6 +9,7 @@ import {
   type GraphObjectEnvelope
 } from "@living-atlas/contracts";
 import type { CanonicalPayloadDecryptor } from "@living-atlas/graph-service";
+import { summarizeResearchRecommendation } from "@living-atlas/graph-service";
 import {
   accountSourceMeaning,
   type SourceMeaningAccounting,
@@ -34,7 +35,85 @@ export type LocalReviewAssertionDestination =
   | LocalReviewRelationshipDestination;
 export type LocalReviewDestinationRecord = LocalReviewEntityDestination | LocalReviewAssertionDestination;
 
+export type LocalReviewEvidenceSummary = {
+  evidence_id: string;
+  stance: "supports" | "refutes" | "context";
+  source_label: "Owner source" | "LinkedIn" | "Public web" | "Organization source" | "Local corpus" | "Other source";
+  retrieved_at: string;
+  confidence: "high" | "medium" | "low" | "unassessed";
+  private_detail: {
+    locator: string;
+    excerpt?: string;
+    snapshot_ref?: string;
+  };
+};
+
+export type LocalReviewCoverageBasis = "direct" | "unit-via-observation" | "source-context" | "uncovered";
+
+export type LocalReviewDecisionSummary = {
+  destination_object_id: string;
+  destination_kind: "entity" | "fact" | "relationship" | "observation";
+  label: string;
+  parity: "covered" | "uncovered";
+  coverage_basis: LocalReviewCoverageBasis;
+  confidence: "high" | "medium" | "low" | "unassessed";
+  evidence: LocalReviewEvidenceSummary[];
+  rationale: string;
+  editable: boolean;
+};
+
+export type LocalReviewGraphNode = {
+  node_id: string;
+  object_id: string;
+  kind: "entity" | "fact" | "observation";
+  label: string;
+  entity_type?: CanonicalEntity["type"];
+  style: "solid" | "dashed";
+};
+
+export type LocalReviewGraphEdge =
+  | {
+      edge_id: string;
+      kind: "relationship";
+      assertion_id: string;
+      source_entity_id: string;
+      target_entity_id: string;
+      predicate: CanonicalRelationship["predicate"];
+      style: "solid";
+    }
+  | {
+      edge_id: string;
+      kind: "fact";
+      assertion_id: string;
+      source_entity_id: string;
+      target_node_id: string;
+      predicate: CanonicalFact["predicate"];
+      style: "solid";
+    }
+  | {
+      edge_id: string;
+      kind: "observation";
+      assertion_id: string;
+      source_entity_id?: string;
+      target_node_id: string;
+      predicate: "unresolved";
+      style: "dashed";
+    };
+
+export type LocalReviewGraph = {
+  nodes: LocalReviewGraphNode[];
+  edges: LocalReviewGraphEdge[];
+};
+
+export type LocalReviewRecommendationRationale = {
+  outcome: "auto-apply" | "owner-review" | "research";
+  summary: string;
+  reason_codes: string[];
+  independence_group_count: number;
+};
+
 export type LocalReviewUnitMapping = {
+  mapping_id: string;
   unit: SourceMeaningUnit;
   occurrence: number;
   unit_evidence_ids: string[];
@@ -42,7 +121,9 @@ export type LocalReviewUnitMapping = {
   observation_ids: string[];
   fact_ids: string[];
   relationship_ids: string[];
-  destination_records: LocalReviewAssertionDestination[];
+  entity_ids: string[];
+  destination_records: LocalReviewDestinationRecord[];
+  destination_summaries: LocalReviewDecisionSummary[];
 };
 
 export type LocalReviewDestinationGraph = {
@@ -74,6 +155,15 @@ export type LocalReviewQueueItem = {
   source_context: CanonicalEvidencePayload[];
   unit_mappings: LocalReviewUnitMapping[];
   destination_graph: LocalReviewDestinationGraph;
+  graph: LocalReviewGraph;
+  decision_summaries: LocalReviewDecisionSummary[];
+  recommendation_rationale: LocalReviewRecommendationRationale;
+  source_context_mapping: {
+    source_evidence_ids: string[];
+    destination_records: LocalReviewDestinationRecord[];
+    destination_summaries: LocalReviewDecisionSummary[];
+  };
+  unmapped_destination_ids: string[];
   resolution_mode: LocalReviewResolutionMode;
   resolution_mode_explanation: string;
   parity_ids: string[];
@@ -97,6 +187,12 @@ const DecryptableTypes = new Set<GraphObjectEnvelope["object_type"]>([
 ]);
 
 const UnitEvidenceLocatorPattern = /:unit:(sha256:[a-f0-9]{64}):occurrence:(\d+):excerpt:(\d+)$/;
+const DestinationKindOrder = new Map<LocalReviewDestinationRecord["record_type"], number>([
+  ["entity", 0],
+  ["fact", 1],
+  ["relationship", 2],
+  ["observation", 3]
+]);
 
 function locatorExcerptIndex(evidence: CanonicalEvidencePayload): number {
   const match = /:excerpt:(\d+)$/.exec(evidence.locator);
@@ -128,6 +224,210 @@ function recordEvidenceIds(payload: CanonicalObservation | CanonicalFact | Canon
   return payload.schema === "atlas.observation:v1"
     ? payload.evidence_refs
     : payload.evidence_links.map((link) => link.evidence_id);
+}
+
+function assertionEntityIds(payload: CanonicalObservation | CanonicalFact | CanonicalRelationship): string[] {
+  if (payload.schema === "atlas.observation:v1") return payload.candidate_entity_ids;
+  if (payload.schema === "atlas.relationship:v2") return [payload.source_entity_id, payload.target_entity_id];
+  return [
+    payload.subject_entity_id,
+    ...(payload.value.kind === "entity-ref" ? [payload.value.entity_id] : [])
+  ];
+}
+
+function assertionReferencesEntity(
+  payload: CanonicalObservation | CanonicalFact | CanonicalRelationship,
+  entityId: string
+): boolean {
+  return assertionEntityIds(payload).includes(entityId);
+}
+
+function dedupeAndSortDestinations(
+  destinations: LocalReviewDestinationRecord[],
+  proposedOrderById?: Map<string, number>
+): LocalReviewDestinationRecord[] {
+  const byId = new Map(destinations.map((destination) => [destination.object_id, destination]));
+  return [...byId.values()].sort((left, right) => (
+    (DestinationKindOrder.get(left.record_type) ?? 99) - (DestinationKindOrder.get(right.record_type) ?? 99)
+      || (left.record_type === "observation" && right.record_type === "observation"
+        ? (proposedOrderById?.get(left.object_id) ?? Number.MAX_SAFE_INTEGER)
+          - (proposedOrderById?.get(right.object_id) ?? Number.MAX_SAFE_INTEGER)
+        : 0)
+      || left.object_id.localeCompare(right.object_id)
+  ));
+}
+
+function mappingId(candidateId: string, unitId: string, occurrence: number): string {
+  return `mapping:${createHash("sha256").update(`${candidateId}:${unitId}:${occurrence}`).digest("hex").slice(0, 24)}`;
+}
+
+function sourceLabel(evidence: CanonicalEvidencePayload): LocalReviewEvidenceSummary["source_label"] {
+  if (evidence.source_kind === "migration" || evidence.source_kind === "manual") return "Owner source";
+  if (evidence.source_kind === "linkedin") return "LinkedIn";
+  if (evidence.extraction_method === "canonical-research-organization-v1") return "Organization source";
+  if (evidence.extraction_method === "canonical-research-local-corpus-v1") return "Local corpus";
+  if (evidence.source_kind === "public-web") return "Public web";
+  if (evidence.source_kind === "connector") return "Local corpus";
+  return "Other source";
+}
+
+function factValueLabel(fact: CanonicalFact): string {
+  if (fact.value.kind === "entity-ref") return "linked entity";
+  if (fact.value.kind === "quantity") return `${fact.value.amount} ${fact.value.unit}`;
+  return String(fact.value.value);
+}
+
+function destinationLabel(destination: LocalReviewDestinationRecord): string {
+  if (destination.record_type === "entity") return `${destination.record.name} (${destination.record.type})`;
+  if (destination.record_type === "observation") return destination.record.statement;
+  if (destination.record_type === "fact") return `${destination.record.predicate}: ${factValueLabel(destination.record)}`;
+  return destination.record.predicate.replaceAll("-", " ");
+}
+
+function linkedEvidence(
+  destination: LocalReviewDestinationRecord,
+  assertions: Array<CanonicalObservation | CanonicalFact | CanonicalRelationship>
+): Array<{ evidence_id: string; stance: LocalReviewEvidenceSummary["stance"] }> {
+  const records = destination.record_type === "entity"
+    ? assertions.filter((assertion) => assertionReferencesEntity(assertion, destination.object_id))
+    : [destination.record];
+  const links = records.flatMap((record) => record.schema === "atlas.observation:v1"
+    ? record.evidence_refs.map((evidence_id) => ({ evidence_id, stance: "supports" as const }))
+    : record.evidence_links);
+  return [...new Map(links.map((link) => [`${link.evidence_id}:${link.stance}`, link])).values()]
+    .sort((left, right) => left.evidence_id.localeCompare(right.evidence_id) || left.stance.localeCompare(right.stance));
+}
+
+function destinationConfidence(destination: LocalReviewDestinationRecord): LocalReviewDecisionSummary["confidence"] {
+  return destination.record_type === "fact" || destination.record_type === "relationship"
+    ? destination.record.confidence.band
+    : "unassessed";
+}
+
+function coverageRationale(basis: LocalReviewCoverageBasis): string {
+  if (basis === "direct") return "This destination is directly named by the recorded source coverage.";
+  if (basis === "unit-via-observation") return "This destination shares the exact source fragment with a directly covered observation.";
+  if (basis === "source-context") return "This destination is supported by the complete source context rather than one fragment.";
+  return "No exact source fragment or complete-source coverage currently accounts for this destination.";
+}
+
+function decisionSummary(input: {
+  destination: LocalReviewDestinationRecord;
+  assertions: Array<CanonicalObservation | CanonicalFact | CanonicalRelationship>;
+  evidenceById: Map<string, CanonicalEvidencePayload>;
+  scopedEvidenceIds?: Set<string>;
+  coverageBasis: LocalReviewCoverageBasis;
+}): LocalReviewDecisionSummary {
+  const confidence = destinationConfidence(input.destination);
+  const evidence = linkedEvidence(input.destination, input.assertions).flatMap((link) => {
+    const record = input.evidenceById.get(link.evidence_id);
+    if (!record) return [];
+    if (input.scopedEvidenceIds
+      && record.source_kind === "migration"
+      && !input.scopedEvidenceIds.has(link.evidence_id)) return [];
+    return [{
+      evidence_id: record.evidence_id,
+      stance: link.stance,
+      source_label: sourceLabel(record),
+      retrieved_at: record.retrieved_at,
+      confidence,
+      private_detail: {
+        locator: record.locator,
+        ...(record.excerpt !== undefined ? { excerpt: record.excerpt } : {}),
+        ...(record.snapshot_ref !== undefined ? { snapshot_ref: record.snapshot_ref } : {})
+      }
+    }];
+  });
+  return {
+    destination_object_id: input.destination.object_id,
+    destination_kind: input.destination.record_type,
+    label: destinationLabel(input.destination),
+    parity: input.coverageBasis === "uncovered" ? "uncovered" : "covered",
+    coverage_basis: input.coverageBasis,
+    confidence,
+    evidence,
+    rationale: coverageRationale(input.coverageBasis),
+    editable: input.destination.record_type === "observation"
+  };
+}
+
+const BlockerSummary: Record<string, string> = {
+  "typed-projection-ambiguous-entity": "More than one existing node could represent the same thing.",
+  "typed-projection-missing-edge-endpoint": "A relationship is missing one of its endpoints.",
+  "typed-projection-endpoint-type-mismatch": "A relationship endpoint has a different type than expected.",
+  "typed-projection-ambiguous-edge-endpoint": "A relationship endpoint could refer to more than one node.",
+  "typed-projection-duplicate-edge": "A duplicate relationship may already exist.",
+  "typed-projection-other-edge-omission": "A relationship could not be placed safely."
+};
+
+const ResearchReasonSummary: Record<string, string> = {
+  "qualifies-two-independent-public": "Two independent public sources support the proposed knowledge.",
+  "qualifies-linkedin-plus-independent": "LinkedIn and an independent public source support the proposed knowledge.",
+  "insufficient-evidence": "More independent evidence is needed before this can be applied automatically.",
+  "evidence-conflict": "The available sources disagree.",
+  "identity-ambiguous": "The available evidence does not identify one person or organization with enough certainty.",
+  "proposal-conflict": "The sources support different proposed knowledge.",
+  "unsupported-predicate": "This kind of proposed knowledge needs owner review.",
+  "contact-detail-prohibited": "Researched contact details always require owner review.",
+  "sensitive-relationship": "A sensitive inferred relationship always requires owner review."
+};
+
+function recommendationRationale(
+  review: CanonicalReviewItemPayload,
+  proposedRecords: CanonicalPayload[]
+): LocalReviewRecommendationRationale {
+  const results = proposedRecords.filter((payload): payload is Extract<CanonicalPayload, { schema: "atlas.research-result:v1" }> => (
+    payload.schema === "atlas.research-result:v1"
+  ));
+  const proposals = proposedRecords.filter((payload): payload is CanonicalFact | CanonicalRelationship => (
+    payload.schema === "atlas.fact:v1" || payload.schema === "atlas.relationship:v2"
+  ));
+  const summaries = proposals.flatMap((proposal) => {
+    const proposalResults = results.filter((result) => result.proposed_object_id === canonicalPayloadObjectId(proposal));
+    if (proposalResults.length === 0) return [];
+    return [summarizeResearchRecommendation({
+      proposal,
+      proposed_mutation_hash: proposalResults[0]!.proposed_mutation_hash,
+      identity_state: proposalResults.some((result) => result.identity_state === "ambiguous") ? "ambiguous" : "resolved",
+      ...(proposal.schema === "atlas.relationship:v2"
+        ? { relationship_basis: proposalResults.every((result) => result.relationship_basis === "explicit")
+            ? "explicit" as const
+            : "inferred-sensitive" as const }
+        : {}),
+      results: proposalResults
+    })];
+  });
+  if (summaries.length > 0) {
+    const outcome = summaries.some((summary) => summary.recommendation === "owner-review") ? "owner-review"
+      : summaries.some((summary) => summary.recommendation === "research") ? "research"
+        : "auto-apply";
+    const reasonCodes = [...new Set(summaries.flatMap((summary) => summary.reason_codes))].sort();
+    return {
+      outcome,
+      summary: reasonCodes.map((code) => ResearchReasonSummary[code] ?? "Additional review is required.").join(" "),
+      reason_codes: reasonCodes,
+      independence_group_count: new Set(results.map((result) => result.independence_key)).size
+    };
+  }
+  const blockers = [...(review.auto_apply_blockers ?? [])].sort();
+  if (blockers.length > 0) {
+    return {
+      outcome: "owner-review",
+      summary: blockers.map((blocker) => BlockerSummary[blocker]).join(" "),
+      reason_codes: blockers,
+      independence_group_count: 0
+    };
+  }
+  return {
+    outcome: review.recommendation,
+    summary: review.recommendation === "auto-apply"
+      ? "The recorded source coverage supports applying this without another decision."
+      : review.recommendation === "research"
+        ? "More evidence or identity context may make this easier to place."
+        : "Your judgment is needed to confirm how this source should be kept.",
+    reason_codes: [],
+    independence_group_count: 0
+  };
 }
 
 function normalizedMutationKind(payload: CanonicalPayload): string {
@@ -239,6 +539,8 @@ function reviewResolutionMode(input: {
   parityRecords: CanonicalParityRecordPayload[];
   sourceAccounting: SourceMeaningAccounting;
   unitMappings: LocalReviewUnitMapping[];
+  unmappedDestinationIds: string[];
+  missingReferences: string[];
 }): { mode: LocalReviewResolutionMode; explanation: string } {
   const proposedObservations = input.proposedRecords.filter((payload): payload is CanonicalObservation => (
     payload.schema === "atlas.observation:v1"
@@ -257,13 +559,19 @@ function reviewResolutionMode(input: {
     && proposedObservations.every((observation) => parityObservationIds.has(observation.assertion_id));
 
   if (!input.sourceAccounting.exact_source_preserved) {
-    return { mode: "incomplete", explanation: "Lossless canonical source evidence is unavailable, so Preserve and Edit are blocked." };
+    return { mode: "incomplete", explanation: "The exact source copy is unavailable, so Keep and Edit are blocked." };
   }
   if (!proposedComplete) {
-    return { mode: "incomplete", explanation: "One or more proposed canonical records are unavailable, so Preserve and Edit are blocked." };
+    return { mode: "incomplete", explanation: "One or more proposed destinations are unavailable, so Keep and Edit are blocked." };
+  }
+  if (input.missingReferences.length > 0) {
+    return { mode: "incomplete", explanation: "One or more referenced items are unavailable, so the destination mapping is incomplete." };
   }
   if (!observationParityShapeValid) {
-    return { mode: "incomplete", explanation: "Every parity record must be represented observation parity backed only by proposed observations." };
+    return { mode: "incomplete", explanation: "The recorded source coverage does not match the proposed observations." };
+  }
+  if (input.unmappedDestinationIds.length > 0) {
+    return { mode: "incomplete", explanation: "One or more proposed destinations are not tied to an exact source fragment or the complete source." };
   }
 
   const hasCanonicalUnitEvidence = input.unitMappings.some((mapping) => mapping.unit_evidence_ids.length > 0);
@@ -272,20 +580,20 @@ function reviewResolutionMode(input: {
       && input.unitMappings.length === input.sourceAccounting.meaningful_units.length
       && input.unitMappings.every((mapping) => mapping.unit_evidence_ids.length > 0 && mapping.observation_ids.length > 0);
     if (!unitsComplete) {
-      return { mode: "incomplete", explanation: "Not every source unit has canonical unit evidence and a mapped parity observation." };
+      return { mode: "incomplete", explanation: "Not every source fragment has evidence and a mapped observation." };
     }
     const mappedObservationIds = new Set(input.unitMappings.flatMap((mapping) => mapping.observation_ids));
     if (proposedObservations.some((observation) => !mappedObservationIds.has(observation.assertion_id))
       || input.parityRecords.some((parity) => parity.canonical_object_ids.some((id) => !mappedObservationIds.has(id)))) {
-      return { mode: "incomplete", explanation: "Observation parity is not wholly covered by mapped proposed source-unit observations." };
+      return { mode: "incomplete", explanation: "The recorded source coverage is not wholly accounted for by the mapped source fragments." };
     }
-    return { mode: "rich", explanation: "Every source unit maps to canonical evidence and observation-only parity; observation-ID editing is available." };
+    return { mode: "rich", explanation: "Every source fragment maps to evidence and a destination; observation editing is available." };
   }
 
   if (input.proposedRecords.length === 1 && proposedObservations.length === 1) {
-    return { mode: "legacy", explanation: "This legacy one-placeholder candidate will expand into provenance-linked observations when preserved." };
+    return { mode: "legacy", explanation: "This source has one general destination that can expand into one sourced observation per extracted item." };
   }
-  return { mode: "incomplete", explanation: "This candidate is neither a complete canonical mapping nor a supported legacy placeholder." };
+  return { mode: "incomplete", explanation: "This source does not yet have a complete supported destination mapping." };
 }
 
 function meaningfulHeadline(
@@ -324,7 +632,9 @@ export async function projectLocalReviewQueue(input: {
   const reviews = [...payloads.values()].filter((payload): payload is CanonicalReviewItemPayload => payload.schema === "atlas.review-item:v1");
   const itemFor = (review: CanonicalReviewItemPayload): LocalReviewQueueItem => {
     const proposed = review.proposed_object_ids;
-    const evidenceIds = new Set<string>(review.source_evidence_ids ?? []);
+    const proposedOrderById = new Map(proposed.map((id, index) => [id, index]));
+    const declaredSourceEvidenceIds = new Set<string>(review.source_evidence_ids ?? []);
+    const evidenceIds = new Set<string>(declaredSourceEvidenceIds);
     for (const id of proposed) {
       const payload = payloads.get(id);
       if (payload?.schema === "atlas.observation:v1") payload.evidence_refs.forEach((evidence) => evidenceIds.add(evidence));
@@ -354,12 +664,17 @@ export async function projectLocalReviewQueue(input: {
     });
     const parityRecords = [...payloads.values()].filter((payload): payload is CanonicalParityRecordPayload => payload.schema === "atlas.parity-record:v1" && parityIds.includes(payload.parity_id));
     const sourceContext = sortEvidenceChunks(evidence.filter((item) => (
-      item.source_kind === "migration" && item.extraction_method === "canonical-markdown-lossless-v1"
+      declaredSourceEvidenceIds.has(item.evidence_id)
+      && item.source_kind === "migration"
+      && item.extraction_method === "canonical-markdown-lossless-v1"
     )));
     const observation = proposedRecords.find((payload) => payload.schema === "atlas.observation:v1");
     const sourceAccounting = accountSourceMeaning(sourceContext);
     const parityObservationIds = new Set(parityRecords.flatMap((parity) => (
       parity.representation_kind === "observation" ? parity.canonical_object_ids : []
+    )));
+    const representedParityIds = new Set(parityRecords.flatMap((parity) => (
+      parity.coverage_state === "represented" ? parity.canonical_object_ids : []
     )));
     const canonicalDestinations: LocalReviewAssertionDestination[] = [];
     for (const payload of proposedRecords) {
@@ -367,6 +682,12 @@ export async function projectLocalReviewQueue(input: {
       if (payload.schema === "atlas.fact:v1") canonicalDestinations.push(factDestination(payload));
       if (payload.schema === "atlas.relationship:v2") canonicalDestinations.push(relationshipDestination(payload));
     }
+    canonicalDestinations.splice(0, canonicalDestinations.length, ...dedupeAndSortDestinations(
+      canonicalDestinations,
+      proposedOrderById
+    ) as LocalReviewAssertionDestination[]);
+    const canonicalAssertions = canonicalDestinations.map((destination) => destination.record);
+    const evidenceById = new Map(evidence.map((item) => [item.evidence_id, item]));
     const unitEvidence = evidence.filter((item) => item.source_kind === "migration"
       && item.extraction_method === "canonical-source-unit-v1");
     const occurrenceByUnitId = new Map<string, number>();
@@ -378,11 +699,23 @@ export async function projectLocalReviewQueue(input: {
         return match?.[1] === unit.unit_id && Number(match[2]) === occurrence;
       }));
       const matchingEvidenceIds = new Set(matchingEvidence.map((item) => item.evidence_id));
-      const destinations = canonicalDestinations.filter((destination) => {
-        if (destination.record_type === "observation" && !parityObservationIds.has(destination.object_id)) return false;
+      const assertionDestinations = canonicalDestinations.filter((destination) => {
         return recordEvidenceIds(destination.record).some((id) => matchingEvidenceIds.has(id));
       });
+      const entityIds = [...new Set(assertionDestinations.flatMap((destination) => assertionEntityIds(destination.record)))].sort();
+      const entityDestinations = entityIds.flatMap((id) => {
+        const payload = payloads.get(id);
+        return payload?.schema === "atlas.entity:v1" ? [entityDestination(payload)] : [];
+      });
+      const destinations = dedupeAndSortDestinations(
+        [...entityDestinations, ...assertionDestinations],
+        proposedOrderById
+      );
+      const representedObservationPresent = assertionDestinations.some((destination) => (
+        destination.record_type === "observation" && parityObservationIds.has(destination.object_id)
+      ));
       return {
+        mapping_id: mappingId(review.candidate_id, unit.unit_id, occurrence),
         unit,
         occurrence,
         unit_evidence_ids: matchingEvidence.map((item) => item.evidence_id),
@@ -390,7 +723,17 @@ export async function projectLocalReviewQueue(input: {
         observation_ids: destinations.filter((item) => item.record_type === "observation").map((item) => item.object_id),
         fact_ids: destinations.filter((item) => item.record_type === "fact").map((item) => item.object_id),
         relationship_ids: destinations.filter((item) => item.record_type === "relationship").map((item) => item.object_id),
-        destination_records: destinations
+        entity_ids: entityIds,
+        destination_records: destinations,
+        destination_summaries: destinations.map((destination) => decisionSummary({
+          destination,
+          assertions: assertionDestinations.map((item) => item.record),
+          evidenceById,
+          scopedEvidenceIds: matchingEvidenceIds,
+          coverageBasis: representedParityIds.has(destination.object_id)
+            ? "direct"
+            : representedObservationPresent ? "unit-via-observation" : "uncovered"
+        }))
       };
     });
     const graphObservations = proposedRecords.filter((payload): payload is CanonicalObservation => payload.schema === "atlas.observation:v1");
@@ -399,27 +742,143 @@ export async function projectLocalReviewQueue(input: {
     const graphEntityIds = new Set<string>([
       ...proposedRecords.flatMap((payload) => payload.schema === "atlas.entity:v1" ? [payload.entity_id] : []),
       ...graphObservations.flatMap((payload) => payload.candidate_entity_ids),
-      ...graphFacts.map((payload) => payload.subject_entity_id),
+      ...graphFacts.flatMap((payload) => [
+        payload.subject_entity_id,
+        ...(payload.value.kind === "entity-ref" ? [payload.value.entity_id] : [])
+      ]),
       ...graphRelationships.flatMap((payload) => [payload.source_entity_id, payload.target_entity_id])
     ]);
-    const graphEntities: CanonicalEntity[] = [...graphEntityIds].flatMap((id) => {
+    const graphEntities: CanonicalEntity[] = [...graphEntityIds].sort().flatMap((id) => {
       const payload = payloads.get(id);
       return payload?.schema === "atlas.entity:v1" ? [payload] : [];
     });
     const destinationGraph: LocalReviewDestinationGraph = {
       source_evidence_ids: sourceContext.map((item) => item.evidence_id),
       entities: graphEntities.map(entityDestination),
-      observations: graphObservations.map(observationDestination),
-      facts: graphFacts.map(factDestination),
-      relationships: graphRelationships.map(relationshipDestination)
+      observations: graphObservations.map(observationDestination).sort((left, right) => left.object_id.localeCompare(right.object_id)),
+      facts: graphFacts.map(factDestination).sort((left, right) => left.object_id.localeCompare(right.object_id)),
+      relationships: graphRelationships.map(relationshipDestination).sort((left, right) => left.object_id.localeCompare(right.object_id))
     };
-    const resolutionMode = reviewResolutionMode({
-      proposedObjectIds: proposed,
-      proposedRecords,
-      parityRecords,
-      sourceAccounting,
-      unitMappings
+    const sourceEvidenceIds = new Set(sourceContext.map((item) => item.evidence_id));
+    const sourceContextAssertions = canonicalDestinations.filter((destination) => {
+      const recordEvidence = recordEvidenceIds(destination.record);
+      return recordEvidence.some((id) => sourceEvidenceIds.has(id))
+        && recordEvidence.every((id) => {
+          if (sourceEvidenceIds.has(id)) return true;
+          const linked = evidenceById.get(id);
+          return linked !== undefined && linked.extraction_method !== "canonical-source-unit-v1";
+        });
     });
+    const sourceContextEntityIds = [...new Set(sourceContextAssertions.flatMap((destination) => (
+      assertionEntityIds(destination.record)
+    )))].sort();
+    const sourceContextDestinations = dedupeAndSortDestinations([
+      ...sourceContextEntityIds.flatMap((id) => {
+        const payload = payloads.get(id);
+        return payload?.schema === "atlas.entity:v1" ? [entityDestination(payload)] : [];
+      }),
+      ...sourceContextAssertions
+    ], proposedOrderById);
+    const allDestinations = dedupeAndSortDestinations([
+      ...destinationGraph.entities,
+      ...destinationGraph.facts,
+      ...destinationGraph.relationships,
+      ...destinationGraph.observations
+    ], proposedOrderById);
+    const unitMappedIds = new Set(unitMappings.flatMap((mapping) => (
+      mapping.destination_records.map((destination) => destination.object_id)
+    )));
+    const sourceMappedIds = new Set(sourceContextDestinations.map((destination) => destination.object_id));
+    const unmappedDestinationIds = allDestinations
+      .filter((destination) => !unitMappedIds.has(destination.object_id) && !sourceMappedIds.has(destination.object_id))
+      .map((destination) => destination.object_id);
+    const sourceContextCovered = sourceContextAssertions.some((destination) => (
+      destination.record_type === "observation" && parityObservationIds.has(destination.object_id)
+    )) || graphObservations.some((observationRecord) => (
+      parityObservationIds.has(observationRecord.assertion_id)
+      && recordEvidenceIds(observationRecord).some((id) => sourceEvidenceIds.has(id))
+    ));
+    const basisForDestination = (destination: LocalReviewDestinationRecord): LocalReviewCoverageBasis => {
+      if (representedParityIds.has(destination.object_id)) return "direct";
+      if (unitMappings.some((mapping) => mapping.destination_records.some((record) => record.object_id === destination.object_id)
+        && mapping.observation_ids.some((id) => parityObservationIds.has(id)))) {
+        return "unit-via-observation";
+      }
+      if (sourceMappedIds.has(destination.object_id) && sourceContextCovered) return "source-context";
+      return "uncovered";
+    };
+    const decisionSummaries = allDestinations.map((destination) => decisionSummary({
+      destination,
+      assertions: canonicalAssertions,
+      evidenceById,
+      coverageBasis: basisForDestination(destination)
+    }));
+    const graph: LocalReviewGraph = {
+      nodes: [
+        ...graphEntities.map((entity): LocalReviewGraphNode => ({
+          node_id: entity.entity_id,
+          object_id: entity.entity_id,
+          kind: "entity",
+          label: entity.name,
+          entity_type: entity.type,
+          style: "solid"
+        })),
+        ...graphFacts.map((fact): LocalReviewGraphNode => ({
+          node_id: `fact:${fact.assertion_id}`,
+          object_id: fact.assertion_id,
+          kind: "fact",
+          label: factValueLabel(fact),
+          style: "solid"
+        })),
+        ...graphObservations.map((observationRecord): LocalReviewGraphNode => ({
+          node_id: `observation:${observationRecord.assertion_id}`,
+          object_id: observationRecord.assertion_id,
+          kind: "observation",
+          label: observationRecord.statement,
+          style: "dashed"
+        }))
+      ].sort((left, right) => left.kind.localeCompare(right.kind) || left.node_id.localeCompare(right.node_id)),
+      edges: [
+        ...graphRelationships.map((relationship): LocalReviewGraphEdge => ({
+          edge_id: relationship.edge_id,
+          kind: "relationship",
+          assertion_id: relationship.assertion_id,
+          source_entity_id: relationship.source_entity_id,
+          target_entity_id: relationship.target_entity_id,
+          predicate: relationship.predicate,
+          style: "solid"
+        })),
+        ...graphFacts.map((fact): LocalReviewGraphEdge => ({
+          edge_id: `fact:${fact.assertion_id}`,
+          kind: "fact",
+          assertion_id: fact.assertion_id,
+          source_entity_id: fact.subject_entity_id,
+          target_node_id: `fact:${fact.assertion_id}`,
+          predicate: fact.predicate,
+          style: "solid"
+        })),
+        ...graphObservations.flatMap((observationRecord): LocalReviewGraphEdge[] => (
+          observationRecord.candidate_entity_ids.length > 0
+            ? observationRecord.candidate_entity_ids.map((entityId) => ({
+                edge_id: `observation:${observationRecord.assertion_id}:${entityId}`,
+                kind: "observation" as const,
+                assertion_id: observationRecord.assertion_id,
+                source_entity_id: entityId,
+                target_node_id: `observation:${observationRecord.assertion_id}`,
+                predicate: "unresolved" as const,
+                style: "dashed" as const
+              }))
+            : [{
+                edge_id: `observation:${observationRecord.assertion_id}:standalone`,
+                kind: "observation",
+                assertion_id: observationRecord.assertion_id,
+                target_node_id: `observation:${observationRecord.assertion_id}`,
+                predicate: "unresolved",
+                style: "dashed"
+              }]
+        ))
+      ].sort((left, right) => left.kind.localeCompare(right.kind) || left.edge_id.localeCompare(right.edge_id))
+    };
     const referenced = [
       ...proposed,
       ...evidenceIds,
@@ -427,6 +886,16 @@ export async function projectLocalReviewQueue(input: {
       ...parityRecords.flatMap((parity) => parity.canonical_object_ids),
       ...graphEntityIds
     ];
+    const missingReferences = referenced.filter((id) => !payloads.has(id)).sort();
+    const resolutionMode = reviewResolutionMode({
+      proposedObjectIds: proposed,
+      proposedRecords,
+      parityRecords,
+      sourceAccounting,
+      unitMappings,
+      unmappedDestinationIds,
+      missingReferences
+    });
     const requestedUnitHashes = new Set(review.research_requested_unit_hashes ?? []);
     const researchRequestedUnits = sourceAccounting.meaningful_units.filter((unit) => requestedUnitHashes.has(unit.unit_id));
     return {
@@ -448,12 +917,27 @@ export async function projectLocalReviewQueue(input: {
       source_context: sourceContext,
       unit_mappings: unitMappings,
       destination_graph: destinationGraph,
+      graph,
+      decision_summaries: decisionSummaries,
+      recommendation_rationale: recommendationRationale(review, proposedRecords),
+      source_context_mapping: {
+        source_evidence_ids: [...sourceEvidenceIds].sort(),
+        destination_records: sourceContextDestinations,
+        destination_summaries: sourceContextDestinations.map((destination) => decisionSummary({
+          destination,
+          assertions: sourceContextAssertions.map((item) => item.record),
+          evidenceById,
+          scopedEvidenceIds: sourceEvidenceIds,
+          coverageBasis: basisForDestination(destination)
+        }))
+      },
+      unmapped_destination_ids: unmappedDestinationIds,
       resolution_mode: resolutionMode.mode,
       resolution_mode_explanation: resolutionMode.explanation,
       parity_ids: parityIds.sort(),
       parity_records: parityRecords,
       source_accounting: sourceAccounting,
-      missing_references: referenced.filter((id) => !payloads.has(id)).sort(),
+      missing_references: missingReferences,
       context_unavailable: sourceContext.length === 0,
       exact_source_encrypted: sourceContext.length > 0 && sourceContext.every((evidence) => (
         envelopesById.get(evidence.evidence_id)?.encryption_class === "client-encrypted"
