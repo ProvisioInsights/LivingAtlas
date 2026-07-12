@@ -1,3 +1,7 @@
+import type { CanonicalExport } from "@living-atlas/contracts";
+import type { LocalCanonicalAtlasClient } from "@living-atlas/atlas-client";
+import { deriveCanonicalCutoverReadiness } from "./canonical-cutover-readiness";
+
 export type CanonicalPromotionPreflight = {
   candidate_isolated: boolean;
   candidate_authority_id: string;
@@ -10,6 +14,21 @@ export type CanonicalPromotionPreflight = {
 
 export type CanonicalPromotionPlanInput = CanonicalPromotionPreflight & {
   candidate_object_count: number;
+};
+
+export type CanonicalPromotionArtifactInput = {
+  candidate_isolated: boolean;
+  candidate_authority_id: string;
+  live_authority_id: string;
+  canonical_manifest_object_count: number;
+  conversion_integrity: { unrepresented_meaningful_units: number; reopened_manifest_mismatches: number };
+  decrypt_coverage_equal: boolean;
+  restart_manifest_equal: boolean;
+  backup_restore_manifest_equal: boolean;
+  mutation_idempotency_verified: boolean;
+  pending_reconciliation: number;
+  owner_accepted: boolean;
+  pending_outbox: number;
 };
 
 export function preflightCanonicalPromotion(input: CanonicalPromotionPreflight) {
@@ -33,6 +52,28 @@ export function buildCanonicalPromotionPlan(input: CanonicalPromotionPlanInput) 
     object_count: input.candidate_object_count,
     authority_id: input.candidate_authority_id
   };
+}
+
+export function buildPromotionPlanFromArtifacts(input: CanonicalPromotionArtifactInput) {
+  const readiness = deriveCanonicalCutoverReadiness({
+    conversion_integrity: input.conversion_integrity,
+    decrypt_coverage: { equal: input.decrypt_coverage_equal },
+    restart_manifest_equal: input.restart_manifest_equal,
+    backup_restore_manifest_equal: input.backup_restore_manifest_equal,
+    mutation_idempotency_verified: input.mutation_idempotency_verified,
+    pending_reconciliation: input.pending_reconciliation,
+    owner_accepted: input.owner_accepted
+  });
+  return buildCanonicalPromotionPlan({
+    candidate_isolated: input.candidate_isolated,
+    candidate_authority_id: input.candidate_authority_id,
+    live_authority_id: input.live_authority_id,
+    canonical_manifest_equal: input.backup_restore_manifest_equal,
+    backup_restore_manifest_equal: input.backup_restore_manifest_equal,
+    pending_outbox: input.pending_outbox,
+    readiness,
+    candidate_object_count: input.canonical_manifest_object_count
+  });
 }
 
 export async function applyCanonicalPromotion(input: {
@@ -113,5 +154,3 @@ export async function promoteCanonicalExport(input: {
   });
   return { applied: true as const, object_count: input.plan.object_count, generation: generation! };
 }
-import type { CanonicalExport } from "@living-atlas/contracts";
-import type { LocalCanonicalAtlasClient } from "@living-atlas/atlas-client";

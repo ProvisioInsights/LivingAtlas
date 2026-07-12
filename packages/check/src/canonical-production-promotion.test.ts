@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applyCanonicalPromotion, buildCanonicalPromotionPlan, createCanonicalPromotionReceipt, createCanonicalRollbackReceipt, preflightCanonicalPromotion, promoteCanonicalExport } from "./canonical-production-promotion";
+import { applyCanonicalPromotion, buildCanonicalPromotionPlan, buildPromotionPlanFromArtifacts, createCanonicalPromotionReceipt, createCanonicalRollbackReceipt, preflightCanonicalPromotion, promoteCanonicalExport } from "./canonical-production-promotion";
 
 describe("canonical production promotion", () => {
   it("rejects a candidate whose authority differs from the local authority", () => {
@@ -84,5 +84,22 @@ describe("canonical production promotion", () => {
     });
     expect(imported).toBe(true);
     expect(result).toEqual({ applied: true, object_count: 42, generation: 8 });
+  });
+
+  it("derives the dry-run plan from complete candidate proof artifacts", () => {
+    expect(buildPromotionPlanFromArtifacts({
+      candidate_isolated: true,
+      candidate_authority_id: "la_authority_live0001",
+      live_authority_id: "la_authority_live0001",
+      canonical_manifest_object_count: 42,
+      conversion_integrity: { unrepresented_meaningful_units: 0, reopened_manifest_mismatches: 0 },
+      decrypt_coverage_equal: true,
+      restart_manifest_equal: true,
+      backup_restore_manifest_equal: true,
+      mutation_idempotency_verified: true,
+      pending_reconciliation: 0,
+      owner_accepted: true,
+      pending_outbox: 0
+    })).toEqual({ mode: "dry-run", object_count: 42, authority_id: "la_authority_live0001" });
   });
 });
