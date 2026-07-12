@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildCanonicalPromotionPlan, preflightCanonicalPromotion } from "./canonical-production-promotion";
+import { applyCanonicalPromotion, buildCanonicalPromotionPlan, preflightCanonicalPromotion } from "./canonical-production-promotion";
 
 describe("canonical production promotion", () => {
   it("rejects a candidate whose authority differs from the local authority", () => {
@@ -25,5 +25,16 @@ describe("canonical production promotion", () => {
       readiness: { ready: true, blockers: [] },
       candidate_object_count: 42
     })).toEqual({ mode: "dry-run", object_count: 42, authority_id: "la_authority_live0001" });
+  });
+
+  it("requires the explicit acknowledgement before invoking the promotion writer", async () => {
+    let calls = 0;
+    const plan = { mode: "dry-run" as const, object_count: 42, authority_id: "la_authority_live0001" };
+    await expect(applyCanonicalPromotion({ plan, acknowledgement: "wrong", apply: async () => { calls += 1; } }))
+      .rejects.toThrow("promotion-acknowledgement-required");
+    expect(calls).toBe(0);
+    await expect(applyCanonicalPromotion({ plan, acknowledgement: "promote-verified-canonical-candidate", apply: async () => { calls += 1; } }))
+      .resolves.toEqual({ applied: true, object_count: 42 });
+    expect(calls).toBe(1);
   });
 });

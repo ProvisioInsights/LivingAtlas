@@ -34,3 +34,15 @@ export function buildCanonicalPromotionPlan(input: CanonicalPromotionPlanInput) 
     authority_id: input.candidate_authority_id
   };
 }
+
+export async function applyCanonicalPromotion(input: {
+  plan: ReturnType<typeof buildCanonicalPromotionPlan>;
+  acknowledgement?: string;
+  apply: () => Promise<void>;
+}) {
+  if (input.acknowledgement !== "promote-verified-canonical-candidate") {
+    throw new Error("promotion-acknowledgement-required");
+  }
+  await input.apply();
+  return { applied: true as const, object_count: input.plan.object_count };
+}
