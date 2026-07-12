@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applyCanonicalPromotion, buildCanonicalPromotionPlan, createCanonicalPromotionReceipt, createCanonicalRollbackReceipt, preflightCanonicalPromotion } from "./canonical-production-promotion";
+import { applyCanonicalPromotion, buildCanonicalPromotionPlan, createCanonicalPromotionReceipt, createCanonicalRollbackReceipt, preflightCanonicalPromotion, promoteCanonicalExport } from "./canonical-production-promotion";
 
 describe("canonical production promotion", () => {
   it("rejects a candidate whose authority differs from the local authority", () => {
@@ -67,5 +67,22 @@ describe("canonical production promotion", () => {
       restored_generation: 7,
       canonical_manifest_hash: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
     });
+  });
+
+  it("promotes through the canonical client transaction only after acknowledgement", async () => {
+    const plan = { mode: "dry-run" as const, object_count: 42, authority_id: "la_authority_live0001" };
+    let imported = false;
+    const result = await promoteCanonicalExport({
+      plan,
+      acknowledgement: "promote-verified-canonical-candidate",
+      client: { importCanonical: async () => { imported = true; return { ok: true, generation: 8 }; } } as never,
+      exported: {} as never,
+      expected_generation: 7,
+      actor_id: "la_client_promotion0001",
+      operation_id: "la_operation_promotion0001",
+      idempotency_key: "la_idem_promotion0001"
+    });
+    expect(imported).toBe(true);
+    expect(result).toEqual({ applied: true, object_count: 42, generation: 8 });
   });
 });

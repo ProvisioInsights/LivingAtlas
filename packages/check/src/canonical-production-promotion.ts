@@ -84,3 +84,34 @@ export function createCanonicalRollbackReceipt(input: {
     canonical_manifest_hash: input.canonical_manifest_hash
   };
 }
+
+export async function promoteCanonicalExport(input: {
+  plan: ReturnType<typeof buildCanonicalPromotionPlan>;
+  acknowledgement?: string;
+  client: Pick<LocalCanonicalAtlasClient, "importCanonical">;
+  exported: CanonicalExport;
+  expected_generation: number;
+  actor_id: string;
+  operation_id: string;
+  idempotency_key: string;
+}) {
+  let generation: number | undefined;
+  await applyCanonicalPromotion({
+    plan: input.plan,
+    acknowledgement: input.acknowledgement,
+    apply: async () => {
+      const result = await input.client.importCanonical({
+        exported: input.exported,
+        expected_generation: input.expected_generation,
+        actor_id: input.actor_id,
+        operation_id: input.operation_id,
+        idempotency_key: input.idempotency_key
+      });
+      if (!result.ok) throw new Error(`promotion-transaction-failed:${result.reason}`);
+      generation = result.generation;
+    }
+  });
+  return { applied: true as const, object_count: input.plan.object_count, generation: generation! };
+}
+import type { CanonicalExport } from "@living-atlas/contracts";
+import type { LocalCanonicalAtlasClient } from "@living-atlas/atlas-client";
