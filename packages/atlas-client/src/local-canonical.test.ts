@@ -33,7 +33,7 @@ function observationDraft(input: { objectId: string; statement: string; supersed
     visible_metadata: { tombstone: false, remote_indexable: false },
     payload: { kind: "plaintext-json" as const, data: {
       schema: "atlas.observation:v1", assertion_id: input.objectId, statement: input.statement,
-      candidate_entity_ids: [], resolution_state: "owner-review", recorded_at: now,
+      candidate_entity_ids: [entityId], resolution_state: "owner-review", recorded_at: now,
       evidence_refs: ["la_object_localclientevidence0001"],
       ...(input.supersedes ? { supersedes: input.supersedes } : {})
     } }
@@ -62,7 +62,7 @@ describe("local canonical Atlas client", () => {
     try {
       const keyring = createDefaultLocalKeyring({ authorityId: fixtureAuthorityId, createdAt: now });
       const store = await FileLocalGraphStore.open({ directory, authorityId: fixtureAuthorityId, plaintextPersistence: "encrypt", keyring });
-      await store.initializeFromObjects([entityDraft(), factDraft()]);
+      await store.initializeFromObjects([entityDraft(), factDraft(), observationDraft({ objectId: "la_object_localclientobservation0001", statement: "Synthetic unresolved observation." })]);
       const decrypt = async (object: Parameters<typeof decryptGraphObjectPayload>[0]) => {
         const payload = await decryptGraphObjectPayload(object, keyring);
         return payload?.kind === "plaintext-json" ? payload.data : undefined;
@@ -80,6 +80,8 @@ describe("local canonical Atlas client", () => {
         .resolves.toEqual({ entity_id: entityId, canonical_entity_id: entityId, redirect_path: [entityId] });
       await expect((client as unknown as { assertionsForEntity(id: string): Promise<unknown[]> }).assertionsForEntity(entityId))
         .resolves.toEqual([expect.objectContaining({ schema: "atlas.fact:v1", subject_entity_id: entityId })]);
+      await expect((client as unknown as { observationsForEntity(id: string): Promise<unknown[]> }).observationsForEntity(entityId))
+        .resolves.toEqual([expect.objectContaining({ schema: "atlas.observation:v1", candidate_entity_ids: [entityId] })]);
     } finally {
       await rm(directory, { recursive: true, force: true });
     }

@@ -22,6 +22,7 @@ export type LocalCanonicalAtlasClient = {
   entityGet(entity_id: string): Promise<Record<string, unknown> | undefined>;
   resolveEntityId(entity_id: string): Promise<CanonicalEntityRedirect>;
   assertionsForEntity(entity_id: string): Promise<Record<string, unknown>[]>;
+  observationsForEntity(entity_id: string): Promise<Record<string, unknown>[]>;
   importCanonical(input: {
     exported: unknown;
     expected_generation: number;
@@ -73,6 +74,19 @@ export function createLocalCanonicalAtlasClient(input: {
         }
       }
       return assertions.sort((left, right) => String(left.assertion_id).localeCompare(String(right.assertion_id)));
+    },
+    async observationsForEntity(entity_id) {
+      const resolved = await this.resolveEntityId(entity_id);
+      const observations: Record<string, unknown>[] = [];
+      for (const object of input.graphStore.listObjects().filter((item) => item.object_type === "assertion" && !item.visible_metadata.tombstone)) {
+        const payload = await input.decryptPayload(object);
+        const parsed = CanonicalWriteSchema.safeParse({ object_type: object.object_type, payload });
+        if (parsed.success && parsed.data.payload.schema === "atlas.observation:v1"
+          && parsed.data.payload.candidate_entity_ids.includes(resolved.canonical_entity_id)) {
+          observations.push(parsed.data.payload);
+        }
+      }
+      return observations.sort((left, right) => String(left.assertion_id).localeCompare(String(right.assertion_id)));
     },
     async exportCanonical(options = {}) {
       const records = [];
