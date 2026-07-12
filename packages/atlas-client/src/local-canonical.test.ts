@@ -13,7 +13,7 @@ const entityId = "la_object_localcliententity0001";
 function entityDraft() {
   return {
     schema_version: 1 as const, authority_id: fixtureAuthorityId, object_id: entityId,
-    object_type: "entity", version: 1, access_class: "local-private" as const,
+    object_type: "entity" as const, version: 1, access_class: "local-private" as const,
     encryption_class: "plaintext" as const, created_at: now, updated_at: now,
     content_hash: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     visible_metadata: { tombstone: false, remote_indexable: false },
@@ -40,13 +40,29 @@ function observationDraft(input: { objectId: string; statement: string; supersed
   };
 }
 
+function factDraft() {
+  return {
+    schema_version: 1 as const, authority_id: fixtureAuthorityId, object_id: "la_object_localclientfact0001",
+    object_type: "assertion" as const, version: 1, access_class: "local-private" as const,
+    encryption_class: "plaintext" as const, created_at: now, updated_at: now,
+    content_hash: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    visible_metadata: { tombstone: false, remote_indexable: false },
+    payload: { kind: "plaintext-json" as const, data: {
+      schema: "atlas.fact:v1", assertion_id: "la_object_localclientfact0001", subject_entity_id: entityId,
+      predicate: "status", value: { kind: "text", value: "Synthetic active status" }, recorded_at: now,
+      lineage_action: "assert", supersedes: [], evidence_links: [{ evidence_id: "la_object_localclientevidence0001", stance: "supports" }],
+      confidence: { band: "high", assessment_kind: "assertion", method: "synthetic", assessed_at: now, evidence_refs: ["la_object_localclientevidence0001"] }
+    } }
+  };
+}
+
 describe("local canonical Atlas client", () => {
   it("reads a decrypted canonical entity by its stable ID", async () => {
     const directory = await mkdtemp(join(tmpdir(), "living-atlas-local-entity-read-"));
     try {
       const keyring = createDefaultLocalKeyring({ authorityId: fixtureAuthorityId, createdAt: now });
       const store = await FileLocalGraphStore.open({ directory, authorityId: fixtureAuthorityId, plaintextPersistence: "encrypt", keyring });
-      await store.createObject({ object: entityDraft(), expected_generation: 0, actor_id: fixtureLocalClientId, recorded_at: now });
+      await store.initializeFromObjects([entityDraft(), factDraft()]);
       const decrypt = async (object: Parameters<typeof decryptGraphObjectPayload>[0]) => {
         const payload = await decryptGraphObjectPayload(object, keyring);
         return payload?.kind === "plaintext-json" ? payload.data : undefined;
@@ -62,6 +78,8 @@ describe("local canonical Atlas client", () => {
       });
       await expect((client as unknown as { resolveEntityId(id: string): Promise<unknown> }).resolveEntityId(entityId))
         .resolves.toEqual({ entity_id: entityId, canonical_entity_id: entityId, redirect_path: [entityId] });
+      await expect((client as unknown as { assertionsForEntity(id: string): Promise<unknown[]> }).assertionsForEntity(entityId))
+        .resolves.toEqual([expect.objectContaining({ schema: "atlas.fact:v1", subject_entity_id: entityId })]);
     } finally {
       await rm(directory, { recursive: true, force: true });
     }
