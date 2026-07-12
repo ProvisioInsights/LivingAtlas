@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applyCanonicalPromotion, buildCanonicalPromotionPlan, createCanonicalPromotionReceipt, preflightCanonicalPromotion } from "./canonical-production-promotion";
+import { applyCanonicalPromotion, buildCanonicalPromotionPlan, createCanonicalPromotionReceipt, createCanonicalRollbackReceipt, preflightCanonicalPromotion } from "./canonical-production-promotion";
 
 describe("canonical production promotion", () => {
   it("rejects a candidate whose authority differs from the local authority", () => {
@@ -50,6 +50,21 @@ describe("canonical production promotion", () => {
       object_count: 42,
       live_generation_before: 7,
       live_generation_after: 8,
+      canonical_manifest_hash: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    });
+  });
+
+  it("records rollback as a restore target rather than an in-place overwrite", () => {
+    expect(createCanonicalRollbackReceipt({
+      authority_id: "la_authority_live0001",
+      backup_id: "la_backup_000001",
+      restored_generation: 7,
+      canonical_manifest_hash: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    })).toEqual({
+      schema: "living-atlas-canonical-rollback-receipt:v1",
+      authority_id: "la_authority_live0001",
+      backup_id: "la_backup_000001",
+      restored_generation: 7,
       canonical_manifest_hash: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
     });
   });

@@ -66,3 +66,21 @@ export function createCanonicalPromotionReceipt(input: {
     canonical_manifest_hash: input.canonical_manifest_hash
   };
 }
+
+export function createCanonicalRollbackReceipt(input: {
+  authority_id: string;
+  backup_id: string;
+  restored_generation: number;
+  canonical_manifest_hash: `sha256:${string}`;
+}) {
+  if (!input.backup_id.startsWith("la_backup_") || !Number.isSafeInteger(input.restored_generation) || input.restored_generation < 0) {
+    throw new Error("rollback-proof-invalid");
+  }
+  return {
+    schema: "living-atlas-canonical-rollback-receipt:v1" as const,
+    authority_id: input.authority_id,
+    backup_id: input.backup_id,
+    restored_generation: input.restored_generation,
+    canonical_manifest_hash: input.canonical_manifest_hash
+  };
+}
