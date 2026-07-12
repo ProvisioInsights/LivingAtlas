@@ -8,6 +8,10 @@ export type CanonicalPromotionPreflight = {
   readiness: { ready: boolean; blockers: string[] };
 };
 
+export type CanonicalPromotionPlanInput = CanonicalPromotionPreflight & {
+  candidate_object_count: number;
+};
+
 export function preflightCanonicalPromotion(input: CanonicalPromotionPreflight) {
   if (!input.candidate_isolated) throw new Error("candidate-not-isolated");
   if (input.candidate_authority_id !== input.live_authority_id) throw new Error("authority-mismatch");
@@ -17,4 +21,16 @@ export function preflightCanonicalPromotion(input: CanonicalPromotionPreflight) 
   if (input.pending_outbox !== 0) throw new Error("outbox-not-empty");
   if (!input.readiness.ready) throw new Error(`cutover-not-ready:${input.readiness.blockers.join(",")}`);
   return { ready: true as const };
+}
+
+export function buildCanonicalPromotionPlan(input: CanonicalPromotionPlanInput) {
+  preflightCanonicalPromotion(input);
+  if (!Number.isSafeInteger(input.candidate_object_count) || input.candidate_object_count < 1) {
+    throw new Error("candidate-object-count-invalid");
+  }
+  return {
+    mode: "dry-run" as const,
+    object_count: input.candidate_object_count,
+    authority_id: input.candidate_authority_id
+  };
 }
