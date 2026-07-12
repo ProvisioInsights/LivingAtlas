@@ -13,6 +13,7 @@ export type LocalCanonicalPayloadDecryptor = (object: GraphObjectEnvelope) => Pr
 
 export type LocalCanonicalAtlasClient = {
   exportCanonical(input?: { exported_at?: string }): Promise<CanonicalExport>;
+  entityGet(entity_id: string): Promise<Record<string, unknown> | undefined>;
   importCanonical(input: {
     exported: unknown;
     expected_generation: number;
@@ -38,6 +39,13 @@ export function createLocalCanonicalAtlasClient(input: {
 }): LocalCanonicalAtlasClient {
   const timestamp = () => input.now ?? new Date().toISOString();
   return {
+    async entityGet(entity_id) {
+      const object = input.graphStore.readObject(entity_id);
+      if (!object || object.visible_metadata.tombstone || object.object_type !== "entity") return undefined;
+      const payload = await input.decryptPayload(object);
+      const parsed = CanonicalWriteSchema.safeParse({ object_type: object.object_type, payload });
+      return parsed.success && parsed.data.payload.schema === "atlas.entity:v1" ? parsed.data.payload : undefined;
+    },
     async exportCanonical(options = {}) {
       const records = [];
       for (const object of input.graphStore.listObjects().filter((item) => CanonicalObjectTypes.has(item.object_type))) {

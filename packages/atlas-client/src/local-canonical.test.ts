@@ -41,6 +41,30 @@ function observationDraft(input: { objectId: string; statement: string; supersed
 }
 
 describe("local canonical Atlas client", () => {
+  it("reads a decrypted canonical entity by its stable ID", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "living-atlas-local-entity-read-"));
+    try {
+      const keyring = createDefaultLocalKeyring({ authorityId: fixtureAuthorityId, createdAt: now });
+      const store = await FileLocalGraphStore.open({ directory, authorityId: fixtureAuthorityId, plaintextPersistence: "encrypt", keyring });
+      await store.createObject({ object: entityDraft(), expected_generation: 0, actor_id: fixtureLocalClientId, recorded_at: now });
+      const decrypt = async (object: Parameters<typeof decryptGraphObjectPayload>[0]) => {
+        const payload = await decryptGraphObjectPayload(object, keyring);
+        return payload?.kind === "plaintext-json" ? payload.data : undefined;
+      };
+      const client = createLocalCanonicalAtlasClient({ graphStore: store, decryptPayload: decrypt, now }) as unknown as {
+        entityGet(entityId: string): Promise<unknown>;
+      };
+
+      await expect(client.entityGet(entityId)).resolves.toMatchObject({
+        schema: "atlas.entity:v1",
+        entity_id: entityId,
+        name: "Synthetic local canonical export"
+      });
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
   it("rejects a canonical import whose declared content hash does not match its payload", async () => {
     const sourceDir = await mkdtemp(join(tmpdir(), "living-atlas-local-forged-source-"));
     const targetDir = await mkdtemp(join(tmpdir(), "living-atlas-local-forged-target-"));
