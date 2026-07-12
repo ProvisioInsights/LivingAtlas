@@ -46,3 +46,23 @@ export async function applyCanonicalPromotion(input: {
   await input.apply();
   return { applied: true as const, object_count: input.plan.object_count };
 }
+
+export function createCanonicalPromotionReceipt(input: {
+  plan: ReturnType<typeof buildCanonicalPromotionPlan>;
+  live_generation_before: number;
+  live_generation_after: number;
+  canonical_manifest_hash: `sha256:${string}`;
+}) {
+  if (!Number.isSafeInteger(input.live_generation_before) || !Number.isSafeInteger(input.live_generation_after)
+    || input.live_generation_after < input.live_generation_before) {
+    throw new Error("promotion-generation-invalid");
+  }
+  return {
+    schema: "living-atlas-canonical-promotion-receipt:v1" as const,
+    authority_id: input.plan.authority_id,
+    object_count: input.plan.object_count,
+    live_generation_before: input.live_generation_before,
+    live_generation_after: input.live_generation_after,
+    canonical_manifest_hash: input.canonical_manifest_hash
+  };
+}

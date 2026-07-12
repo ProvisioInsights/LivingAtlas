@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applyCanonicalPromotion, buildCanonicalPromotionPlan, preflightCanonicalPromotion } from "./canonical-production-promotion";
+import { applyCanonicalPromotion, buildCanonicalPromotionPlan, createCanonicalPromotionReceipt, preflightCanonicalPromotion } from "./canonical-production-promotion";
 
 describe("canonical production promotion", () => {
   it("rejects a candidate whose authority differs from the local authority", () => {
@@ -36,5 +36,21 @@ describe("canonical production promotion", () => {
     await expect(applyCanonicalPromotion({ plan, acknowledgement: "promote-verified-canonical-candidate", apply: async () => { calls += 1; } }))
       .resolves.toEqual({ applied: true, object_count: 42 });
     expect(calls).toBe(1);
+  });
+
+  it("records only promotion proof metadata", () => {
+    expect(createCanonicalPromotionReceipt({
+      plan: { mode: "dry-run", object_count: 42, authority_id: "la_authority_live0001" },
+      live_generation_before: 7,
+      live_generation_after: 8,
+      canonical_manifest_hash: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    })).toEqual({
+      schema: "living-atlas-canonical-promotion-receipt:v1",
+      authority_id: "la_authority_live0001",
+      object_count: 42,
+      live_generation_before: 7,
+      live_generation_after: 8,
+      canonical_manifest_hash: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    });
   });
 });
