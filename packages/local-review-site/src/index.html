@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>Living Atlas Review</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <main>
+      <header class="masthead">
+        <div>
+          <p class="eyebrow">Living Atlas · review desk</p>
+          <h1>Keep the meaning. Lose the clutter.</h1>
+          <p class="intro">Choose a source, compare what it says with what will be kept, then decide.</p>
+        </div>
+        <div class="custody"><span></span>Local and encrypted</div>
+      </header>
+
+      <section class="workbench" aria-label="Review controls">
+        <div id="queue-summary" class="queue-summary" aria-live="polite"></div>
+        <label class="search-control" for="search">
+          <span>Find in this queue</span>
+          <input id="search" type="search" placeholder="Search source text or proposed knowledge" autocomplete="off">
+        </label>
+      </section>
+
+      <nav id="tabs" class="tabs" aria-label="Review queues">
+        <button data-tab="owner_review"><span>Review</span><strong data-count="owner_review">0</strong></button>
+        <button data-tab="research"><span>Research</span><strong data-count="research">0</strong></button>
+        <button data-tab="deferred"><span>Later</span><strong data-count="deferred">0</strong></button>
+        <button data-tab="automatic"><span>Done</span><strong data-count="automatic">0</strong></button>
+      </nav>
+
+      <section id="status" class="status" role="status">Secure local session is opening your review queue.</section>
+
+      <section id="bulk-actions" class="bulk-actions" hidden>
+        <label><input id="select-page" type="checkbox"> Select this page</label>
+        <span id="selection-count">0 selected</span>
+        <div id="bulk-decision-actions">
+          <button data-bulk-action="keep" class="primary">Keep</button>
+          <button data-bulk-action="research">Research</button>
+          <button data-bulk-action="defer">Later</button>
+        </div>
+      </section>
+
+      <section id="bulk-preview" class="bulk-preview" aria-live="polite" hidden>
+        <header>
+          <div>
+            <p class="lane-label">Exact effects</p>
+            <h2 id="bulk-preview-title">Review selected changes</h2>
+          </div>
+          <button id="bulk-preview-cancel" class="quiet" type="button">Close preview</button>
+        </header>
+        <p id="bulk-preview-summary" class="bulk-preview-summary"></p>
+        <div id="bulk-preview-details" class="bulk-preview-details">
+          <section>
+            <h3>Destinations</h3>
+            <ul id="bulk-preview-mutations"></ul>
+          </section>
+          <section>
+            <h3>Evidence groups</h3>
+            <ul id="bulk-preview-evidence"></ul>
+          </section>
+        </div>
+        <footer>
+          <button id="bulk-preview-apply" class="primary" type="button">Apply exact effects</button>
+        </footer>
+      </section>
+
+      <section id="queue" class="queue" aria-live="polite"></section>
+
+      <nav id="pagination" class="pagination" aria-label="Queue pages" hidden>
+        <button id="previous-page">Previous</button>
+        <span id="page-status"></span>
+        <button id="next-page">Next</button>
+      </nav>
+    </main>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

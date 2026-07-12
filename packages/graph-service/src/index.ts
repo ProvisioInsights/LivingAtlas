@@ -4,6 +4,11 @@ import {
   type LivingAtlasMcpToolName
 } from "@living-atlas/mcp-contract";
 
+export * from "./canonical-assertions";
+export * from "./canonical-entity-resolution";
+export * from "./canonical-parity";
+export * from "./canonical-recommendation";
+
 export type LivingAtlasIngress = "local-stdio" | "remote-http";
 export type LivingAtlasKeyCustody = "local-keyholding" | "transient-cloud-unlock" | "host-blind";
 
@@ -77,6 +82,7 @@ export type LivingAtlasBatchResult = {
 
 const ToolNameSet = new Set<string>(LivingAtlasMcpToolNames);
 const BatchToolNames = new Set<LivingAtlasMcpToolName>(["object_batch", "edge_batch"]);
+const LocalOnlyToolNames = new Set<LivingAtlasMcpToolName>(["resolution_apply"]);
 const BatchMaxBytes = 1024 * 1024;
 const LocalBatchMaxItems = 100;
 const RemoteBatchMaxItems = 10;
@@ -322,6 +328,10 @@ export function createLivingAtlasGraphService(adapter: LivingAtlasGraphToolAdapt
     async callTool(toolName, args, context) {
       if (!isLivingAtlasMcpToolName(toolName)) {
         throw new Error("unknown-tool");
+      }
+
+      if (LocalOnlyToolNames.has(toolName) && context.ingress !== "local-stdio") {
+        throw new Error("local-only-tool");
       }
 
       if (BatchToolNames.has(toolName)) {

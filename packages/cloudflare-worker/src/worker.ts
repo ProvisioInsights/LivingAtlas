@@ -3,7 +3,7 @@ import { SyncBatchSchema } from "@living-atlas/contracts";
 import type { AccessMode, GraphObjectEnvelope, SyncBatch } from "@living-atlas/contracts";
 import type { DurableAuditEvent, Operation } from "@living-atlas/contracts";
 import { createLivingAtlasGraphService } from "@living-atlas/graph-service";
-import { LivingAtlasMcpToolDefinitions } from "@living-atlas/mcp-contract";
+import { RemoteLivingAtlasMcpToolDefinitions } from "@living-atlas/mcp-contract";
 import { appendAuditEvent, createAuditId, readPraxisActivityAuditStream } from "./audit-ledger";
 import { BootstrapClaimBodySchema, verifyClaimToken, type BootstrapRuntimeConfig } from "./bootstrap";
 import type { BootstrapClaimLockCore } from "./bootstrap-lock";
@@ -1965,7 +1965,7 @@ async function routeRemoteMcpRequest(request: Request, env: BootstrapWorkerEnv):
       return jsonRpcError(body.id, -32001, "missing-or-invalid-mcp-token", 401);
     }
     return jsonRpcResult(body.id, {
-      tools: LivingAtlasMcpToolDefinitions
+      tools: RemoteLivingAtlasMcpToolDefinitions
     });
   }
 

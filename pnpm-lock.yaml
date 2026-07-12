@@ -48,9 +48,19 @@ importers:
       '@living-atlas/contracts':
         specifier: workspace:*
         version: link:../contracts
+      '@living-atlas/local-graph-store':
+        specifier: workspace:*
+        version: link:../local-graph-store
+      '@living-atlas/local-keyring':
+        specifier: workspace:*
+        version: link:../local-keyring
       '@living-atlas/mcp-contract':
         specifier: workspace:*
         version: link:../mcp-contract
+    devDependencies:
+      '@living-atlas/fixtures':
+        specifier: workspace:*
+        version: link:../fixtures
 
   packages/backup:
     dependencies:
@@ -75,6 +85,9 @@ importers:
       '@living-atlas/fixtures':
         specifier: workspace:*
         version: link:../fixtures
+      '@living-atlas/graph-service':
+        specifier: workspace:*
+        version: link:../graph-service
       '@living-atlas/importer':
         specifier: workspace:*
         version: link:../importer
@@ -93,6 +106,9 @@ importers:
       '@living-atlas/local-mcp':
         specifier: workspace:*
         version: link:../local-mcp
+      '@living-atlas/local-review-site':
+        specifier: workspace:*
+        version: link:../local-review-site
       '@living-atlas/policy':
         specifier: workspace:*
         version: link:../policy
@@ -141,6 +157,16 @@ importers:
       '@living-atlas/mcp-contract':
         specifier: workspace:*
         version: link:../mcp-contract
+    devDependencies:
+      '@living-atlas/fixtures':
+        specifier: workspace:*
+        version: link:../fixtures
+      '@living-atlas/local-graph-store':
+        specifier: workspace:*
+        version: link:../local-graph-store
+      '@living-atlas/local-keyring':
+        specifier: workspace:*
+        version: link:../local-keyring
 
   packages/graph-workbench:
     dependencies:
@@ -264,6 +290,9 @@ importers:
       '@living-atlas/graph-service':
         specifier: workspace:*
         version: link:../graph-service
+      '@living-atlas/importer':
+        specifier: workspace:*
+        version: link:../importer
       '@living-atlas/local-control-store':
         specifier: workspace:*
         version: link:../local-control-store
@@ -285,6 +314,25 @@ importers:
       zod:
         specifier: 4.4.3
         version: 4.4.3
+
+  packages/local-review-site:
+    dependencies:
+      '@living-atlas/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+      '@living-atlas/graph-service':
+        specifier: workspace:*
+        version: link:../graph-service
+      '@living-atlas/importer':
+        specifier: workspace:*
+        version: link:../importer
+      '@living-atlas/local-mcp':
+        specifier: workspace:*
+        version: link:../local-mcp
+    devDependencies:
+      '@living-atlas/fixtures':
+        specifier: workspace:*
+        version: link:../fixtures
 
   packages/mcp-contract: {}
 

@@ -1,6 +1,6 @@
 import { McpAgent } from "agents/mcp";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { LivingAtlasMcpToolDefinitions } from "@living-atlas/mcp-contract";
+import { RemoteLivingAtlasMcpToolDefinitions } from "@living-atlas/mcp-contract";
 import {
   buildToolRegistrations,
   isStreamingTool,
@@ -59,7 +59,7 @@ export class LivingAtlasRemoteMcp extends McpAgent<GatewayEnv, unknown, GatewayP
     const props: GatewayProps = this.props ?? { capability_id: "", authority_id: "" };
     const env = this.env;
 
-    for (const def of LivingAtlasMcpToolDefinitions) {
+    for (const def of RemoteLivingAtlasMcpToolDefinitions) {
       const toolName = `remote_${def.name}`;
       this.server.tool(toolName, def.description, {}, async (_args: unknown, extra: unknown) => {
         // Kill switch: a revoked capability is dropped before any work or oracle

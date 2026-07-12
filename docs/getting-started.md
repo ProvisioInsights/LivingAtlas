@@ -106,6 +106,7 @@ export LIVING_ATLAS_LOCAL_KEYRING="$REPLICA/keyring.json"
 export LIVING_ATLAS_LOCAL_GRAPH_DIR="$REPLICA/graph"
 export LIVING_ATLAS_LOCAL_SYNC_OUTBOX_DIR="$REPLICA/outbox"
 export LIVING_ATLAS_ACTIVITY_LOG="$REPLICA/activity.jsonl"
+export LIVING_ATLAS_AUDIT_LOG="$REPLICA/audit.jsonl"
 # Secrets resolved from the keychain at launch (never written to disk):
 export LIVING_ATLAS_LOCAL_CONTROL_STORE_PASSPHRASE="$(security find-generic-password -s io.livingatlas.<env>.control-store -w)"
 export LIVING_ATLAS_LOCAL_KEYRING_PASSPHRASE="$(security find-generic-password -s io.livingatlas.<env>.keyring -w)"
@@ -151,6 +152,34 @@ Restart the app after editing its config so it picks up the new server.
 > requires deploying the Cloudflare worker and (for private data) the cloud-unlock
 > access mode. See [Access Modes](architecture/access-modes.md) and
 > [Data Tiering](architecture/data-tiering.md).
+
+## Local-only MVP proof and recovery
+
+Before using any owner corpus, run the synthetic, no-network acceptance proof:
+
+```bash
+npm run mvp:local-proof
+```
+
+It creates and removes its own temporary sealed control store, keyring, graph,
+activity/audit logs, WORM backup, and separate restored replica. Its output is
+limited to status, counts, and hashes. It proves import, authenticated query and
+correction, restart persistence, backup, restore, and failed-restore source
+protection without reading an owner profile or corpus.
+
+The one-corpus local import command requires an explicit acknowledgement and
+private paths supplied only in the operator's environment. It records redacted
+per-source terminal outcomes (`imported`, `quarantined`, or `skipped`) and
+defaults imported content to `local-private`; ambiguous relationships remain
+quarantined. Do not run it against an owner corpus without that owner's explicit
+approval for that operation.
+
+For recovery, `npm run backup:restore -- --backup-id <id> --store <local-worm-store> --out <empty-dir>`
+prompts for the recovery master and reconstructs `<empty-dir>/graph/snapshot.json`,
+an empty journal, and `<empty-dir>/keyring.json`. It refuses a non-empty output
+directory and never alters the source replica. Restore currently accepts only a
+full backup; it deliberately rejects a differential backup until chain restore
+is implemented.
 
 ## 7. Verify
 

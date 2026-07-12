@@ -1687,10 +1687,14 @@ function emptyObjectTypeRecord(): Record<ObjectType, number> {
   return {
     page: 0,
     block: 0,
+    entity: 0,
+    assertion: 0,
     edge: 0,
     event: 0,
     index: 0,
     attachment: 0,
+    evidence: 0,
+    review: 0,
     manifest: 0,
     audit: 0,
     change: 0,
@@ -2393,6 +2397,36 @@ export function createLogseqSemanticPlaintextGraphObjects(
       createdAt: built.createdAt,
       draft
     }))
+  };
+}
+
+/**
+ * Exposes only high-confidence typed semantics for canonical-first callers.
+ * Legacy envelopes are an internal parser implementation detail and are never
+ * returned or persisted by this API.
+ */
+export function extractLogseqTypedSemantics(
+  files: MarkdownFileInput[],
+  options: CreateLogseqSemanticImportOptions
+): { endpoints: Array<{ endpoint: EndpointRecord; source_path_ref: string }>; edges: Array<{ edge: TemporalEdge; source_path_ref: string }> } {
+  const parsed = createLogseqSemanticPlaintextGraphObjects(files, options);
+  const endpoints = new Map<string, { endpoint: EndpointRecord; source_path_ref: string }>();
+  const edges = new Map<string, { edge: TemporalEdge; source_path_ref: string }>();
+  for (const object of parsed.objects) {
+    const data = object.payload.data;
+    if (data.kind === "logseq-endpoint") {
+      const endpoint = EndpointRecordSchema.safeParse(data.endpoint);
+      if (endpoint.success && typeof data.source_path_ref === "string") endpoints.set(endpoint.data.object_id, { endpoint: endpoint.data, source_path_ref: data.source_path_ref });
+      continue;
+    }
+    if (data.kind === "logseq-temporal-edge") {
+      const edge = TemporalEdgeSchema.safeParse(data.edge);
+      if (edge.success && typeof data.source_path_ref === "string") edges.set(edge.data.edge_id, { edge: edge.data, source_path_ref: data.source_path_ref });
+    }
+  }
+  return {
+    endpoints: [...endpoints.values()].sort((left, right) => left.endpoint.object_id.localeCompare(right.endpoint.object_id)),
+    edges: [...edges.values()].sort((left, right) => left.edge.edge_id.localeCompare(right.edge.edge_id))
   };
 }
 

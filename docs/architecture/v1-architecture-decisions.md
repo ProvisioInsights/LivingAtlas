@@ -9,6 +9,17 @@ Collapse the post-review architecture into implementable V1 decisions. These
 decisions supersede older exploratory wording in the planning docs when there is
 a conflict.
 
+Later accepted decisions extend this document:
+
+- ADR 0004 defines canonical entity, fact, relationship, evidence, identity,
+  review, and parity payloads.
+- ADR 0005 makes knowledge assertions append-only and bitemporal with durable
+  evidence and confidence lineage.
+- ADR 0006 defines atomic per-review-item resolution commands and honest local,
+  audit, and sync receipts.
+- ADR 0007 defines evidence-backed reversible entity merge and split behavior.
+- ADR 0008 separates semantic parity coverage from unresolved real-world truth.
+
 ## Decision 1: Cloudflare-Hosted Remote MCP Is The V1 Remote Path
 
 V1 uses a Cloudflare-hosted remote MCP for remote-readable data.

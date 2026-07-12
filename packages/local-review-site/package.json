@@ -1,0 +1,19 @@
+{
+  "name": "@living-atlas/local-review-site",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./review-auto-apply": "./src/review-auto-apply.ts",
+    "./review-projection": "./src/review-projection.ts"
+  },
+  "dependencies": {
+    "@living-atlas/contracts": "workspace:*",
+    "@living-atlas/graph-service": "workspace:*",
+    "@living-atlas/importer": "workspace:*",
+    "@living-atlas/local-mcp": "workspace:*"
+  },
+  "devDependencies": {
+    "@living-atlas/fixtures": "workspace:*"
+  }
+}

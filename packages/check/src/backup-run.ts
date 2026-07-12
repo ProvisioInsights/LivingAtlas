@@ -245,13 +245,21 @@ function formatBackupId(serial: number): string {
   return `la_backup_${String(serial).padStart(6, "0")}`;
 }
 
-/** Reads the sealed graph snapshot bytes without decrypting. */
-async function readSealedSnapshot(graphDir: string): Promise<{ bytes: Buffer; generation: number }> {
+/**
+ * Materializes the sealed replayed graph state without decrypting or compacting
+ * the source replica. A raw snapshot file alone can be behind its journal.
+ */
+async function materializeSealedSnapshot(graphDir: string): Promise<{ bytes: Buffer; generation: number }> {
   const store = await FileLocalGraphStore.open({ directory: graphDir });
-  const generation = store.status().generation;
-  const snapshotPath = join(graphDir, "snapshot.json");
-  const bytes = await readFile(snapshotPath);
-  return { bytes, generation };
+  const source = JSON.parse(await readFile(join(graphDir, "snapshot.json"), "utf8")) as {
+    plaintext_persistence: "redacted" | "encrypted" | "allowed";
+  };
+  const snapshot = store.materializedSnapshot();
+  snapshot.plaintext_persistence = source.plaintext_persistence;
+  return {
+    bytes: Buffer.from(`${JSON.stringify(snapshot, null, 2)}\n`, "utf8"),
+    generation: snapshot.generation
+  };
 }
 
 /**
@@ -296,7 +304,7 @@ export async function runBackup(
   const sealedKeyringBytes = await readFile(keyringPath);
 
   const graphDir = requireEnv("LIVING_ATLAS_LOCAL_GRAPH_DIR");
-  const { bytes: snapshotBytes, generation } = await readSealedSnapshot(graphDir);
+  const { bytes: snapshotBytes, generation } = await materializeSealedSnapshot(graphDir);
 
   const baseGeneration = level === "full" ? 0 : state.lastFullBaseGeneration;
   const serial = state.serial + 1;
@@ -337,6 +345,10 @@ export async function runBackup(
   if (!result.durable) {
     for (const err of result.errors) console.error(`backup: store error: ${err}`);
     console.error(`backup: NOT durable (${backupId})`);
+    // Immutable stores cannot overwrite a partially written backup ID. Consume
+    // this serial without advertising it as recoverable, so the next attempt
+    // uses a fresh ID rather than repeatedly colliding with WORM artifacts.
+    await saveState(stagingDir, { ...state, serial });
     return 1;
   }
 

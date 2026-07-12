@@ -3,10 +3,12 @@
 ## Summary
 
 Living Atlas is a Cloudflare-custodied, local-key-aware private knowledge graph
-system inspired by Logseq, Obsidian, and the existing Living Atlas prototype. It
-gives the operator a trustworthy way to capture, traverse, query, visualize,
-sync, and audit personal and business knowledge while controlling exactly what
-local tools, remote AI providers, and shared contexts are allowed to see.
+service and the canonical knowledge store for Praxis. It gives the operator a
+trustworthy way to preserve, traverse, query, sync, and audit personal and
+business knowledge while controlling exactly what local tools, remote AI
+providers, and shared contexts are allowed to see. Praxis is the everyday
+experience; Atlas provides the durable service and private administration,
+recovery, and migration-review surfaces.
 
 The product must support anywhere access without turning sensitive private
 knowledge into remotely readable plaintext. Cloudflare may hold complete graph
@@ -15,9 +17,9 @@ objects are available to the Cloudflare-hosted remote MCP by explicit policy.
 
 ## Why Now
 
-The current Logseq-based workflow has proven the value of:
+The prior Logseq-based workflow proved the value of:
 
-- Markdown-first authoring.
+- Broad semantic capture without silently dropping source meaning.
 - MCP-based guarded read/write access.
 - A read-oriented Living Atlas visualization layer.
 - Typed temporal edges and event records.
@@ -37,7 +39,7 @@ The next version should make these ideas explicit in one system:
 Primary user:
 
 - An operator-builder maintaining a personal and business knowledge graph
-  across local notes, browser workflows, daily briefs, project systems,
+  across imported sources, browser workflows, daily briefs, project systems,
   outreach, meetings, and local automations.
 
 Secondary users:
@@ -63,22 +65,25 @@ Living Atlas lets the operator ask:
 
 ## Goals
 
-1. Preserve local markdown/import-export compatibility while using object ids,
-   changes, manifests, and indexes as the runtime architecture.
+1. Preserve source meaning through migration and canonical import/export while
+   using object ids, changes, manifests, and indexes as the runtime architecture.
 2. Provide a full-trust local MCP with complete authorized graph access.
 3. Provide Cloudflare-hosted remote MCP access for remote-readable data.
 4. Keep Cloudflare and local materializations continuously synchronized, while
    tolerating either side being offline.
 5. Keep the cloud host blind to sensitive plaintext whenever possible.
 6. Make create, read, update, and delete operations visible and auditable.
-7. Support typed temporal edges and event records as first-class graph concepts.
-8. Support Obsidian/Logseq-style authoring without requiring either app to be
-   the runtime.
-9. Make Living Atlas a useful working surface, not just a pretty graph view.
+7. Support entities, fact assertions, typed temporal relationships, occurrences,
+   evidence, and identity resolution as first-class graph concepts.
+8. Import Obsidian/Logseq-style sources without using their page, block, note, or
+   application concepts as the canonical runtime model.
+9. Provide stable typed APIs for Praxis and other authorized clients, plus
+   private Atlas administration, recovery, and review surfaces.
 
 ## Non-Goals
 
-- Replacing Logseq or Obsidian as the only authoring UI in v1.
+- Keeping Logseq, Obsidian, page, block, or note concepts as the canonical model
+  or required everyday UI.
 - Storing the full graph as plaintext in a hosted database.
 - Letting prompt instructions substitute for hard access controls.
 - Building collaborative multi-tenant enterprise administration in v1.
@@ -99,6 +104,11 @@ Living Atlas lets the operator ask:
 - Complete local replica that can decrypt sensitive objects with local keys.
 - Object envelope with stable id, authority, access class, encryption class,
   version, content hash, and change id.
+- Versioned canonical entity, fact, bounded observation, relationship, evidence,
+  identity-resolution, review, and parity payload contracts.
+- Fact-level provenance, privacy, confidence, and bitemporal assertion lineage.
+- Atomic per-review-item resolution commands with honest local/audit/sync
+  receipts.
 - Cloudflare-hosted remote MCP with full CRUD on remote-readable objects.
 - Sensitive-object plaintext CRUD only through a keyholding client/local MCP
   path.
@@ -176,11 +186,11 @@ would reveal withheld content.
 
 The operator must be able to see:
 
-- Who or what created a note, edge, event, property, file, index entry, or sync
-  object.
-- Who or what read a note, block, query result, search result, release, or
+- Who or what created an entity, fact, relationship, occurrence, evidence record,
+  file, index entry, or sync object.
+- Who or what read an entity, fact, relationship, query result, search result, release, or
   remote-readable object.
-- What changed during an update, with before/after metadata and source file
+- What changed during an update, with before/after metadata and provenance
   references.
 - What was deleted, archived, invalidated, redacted, or superseded.
 - Which policy allowed or denied a read/write.
@@ -193,10 +203,13 @@ Reads by remote providers are first-class audit events. They are not passive.
 
 ### Graph Model
 
-- Support pages, journals, blocks, links, typed edges, events, attachments, and
-  generated projections.
-- Support state edges with `valid-from`, `valid-to`, `recorded-at`, and
-  `superseded-at`.
+- Support canonical entities, fact assertions, bounded unresolved observations,
+  typed relationships, occurrences, evidence, identity-resolution records,
+  attachments, and generated projections.
+- Treat pages, journals, blocks, and source capsules as migration inputs only;
+  new canonical writes never emit them.
+- Support facts and state relationships with world-valid time, machine knowledge
+  time, and append-only correction/supersession lineage.
 - Support point events with `occurred-on`, optional `occurred-until`, and
   `recorded-at`.
 - Preserve mixed-precision dates.
@@ -208,6 +221,8 @@ Reads by remote providers are first-class audit events. They are not passive.
 - Remote profile runs on Cloudflare for V1 and serves remote-readable data.
 - Remote profile cannot decrypt or semantically edit sensitive plaintext.
 - Hide raw mutating tools unless running in local admin mode.
+- Expose typed entity, fact, observation, relationship, timeline, provenance,
+  and resolution operations to normal Praxis and authorized client paths.
 - Default writes to durable intent flow.
 - Require idempotency keys for mutations.
 - Emit CRUD ledger events for both successful and rejected operations.
@@ -224,7 +239,7 @@ Reads by remote providers are first-class audit events. They are not passive.
 
 ### Praxis UI/Client
 
-- Render graph overview, source detail, temporal scrubber, activity ledger,
+- Render graph overview, entity/fact detail, temporal scrubber, activity ledger,
   policy visibility, and review queues from Atlas APIs.
 - Make it obvious whether the current view is full-local or remote-filtered.
 - Show recent CRUD operations and remote read attempts.
@@ -239,8 +254,8 @@ Reads by remote providers are first-class audit events. They are not passive.
 - Use per-device keys and revocation.
 - Use scoped keys or separate encrypted bundles for remote-safe subsets.
 - Avoid remote plaintext indexes for sensitive content.
-- Avoid object names that reveal page titles, people, companies, projects, or
-  journal dates unless explicitly allowed.
+- Avoid object names that reveal people, companies, projects, topics, predicates,
+  or occurrence dates unless explicitly allowed.
 - Log all remote reads and denied accesses.
 - Treat embeddings as sensitive derived data.
 - Keep private fixtures out of the repo.
@@ -262,7 +277,8 @@ Reads by remote providers are first-class audit events. They are not passive.
 
 ## Open Questions
 
-- Should v1 use one encrypted bundle per page, per block, or per chunk?
+- What evidence-retention limits should apply per source class after parity
+  cutover?
 - How should local-only semantic search be packaged across devices?
 - Should delete mean archive, tombstone, redaction, or cryptographic erasure per
   policy tier?

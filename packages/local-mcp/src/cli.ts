@@ -1,26 +1,32 @@
 #!/usr/bin/env node
 import { FileLocalControlStore, createFixtureLocalControlState } from "@living-atlas/local-control-store";
 import { FileLocalGraphStore } from "@living-atlas/local-graph-store";
-import { FileLocalKeyringStore, resolveLocalSecret } from "@living-atlas/local-keyring";
+import { decryptGraphObjectPayload, FileLocalKeyringStore, resolveLocalSecret } from "@living-atlas/local-keyring";
 import { syntheticGraphObjects } from "@living-atlas/fixtures";
 import { FileLocalMcpActivitySink } from "./activity";
-import { InMemoryLocalMcpAuditSink } from "./audit";
+import { FileLocalMcpAuditSink, InMemoryLocalMcpAuditSink } from "./audit";
 import { createLocalMcpContextFromControlState } from "./local-graph";
 import { FileLocalMcpMutationOutboxSink } from "./outbox";
 import { runLivingAtlasLocalMcpStdio } from "./server";
 import type { LocalControlState } from "@living-atlas/contracts";
 
-async function loadControlState() {
+async function loadControlState(): Promise<{ controlState: LocalControlState; fixtureMode: boolean }> {
   const storePath = process.env.LIVING_ATLAS_LOCAL_CONTROL_STORE;
   const passphrase = resolveLocalSecret("LIVING_ATLAS_LOCAL_CONTROL_STORE_PASSPHRASE")?.value;
   const fixtureToken = process.env.LIVING_ATLAS_LOCAL_MCP_TOKEN;
 
   if (storePath && passphrase) {
-    return new FileLocalControlStore(storePath).read(passphrase);
+    return {
+      controlState: await new FileLocalControlStore(storePath).read(passphrase),
+      fixtureMode: false
+    };
   }
 
   if (fixtureToken) {
-    return createFixtureLocalControlState(fixtureToken);
+    return {
+      controlState: await createFixtureLocalControlState(fixtureToken),
+      fixtureMode: true
+    };
   }
 
   console.error(
@@ -41,13 +47,17 @@ function localMcpAuthorizationHeader(): string | undefined {
   return undefined;
 }
 
-const controlState = await loadControlState();
+const { controlState, fixtureMode } = await loadControlState();
+const localGraph = await loadGraphStore(controlState, fixtureMode);
 
 await runLivingAtlasLocalMcpStdio(
   createLocalMcpContextFromControlState({
     controlState,
-    graphStore: await loadGraphStore(controlState),
-    auditSink: new InMemoryLocalMcpAuditSink(),
+    graphStore: localGraph.graphStore,
+    decryptPayload: localGraph.decryptPayload,
+    auditSink: process.env.LIVING_ATLAS_AUDIT_LOG
+      ? new FileLocalMcpAuditSink(process.env.LIVING_ATLAS_AUDIT_LOG)
+      : new InMemoryLocalMcpAuditSink(),
     activitySink: process.env.LIVING_ATLAS_ACTIVITY_LOG
       ? new FileLocalMcpActivitySink(process.env.LIVING_ATLAS_ACTIVITY_LOG)
       : undefined,
@@ -60,10 +70,18 @@ await runLivingAtlasLocalMcpStdio(
   }
 );
 
-async function loadGraphStore(controlState: LocalControlState): Promise<FileLocalGraphStore | undefined> {
+async function loadGraphStore(
+  controlState: LocalControlState,
+  fixtureMode: boolean
+): Promise<{
+  graphStore?: FileLocalGraphStore;
+  decryptPayload?: Parameters<typeof decryptGraphObjectPayload>[0] extends infer Object
+    ? (object: Object) => ReturnType<typeof decryptGraphObjectPayload>
+    : never;
+}> {
   const directory = process.env.LIVING_ATLAS_LOCAL_GRAPH_DIR;
   if (!directory) {
-    return undefined;
+    return {};
   }
   const keyringPath = process.env.LIVING_ATLAS_LOCAL_KEYRING;
   const keyringPassphrase = resolveLocalSecret("LIVING_ATLAS_LOCAL_KEYRING_PASSPHRASE")?.value;
@@ -78,12 +96,15 @@ async function loadGraphStore(controlState: LocalControlState): Promise<FileLoca
     keyring
   });
 
-  if (store.status().object_count === 0) {
+  if (fixtureMode && store.status().object_count === 0) {
     const initialized = await store.initializeFromObjects(syntheticGraphObjects);
     if (!initialized.ok) {
       throw new Error(`Failed to initialize local graph store: ${initialized.reason}`);
     }
   }
 
-  return store;
+  return {
+    graphStore: store,
+    decryptPayload: keyring ? (object) => decryptGraphObjectPayload(object, keyring) : undefined
+  };
 }

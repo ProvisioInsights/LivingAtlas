@@ -21,8 +21,11 @@ Mutation ordering for sync lives in the sync change log. Near-live UI animation
 lives in the live activity stream. These systems share operation ids but are not
 one database.
 
-The ledger is not a secondary source of truth for note content. It is the
-evidence trail of interactions with the graph.
+The ledger is not a secondary source of truth for knowledge content or
+assertion history. Facts and relationships carry durable knowledge-time and
+supersession lineage under ADR 0005. The CRUD ledger is the evidence trail of
+interactions with those records and may use different redaction, aggregation,
+and retention rules.
 
 ## Event Shape
 
@@ -99,7 +102,8 @@ Positive:
 - The operator can audit remote reads, not just writes.
 - Agent actions become reviewable.
 - Policy denials become visible.
-- Reconstructing "what touched this fact" becomes possible.
+- Reconstructing "what touched this assertion" becomes possible without making
+  the audit stream the assertion's source of truth.
 
 Negative:
 

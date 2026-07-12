@@ -33,6 +33,17 @@ describe("local MCP server wrapper", () => {
     expect(LocalMcpToolInputSchemas.object_create).not.toHaveProperty("authorization");
     expect(LocalMcpToolInputSchemas.object_update).not.toHaveProperty("authorization");
     expect(LocalMcpToolInputSchemas.object_delete).not.toHaveProperty("authorization");
+    const resolutionInputSchema = (LocalMcpToolInputSchemas as Record<string, unknown>).resolution_apply;
+    expect(LivingAtlasMcpToolNames).toContain("resolution_apply");
+    expect(resolutionInputSchema).toEqual(expect.objectContaining({
+      operation_id: expect.anything(),
+      idempotency_key: expect.anything(),
+      candidate_id: expect.anything(),
+      expected_generation: expect.anything(),
+      expected_review_version: expect.anything(),
+      objects: expect.anything()
+    }));
+    expect(resolutionInputSchema).not.toHaveProperty("authorization");
     expect(Object.keys(LocalMcpToolInputSchemas).sort()).toEqual([...LivingAtlasMcpToolNames].sort());
 
     await expect(localReadObject(context, {

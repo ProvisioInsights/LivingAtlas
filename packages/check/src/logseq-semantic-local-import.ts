@@ -55,6 +55,12 @@ export type LogseqSemanticLocalImportLedger = {
   };
   sync: { attempted: false };
   plaintext_policy: "hash-counts-refs-only";
+  source_outcomes: Array<{
+    source_path_ref: string;
+    content_hash: `sha256:${string}`;
+    outcome: "imported" | "quarantined" | "skipped";
+    reason_codes: string[];
+  }>;
   object_refs: Array<{
     object_id: string;
     object_type: ObjectType;
@@ -101,11 +107,11 @@ function parseInteger(value: string | undefined, fallback: number, min: number, 
 }
 
 function parseScope(value: string | undefined): LogseqSemanticLocalImportScope {
-  if (!value || value === "edges-only") {
-    return "edges-only";
-  }
-  if (value === "all") {
+  if (!value || value === "all") {
     return "all";
+  }
+  if (value === "edges-only") {
+    return "edges-only";
   }
   throw new Error("LIVING_ATLAS_LOGSEQ_SEMANTIC_LOCAL_IMPORT_SCOPE must be all or edges-only");
 }
@@ -151,7 +157,7 @@ export async function importLogseqSemanticLocalObjects(input: {
     path_redaction_secret: input.pathRedactionSecret,
     review_resolutions: reviewResolutions
   });
-  const scope = input.scope ?? "edges-only";
+  const scope = input.scope ?? "all";
   const selected = scope === "all"
     ? built.objects
     : built.objects.filter((object) => object.object_type === "edge");
@@ -230,6 +236,10 @@ export async function importLogseqSemanticLocalObjects(input: {
     });
   }
 
+  if (failedObjects > 0) {
+    throw new Error(`semantic local import failed for ${failedObjects} graph object(s)`);
+  }
+
   const graphStatus = store.status();
   await store.compact();
   const compactedStatus = store.status();
@@ -261,6 +271,17 @@ export async function importLogseqSemanticLocalObjects(input: {
     },
     sync: { attempted: false },
     plaintext_policy: "hash-counts-refs-only",
+    source_outcomes: built.ledger.files.map((file) => {
+      const quarantined = file.counts.terminal_quarantined > 0;
+      return {
+        source_path_ref: file.source_path_ref,
+        content_hash: file.content_hash as `sha256:${string}`,
+        outcome: quarantined ? "quarantined" : "imported",
+        reason_codes: [...new Set(file.objects
+          .filter((object) => !quarantined || object.access_class === "quarantine")
+          .map((object) => object.reason_code))].sort()
+      };
+    }),
     object_refs: objectRefs
   };
 

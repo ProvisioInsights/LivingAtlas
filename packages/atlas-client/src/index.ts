@@ -5,7 +5,9 @@ import type {
   SyncPullResponse,
   SyncStatus
 } from "@living-atlas/contracts";
-import type { LivingAtlasMcpToolName } from "@living-atlas/mcp-contract";
+import type { RemoteLivingAtlasMcpToolName } from "@living-atlas/mcp-contract";
+
+export * from "./local-canonical";
 
 export type FetchLike = (input: URL | RequestInfo, init?: RequestInit) => Promise<Response>;
 
@@ -63,7 +65,7 @@ export class AtlasClientError extends Error {
   }
 }
 
-export type RemoteMcpToolName = LivingAtlasMcpToolName;
+export type RemoteMcpToolName = RemoteLivingAtlasMcpToolName;
 
 export type JsonObject = Record<string, unknown>;
 export type JsonRpcId = string | number | null;

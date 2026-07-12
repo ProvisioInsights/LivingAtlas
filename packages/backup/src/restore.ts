@@ -3,7 +3,11 @@ import type { ImmutableStore } from "./immutable-store";
 import { BackupManifestSchema } from "./manifest";
 import { unwrapKeyringFromEscrow, type EscrowEnvelope } from "./escrow";
 
-export type RestoreResult = { artifactBytes: Buffer; keyringJson: string };
+export type RestoreResult = {
+  kind: "full" | "differential";
+  artifactBytes: Buffer;
+  keyringJson: string;
+};
 
 function sha256(b: Buffer): string {
   return createHash("sha256").update(b).digest("hex");
@@ -28,5 +32,5 @@ export async function restoreBackup(
 
   const env = JSON.parse(escrowBytes.toString("utf8")) as EscrowEnvelope;
   const keyringJson = unwrapKeyringFromEscrow(env, master);
-  return { artifactBytes, keyringJson };
+  return { kind: manifest.kind, artifactBytes, keyringJson };
 }

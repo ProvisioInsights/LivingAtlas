@@ -10,6 +10,7 @@ import type {
 } from "@living-atlas/contracts";
 import {
   AuthorityIdSchema,
+  CanonicalResearchConnectorKindSchema,
   GraphObjectEnvelopeSchema,
   IsoTimestampSchema,
   ObjectIdSchema,
@@ -27,6 +28,46 @@ import {
 const LocalGraphJournalOperationSchema = z.enum(["create", "update", "tombstone"]);
 export type LocalGraphJournalOperation = z.infer<typeof LocalGraphJournalOperationSchema>;
 
+export const LocalGraphResolutionRequestFingerprintSchema = z.object({
+  schema: z.literal("living-atlas-resolution-request-fingerprint:v1"),
+  candidate_id: z.string().regex(/^la_candidate_[A-Za-z0-9_-]{8,}$/),
+  digest: Sha256HashSchema
+}).strict();
+export type LocalGraphResolutionRequestFingerprint = z.infer<typeof LocalGraphResolutionRequestFingerprintSchema>;
+
+export const LocalGraphResearchAuditSummarySchema = z.object({
+  connector_kinds: z.array(CanonicalResearchConnectorKindSchema).min(1).max(4),
+  outcome: z.enum(["auto-apply", "owner-review", "research"]),
+  independence_group_count: z.number().int().nonnegative(),
+  result_set_hash: Sha256HashSchema
+}).strict().superRefine((summary, context) => {
+  const normalized = [...new Set(summary.connector_kinds)].sort();
+  if (JSON.stringify(summary.connector_kinds) !== JSON.stringify(normalized)) {
+    context.addIssue({
+      code: "custom",
+      path: ["connector_kinds"],
+      message: "research connector kinds must be sorted and unique"
+    });
+  }
+});
+export type LocalGraphResearchAuditSummary = z.infer<typeof LocalGraphResearchAuditSummarySchema>;
+
+export const LocalGraphOperationRecordSchema = z
+  .object({
+    operation_id: OperationIdSchema,
+    idempotency_key: z.string().min(1),
+    request_fingerprint: LocalGraphResolutionRequestFingerprintSchema.optional(),
+    research_audit: LocalGraphResearchAuditSummarySchema.optional(),
+    actor_id: z.string().min(1),
+    recorded_at: IsoTimestampSchema,
+    generation: z.number().int().positive(),
+    journal_sequence: z.number().int().positive(),
+    objects: z.array(GraphObjectEnvelopeSchema).min(1),
+    changes: z.array(SyncChangeEventSchema).min(1)
+  })
+  .strict();
+export type LocalGraphOperationRecord = z.infer<typeof LocalGraphOperationRecordSchema>;
+
 export const LocalGraphSnapshotSchema = z
   .object({
     schema_version: z.literal(1),
@@ -36,7 +77,8 @@ export const LocalGraphSnapshotSchema = z
     generation: z.number().int().nonnegative(),
     journal_sequence: z.number().int().nonnegative(),
     plaintext_persistence: z.enum(["redacted", "encrypted", "allowed"]),
-    objects: z.array(GraphObjectEnvelopeSchema)
+    objects: z.array(GraphObjectEnvelopeSchema),
+    operation_records: z.array(LocalGraphOperationRecordSchema).default([])
   })
   .strict();
 
@@ -117,8 +159,21 @@ export type TombstoneLocalGraphObjectInput = LocalGraphMutationInputBase & {
   expected_version?: number;
 };
 
+export type LocalGraphTransactionWrite =
+  | { kind: "create"; object: unknown }
+  | { kind: "update"; object: unknown; expected_version?: number };
+
+export type LocalGraphTransactionInput = LocalGraphMutationInputBase & {
+  operation_id: string;
+  idempotency_key: string;
+  request_fingerprint?: LocalGraphResolutionRequestFingerprint;
+  research_audit?: LocalGraphResearchAuditSummary;
+  writes: LocalGraphTransactionWrite[];
+};
+
 export type LocalGraphMutationConflictReason =
   | "generation-conflict"
+  | "idempotency-conflict"
   | "version-conflict"
   | "object-already-exists"
   | "object-already-tombstoned"
@@ -147,6 +202,24 @@ export type LocalGraphMutationResult =
       current_version?: number;
     };
 
+export type LocalGraphTransactionResult =
+  | {
+      ok: true;
+      operation_record: LocalGraphOperationRecord;
+      objects: GraphObjectEnvelope[];
+      changes: SyncChangeEvent[];
+      generation: number;
+      journal_sequence: number;
+      persistence: "atomic-snapshot-operation";
+      idempotent: boolean;
+    }
+  | {
+      ok: false;
+      reason: LocalGraphMutationConflictReason;
+      current_generation: number;
+      current_version?: number;
+    };
+
 type LocalGraphState = {
   authorityId: AuthorityId;
   createdAt: string;
@@ -154,6 +227,7 @@ type LocalGraphState = {
   generation: number;
   journalSequence: number;
   objects: Map<ObjectId, GraphObjectEnvelope>;
+  operationRecords: LocalGraphOperationRecord[];
 };
 
 type LocalGraphStorePaths = {
@@ -252,6 +326,10 @@ function makeId(prefix: "la_change" | "la_operation" | "la_trace", seed: string)
 
 function cloneGraphObject(object: GraphObjectEnvelope): GraphObjectEnvelope {
   return GraphObjectEnvelopeSchema.parse(structuredClone(object));
+}
+
+function cloneOperationRecord(record: LocalGraphOperationRecord): LocalGraphOperationRecord {
+  return LocalGraphOperationRecordSchema.parse(structuredClone(record));
 }
 
 function normalizeRecordedAt(recordedAt: string | undefined, now: () => string): string {
@@ -356,7 +434,8 @@ function snapshotFromState(
     generation: state.generation,
     journal_sequence: state.journalSequence,
     plaintext_persistence: plaintextPersistence === "redact" ? "redacted" : plaintextPersistence === "encrypt" ? "encrypted" : "allowed",
-    objects: Array.from(state.objects.values()).map(cloneGraphObject)
+    objects: Array.from(state.objects.values()).map(cloneGraphObject),
+    operation_records: state.operationRecords.map((record) => LocalGraphOperationRecordSchema.parse(structuredClone(record)))
   });
 }
 
@@ -441,7 +520,8 @@ function applyJournalEntry(state: LocalGraphState, entry: LocalGraphJournalEntry
     updatedAt: entry.recorded_at,
     generation: entry.generation,
     journalSequence: entry.sequence,
-    objects: nextObjects
+    objects: nextObjects,
+    operationRecords: state.operationRecords
   };
 }
 
@@ -486,7 +566,8 @@ async function loadState(
     updatedAt: snapshot?.updated_at ?? createdAt,
     generation: snapshot?.generation ?? 0,
     journalSequence: snapshot?.journal_sequence ?? 0,
-    objects: snapshot ? mapFromObjects(snapshot.objects) : new Map()
+    objects: snapshot ? mapFromObjects(snapshot.objects) : new Map(),
+    operationRecords: snapshot?.operation_records ?? []
   };
 
   if (plaintextPersistence !== "allow") {
@@ -544,6 +625,14 @@ export class FileLocalGraphStore {
     return statusFromState(this.state, this.plaintextPersistence);
   }
 
+  /**
+   * Return the complete replayed state in the exact snapshot schema without
+   * compacting the journal or writing to the source replica.
+   */
+  materializedSnapshot(): LocalGraphSnapshot {
+    return snapshotFromState(this.state, this.plaintextPersistence);
+  }
+
   listObjects(options: { include_tombstones?: boolean } = {}): GraphObjectEnvelope[] {
     const includeTombstones = options.include_tombstones ?? false;
     return Array.from(this.state.objects.values())
@@ -554,6 +643,12 @@ export class FileLocalGraphStore {
   readObject(objectId: ObjectId): GraphObjectEnvelope | undefined {
     const object = this.state.objects.get(ObjectIdSchema.parse(objectId));
     return object ? cloneGraphObject(object) : undefined;
+  }
+
+  operationRecordForIdempotency(idempotencyKey: string): LocalGraphOperationRecord | undefined {
+    const parsedKey = z.string().min(1).parse(idempotencyKey);
+    const record = this.state.operationRecords.find((candidate) => candidate.idempotency_key === parsedKey);
+    return record ? cloneOperationRecord(record) : undefined;
   }
 
   async initializeFromObjects(
@@ -615,7 +710,8 @@ export class FileLocalGraphStore {
       updatedAt: timestamp,
       generation: expectedGeneration,
       journalSequence: this.state.journalSequence,
-      objects: mapFromObjects(objects)
+      objects: mapFromObjects(objects),
+      operationRecords: this.state.operationRecords
     };
 
     await atomicWriteJson(this.paths.snapshotPath, snapshotFromState(nextState, this.plaintextPersistence));
@@ -790,6 +886,182 @@ export class FileLocalGraphStore {
     });
   }
 
+  async commitTransaction(input: LocalGraphTransactionInput): Promise<LocalGraphTransactionResult> {
+    return this.serializeMutation(async () => {
+      const idempotencyKey = z.string().min(1).parse(input.idempotency_key);
+      const operationId = OperationIdSchema.parse(input.operation_id);
+      const actorId = z.string().min(1).parse(input.actor_id);
+      const requestFingerprint = input.request_fingerprint
+        ? LocalGraphResolutionRequestFingerprintSchema.parse(input.request_fingerprint)
+        : undefined;
+      const researchAudit = input.research_audit
+        ? LocalGraphResearchAuditSummarySchema.parse(input.research_audit)
+        : undefined;
+      const existingRecord = this.state.operationRecords.find((record) => record.idempotency_key === idempotencyKey);
+      if (existingRecord) {
+        const fingerprintConflict = Boolean(existingRecord.request_fingerprint || requestFingerprint)
+          && JSON.stringify(existingRecord.request_fingerprint) !== JSON.stringify(requestFingerprint);
+        const researchAuditConflict = Boolean(existingRecord.research_audit || researchAudit)
+          && JSON.stringify(existingRecord.research_audit) !== JSON.stringify(researchAudit);
+        if (existingRecord.operation_id !== operationId
+          || existingRecord.actor_id !== actorId
+          || fingerprintConflict
+          || researchAuditConflict) {
+          return {
+            ok: false,
+            reason: "idempotency-conflict",
+            current_generation: this.state.generation
+          };
+        }
+        return {
+          ok: true,
+          operation_record: cloneOperationRecord(existingRecord),
+          objects: existingRecord.objects.map(cloneGraphObject),
+          changes: existingRecord.changes.map((change) => SyncChangeEventSchema.parse(structuredClone(change))),
+          generation: existingRecord.generation,
+          journal_sequence: existingRecord.journal_sequence,
+          persistence: "atomic-snapshot-operation",
+          idempotent: true
+        };
+      }
+
+      if (this.state.generation !== input.expected_generation) {
+        return {
+          ok: false,
+          reason: "generation-conflict",
+          current_generation: this.state.generation
+        };
+      }
+
+      if (input.writes.length === 0) {
+        return {
+          ok: false,
+          reason: "invalid-object",
+          current_generation: this.state.generation
+        };
+      }
+
+      const nextObjects = new Map(this.state.objects);
+      const committed: Array<{ operation: "create" | "update"; object: GraphObjectEnvelope; baseVersion?: number }> = [];
+      const writtenIds = new Set<string>();
+
+      for (const write of input.writes) {
+        const object = await objectForPersistence(write.object, this.plaintextPersistence, this.keyring);
+        if (!object) {
+          return { ok: false, reason: "invalid-object", current_generation: this.state.generation };
+        }
+        if (object.authority_id !== this.state.authorityId) {
+          return { ok: false, reason: "object-authority-mismatch", current_generation: this.state.generation };
+        }
+        if (writtenIds.has(object.object_id)) {
+          return { ok: false, reason: "object-already-exists", current_generation: this.state.generation };
+        }
+        writtenIds.add(object.object_id);
+
+        const existing = nextObjects.get(object.object_id);
+        if (write.kind === "create") {
+          if (existing) {
+            return {
+              ok: false,
+              reason: "object-already-exists",
+              current_generation: this.state.generation,
+              current_version: existing.version
+            };
+          }
+          nextObjects.set(object.object_id, cloneGraphObject(object));
+          committed.push({ operation: "create", object });
+          continue;
+        }
+
+        if (!existing) {
+          return { ok: false, reason: "object-missing", current_generation: this.state.generation };
+        }
+        if (existing.visible_metadata.tombstone) {
+          return {
+            ok: false,
+            reason: "object-already-tombstoned",
+            current_generation: this.state.generation,
+            current_version: existing.version
+          };
+        }
+        if (write.expected_version !== undefined && existing.version !== write.expected_version) {
+          return {
+            ok: false,
+            reason: "version-conflict",
+            current_generation: this.state.generation,
+            current_version: existing.version
+          };
+        }
+        if (object.version !== existing.version + 1) {
+          return {
+            ok: false,
+            reason: "version-conflict",
+            current_generation: this.state.generation,
+            current_version: existing.version
+          };
+        }
+        nextObjects.set(object.object_id, cloneGraphObject(object));
+        committed.push({ operation: "update", object, baseVersion: existing.version });
+      }
+
+      const recordedAt = normalizeRecordedAt(input.recorded_at, this.now);
+      const generation = this.state.generation + 1;
+      const sequence = this.state.journalSequence + 1;
+      const changes = committed.map(({ operation, object, baseVersion }) => {
+        const seed = `transaction:${operationId}:${object.object_id}:${generation}:${sequence}`;
+        return SyncChangeEventSchema.parse({
+          change_id: makeId("la_change", seed),
+          authority_id: this.state.authorityId,
+          operation_id: operationId,
+          trace_id: parseTraceId(input.trace_id, seed),
+          recorded_at: recordedAt,
+          object_id: object.object_id,
+          operation,
+          base_version: baseVersion,
+          new_version: object.version,
+          content_hash: object.content_hash,
+          access_class: object.access_class,
+          generation,
+          actor_id: actorId
+        });
+      });
+      const operationRecord = LocalGraphOperationRecordSchema.parse({
+        operation_id: operationId,
+        idempotency_key: idempotencyKey,
+        ...(requestFingerprint ? { request_fingerprint: requestFingerprint } : {}),
+        ...(researchAudit ? { research_audit: researchAudit } : {}),
+        actor_id: actorId,
+        recorded_at: recordedAt,
+        generation,
+        journal_sequence: sequence,
+        objects: committed.map(({ object }) => object),
+        changes
+      });
+      const nextState: LocalGraphState = {
+        authorityId: this.state.authorityId,
+        createdAt: this.state.createdAt,
+        updatedAt: recordedAt,
+        generation,
+        journalSequence: sequence,
+        objects: nextObjects,
+        operationRecords: [...this.state.operationRecords, operationRecord]
+      };
+
+      await atomicWriteJson(this.paths.snapshotPath, snapshotFromState(nextState, this.plaintextPersistence));
+      this.state = nextState;
+      return {
+        ok: true,
+        operation_record: cloneOperationRecord(operationRecord),
+        objects: committed.map(({ object }) => cloneGraphObject(object)),
+        changes: changes.map((change) => SyncChangeEventSchema.parse(structuredClone(change))),
+        generation,
+        journal_sequence: sequence,
+        persistence: "atomic-snapshot-operation",
+        idempotent: false
+      };
+    });
+  }
+
   async compact(): Promise<LocalGraphStoreStatus> {
     return this.serializeMutation(async () => {
       await atomicWriteJson(this.paths.snapshotPath, snapshotFromState(this.state, this.plaintextPersistence));
@@ -859,7 +1131,8 @@ export class FileLocalGraphStore {
       updatedAt: recordedAt,
       generation,
       journalSequence: sequence,
-      objects: nextObjects
+      objects: nextObjects,
+      operationRecords: this.state.operationRecords
     };
 
     return {

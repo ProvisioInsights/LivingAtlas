@@ -30,9 +30,13 @@ export type EncryptionClass = z.infer<typeof EncryptionClassSchema>;
 export const ObjectTypeValues = [
   "page",
   "block",
+  "entity",
+  "assertion",
   "edge",
   "event",
   "attachment",
+  "evidence",
+  "review",
   "manifest",
   "index",
   "audit",

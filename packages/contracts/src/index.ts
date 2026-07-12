@@ -2,6 +2,7 @@ export * from "./classification";
 export * from "./events";
 export * from "./identity-config";
 export * from "./ids";
+export * from "./knowledge";
 export * from "./local-control";
 export * from "./observability";
 export * from "./object-envelope";

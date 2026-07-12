@@ -4,8 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { fixtureAuthorityId, sensitiveBaitRegistry } from "@living-atlas/fixtures";
+import { fixtureAuthorityId, sensitiveBaitRegistry, syntheticGraphObjects } from "@living-atlas/fixtures";
 import { FileLocalControlStore, createFixtureLocalControlState } from "@living-atlas/local-control-store";
+import { FileLocalGraphStore } from "@living-atlas/local-graph-store";
 import { createDefaultLocalKeyring, FileLocalKeyringStore } from "@living-atlas/local-keyring";
 
 const token = "local-install-smoke-token-0001";
@@ -32,6 +33,7 @@ function textContent(result: unknown): string {
 function parseToolJson<T>(label: string, result: unknown): T {
   const text = textContent(result);
   assert(text.length > 0, `${label} did not return text content`);
+  assert(!text.startsWith("MCP error"), `${label} returned MCP error: ${text}`);
   return JSON.parse(text) as T;
 }
 
@@ -116,6 +118,7 @@ async function main(): Promise<void> {
   const keyringPath = join(tempDir, "keyring.json");
   const graphDir = join(tempDir, "graph");
   const activityPath = join(tempDir, "activity.jsonl");
+  const auditPath = join(tempDir, "audit.jsonl");
   const repoRoot = process.cwd();
   let client: Client | undefined;
 
@@ -139,6 +142,16 @@ async function main(): Promise<void> {
     }
     console.log("ok sealed local keyring");
 
+    const graphStore = await FileLocalGraphStore.open({
+      directory: graphDir,
+      authorityId: fixtureAuthorityId,
+      plaintextPersistence: "encrypt",
+      keyring
+    });
+    const initialized = await graphStore.initializeFromObjects(syntheticGraphObjects, { created_at: timestamp });
+    assert(initialized.ok === true, "synthetic encrypted graph fixture did not initialize");
+    console.log("ok encrypted local graph fixture");
+
     const transport = new StdioClientTransport({
       command: "npx",
       args: ["tsx", "packages/local-mcp/src/cli.ts"],
@@ -153,7 +166,8 @@ async function main(): Promise<void> {
         LIVING_ATLAS_LOCAL_GRAPH_DIR: graphDir,
         LIVING_ATLAS_LOCAL_KEYRING: keyringPath,
         LIVING_ATLAS_LOCAL_KEYRING_PASSPHRASE: keyringPassphrase,
-        LIVING_ATLAS_ACTIVITY_LOG: activityPath
+        LIVING_ATLAS_ACTIVITY_LOG: activityPath,
+        LIVING_ATLAS_AUDIT_LOG: auditPath
       }
     });
 
@@ -327,6 +341,13 @@ async function main(): Promise<void> {
     assert(activity.includes("object_update"), "local MCP activity log did not record the update");
     assert(activity.includes("object_delete"), "local MCP activity log did not record the tombstone");
     assertNoSensitiveText("local MCP activity log", activity);
+    const activityRead = parseToolJson<{
+      ok: boolean;
+      result?: { events?: Array<{ crud?: string }>; audit_events?: Array<{ event_type?: string }> };
+    }>("activity_read", await client.callTool({ name: "activity_read", arguments: {} }));
+    assert(activityRead.ok === true, "activity_read did not succeed");
+    assert(activityRead.result?.events?.some((event) => event.crud === "create"), "activity_read did not return persisted create activity");
+    assert(activityRead.result?.audit_events?.some((event) => event.event_type === "tool.allowed"), "activity_read did not return persisted audit events");
     assertNoSensitiveText("local MCP tool output", JSON.stringify({ status, list, read, created, updated, tombstoned, sensitiveCreated }));
     console.log("ok local MCP activity leakage guard");
 

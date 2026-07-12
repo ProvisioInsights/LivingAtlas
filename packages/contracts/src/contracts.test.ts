@@ -13,6 +13,7 @@ import {
   IcalendarRRuleTextSchema,
   LiveActivityEventSchema,
   LocalControlStateSchema,
+  ObjectTypeSchema,
   OperationalEventSchema,
   PraxisActivityAuditStreamResponseSchema,
   SyncBatchSchema,
@@ -745,6 +746,17 @@ describe("operational observability contract", () => {
 
     expect(parsed.sensitive).toBe(false);
     expect(JSON.stringify(parsed)).not.toContain("sync_token");
+  });
+});
+
+describe("canonical runtime object categories", () => {
+  it("accepts canonical object categories without removing legacy migration categories", () => {
+    expect(ObjectTypeSchema.safeParse("entity").success).toBe(true);
+    expect(ObjectTypeSchema.safeParse("assertion").success).toBe(true);
+    expect(ObjectTypeSchema.safeParse("evidence").success).toBe(true);
+    expect(ObjectTypeSchema.safeParse("review").success).toBe(true);
+    expect(ObjectTypeSchema.safeParse("page").success).toBe(true);
+    expect(ObjectTypeSchema.safeParse("block").success).toBe(true);
   });
 });
 
