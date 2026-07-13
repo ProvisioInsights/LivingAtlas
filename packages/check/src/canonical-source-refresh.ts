@@ -40,6 +40,41 @@ export interface CanonicalSourceRefreshInput {
   receipt_path: string;
 }
 
+export async function compareCanonicalSourceContent(input: {
+  live_source_dir: string;
+  prior_working_dir: string;
+}) {
+  if (!isAbsolute(input.live_source_dir) || !isAbsolute(input.prior_working_dir)) {
+    throw new CanonicalSourceRefreshError("invalid-source");
+  }
+  const [live, prior] = await Promise.all([realpath(input.live_source_dir), realpath(input.prior_working_dir)]);
+  if (live === prior || isWithinOrEqual(live, prior) || isWithinOrEqual(prior, live)
+    || !(await stat(live)).isDirectory() || !(await stat(prior)).isDirectory()) {
+    throw new CanonicalSourceRefreshError("path-overlap");
+  }
+  const [liveManifest, priorManifest] = await Promise.all([
+    scanContent(live, "sha256"), scanContent(prior, "sha256")
+  ]);
+  const shared = [...liveManifest.entries.keys()].filter((path) => priorManifest.entries.has(path)).sort(comparePath);
+  const identical = shared.filter((path) => (
+    liveManifest.entries.get(path)!.content_hash === priorManifest.entries.get(path)!.content_hash
+  ));
+  const comparisonHash = sha256(shared.flatMap((path) => [
+    liveManifest.entries.get(path)!.content_hash,
+    priorManifest.entries.get(path)!.content_hash
+  ]));
+  return {
+    report_schema: "atlas.canonical-source-reconciliation:v1" as const,
+    plaintext_policy: "counts-and-hashes-only" as const,
+    shared_path_count: shared.length,
+    identical_content_count: identical.length,
+    divergent_content_count: shared.length - identical.length,
+    live_only_count: liveManifest.entries.size - shared.length,
+    prior_only_count: priorManifest.entries.size - shared.length,
+    comparison_hash: comparisonHash
+  };
+}
+
 interface PublicManifest {
   file_count: number;
   byte_count: number;

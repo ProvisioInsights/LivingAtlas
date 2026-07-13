@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  compareCanonicalSourceContent,
   refreshCanonicalSource,
   summarizeCanonicalPathOverlaps
 } from "./canonical-source-refresh";
@@ -198,6 +199,24 @@ describe("canonical source refresh", () => {
     await expect(readFile(join(fixture.destination, "shared.md"), "utf8")).resolves.toBe("live variant\n");
     await expect(readFile(join(fixture.live, "shared.md"), "utf8")).resolves.toBe("live variant\n");
     await expect(readFile(join(fixture.prior, "shared.md"), "utf8")).resolves.toBe("prior variant\n");
+  });
+
+  it("summarizes identical and divergent source paths without exposing names or content", async () => {
+    const fixture = await makeSharedCopies();
+    await writeFile(join(fixture.live, "shared.md"), "live variant\n");
+    await writeFile(join(fixture.prior, "shared.md"), "prior variant\n");
+
+    await expect(compareCanonicalSourceContent({ live_source_dir: fixture.live, prior_working_dir: fixture.prior }))
+      .resolves.toEqual({
+        report_schema: "atlas.canonical-source-reconciliation:v1",
+        plaintext_policy: "counts-and-hashes-only",
+        shared_path_count: 3,
+        identical_content_count: 2,
+        divergent_content_count: 1,
+        live_only_count: 0,
+        prior_only_count: 0,
+        comparison_hash: expect.stringMatching(/^sha256:[a-f0-9]{64}$/)
+      });
   });
 
   it("stops before case or Unicode path aliases can replace the live variant", async () => {
