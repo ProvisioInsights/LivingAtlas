@@ -188,6 +188,13 @@ describe("canonical isolated-copy runner guard", () => {
       expect((manifest as Array<Record<string, unknown>>).every((item) => (
         Object.keys(item).sort().join(",") === "content_hash,object_id,object_type"
       ))).toBe(true);
+      await expect(readJson(join(output, "candidate-proof.json"))).resolves.toEqual(expect.objectContaining({
+        proof_schema: "living-atlas-canonical-candidate-proof:v1",
+        plaintext_policy: "counts-and-hashes-only",
+        decrypt_coverage_complete: true,
+        restart_manifest_equal: true,
+        mutation_idempotency_verified: true
+      }));
 
       const reopenedRecords = await reopenCanonicalRecords(
         output,
@@ -207,7 +214,8 @@ describe("canonical isolated-copy runner guard", () => {
       expect(await readFile(researchPath, "utf8")).toBe(researchContent);
       const privateArtifacts = [
         join(output, "conversion-report.json"),
-        join(output, "canonical-manifest.json")
+        join(output, "canonical-manifest.json"),
+        join(output, "candidate-proof.json")
       ];
       for (const path of privateArtifacts) expect((await stat(path)).mode & 0o077).toBe(0);
       const persisted = [
@@ -815,7 +823,14 @@ describe("canonical isolated-copy runner guard", () => {
       await expect(persistCanonicalConversionArtifacts({
         copy_dir: output,
         report: malformedReport,
-        manifest: []
+        manifest: [],
+        candidate_proof: {
+          proof_schema: "living-atlas-canonical-candidate-proof:v1",
+          plaintext_policy: "counts-and-hashes-only",
+          decrypt_coverage_complete: true,
+          restart_manifest_equal: true,
+          mutation_idempotency_verified: true
+        }
       })).rejects.toThrow("canonical isolated-copy integrity check failed");
       expect(await readdir(output)).not.toContain("conversion-report.json");
       expect(await readdir(output)).not.toContain("canonical-manifest.json");

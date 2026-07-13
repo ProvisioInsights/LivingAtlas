@@ -159,4 +159,28 @@ describe("canonical production promotion", () => {
       await rm(directory, { recursive: true, force: true });
     }
   });
+
+  it("uses persisted candidate decrypt and idempotency proof without clearing unrelated gates", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "living-atlas-cutover-proof-"));
+    try {
+      await writeFile(join(directory, "conversion-report.json"), JSON.stringify({
+        objects: { total: 1 }, review_queue: { owner_review: 0, research: 0, automatic: 1, incomplete: 0 },
+        integrity: { unrepresented_meaningful_units: 0, reopened_manifest_mismatches: 0 }
+      }));
+      await writeFile(join(directory, "canonical-manifest.json"), JSON.stringify([
+        { object_id: "la_object_cutoverproof0001", object_type: "entity", content_hash: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }
+      ]));
+      await writeFile(join(directory, "candidate-proof.json"), JSON.stringify({
+        proof_schema: "living-atlas-canonical-candidate-proof:v1", plaintext_policy: "counts-and-hashes-only",
+        decrypt_coverage_complete: true, restart_manifest_equal: true, mutation_idempotency_verified: true
+      }));
+
+      await expect(readCanonicalCandidateCutoverReport({ candidate_dir: directory })).resolves.toMatchObject({
+        ready: false,
+        blockers: ["backup-restore-proof-missing", "candidate-live-manifest-comparison-missing", "owner-acceptance-required"]
+      });
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
 });

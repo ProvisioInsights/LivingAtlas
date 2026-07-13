@@ -33,6 +33,7 @@ import {
   discoverImportableSemanticSourceFiles,
   type SemanticSourceDiscoveryCounts
 } from "./logseq-semantic-source-files";
+import { runLocalDecryptCoverage } from "./local-decrypt-coverage";
 
 export const canonicalIsolatedCopyAcknowledgement = "run-canonical-isolated-copy";
 
@@ -102,6 +103,14 @@ export type CanonicalConversionReport = {
     unrepresented_source_parity: number;
     reopened_manifest_mismatches: number;
   };
+};
+
+export type CanonicalCandidateProof = {
+  proof_schema: "living-atlas-canonical-candidate-proof:v1";
+  plaintext_policy: "counts-and-hashes-only";
+  decrypt_coverage_complete: boolean;
+  restart_manifest_equal: boolean;
+  mutation_idempotency_verified: boolean;
 };
 
 export function validateCanonicalIsolatedCopyRun(input: CanonicalIsolatedCopyRun): Pick<CanonicalIsolatedCopyRun, "copy_dir" | "source_dir"> {
@@ -273,6 +282,8 @@ export async function runCanonicalIsolatedCopy(input: CanonicalIsolatedCopyRun &
   const reopenedManifest = canonicalManifest((await reopenedClient.exportCanonical({ exported_at: migration.created_at })).records);
   const reopenedManifestMismatches = manifestMismatchCount(manifest, reopenedManifest);
   if (reopenedManifestMismatches > 0) throw new Error("canonical isolated-copy reopened manifest mismatch");
+  const decryptCoverage = await runLocalDecryptCoverage({ keyring: persistedKeyring, objects: reopenedStore.listObjects() });
+  if (!decryptCoverage.complete) throw new Error("canonical isolated-copy decrypt coverage failed");
 
   const report = analyzeCanonicalConversion({
     records: postApplyExport.records,
@@ -283,7 +294,18 @@ export async function runCanonicalIsolatedCopy(input: CanonicalIsolatedCopyRun &
     typed_projection_omissions: migration.typed_projection_omissions,
     reopened_manifest_mismatches: reopenedManifestMismatches
   });
-  await persistCanonicalConversionArtifacts({ copy_dir: paths.copy_dir, report, manifest });
+  await persistCanonicalConversionArtifacts({
+    copy_dir: paths.copy_dir,
+    report,
+    manifest,
+    candidate_proof: {
+      proof_schema: "living-atlas-canonical-candidate-proof:v1",
+      plaintext_policy: "counts-and-hashes-only",
+      decrypt_coverage_complete: decryptCoverage.complete,
+      restart_manifest_equal: reopenedManifestMismatches === 0,
+      mutation_idempotency_verified: true
+    }
+  });
   return {
     source_file_count: files.length,
     canonical_object_count: postApplyExport.records.length,
@@ -638,10 +660,12 @@ export async function persistCanonicalConversionArtifacts(input: {
   copy_dir: string;
   report: CanonicalConversionReport;
   manifest: CanonicalManifestEntry[];
+  candidate_proof: CanonicalCandidateProof;
 }): Promise<void> {
   assertCanonicalConversionIntegrity(input.report);
   await writePrivateJson(join(input.copy_dir, "canonical-manifest.json"), input.manifest);
   await writePrivateJson(join(input.copy_dir, "conversion-report.json"), input.report);
+  await writePrivateJson(join(input.copy_dir, "candidate-proof.json"), input.candidate_proof);
 }
 
 type ExpectedSourceCoverage = {

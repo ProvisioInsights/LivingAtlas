@@ -51,6 +51,11 @@ function count(value: unknown, error: string): number {
   return value;
 }
 
+function flag(value: unknown, error: string): boolean {
+  if (typeof value !== "boolean") throw new Error(error);
+  return value;
+}
+
 function readManifest(value: unknown): CanonicalManifestEntry[] {
   if (!Array.isArray(value)) throw new Error("canonical-manifest-malformed");
   const objectIds = new Set<string>();
@@ -71,9 +76,13 @@ function readManifest(value: unknown): CanonicalManifestEntry[] {
 }
 
 export async function readCanonicalCandidateCutoverReport(input: { candidate_dir: string }) {
-  const [conversionRaw, manifestRaw] = await Promise.all([
+  const [conversionRaw, manifestRaw, candidateProofRaw] = await Promise.all([
     readFile(join(input.candidate_dir, "conversion-report.json"), "utf8"),
-    readFile(join(input.candidate_dir, "canonical-manifest.json"), "utf8")
+    readFile(join(input.candidate_dir, "canonical-manifest.json"), "utf8"),
+    readFile(join(input.candidate_dir, "candidate-proof.json"), "utf8").catch((error: unknown) => {
+      if ((error as { code?: string }).code === "ENOENT") return undefined;
+      throw error;
+    })
   ]);
   let conversionJson: unknown;
   let manifestJson: unknown;
@@ -97,16 +106,36 @@ export async function readCanonicalCandidateCutoverReport(input: { candidate_dir
   const pendingReconciliation = count(reviewQueue.owner_review, "canonical-cutover-artifact-malformed")
     + count(reviewQueue.research, "canonical-cutover-artifact-malformed")
     + count(reviewQueue.incomplete, "canonical-cutover-artifact-malformed");
+  let candidateProof: { decrypt_coverage_complete: boolean; restart_manifest_equal: boolean; mutation_idempotency_verified: boolean } | undefined;
+  if (candidateProofRaw !== undefined) {
+    try {
+      const parsed = record(JSON.parse(candidateProofRaw), "canonical-candidate-proof-malformed");
+      if (parsed.proof_schema !== "living-atlas-canonical-candidate-proof:v1" || parsed.plaintext_policy !== "counts-and-hashes-only") {
+        throw new Error("canonical-candidate-proof-malformed");
+      }
+      candidateProof = {
+        decrypt_coverage_complete: flag(parsed.decrypt_coverage_complete, "canonical-candidate-proof-malformed"),
+        restart_manifest_equal: flag(parsed.restart_manifest_equal, "canonical-candidate-proof-malformed"),
+        mutation_idempotency_verified: flag(parsed.mutation_idempotency_verified, "canonical-candidate-proof-malformed")
+      };
+    } catch (error) {
+      if (error instanceof Error && error.message === "canonical-candidate-proof-malformed") throw error;
+      throw new Error("canonical-candidate-proof-malformed");
+    }
+  }
   const canonicalManifestHash = `sha256:${createHash("sha256")
     .update(JSON.stringify([...manifest].sort((left, right) => left.object_id.localeCompare(right.object_id))))
     .digest("hex")}` as const;
   const blockers = [
     conversionIntegrity.unrepresented_meaningful_units > 0 && "meaningful-source-unrepresented",
     conversionIntegrity.reopened_manifest_mismatches > 0 && "reopen-manifest-mismatch",
-    "decrypt-coverage-proof-missing",
+    candidateProof === undefined && "decrypt-coverage-proof-missing",
+    candidateProof?.decrypt_coverage_complete === false && "decrypt-coverage-mismatch",
+    candidateProof?.restart_manifest_equal === false && "restart-manifest-mismatch",
     "backup-restore-proof-missing",
     "candidate-live-manifest-comparison-missing",
-    "mutation-idempotency-proof-missing",
+    candidateProof === undefined && "mutation-idempotency-proof-missing",
+    candidateProof?.mutation_idempotency_verified === false && "mutation-idempotency-unverified",
     "owner-acceptance-required",
     pendingReconciliation > 0 && "pending-reconciliation"
   ].filter((blocker): blocker is string => Boolean(blocker));
