@@ -92,6 +92,7 @@ describe("canonical production promotion", () => {
       candidate_authority_id: "la_authority_live0001",
       live_authority_id: "la_authority_live0001",
       canonical_manifest_object_count: 42,
+      canonical_manifest_equal: true,
       conversion_integrity: { unrepresented_meaningful_units: 0, reopened_manifest_mismatches: 0 },
       decrypt_coverage_equal: true,
       restart_manifest_equal: true,
@@ -101,5 +102,23 @@ describe("canonical production promotion", () => {
       owner_accepted: true,
       pending_outbox: 0
     })).toEqual({ mode: "dry-run", object_count: 42, authority_id: "la_authority_live0001" });
+  });
+
+  it("rejects artifacts without a candidate-to-live canonical manifest match", () => {
+    expect(() => buildPromotionPlanFromArtifacts({
+      candidate_isolated: true,
+      candidate_authority_id: "la_authority_live0001",
+      live_authority_id: "la_authority_live0001",
+      canonical_manifest_object_count: 42,
+      canonical_manifest_equal: false,
+      conversion_integrity: { unrepresented_meaningful_units: 0, reopened_manifest_mismatches: 0 },
+      decrypt_coverage_equal: true,
+      restart_manifest_equal: true,
+      backup_restore_manifest_equal: true,
+      mutation_idempotency_verified: true,
+      pending_reconciliation: 0,
+      owner_accepted: true,
+      pending_outbox: 0
+    })).toThrow("backup-proof-missing");
   });
 });

@@ -21,6 +21,7 @@ export type CanonicalPromotionArtifactInput = {
   candidate_authority_id: string;
   live_authority_id: string;
   canonical_manifest_object_count: number;
+  canonical_manifest_equal: boolean;
   conversion_integrity: { unrepresented_meaningful_units: number; reopened_manifest_mismatches: number };
   decrypt_coverage_equal: boolean;
   restart_manifest_equal: boolean;
@@ -68,7 +69,7 @@ export function buildPromotionPlanFromArtifacts(input: CanonicalPromotionArtifac
     candidate_isolated: input.candidate_isolated,
     candidate_authority_id: input.candidate_authority_id,
     live_authority_id: input.live_authority_id,
-    canonical_manifest_equal: input.backup_restore_manifest_equal,
+    canonical_manifest_equal: input.canonical_manifest_equal,
     backup_restore_manifest_equal: input.backup_restore_manifest_equal,
     pending_outbox: input.pending_outbox,
     readiness,
