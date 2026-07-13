@@ -1,9 +1,9 @@
-import { createHash } from "node:crypto";
+import { createHash, type KeyObject } from "node:crypto";
 import { mkdir, readdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { pathToFileURL } from "node:url";
-import { LocalWormStore, restoreBackup } from "@living-atlas/backup";
+import { LocalWormStore, restoreBackup, restoreBackupWithRecoveryKey } from "@living-atlas/backup";
 
 /**
  * Human-only backend restore runner.
@@ -56,12 +56,27 @@ async function promptRecoveryMaster(): Promise<Buffer> {
 }
 
 export async function restoreRunner(args: Args, master: Buffer): Promise<void> {
+  const store = new LocalWormStore(args.storeDir);
+  const restored = await restoreBackup(store, args.backupId, master);
+  await writeRestoredReplica(args, restored);
+}
+
+export async function restoreRunnerWithRecoveryKey(
+  args: Args,
+  recoveryPrivateKey: KeyObject,
+  installPassphrase: (passphrase: string) => Promise<void>
+): Promise<void> {
+  const store = new LocalWormStore(args.storeDir);
+  const restored = await restoreBackupWithRecoveryKey(store, args.backupId, recoveryPrivateKey);
+  await installPassphrase(restored.keyringPassphrase);
+  await writeRestoredReplica(args, restored);
+}
+
+async function writeRestoredReplica(args: Args, restored: { kind: "full" | "differential"; artifactBytes: Buffer; keyringJson: string }): Promise<void> {
   await mkdir(args.outDir, { recursive: true, mode: 0o700 });
   if ((await readdir(args.outDir)).length > 0) {
     throw new Error("restore output directory must be empty");
   }
-  const store = new LocalWormStore(args.storeDir);
-  const restored = await restoreBackup(store, args.backupId, master);
   if (restored.kind !== "full") {
     throw new Error("cannot restore a differential backup without its full backup chain");
   }
