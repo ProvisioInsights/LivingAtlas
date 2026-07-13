@@ -1,10 +1,10 @@
-import { randomBytes } from "node:crypto";
+import { generateKeyPairSync, randomBytes } from "node:crypto";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { fixtureAuthorityId, fixtureLocalClientId } from "@living-atlas/fixtures";
-import { LocalWormStore, restoreBackup, type ImmutableStore } from "@living-atlas/backup";
+import { LocalWormStore, restoreBackup, restoreBackupWithRecoveryKey, type ImmutableStore } from "@living-atlas/backup";
 import { createDefaultLocalKeyring, FileLocalKeyringStore } from "@living-atlas/local-keyring";
 import { FileLocalGraphStore } from "@living-atlas/local-graph-store";
 import { assembleBackupStores, fanOutBestEffort, type CloudStoreFactory } from "./backup-run";
@@ -132,7 +132,7 @@ describe("runBackup local encrypted graph capture", () => {
     const graphDir = join(root, "graph");
     const keyringPath = join(root, "keyring.json");
     const stagingDir = join(root, "staging");
-    const master = randomBytes(32);
+    const { publicKey, privateKey } = generateKeyPairSync("x25519");
     try {
       const keyring = createDefaultLocalKeyring({ authorityId, createdAt: timestamp });
       await new FileLocalKeyringStore(keyringPath).write(keyring, "fixture-keyring-passphrase");
@@ -153,8 +153,9 @@ describe("runBackup local encrypted graph capture", () => {
 
       withBackupEnv({
         LIVING_ATLAS_BACKUP_STAGING_DIR: stagingDir,
-        LIVING_ATLAS_BACKUP_RECOVERY_MASTER: master.toString("base64"),
+        LIVING_ATLAS_BACKUP_RECOVERY_PUBLIC_KEY_PEM: publicKey.export({ format: "pem", type: "spki" }).toString(),
         LIVING_ATLAS_LOCAL_KEYRING: keyringPath,
+        LIVING_ATLAS_LOCAL_KEYRING_PASSPHRASE: "fixture-keyring-passphrase",
         LIVING_ATLAS_LOCAL_GRAPH_DIR: graphDir,
         LIVING_ATLAS_BACKUP_AUTHORITY_ID: authorityId,
         LIVING_ATLAS_BACKUP_FULL_EVERY_MS: "1"
@@ -164,7 +165,7 @@ describe("runBackup local encrypted graph capture", () => {
       const source = JSON.parse(await readFile(join(graphDir, "snapshot.json"), "utf8")) as {
         plaintext_persistence: string;
       };
-      const backup = await restoreBackup(new LocalWormStore(stagingDir, () => 1_000), "la_backup_000001", master);
+      const backup = await restoreBackupWithRecoveryKey(new LocalWormStore(stagingDir, () => 1_000), "la_backup_000001", privateKey);
       const restored = JSON.parse(backup.artifactBytes.toString("utf8")) as {
         generation: number;
         plaintext_persistence: string;

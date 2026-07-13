@@ -1,9 +1,10 @@
-import { createHash } from "node:crypto";
+import { createHash, createPublicKey } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { FileLocalGraphStore } from "@living-atlas/local-graph-store";
+import { resolveLocalSecret } from "@living-atlas/local-keyring";
 import {
   LocalWormStore,
   PersonalOneDriveStore,
@@ -11,6 +12,7 @@ import {
   dueLevels,
   selectForDeletion,
   wrapKeyringForEscrow,
+  createRecoveryBundle,
   writeBackup,
   type BackupRef,
   type CadenceConfig,
@@ -277,7 +279,6 @@ export async function runBackup(
   factory?: CloudStoreFactory,
 ): Promise<number> {
   const stagingDir = requireEnv("LIVING_ATLAS_BACKUP_STAGING_DIR");
-  const master = resolveRecoveryMaster();
   const keyringPath = requireEnv("LIVING_ATLAS_LOCAL_KEYRING");
   const authorityId = envValue("LIVING_ATLAS_BACKUP_AUTHORITY_ID") ?? "la_authority_local";
 
@@ -312,13 +313,24 @@ export async function runBackup(
   const retainMs = level === "full" ? rules[1]!.keepForMs : rules[0]!.keepForMs;
   const retainUntilMs = nowMs + retainMs;
 
+  const recoveryPublicKeyPem = envValue("LIVING_ATLAS_BACKUP_RECOVERY_PUBLIC_KEY_PEM");
+  const keyringPassphrase = recoveryPublicKeyPem ? resolveLocalSecret("LIVING_ATLAS_LOCAL_KEYRING_PASSPHRASE") : undefined;
+  if (recoveryPublicKeyPem && !keyringPassphrase) throw new Error("missing LIVING_ATLAS_LOCAL_KEYRING_PASSPHRASE for recovery bundle");
+  const keyRecovery = recoveryPublicKeyPem
+    ? { recoveryBundleJson: JSON.stringify(createRecoveryBundle({
+      authority_id: authorityId,
+      sealed_keyring_json: sealedKeyringBytes.toString("utf8"),
+      keyring_passphrase: keyringPassphrase!.value,
+      recovery_public_key: createPublicKey(recoveryPublicKeyPem)
+    })) }
+    : { escrowEnvelopeJson: JSON.stringify(wrapKeyringForEscrow(sealedKeyringBytes.toString("utf8"), resolveRecoveryMaster())) };
   const input: WriteBackupInput = {
     authority_id: authorityId,
     kind: level,
     base_generation: baseGeneration,
     target_generation: generation,
     artifactBytes: snapshotBytes,
-    escrowEnvelopeJson: JSON.stringify(wrapKeyringForEscrow(sealedKeyringBytes.toString("utf8"), master)),
+    ...keyRecovery,
     createdAtIso: new Date(nowMs).toISOString(),
     backupId,
     retainUntilMs,
