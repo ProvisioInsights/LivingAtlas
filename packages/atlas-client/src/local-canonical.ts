@@ -24,6 +24,7 @@ export type LocalCanonicalAtlasClient = {
   assertionsForEntity(entity_id: string): Promise<Record<string, unknown>[]>;
   observationsForEntity(entity_id: string): Promise<Record<string, unknown>[]>;
   relationshipsForEntity(entity_id: string): Promise<Record<string, unknown>[]>;
+  provenanceForAssertion(assertion_id: string): Promise<{ assertion: Record<string, unknown>; evidence: Record<string, unknown>[] } | undefined>;
   importCanonical(input: {
     exported: unknown;
     expected_generation: number;
@@ -102,6 +103,27 @@ export function createLocalCanonicalAtlasClient(input: {
         }
       }
       return relationships.sort((left, right) => String(left.assertion_id).localeCompare(String(right.assertion_id)));
+    },
+    async provenanceForAssertion(assertion_id) {
+      const object = input.graphStore.readObject(assertion_id);
+      if (!object || object.visible_metadata.tombstone || (object.object_type !== "assertion" && object.object_type !== "edge")) return undefined;
+      const payload = await input.decryptPayload(object);
+      const parsed = CanonicalWriteSchema.safeParse({ object_type: object.object_type, payload });
+      if (!parsed.success) return undefined;
+      const assertion = parsed.data.payload;
+      const evidenceIds = assertion.schema === "atlas.observation:v1"
+        ? new Set(assertion.evidence_refs)
+        : assertion.schema === "atlas.fact:v1" || assertion.schema === "atlas.relationship:v2"
+          ? new Set([...assertion.evidence_links.map((link) => link.evidence_id), ...assertion.confidence.evidence_refs])
+          : undefined;
+      if (!evidenceIds) return undefined;
+      const evidence: Record<string, unknown>[] = [];
+      for (const evidenceObject of input.graphStore.listObjects().filter((item) => item.object_type === "evidence" && !item.visible_metadata.tombstone && evidenceIds.has(item.object_id))) {
+        const evidencePayload = await input.decryptPayload(evidenceObject);
+        const parsedEvidence = CanonicalWriteSchema.safeParse({ object_type: evidenceObject.object_type, payload: evidencePayload });
+        if (parsedEvidence.success && parsedEvidence.data.payload.schema === "atlas.evidence:v1") evidence.push(parsedEvidence.data.payload);
+      }
+      return { assertion, evidence: evidence.sort((left, right) => String(left.evidence_id).localeCompare(String(right.evidence_id))) };
     },
     async exportCanonical(options = {}) {
       const records = [];
