@@ -1,3 +1,6 @@
+import { createHash } from "node:crypto";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import type { CanonicalExport } from "@living-atlas/contracts";
 import type { LocalCanonicalAtlasClient } from "@living-atlas/atlas-client";
 import { deriveCanonicalCutoverReadiness } from "./canonical-cutover-readiness";
@@ -31,6 +34,93 @@ export type CanonicalPromotionArtifactInput = {
   owner_accepted: boolean;
   pending_outbox: number;
 };
+
+type CanonicalManifestEntry = {
+  object_id: string;
+  object_type: string;
+  content_hash: `sha256:${string}`;
+};
+
+function record(value: unknown, error: string): Record<string, unknown> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error(error);
+  return value as Record<string, unknown>;
+}
+
+function count(value: unknown, error: string): number {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) throw new Error(error);
+  return value;
+}
+
+function readManifest(value: unknown): CanonicalManifestEntry[] {
+  if (!Array.isArray(value)) throw new Error("canonical-manifest-malformed");
+  const objectIds = new Set<string>();
+  return value.map((entry) => {
+    const parsed = record(entry, "canonical-manifest-malformed");
+    const objectId = parsed.object_id;
+    const objectType = parsed.object_type;
+    const contentHash = parsed.content_hash;
+    if (typeof objectId !== "string" || !/^la_object_[A-Za-z0-9_-]+$/.test(objectId)
+      || typeof objectType !== "string" || !/^(entity|assertion|edge|evidence|review|manifest)$/.test(objectType)
+      || typeof contentHash !== "string" || !/^sha256:[a-f0-9]{64}$/.test(contentHash)
+      || objectIds.has(objectId)) {
+      throw new Error("canonical-manifest-malformed");
+    }
+    objectIds.add(objectId);
+    return { object_id: objectId, object_type: objectType, content_hash: contentHash as `sha256:${string}` };
+  });
+}
+
+export async function readCanonicalCandidateCutoverReport(input: { candidate_dir: string }) {
+  const [conversionRaw, manifestRaw] = await Promise.all([
+    readFile(join(input.candidate_dir, "conversion-report.json"), "utf8"),
+    readFile(join(input.candidate_dir, "canonical-manifest.json"), "utf8")
+  ]);
+  let conversionJson: unknown;
+  let manifestJson: unknown;
+  try {
+    conversionJson = JSON.parse(conversionRaw);
+    manifestJson = JSON.parse(manifestRaw);
+  } catch {
+    throw new Error("canonical-cutover-artifact-malformed");
+  }
+  const conversion = record(conversionJson, "canonical-cutover-artifact-malformed");
+  const objects = record(conversion.objects, "canonical-cutover-artifact-malformed");
+  const reviewQueue = record(conversion.review_queue, "canonical-cutover-artifact-malformed");
+  const integrity = record(conversion.integrity, "canonical-cutover-artifact-malformed");
+  const manifest = readManifest(manifestJson);
+  const candidateObjectCount = count(objects.total, "canonical-cutover-artifact-malformed");
+  if (candidateObjectCount !== manifest.length) throw new Error("candidate-manifest-count-mismatch");
+  const conversionIntegrity = {
+    unrepresented_meaningful_units: count(integrity.unrepresented_meaningful_units, "canonical-cutover-artifact-malformed"),
+    reopened_manifest_mismatches: count(integrity.reopened_manifest_mismatches, "canonical-cutover-artifact-malformed")
+  };
+  const pendingReconciliation = count(reviewQueue.owner_review, "canonical-cutover-artifact-malformed")
+    + count(reviewQueue.research, "canonical-cutover-artifact-malformed")
+    + count(reviewQueue.incomplete, "canonical-cutover-artifact-malformed");
+  const canonicalManifestHash = `sha256:${createHash("sha256")
+    .update(JSON.stringify([...manifest].sort((left, right) => left.object_id.localeCompare(right.object_id))))
+    .digest("hex")}` as const;
+  const blockers = [
+    conversionIntegrity.unrepresented_meaningful_units > 0 && "meaningful-source-unrepresented",
+    conversionIntegrity.reopened_manifest_mismatches > 0 && "reopen-manifest-mismatch",
+    "decrypt-coverage-proof-missing",
+    "backup-restore-proof-missing",
+    "candidate-live-manifest-comparison-missing",
+    "mutation-idempotency-proof-missing",
+    "owner-acceptance-required",
+    pendingReconciliation > 0 && "pending-reconciliation"
+  ].filter((blocker): blocker is string => Boolean(blocker));
+  return {
+    report_schema: "living-atlas-canonical-cutover-report:v1" as const,
+    plaintext_policy: "counts-and-hashes-only" as const,
+    candidate_object_count: candidateObjectCount,
+    canonical_manifest_hash: canonicalManifestHash,
+    conversion_integrity: conversionIntegrity,
+    pending_reconciliation: pendingReconciliation,
+    ready: false as const,
+    blockers
+  };
+}
 
 export function preflightCanonicalPromotion(input: CanonicalPromotionPreflight) {
   if (!input.candidate_isolated) throw new Error("candidate-not-isolated");

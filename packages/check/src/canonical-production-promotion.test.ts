@@ -1,5 +1,8 @@
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { applyCanonicalPromotion, buildCanonicalPromotionPlan, buildPromotionPlanFromArtifacts, createCanonicalPromotionReceipt, createCanonicalRollbackReceipt, preflightCanonicalPromotion, promoteCanonicalExport } from "./canonical-production-promotion";
+import { applyCanonicalPromotion, buildCanonicalPromotionPlan, buildPromotionPlanFromArtifacts, createCanonicalPromotionReceipt, createCanonicalRollbackReceipt, preflightCanonicalPromotion, promoteCanonicalExport, readCanonicalCandidateCutoverReport } from "./canonical-production-promotion";
 
 describe("canonical production promotion", () => {
   it("rejects a candidate whose authority differs from the local authority", () => {
@@ -120,5 +123,40 @@ describe("canonical production promotion", () => {
       owner_accepted: true,
       pending_outbox: 0
     })).toThrow("backup-proof-missing");
+  });
+
+  it("reports a persisted candidate as not ready when promotion proof artifacts are absent", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "living-atlas-cutover-report-"));
+    try {
+      await writeFile(join(directory, "conversion-report.json"), JSON.stringify({
+        objects: { total: 2 },
+        review_queue: { owner_review: 1, research: 0, automatic: 1, incomplete: 0 },
+        integrity: { unrepresented_meaningful_units: 0, reopened_manifest_mismatches: 0 }
+      }));
+      await writeFile(join(directory, "canonical-manifest.json"), JSON.stringify([
+        { object_id: "la_object_cutoverreport0001", object_type: "entity", content_hash: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" },
+        { object_id: "la_object_cutoverreport0002", object_type: "assertion", content_hash: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" }
+      ]));
+
+      await expect(readCanonicalCandidateCutoverReport({ candidate_dir: directory })).resolves.toEqual({
+        report_schema: "living-atlas-canonical-cutover-report:v1",
+        plaintext_policy: "counts-and-hashes-only",
+        candidate_object_count: 2,
+        canonical_manifest_hash: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
+        conversion_integrity: { unrepresented_meaningful_units: 0, reopened_manifest_mismatches: 0 },
+        pending_reconciliation: 1,
+        ready: false,
+        blockers: [
+          "decrypt-coverage-proof-missing",
+          "backup-restore-proof-missing",
+          "candidate-live-manifest-comparison-missing",
+          "mutation-idempotency-proof-missing",
+          "owner-acceptance-required",
+          "pending-reconciliation"
+        ]
+      });
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
   });
 });

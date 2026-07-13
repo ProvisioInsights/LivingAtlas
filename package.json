@@ -62,6 +62,7 @@
     "local:install-smoke": "tsx packages/check/src/local-install-smoke.ts",
     "mvp:local-proof": "tsx packages/check/src/local-mvp-proof.ts",
     "canonical:refresh-source": "tsx packages/check/src/canonical-source-refresh.ts",
+    "canonical:cutover-report": "tsx packages/check/src/canonical-cutover-report-cli.ts",
     "local-mcp:fixture": "tsx packages/local-mcp/src/cli.ts",
     "mcp:inspect:local": "npx @modelcontextprotocol/inspector npx tsx packages/local-mcp/src/cli.ts",
     "workbench:dev": "tsx packages/graph-workbench/src/server.ts",
