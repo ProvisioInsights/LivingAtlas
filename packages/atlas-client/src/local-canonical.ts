@@ -25,6 +25,7 @@ export type LocalCanonicalAtlasClient = {
   observationsForEntity(entity_id: string): Promise<Record<string, unknown>[]>;
   relationshipsForEntity(entity_id: string): Promise<Record<string, unknown>[]>;
   provenanceForAssertion(assertion_id: string): Promise<{ assertion: Record<string, unknown>; evidence: Record<string, unknown>[] } | undefined>;
+  timelineForEntity(entity_id: string): Promise<Record<string, unknown>[]>;
   importCanonical(input: {
     exported: unknown;
     expected_generation: number;
@@ -124,6 +125,28 @@ export function createLocalCanonicalAtlasClient(input: {
         if (parsedEvidence.success && parsedEvidence.data.payload.schema === "atlas.evidence:v1") evidence.push(parsedEvidence.data.payload);
       }
       return { assertion, evidence: evidence.sort((left, right) => String(left.evidence_id).localeCompare(String(right.evidence_id))) };
+    },
+    async timelineForEntity(entity_id) {
+      const resolved = await this.resolveEntityId(entity_id);
+      const timeline: Record<string, unknown>[] = [];
+      for (const object of input.graphStore.listObjects().filter((item) => (
+        (item.object_type === "assertion" || item.object_type === "edge") && !item.visible_metadata.tombstone
+      ))) {
+        const payload = await input.decryptPayload(object);
+        const parsed = CanonicalWriteSchema.safeParse({ object_type: object.object_type, payload });
+        if (!parsed.success) continue;
+        const assertion = parsed.data.payload;
+        const involvesEntity = (assertion.schema === "atlas.fact:v1" && assertion.subject_entity_id === resolved.canonical_entity_id)
+          || (assertion.schema === "atlas.observation:v1" && assertion.candidate_entity_ids.includes(resolved.canonical_entity_id))
+          || (assertion.schema === "atlas.relationship:v2" && (
+            assertion.source_entity_id === resolved.canonical_entity_id || assertion.target_entity_id === resolved.canonical_entity_id
+          ));
+        if (involvesEntity) timeline.push(assertion);
+      }
+      return timeline.sort((left, right) => (
+        String(left.recorded_at).localeCompare(String(right.recorded_at))
+        || String(left.assertion_id).localeCompare(String(right.assertion_id))
+      ));
     },
     async exportCanonical(options = {}) {
       const records = [];

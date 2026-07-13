@@ -122,6 +122,12 @@ describe("local canonical Atlas client", () => {
           assertion: expect.objectContaining({ schema: "atlas.fact:v1", assertion_id: "la_object_localclientfact0001" }),
           evidence: [expect.objectContaining({ schema: "atlas.evidence:v1", evidence_id: "la_object_localclientevidence0001" })]
         });
+      await expect((client as unknown as { timelineForEntity(id: string): Promise<Array<{ schema: string }>> }).timelineForEntity(entityId))
+        .resolves.toEqual([
+          expect.objectContaining({ schema: "atlas.fact:v1" }),
+          expect.objectContaining({ schema: "atlas.observation:v1" }),
+          expect.objectContaining({ schema: "atlas.relationship:v2" })
+        ]);
     } finally {
       await rm(directory, { recursive: true, force: true });
     }
