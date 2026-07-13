@@ -56,6 +56,7 @@ async function promptRecoveryMaster(): Promise<Buffer> {
 }
 
 export async function restoreRunner(args: Args, master: Buffer): Promise<void> {
+  await assertRestoreOutputAvailable(args.outDir);
   const store = new LocalWormStore(args.storeDir);
   const restored = await restoreBackup(store, args.backupId, master);
   await writeRestoredReplica(args, restored);
@@ -66,10 +67,20 @@ export async function restoreRunnerWithRecoveryKey(
   recoveryPrivateKey: KeyObject,
   installPassphrase: (passphrase: string) => Promise<void>
 ): Promise<void> {
+  await assertRestoreOutputAvailable(args.outDir);
   const store = new LocalWormStore(args.storeDir);
   const restored = await restoreBackupWithRecoveryKey(store, args.backupId, recoveryPrivateKey);
   await installPassphrase(restored.keyringPassphrase);
   await writeRestoredReplica(args, restored);
+}
+
+async function assertRestoreOutputAvailable(outDir: string): Promise<void> {
+  try {
+    if ((await readdir(outDir)).length > 0) throw new Error("restore output directory must be empty");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw error;
+  }
 }
 
 async function writeRestoredReplica(args: Args, restored: { kind: "full" | "differential"; artifactBytes: Buffer; keyringJson: string }): Promise<void> {

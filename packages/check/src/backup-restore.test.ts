@@ -1,5 +1,5 @@
 import { generateKeyPairSync, randomBytes } from "node:crypto";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -88,6 +88,20 @@ describe("backup restore runner", () => {
       await restoreRunnerWithRecoveryKey({ backupId: "la_backup_v2restore", storeDir, outDir }, privateKey, async (passphrase) => { installed.push(passphrase); });
       expect(installed).toEqual(["synthetic-passphrase"]);
       await expect(readFile(join(outDir, "graph", "snapshot.json"))).resolves.toEqual(artifact);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it("does not install a recovered passphrase when the restore output is already occupied", async () => {
+    const root = await mkdtemp(join(tmpdir(), "living-atlas-backup-restore-v2-occupied-"));
+    const storeDir = join(root, "store");
+    const outDir = join(root, "restored");
+    const { publicKey, privateKey } = generateKeyPairSync("x25519");
+    try {
+      await mkdir(outDir); await writeFile(join(outDir, "existing"), "keep");
+      await writeBackup([new LocalWormStore(storeDir)], { authority_id: "la_authority_test0001", kind: "full", base_generation: 0, target_generation: 1, artifactBytes: Buffer.from("snapshot"), recoveryBundleJson: JSON.stringify(createRecoveryBundle({ authority_id: "la_authority_test0001", sealed_keyring_json: "{}", keyring_passphrase: "synthetic-passphrase", recovery_public_key: publicKey })), createdAtIso: "2026-07-09T00:00:00.000Z", backupId: "la_backup_v2occupied", retainUntilMs: 0 });
+      const installed: string[] = [];
+      await expect(restoreRunnerWithRecoveryKey({ backupId: "la_backup_v2occupied", storeDir, outDir }, privateKey, async (passphrase) => { installed.push(passphrase); })).rejects.toThrow("restore output directory must be empty");
+      expect(installed).toEqual([]);
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 });
