@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { randomBytes } from "node:crypto";
-import { wrapKeyringForEscrow, unwrapKeyringFromEscrow } from "./escrow";
+import { generateKeyPairSync, randomBytes } from "node:crypto";
+import { createRecoveryBundle, openRecoveryBundle, wrapKeyringForEscrow, unwrapKeyringFromEscrow } from "./escrow";
 
 describe("escrow", () => {
   const master = randomBytes(32); // 256-bit recovery master
@@ -21,6 +21,23 @@ describe("escrow", () => {
     const env = wrapKeyringForEscrow(keyringJson, master);
     const tampered = { ...env, ciphertext_b64: Buffer.from(randomBytes(env_len(env))).toString("base64") };
     expect(() => unwrapKeyringFromEscrow(tampered, master)).toThrow();
+  });
+
+  it("seals a self-sufficient recovery bundle to an X25519 public key", () => {
+    const { publicKey, privateKey } = generateKeyPairSync("x25519");
+    const bundle = createRecoveryBundle({
+      authority_id: "la_authority_test0001",
+      sealed_keyring_json: keyringJson,
+      keyring_passphrase: "synthetic-passphrase",
+      recovery_public_key: publicKey
+    });
+    expect(bundle.schema).toBe("living-atlas-recovery-bundle:v2");
+    expect(JSON.stringify(bundle)).not.toContain("synthetic-passphrase");
+    expect(openRecoveryBundle(bundle, privateKey)).toEqual({
+      authority_id: "la_authority_test0001",
+      sealed_keyring_json: keyringJson,
+      keyring_passphrase: "synthetic-passphrase"
+    });
   });
 });
 
