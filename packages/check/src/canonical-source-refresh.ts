@@ -556,7 +556,7 @@ export async function refreshCanonicalSource(
     return receipt;
   } finally {
     if (destinationClaimed && !keepDestination) {
-      await rm(paths.destination, { recursive: true, force: true });
+      await rm(paths.destination, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });
     }
   }
 }
