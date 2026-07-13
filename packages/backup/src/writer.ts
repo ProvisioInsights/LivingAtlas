@@ -8,7 +8,8 @@ export type WriteBackupInput = {
   base_generation: number;
   target_generation: number;
   artifactBytes: Buffer;
-  escrowEnvelopeJson: string;
+  escrowEnvelopeJson?: string;
+  recoveryBundleJson?: string;
   createdAtIso: string;
   backupId: string;
   retainUntilMs: number;
@@ -26,7 +27,11 @@ export async function writeBackup(
   input: WriteBackupInput,
 ): Promise<WriteBackupResult> {
   const artifactName = input.kind === "full" ? "snapshot.enc" : "differential.enc";
-  const escrowBytes = Buffer.from(input.escrowEnvelopeJson, "utf8");
+  if ((input.escrowEnvelopeJson === undefined) === (input.recoveryBundleJson === undefined)) {
+    throw new Error("backup requires exactly one key recovery artifact");
+  }
+  const keyArtifactName = input.recoveryBundleJson === undefined ? "keyring.escrow.json" : "recovery-bundle.json";
+  const keyArtifactBytes = Buffer.from(input.recoveryBundleJson ?? input.escrowEnvelopeJson!, "utf8");
   const manifest: BackupManifest = BackupManifestSchema.parse({
     backup_id: input.backupId,
     kind: input.kind,
@@ -37,13 +42,13 @@ export async function writeBackup(
     parent_backup_id: input.parentBackupId,
     artifacts: [
       { name: artifactName, sha256: sha256(input.artifactBytes), bytes: input.artifactBytes.length },
-      { name: "keyring.escrow.json", sha256: sha256(escrowBytes), bytes: escrowBytes.length },
+      { name: keyArtifactName, sha256: sha256(keyArtifactBytes), bytes: keyArtifactBytes.length },
     ],
   });
   const manifestBytes = Buffer.from(JSON.stringify(manifest), "utf8");
   const items: Array<[string, Buffer]> = [
     [`${input.backupId}/${artifactName}`, input.artifactBytes],
-    [`${input.backupId}/keyring.escrow.json`, escrowBytes],
+    [`${input.backupId}/${keyArtifactName}`, keyArtifactBytes],
     [`${input.backupId}/manifest.json`, manifestBytes],
   ];
 

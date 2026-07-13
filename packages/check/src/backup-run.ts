@@ -356,11 +356,16 @@ export async function runBackup(
   // fail the backup — durability lives in the required (R2 + staging) tier.
   if (bestEffortStores.length > 0) {
     const artifactName = level === "full" ? "snapshot.enc" : "differential.enc";
-    const escrowBytes = Buffer.from(input.escrowEnvelopeJson, "utf8");
+    const keyArtifact = result.manifest.artifacts.find((artifact) => (
+      artifact.name === "keyring.escrow.json" || artifact.name === "recovery-bundle.json"
+    ));
+    if (!keyArtifact) throw new Error("backup key recovery artifact missing from manifest");
+    const keyArtifactBytes = Buffer.from(input.recoveryBundleJson ?? input.escrowEnvelopeJson ?? "", "utf8");
+    if (keyArtifactBytes.length === 0) throw new Error("backup key recovery artifact missing from input");
     const manifestBytes = Buffer.from(JSON.stringify(result.manifest), "utf8");
     const items: Array<[string, Buffer]> = [
       [`${backupId}/${artifactName}`, input.artifactBytes],
-      [`${backupId}/keyring.escrow.json`, escrowBytes],
+      [`${backupId}/${keyArtifact.name}`, keyArtifactBytes],
       [`${backupId}/manifest.json`, manifestBytes],
     ];
     const soft = await fanOutBestEffort(bestEffortStores, items, retainUntilMs);

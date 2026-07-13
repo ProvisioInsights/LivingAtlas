@@ -1,12 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { randomBytes } from "node:crypto";
+import { generateKeyPairSync, randomBytes } from "node:crypto";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { LocalWormStore } from "./immutable-store";
 import { writeBackup } from "./writer";
-import { wrapKeyringForEscrow } from "./escrow";
-import { restoreBackup } from "./restore";
+import { createRecoveryBundle, wrapKeyringForEscrow } from "./escrow";
+import { restoreBackup, restoreBackupWithRecoveryKey } from "./restore";
 
 describe("restoreBackup", () => {
   it("round-trips: full backup then restore yields identical artifact + keyring", async () => {
@@ -43,5 +43,24 @@ describe("restoreBackup", () => {
     });
     // Corrupt the stored artifact by writing a NEW backup id whose manifest lies:
     await expect(restoreBackup(store, "la_backup_missing", master)).rejects.toThrow();
+  });
+
+  it("restores a public-key-sealed recovery bundle without a symmetric recovery master", async () => {
+    const store = new LocalWormStore(mkdtempSync(join(tmpdir(), "worm-")), () => 1_000);
+    const { publicKey, privateKey } = generateKeyPairSync("x25519");
+    const keyringJson = JSON.stringify({ keys: [{ id: "la_key_x" }] });
+    await writeBackup([store], {
+      authority_id: "la_authority_test0001", kind: "full", base_generation: 0, target_generation: 3,
+      artifactBytes: Buffer.from("sealed-snapshot-bytes"),
+      recoveryBundleJson: JSON.stringify(createRecoveryBundle({
+        authority_id: "la_authority_test0001", sealed_keyring_json: keyringJson,
+        keyring_passphrase: "synthetic-passphrase", recovery_public_key: publicKey
+      })),
+      createdAtIso: "2026-07-04T00:00:00.000Z", backupId: "la_backup_recoveryv2", retainUntilMs: 0
+    });
+
+    await expect(restoreBackupWithRecoveryKey(store, "la_backup_recoveryv2", privateKey)).resolves.toMatchObject({
+      artifactBytes: Buffer.from("sealed-snapshot-bytes"), keyringJson, keyringPassphrase: "synthetic-passphrase"
+    });
   });
 });
