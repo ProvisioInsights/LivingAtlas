@@ -79,6 +79,7 @@
     "real-data:tier-coverage": "tsx packages/check/src/local-tier-coverage.ts",
     "cloud-unlock:e2e-proof": "tsx packages/check/src/local-cloud-unlock-e2e.ts",
     "real-data:tombstone-orphans": "tsx packages/check/src/local-tombstone-orphans.ts",
+    "real-data:refresh-reconcile": "tsx packages/check/src/logseq-semantic-refresh-reconcile.ts",
     "real-data:backfill-outbox": "tsx packages/check/src/local-backfill-outbox.ts",
     "backup:run": "tsx packages/check/src/backup-run.ts",
     "backup:restore": "tsx packages/check/src/backup-restore.ts"
