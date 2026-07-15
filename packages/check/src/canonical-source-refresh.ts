@@ -14,7 +14,7 @@ import {
 } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
-const receiptSchema = "atlas.canonical-source-refresh-receipt:v1" as const;
+const receiptSchema = "atlas.canonical-source-refresh-receipt:v2" as const;
 
 type RefreshErrorCode =
   | "destination-exists"
@@ -123,6 +123,14 @@ export interface CanonicalSourceRefreshReceipt {
   };
   live_delta: DeltaSummary;
   preserved_working_delta: DeltaSummary;
+  agreed: {
+    path_count: number;
+    path_set_hash: string;
+  };
+  ignored_resolved_live: {
+    path_count: number;
+    path_set_hash: string;
+  };
   overlap: {
     path_count: number;
     path_set_hash: string;
@@ -340,6 +348,66 @@ function canonicalFilesystemPath(path: string) {
     .join("/");
 }
 
+function outcomeFingerprintsByCanonicalPath(
+  changes: readonly DeltaChange[],
+  entries: ReadonlyMap<string, InternalEntry>
+) {
+  const byCanonical = new Map<string, string[]>();
+  for (const change of changes) {
+    const canonical = canonicalFilesystemPath(change.path);
+    const entry = change.kind === "deleted" ? undefined : entries.get(change.path);
+    const fingerprint = [change.path, change.kind, entry?.mode ?? "", entry?.git_oid ?? ""].join("\u0000");
+    const bucket = byCanonical.get(canonical) ?? [];
+    bucket.push(fingerprint);
+    byCanonical.set(canonical, bucket);
+  }
+  for (const bucket of byCanonical.values()) bucket.sort();
+  return byCanonical;
+}
+
+function agreedCanonicalPaths(
+  liveChanges: readonly DeltaChange[],
+  priorChanges: readonly DeltaChange[],
+  liveEntries: ReadonlyMap<string, InternalEntry>,
+  priorEntries: ReadonlyMap<string, InternalEntry>
+) {
+  const live = outcomeFingerprintsByCanonicalPath(liveChanges, liveEntries);
+  const prior = outcomeFingerprintsByCanonicalPath(priorChanges, priorEntries);
+  const agreed = new Set<string>();
+  for (const [canonical, liveFingerprints] of live) {
+    const priorFingerprints = prior.get(canonical);
+    if (
+      priorFingerprints
+      && liveFingerprints.length === priorFingerprints.length
+      && liveFingerprints.every((value, index) => value === priorFingerprints[index])
+    ) {
+      agreed.add(canonical);
+    }
+  }
+  return agreed;
+}
+
+async function gitIgnoredPaths(repoDir: string, paths: readonly string[]) {
+  const ignored = new Set<string>();
+  if (paths.length === 0) return ignored;
+  const stdout = await new Promise<string>((resolvePromise, reject) => {
+    const child = execFile("git", ["-C", repoDir, "check-ignore", "--stdin", "-z"], {
+      encoding: "utf8",
+      maxBuffer: 32 * 1024 * 1024,
+      env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" }
+    }, (error, output) => {
+      const code = (error as { code?: number } | null)?.code;
+      if (error && code !== 1) reject(error);
+      else resolvePromise(output);
+    });
+    child.stdin?.end(paths.map((path) => `${path}\u0000`).join(""));
+  });
+  for (const path of stdout.split("\u0000")) {
+    if (path) ignored.add(path);
+  }
+  return ignored;
+}
+
 export function summarizeCanonicalPathOverlaps(
   input: {
     live_delta_paths: readonly string[];
@@ -548,19 +616,32 @@ export async function refreshCanonicalSource(
     const baseEntries = await readBaseEntries(paths.destination, commonBase);
     const liveChanges = compareTrees(baseEntries, liveBefore.entries);
     const priorChanges = compareTrees(baseEntries, priorBefore.entries);
+    const agreed = agreedCanonicalPaths(liveChanges, priorChanges, liveBefore.entries, priorBefore.entries);
+    const disputedLive = liveChanges.filter((change) => !agreed.has(canonicalFilesystemPath(change.path)));
+    const disputedPrior = priorChanges.filter((change) => !agreed.has(canonicalFilesystemPath(change.path)));
+    const ignoreCandidates = [...new Set([...disputedLive, ...disputedPrior].map((change) => change.path))];
+    const ignoredPaths = await gitIgnoredPaths(paths.destination, ignoreCandidates);
+    const ignoredCanonical = new Set([...ignoredPaths].map(canonicalFilesystemPath));
+    const contestedLive = disputedLive.filter((change) => !ignoredCanonical.has(canonicalFilesystemPath(change.path)));
+    const preservedPrior = disputedPrior.filter((change) => !ignoredCanonical.has(canonicalFilesystemPath(change.path)));
+    const ignoredResolvedLive = new Set(
+      disputedPrior
+        .map((change) => canonicalFilesystemPath(change.path))
+        .filter((canonical) => ignoredCanonical.has(canonical))
+    );
     const overlap = summarizeCanonicalPathOverlaps({
-      live_delta_paths: liveChanges.map((change) => change.path),
-      prior_delta_paths: priorChanges.map((change) => change.path),
+      live_delta_paths: contestedLive.map((change) => change.path),
+      prior_delta_paths: preservedPrior.map((change) => change.path),
       live_current_paths: [...liveBefore.entries.keys()],
-      prior_deleted_paths: priorChanges
+      prior_deleted_paths: preservedPrior
         .filter((change) => change.kind === "deleted")
         .map((change) => change.path),
-      prior_write_paths: priorChanges
+      prior_write_paths: preservedPrior
         .filter((change) => change.kind !== "deleted")
         .map((change) => change.path)
     });
 
-    if (overlap.path_count === 0) await applyPriorDelta(paths.prior, paths.destination, priorChanges);
+    if (overlap.path_count === 0) await applyPriorDelta(paths.prior, paths.destination, preservedPrior);
     const destination = await scanContent(paths.destination, objectFormat);
     const liveAfter = await scanContent(paths.live, objectFormat);
     const priorAfter = await scanContent(paths.prior, objectFormat);
@@ -583,6 +664,11 @@ export async function refreshCanonicalSource(
       prior_working: { unchanged: true, before: priorBefore.public, after: priorAfter.public },
       live_delta: summarizeDelta(liveChanges),
       preserved_working_delta: summarizeDelta(priorChanges),
+      agreed: { path_count: agreed.size, path_set_hash: sha256([...agreed].sort()) },
+      ignored_resolved_live: {
+        path_count: ignoredResolvedLive.size,
+        path_set_hash: sha256([...ignoredResolvedLive].sort())
+      },
       overlap,
       destination: destination.public
     };

@@ -120,7 +120,7 @@ describe("canonical source refresh", () => {
     });
 
     expect(result).toMatchObject({
-      schema: "atlas.canonical-source-refresh-receipt:v1",
+      schema: "atlas.canonical-source-refresh-receipt:v2",
       outcome: "refreshed",
       common_base_hash: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
       live_source: {
@@ -173,6 +173,89 @@ describe("canonical source refresh", () => {
     await expect(readFile(join(fixture.live, "live-tracked.md")))
       .resolves.toEqual(sourceBytesBefore);
     await expect(readFile(brokenRef, "utf8")).resolves.toBe(brokenRefBytes);
+  });
+
+  it("refreshes when both sides hold identical new content on the same paths", async () => {
+    const fixture = await makeSharedCopies();
+    const sharedBytes = "identical generated artifact\n";
+    await writeFile(join(fixture.live, "generated-artifact.log"), sharedBytes);
+    await writeFile(join(fixture.prior, "generated-artifact.log"), sharedBytes);
+    await writeFile(join(fixture.live, "shared.md"), "same edit on both sides\n");
+    await writeFile(join(fixture.prior, "shared.md"), "same edit on both sides\n");
+    await writeFile(join(fixture.prior, "prior-only.md"), "preserved prior only\n");
+
+    const result = await refreshCanonicalSource({
+      live_source_dir: fixture.live,
+      prior_working_dir: fixture.prior,
+      destination_dir: fixture.destination,
+      receipt_path: fixture.receipt
+    });
+
+    expect(result).toMatchObject({
+      outcome: "refreshed",
+      overlap: { path_count: 0 },
+      agreed: {
+        path_count: 2,
+        path_set_hash: expect.stringMatching(/^sha256:[a-f0-9]{64}$/)
+      }
+    });
+    await expect(readFile(join(fixture.destination, "generated-artifact.log"), "utf8")).resolves.toBe(sharedBytes);
+    await expect(readFile(join(fixture.destination, "shared.md"), "utf8")).resolves.toBe("same edit on both sides\n");
+    await expect(readFile(join(fixture.destination, "prior-only.md"), "utf8")).resolves.toBe("preserved prior only\n");
+  });
+
+  it("refreshes when both sides applied the identical case-only rename", async () => {
+    const fixture = await makeSharedCopies();
+    for (const side of [fixture.live, fixture.prior]) {
+      await rm(join(side, "shared.md"));
+      await writeFile(join(side, "SHARED.md"), "base shared\n");
+    }
+
+    const result = await refreshCanonicalSource({
+      live_source_dir: fixture.live,
+      prior_working_dir: fixture.prior,
+      destination_dir: fixture.destination,
+      receipt_path: fixture.receipt
+    });
+
+    expect(result).toMatchObject({ outcome: "refreshed", overlap: { path_count: 0 } });
+    expect(result.agreed.path_count).toBeGreaterThanOrEqual(1);
+    await expect(readFile(join(fixture.destination, "SHARED.md"), "utf8")).resolves.toBe("base shared\n");
+  });
+
+  it("resolves gitignored divergence to the live variant instead of stopping", async () => {
+    const fixture = await makeSharedCopies();
+    await writeFile(join(fixture.live, ".gitignore"), "artifacts/\n*.cache\n");
+    await git(fixture.live, "add", ".gitignore");
+    await git(fixture.live, "commit", "-m", "synthetic ignore rules");
+    await mkdir(join(fixture.live, "artifacts"), { recursive: true });
+    await mkdir(join(fixture.prior, "artifacts"), { recursive: true });
+    await writeFile(join(fixture.live, "artifacts", "build.out"), "live artifact bytes\n");
+    await writeFile(join(fixture.prior, "artifacts", "build.out"), "stale prior artifact bytes\n");
+    await writeFile(join(fixture.prior, "stale-only.cache"), "stale prior cache\n");
+    await writeFile(join(fixture.prior, "prior-tracked.md"), "preserved prior\n");
+
+    const result = await refreshCanonicalSource({
+      live_source_dir: fixture.live,
+      prior_working_dir: fixture.prior,
+      destination_dir: fixture.destination,
+      receipt_path: fixture.receipt
+    });
+
+    expect(result).toMatchObject({
+      outcome: "refreshed",
+      overlap: { path_count: 0 },
+      ignored_resolved_live: {
+        path_count: 2,
+        path_set_hash: expect.stringMatching(/^sha256:[a-f0-9]{64}$/)
+      }
+    });
+    await expect(readFile(join(fixture.destination, "artifacts", "build.out"), "utf8"))
+      .resolves.toBe("live artifact bytes\n");
+    await expect(readFile(join(fixture.destination, "stale-only.cache"), "utf8")).rejects.toThrow();
+    await expect(readFile(join(fixture.destination, "prior-tracked.md"), "utf8")).resolves.toBe("preserved prior\n");
+    await expect(readFile(join(fixture.prior, "artifacts", "build.out"), "utf8"))
+      .resolves.toBe("stale prior artifact bytes\n");
   });
 
   it("stops on a same-path overlap and leaves both byte variants intact", async () => {
