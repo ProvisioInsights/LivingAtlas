@@ -56,6 +56,8 @@ import {
   localTraverseGraph,
   localUpdateEdgeObject,
   localUpdateObject,
+  localMigrationOpen,
+  localMigrationSeal,
   type LocalGraphSyntheticStoreLimits
 } from "./local-graph";
 import {
@@ -2753,6 +2755,91 @@ describe("local fixture graph tools", () => {
       }
     }
   );
+
+  it("allows correcting an immutable research record while a migration window is open (ADR-0010)", async () => {
+    const token = "local-token-migration-window-mutable-0001";
+    const directory = await mkdtemp(join(tmpdir(), "living-atlas-migration-window-mutable-"));
+    try {
+      const controlState = await createFixtureLocalControlState(token);
+      const keyring = createDefaultLocalKeyring({ authorityId: controlState.authority_id, createdAt: now });
+      const graphStore = await FileLocalGraphStore.open({
+        directory,
+        authorityId: controlState.authority_id,
+        plaintextPersistence: "encrypt",
+        keyring
+      });
+      const evidence = withResolutionPayload(researchResolutionDrafts().evidence[0]!, {
+        extraction_method: undefined
+      });
+      await expect(graphStore.initializeFromObjects([evidence] as never)).resolves.toMatchObject({ ok: true });
+      const context = createLocalMcpContextFromControlState({
+        controlState,
+        graphStore,
+        decryptPayload: decryptWithKeyring(keyring),
+        auditSink: new InMemoryLocalMcpAuditSink(),
+        now
+      });
+
+      // While live, the research record is append-only immutable.
+      await expect(localUpdateObject(context, {
+        authorization: `Bearer ${token}`,
+        object_id: evidence.object_id,
+        expected_version: 1,
+        patch: { content_hash: fixedHash("f") }
+      })).resolves.toEqual({ ok: false, reason: "research-record-immutable" });
+
+      // Opening a bounded migration window suspends per-record immutability.
+      await expect(graphStore.openMigrationWindow({ reason: "bulk correction", actor_id: "owner-1" }))
+        .resolves.toMatchObject({ ok: true });
+
+      const corrected = await localUpdateObject(context, {
+        authorization: `Bearer ${token}`,
+        object_id: evidence.object_id,
+        expected_version: 1,
+        patch: { content_hash: fixedHash("f") }
+      });
+      expect(corrected).toMatchObject({ ok: true });
+      expect(graphStore.readObject(evidence.object_id)).toMatchObject({ version: 2 });
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("migration_open and migration_seal drive the authority lifecycle through the MCP (ADR-0010)", async () => {
+    const token = "local-token-migration-tools-0001";
+    const directory = await mkdtemp(join(tmpdir(), "living-atlas-migration-tools-"));
+    try {
+      const controlState = await createFixtureLocalControlState(token);
+      const keyring = createDefaultLocalKeyring({ authorityId: controlState.authority_id, createdAt: now });
+      const graphStore = await FileLocalGraphStore.open({
+        directory,
+        authorityId: controlState.authority_id,
+        plaintextPersistence: "encrypt",
+        keyring
+      });
+      const context = createLocalMcpContextFromControlState({
+        controlState,
+        graphStore,
+        decryptPayload: decryptWithKeyring(keyring),
+        auditSink: new InMemoryLocalMcpAuditSink(),
+        now
+      });
+
+      const opened = await localMigrationOpen(context, {
+        authorization: `Bearer ${token}`,
+        reason: "logseq sunset corrections"
+      });
+      expect(opened).toMatchObject({ ok: true });
+      expect(graphStore.status().lifecycle.state).toBe("migrating");
+
+      const sealed = await localMigrationSeal(context, { authorization: `Bearer ${token}` });
+      expect(sealed).toMatchObject({ ok: true });
+      expect(graphStore.status().lifecycle.state).toBe("live");
+      expect(graphStore.migrationHistory()).toHaveLength(1);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
 
   it.each([
     { recordKind: "fact" as const, operation: "update" as const },
