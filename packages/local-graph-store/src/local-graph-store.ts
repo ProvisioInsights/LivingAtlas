@@ -68,6 +68,29 @@ export const LocalGraphOperationRecordSchema = z
   .strict();
 export type LocalGraphOperationRecord = z.infer<typeof LocalGraphOperationRecordSchema>;
 
+export const MigrationWindowSchema = z
+  .object({
+    migration_id: z.string().regex(/^la_migration_[a-f0-9]{24}$/),
+    reason: z.string().min(1),
+    opened_at: IsoTimestampSchema,
+    opened_by: z.string().min(1),
+    base_generation: z.number().int().nonnegative()
+  })
+  .strict();
+export type MigrationWindow = z.infer<typeof MigrationWindowSchema>;
+
+export const AuthorityLifecycleSchema = z.discriminatedUnion("state", [
+  z.object({ state: z.literal("live") }).strict(),
+  z.object({ state: z.literal("migrating"), window: MigrationWindowSchema }).strict()
+]);
+export type AuthorityLifecycle = z.infer<typeof AuthorityLifecycleSchema>;
+
+export const SealedMigrationRecordSchema = MigrationWindowSchema.extend({
+  sealed_at: IsoTimestampSchema,
+  sealed_generation: z.number().int().nonnegative()
+}).strict();
+export type SealedMigrationRecord = z.infer<typeof SealedMigrationRecordSchema>;
+
 export const LocalGraphSnapshotSchema = z
   .object({
     schema_version: z.literal(1),
@@ -78,7 +101,9 @@ export const LocalGraphSnapshotSchema = z
     journal_sequence: z.number().int().nonnegative(),
     plaintext_persistence: z.enum(["redacted", "encrypted", "allowed"]),
     objects: z.array(GraphObjectEnvelopeSchema),
-    operation_records: z.array(LocalGraphOperationRecordSchema).default([])
+    operation_records: z.array(LocalGraphOperationRecordSchema).default([]),
+    lifecycle: AuthorityLifecycleSchema.default({ state: "live" }),
+    migration_records: z.array(SealedMigrationRecordSchema).default([])
   })
   .strict();
 
@@ -135,6 +160,7 @@ export type LocalGraphStoreStatus = {
   tombstone_count: number;
   updated_at: string;
   plaintext_persistence: "redacted" | "encrypted" | "allowed";
+  lifecycle: AuthorityLifecycle;
 };
 
 export type LocalGraphMutationInputBase = {
@@ -228,6 +254,8 @@ type LocalGraphState = {
   journalSequence: number;
   objects: Map<ObjectId, GraphObjectEnvelope>;
   operationRecords: LocalGraphOperationRecord[];
+  lifecycle: AuthorityLifecycle;
+  migrationRecords: SealedMigrationRecord[];
 };
 
 type LocalGraphStorePaths = {
@@ -435,7 +463,9 @@ function snapshotFromState(
     journal_sequence: state.journalSequence,
     plaintext_persistence: plaintextPersistence === "redact" ? "redacted" : plaintextPersistence === "encrypt" ? "encrypted" : "allowed",
     objects: Array.from(state.objects.values()).map(cloneGraphObject),
-    operation_records: state.operationRecords.map((record) => LocalGraphOperationRecordSchema.parse(structuredClone(record)))
+    operation_records: state.operationRecords.map((record) => LocalGraphOperationRecordSchema.parse(structuredClone(record))),
+    lifecycle: AuthorityLifecycleSchema.parse(structuredClone(state.lifecycle)),
+    migration_records: state.migrationRecords.map((record) => SealedMigrationRecordSchema.parse(structuredClone(record)))
   });
 }
 
@@ -453,7 +483,8 @@ function statusFromState(
     active_object_count: objects.length - tombstoneCount,
     tombstone_count: tombstoneCount,
     updated_at: state.updatedAt,
-    plaintext_persistence: plaintextPersistence === "redact" ? "redacted" : plaintextPersistence === "encrypt" ? "encrypted" : "allowed"
+    plaintext_persistence: plaintextPersistence === "redact" ? "redacted" : plaintextPersistence === "encrypt" ? "encrypted" : "allowed",
+    lifecycle: state.lifecycle
   };
 }
 
@@ -521,7 +552,9 @@ function applyJournalEntry(state: LocalGraphState, entry: LocalGraphJournalEntry
     generation: entry.generation,
     journalSequence: entry.sequence,
     objects: nextObjects,
-    operationRecords: state.operationRecords
+    operationRecords: state.operationRecords,
+    lifecycle: state.lifecycle,
+    migrationRecords: state.migrationRecords
   };
 }
 
@@ -567,7 +600,9 @@ async function loadState(
     generation: snapshot?.generation ?? 0,
     journalSequence: snapshot?.journal_sequence ?? 0,
     objects: snapshot ? mapFromObjects(snapshot.objects) : new Map(),
-    operationRecords: snapshot?.operation_records ?? []
+    operationRecords: snapshot?.operation_records ?? [],
+    lifecycle: snapshot?.lifecycle ?? { state: "live" },
+    migrationRecords: snapshot?.migration_records ?? []
   };
 
   if (plaintextPersistence !== "allow") {
@@ -651,6 +686,87 @@ export class FileLocalGraphStore {
     return record ? cloneOperationRecord(record) : undefined;
   }
 
+  migrationHistory(): SealedMigrationRecord[] {
+    return this.state.migrationRecords.map((record) => SealedMigrationRecordSchema.parse(structuredClone(record)));
+  }
+
+  /**
+   * Open a bounded, recorded migration window (ADR-0010). While a window is
+   * open the authority is `migrating`, which suspends per-record append-only
+   * immutability so bulk corrections and refactors can be applied directly.
+   * The window persists across reload and must be closed with sealMigrationWindow.
+   */
+  async openMigrationWindow(input: {
+    reason: string;
+    actor_id: string;
+    opened_at?: string;
+  }): Promise<
+    | { ok: true; window: MigrationWindow; status: LocalGraphStoreStatus }
+    | { ok: false; reason: "migration-window-already-open" | "invalid-reason" }
+  > {
+    return this.serializeMutation(async () => {
+      const reason = z.string().min(1).safeParse(input.reason);
+      if (!reason.success) {
+        return { ok: false as const, reason: "invalid-reason" as const };
+      }
+      if (this.state.lifecycle.state === "migrating") {
+        return { ok: false as const, reason: "migration-window-already-open" as const };
+      }
+      const openedAt = normalizeRecordedAt(input.opened_at, this.now);
+      const actorId = z.string().min(1).parse(input.actor_id);
+      const migrationId = `la_migration_${digest(`${this.state.authorityId}:${reason.data}:${openedAt}:${this.state.generation}:${actorId}`)}`;
+      const window = MigrationWindowSchema.parse({
+        migration_id: migrationId,
+        reason: reason.data,
+        opened_at: openedAt,
+        opened_by: actorId,
+        base_generation: this.state.generation
+      });
+      this.state = { ...this.state, updatedAt: openedAt, lifecycle: { state: "migrating", window } };
+      await atomicWriteJson(this.paths.snapshotPath, snapshotFromState(this.state, this.plaintextPersistence));
+      return { ok: true as const, window, status: this.status() };
+    });
+  }
+
+  /**
+   * Seal an open migration window: re-seal the authority to `live` (restoring
+   * append-only immutability) and append an audited SealedMigrationRecord
+   * capturing base/sealed generations for the whole window.
+   */
+  async sealMigrationWindow(input: {
+    actor_id: string;
+    migration_id?: string;
+    sealed_at?: string;
+  }): Promise<
+    | { ok: true; record: SealedMigrationRecord; status: LocalGraphStoreStatus }
+    | { ok: false; reason: "no-open-migration-window" | "migration-id-mismatch" }
+  > {
+    return this.serializeMutation(async () => {
+      if (this.state.lifecycle.state !== "migrating") {
+        return { ok: false as const, reason: "no-open-migration-window" as const };
+      }
+      const openWindow = this.state.lifecycle.window;
+      if (input.migration_id !== undefined && input.migration_id !== openWindow.migration_id) {
+        return { ok: false as const, reason: "migration-id-mismatch" as const };
+      }
+      const sealedAt = normalizeRecordedAt(input.sealed_at, this.now);
+      z.string().min(1).parse(input.actor_id);
+      const record = SealedMigrationRecordSchema.parse({
+        ...openWindow,
+        sealed_at: sealedAt,
+        sealed_generation: this.state.generation
+      });
+      this.state = {
+        ...this.state,
+        updatedAt: sealedAt,
+        lifecycle: { state: "live" },
+        migrationRecords: [...this.state.migrationRecords, record]
+      };
+      await atomicWriteJson(this.paths.snapshotPath, snapshotFromState(this.state, this.plaintextPersistence));
+      return { ok: true as const, record, status: this.status() };
+    });
+  }
+
   async initializeFromObjects(
     objectsInput: GraphObjectEnvelope[],
     options: InitializeLocalGraphStoreOptions = {}
@@ -711,7 +827,9 @@ export class FileLocalGraphStore {
       generation: expectedGeneration,
       journalSequence: this.state.journalSequence,
       objects: mapFromObjects(objects),
-      operationRecords: this.state.operationRecords
+      operationRecords: this.state.operationRecords,
+      lifecycle: this.state.lifecycle,
+      migrationRecords: this.state.migrationRecords
     };
 
     await atomicWriteJson(this.paths.snapshotPath, snapshotFromState(nextState, this.plaintextPersistence));
@@ -1044,7 +1162,9 @@ export class FileLocalGraphStore {
         generation,
         journalSequence: sequence,
         objects: nextObjects,
-        operationRecords: [...this.state.operationRecords, operationRecord]
+        operationRecords: [...this.state.operationRecords, operationRecord],
+        lifecycle: this.state.lifecycle,
+        migrationRecords: this.state.migrationRecords
       };
 
       await atomicWriteJson(this.paths.snapshotPath, snapshotFromState(nextState, this.plaintextPersistence));
@@ -1132,7 +1252,9 @@ export class FileLocalGraphStore {
       generation,
       journalSequence: sequence,
       objects: nextObjects,
-      operationRecords: this.state.operationRecords
+      operationRecords: this.state.operationRecords,
+      lifecycle: this.state.lifecycle,
+      migrationRecords: this.state.migrationRecords
     };
 
     return {

@@ -25,7 +25,9 @@ export type LivingAtlasMcpToolName =
   | "sync_pull"
   | "sync_envelopes"
   | "usage_gate"
-  | "usage_reconcile";
+  | "usage_reconcile"
+  | "migration_open"
+  | "migration_seal";
 
 export type LivingAtlasMcpToolDefinition = {
   name: LivingAtlasMcpToolName;
@@ -485,13 +487,27 @@ export const LivingAtlasMcpToolDefinitions = [
       max_r2_objects: { type: "integer", minimum: 1, maximum: 100000 },
       inventory_mode: { type: "string", enum: ["full", "metadata"] }
     })
+  },
+  {
+    name: "migration_open",
+    description: "Open a bounded, audited migration window (ADR-0010) that suspends append-only immutability so the authority owner can apply bulk corrections or refactors in place. Local-only; must be closed with migration_seal.",
+    inputSchema: objectSchema({
+      reason: { type: "string", minLength: 1 }
+    }, ["reason"])
+  },
+  {
+    name: "migration_seal",
+    description: "Seal the open migration window (ADR-0010): return the authority to live, restoring append-only immutability, and record an audited sealed-migration entry. Local-only.",
+    inputSchema: objectSchema({
+      migration_id: { type: "string", pattern: "^la_migration_[a-f0-9]{24}$" }
+    })
   }
 ] as const satisfies readonly LivingAtlasMcpToolDefinition[];
 
 export const LivingAtlasMcpToolNames = LivingAtlasMcpToolDefinitions.map((tool) => tool.name);
 
 /** Tools that must never be advertised or callable through remote MCP transports. */
-export const LocalOnlyLivingAtlasMcpToolNames = ["resolution_apply"] as const satisfies readonly LivingAtlasMcpToolName[];
+export const LocalOnlyLivingAtlasMcpToolNames = ["resolution_apply", "migration_open", "migration_seal"] as const satisfies readonly LivingAtlasMcpToolName[];
 export type RemoteLivingAtlasMcpToolName = Exclude<
   LivingAtlasMcpToolName,
   (typeof LocalOnlyLivingAtlasMcpToolNames)[number]

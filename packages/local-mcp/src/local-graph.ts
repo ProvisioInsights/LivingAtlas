@@ -43,7 +43,10 @@ import { accountSourceMeaning } from "@living-atlas/importer";
 import type {
   FileLocalGraphStore,
   LocalGraphOperationRecord,
-  LocalGraphResolutionRequestFingerprint
+  LocalGraphResolutionRequestFingerprint,
+  LocalGraphStoreStatus,
+  MigrationWindow,
+  SealedMigrationRecord
 } from "@living-atlas/local-graph-store";
 import {
   PlaintextGraphObjectDraftSchema,
@@ -433,10 +436,22 @@ async function canonicalPayloadForMutationGuard(
     : undefined;
 }
 
+/**
+ * True when the authority is inside an open migration window (ADR-0010). While
+ * a window is open, per-record append-only immutability is suspended so bulk
+ * corrections and refactors can be applied directly to research/review records.
+ */
+function migrationWindowOpen(context: LocalMcpContext): boolean {
+  return context.graphStore?.status().lifecycle.state === "migrating";
+}
+
 async function isImmutableResearchRecord(
   context: LocalMcpContext,
   object: GraphObjectEnvelope
 ): Promise<boolean> {
+  if (migrationWindowOpen(context)) {
+    return false;
+  }
   const payload = await canonicalPayloadForMutationGuard(context, object);
   if (!payload
     && object.encryption_class === "client-encrypted"
@@ -775,6 +790,76 @@ export async function localGraphStatus(
       operations: auth.authenticated.capability.operations
     }
   };
+}
+
+export type LocalMigrationOpenToolInput = LocalGraphToolInput & {
+  reason: string;
+};
+
+export type LocalMigrationSealToolInput = LocalGraphToolInput & {
+  migration_id?: string;
+};
+
+/**
+ * Open a bounded migration window (ADR-0010). Suspends per-record append-only
+ * immutability so the owner can apply bulk corrections/refactors directly.
+ */
+export async function localMigrationOpen(
+  context: LocalMcpContext,
+  input: LocalMigrationOpenToolInput
+): Promise<LocalGraphToolResult<{ window: MigrationWindow; status: LocalGraphStoreStatus }>> {
+  const auth = await authenticateToolCall(context, input.authorization);
+  if (!auth.ok) {
+    return { ok: false, reason: auth.reason };
+  }
+  if (!auth.authenticated.capability.operations.includes("update")) {
+    recordToolDecision({ context, authenticated: auth.authenticated, toolName: "migration_open", operation: "update", allowed: false, reason: "operation-not-permitted" });
+    return { ok: false, reason: "operation-not-permitted" };
+  }
+  const graphStore = context.graphStore;
+  if (!graphStore) {
+    recordToolDecision({ context, authenticated: auth.authenticated, toolName: "migration_open", operation: "update", allowed: false, reason: "graph-store-unavailable" });
+    return { ok: false, reason: "graph-store-unavailable" };
+  }
+  const result = await graphStore.openMigrationWindow({
+    reason: input.reason,
+    actor_id: auth.authenticated.client.client_id
+  });
+  recordToolDecision({ context, authenticated: auth.authenticated, toolName: "migration_open", operation: "update", allowed: result.ok, reason: result.ok ? "allowed" : result.reason });
+  return result.ok
+    ? { ok: true, result: { window: result.window, status: result.status } }
+    : { ok: false, reason: result.reason };
+}
+
+/**
+ * Seal an open migration window (ADR-0010): re-seal the authority to `live`
+ * (restoring immutability) and append an audited SealedMigrationRecord.
+ */
+export async function localMigrationSeal(
+  context: LocalMcpContext,
+  input: LocalMigrationSealToolInput
+): Promise<LocalGraphToolResult<{ record: SealedMigrationRecord; status: LocalGraphStoreStatus }>> {
+  const auth = await authenticateToolCall(context, input.authorization);
+  if (!auth.ok) {
+    return { ok: false, reason: auth.reason };
+  }
+  if (!auth.authenticated.capability.operations.includes("update")) {
+    recordToolDecision({ context, authenticated: auth.authenticated, toolName: "migration_seal", operation: "update", allowed: false, reason: "operation-not-permitted" });
+    return { ok: false, reason: "operation-not-permitted" };
+  }
+  const graphStore = context.graphStore;
+  if (!graphStore) {
+    recordToolDecision({ context, authenticated: auth.authenticated, toolName: "migration_seal", operation: "update", allowed: false, reason: "graph-store-unavailable" });
+    return { ok: false, reason: "graph-store-unavailable" };
+  }
+  const result = await graphStore.sealMigrationWindow({
+    actor_id: auth.authenticated.client.client_id,
+    migration_id: input.migration_id
+  });
+  recordToolDecision({ context, authenticated: auth.authenticated, toolName: "migration_seal", operation: "update", allowed: result.ok, reason: result.ok ? "allowed" : result.reason });
+  return result.ok
+    ? { ok: true, result: { record: result.record, status: result.status } }
+    : { ok: false, reason: result.reason };
 }
 
 type ParsedResolutionMutationSet = {
