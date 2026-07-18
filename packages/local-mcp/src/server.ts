@@ -19,6 +19,8 @@ import {
   localCreateEdgeObject,
   localDeleteEdgeObject,
   localGraphStatus,
+  localMigrationOpen,
+  localMigrationSeal,
   localListObjects,
   localReadObject,
   localReadEdgeObject,
@@ -45,6 +47,8 @@ import {
   type LocalGraphSearchToolInput,
   type LocalGraphTombstoneToolInput,
   type LocalGraphToolInput,
+  type LocalMigrationOpenToolInput,
+  type LocalMigrationSealToolInput,
   type LocalGraphTimelineToolInput,
   type LocalGraphTraverseToolInput,
   type LocalGraphUpdateToolInput
@@ -193,6 +197,12 @@ const SyncReadInputSchema = {
   after_generation: z.number().int().nonnegative(),
   limit: z.number().int().min(1).max(50).optional()
 };
+const MigrationOpenInputSchema = {
+  reason: z.string().min(1).describe("Why this migration window is being opened (audited in the sealed-migration record).")
+};
+const MigrationSealInputSchema = {
+  migration_id: z.string().regex(/^la_migration_[a-f0-9]{24}$/).describe("Optional guard: only seal if this matches the currently open window.").optional()
+};
 
 export const LocalMcpToolInputSchemas = {
   access_modes: EmptyInputSchema,
@@ -219,7 +229,9 @@ export const LocalMcpToolInputSchemas = {
   sync_pull: SyncReadInputSchema,
   sync_envelopes: SyncReadInputSchema,
   usage_gate: EmptyInputSchema,
-  usage_reconcile: EmptyInputSchema
+  usage_reconcile: EmptyInputSchema,
+  migration_open: MigrationOpenInputSchema,
+  migration_seal: MigrationSealInputSchema
 };
 
 function asToolContent(result: unknown) {
@@ -254,6 +266,14 @@ function withCreateAuthorization(input: unknown, options: LocalMcpServerAuthOpti
 
 function withUpdateAuthorization(input: unknown, options: LocalMcpServerAuthOptions): LocalGraphUpdateToolInput {
   return withAuthorization(input, options) as LocalGraphUpdateToolInput;
+}
+
+function withMigrationOpenAuthorization(input: unknown, options: LocalMcpServerAuthOptions): LocalMigrationOpenToolInput {
+  return withAuthorization(input, options) as LocalMigrationOpenToolInput;
+}
+
+function withMigrationSealAuthorization(input: unknown, options: LocalMcpServerAuthOptions): LocalMigrationSealToolInput {
+  return withAuthorization(input, options) as LocalMigrationSealToolInput;
 }
 
 function withTombstoneAuthorization(input: unknown, options: LocalMcpServerAuthOptions): LocalGraphTombstoneToolInput {
@@ -360,6 +380,10 @@ export function createLivingAtlasLocalMcpServer(
         case "usage_gate":
         case "usage_reconcile":
           return localUnsupportedTool(context, withAuthorization(input, options), toolName);
+        case "migration_open":
+          return localMigrationOpen(context, withMigrationOpenAuthorization(input, options));
+        case "migration_seal":
+          return localMigrationSeal(context, withMigrationSealAuthorization(input, options));
       }
     }
   });
@@ -717,6 +741,24 @@ export function createLivingAtlasLocalMcpServer(
           readOnlyHint: true,
           destructiveHint: false,
           idempotentHint: true,
+          openWorldHint: false
+        }
+      },
+      async (input: unknown) => asToolContent(await callLocalTool(name, input))
+    );
+  }
+
+  for (const name of ["migration_open", "migration_seal"] as const) {
+    server.registerTool(
+      name,
+      {
+        title: name.replaceAll("_", " "),
+        description: toolMetadata(name).description,
+        inputSchema: LocalMcpToolInputSchemas[name],
+        annotations: {
+          readOnlyHint: false,
+          destructiveHint: true,
+          idempotentHint: false,
           openWorldHint: false
         }
       },
