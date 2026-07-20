@@ -20,10 +20,14 @@ function connectOnce(socketPath: string): Promise<Socket> {
 }
 
 /**
- * Connect to the local-mcp daemon's Unix socket, spawning it first if nobody
- * is listening yet. Retries with backoff because daemon startup does real
- * async work (Keychain-backed control-store/keyring reads, replaying the
- * graph journal) before it starts accepting connections.
+ * Connect to the local-mcp daemon's Unix socket. In the normal always-on
+ * deployment the launchd LaunchAgent already holds it open, so the first
+ * connectOnce succeeds immediately. If nobody is listening yet (pre-login
+ * window, or no LaunchAgent installed) we ask spawnDaemon to bring it up and
+ * retry with backoff — daemon startup does real async work (Keychain-backed
+ * control-store/keyring reads, replaying the graph journal) before it accepts
+ * connections. launchd's single-instance guarantee (or, in the fallback, the
+ * daemon's own socket bind) means concurrent proxies converge on one daemon.
  */
 export async function connectToLocalMcpDaemon(options: {
   socketPath: string;
@@ -71,6 +75,28 @@ export function pipeStdioToDaemon(socket: Socket): void {
   process.stdin.once("error", () => socket.destroy());
 }
 
+/**
+ * Ensure the daemon is up. Preferred path: the daemon runs as an always-on
+ * launchd LaunchAgent (RunAtLoad + KeepAlive), so we simply ask launchd to
+ * (re)start its own managed service — idempotent, single-instance guaranteed
+ * by launchd, no raw process spawned by us. Fallback (no LaunchAgent
+ * installed, e.g. dev/fixture runs): spawn the daemon detached ourselves so
+ * proxy.ts still works standalone.
+ */
+function ensureLocalMcpDaemonRunning(): void {
+  const launchdLabel = process.env.LIVING_ATLAS_LOCAL_MCP_LAUNCHD_LABEL;
+  if (launchdLabel) {
+    const child = spawn("launchctl", ["kickstart", `gui/${process.getuid?.() ?? ""}/${launchdLabel}`], {
+      detached: true,
+      stdio: "ignore"
+    });
+    child.on("error", () => spawnLocalMcpDaemonProcess());
+    child.unref();
+    return;
+  }
+  spawnLocalMcpDaemonProcess();
+}
+
 function spawnLocalMcpDaemonProcess(): void {
   const thisDir = dirname(fileURLToPath(import.meta.url));
   const daemonEntryPath = join(thisDir, "daemon.ts");
@@ -90,7 +116,7 @@ if (isMain) {
   const socketPath = localMcpSocketPathFromEnv();
   const socket = await connectToLocalMcpDaemon({
     socketPath,
-    spawnDaemon: spawnLocalMcpDaemonProcess
+    spawnDaemon: ensureLocalMcpDaemonRunning
   });
   pipeStdioToDaemon(socket);
 }
