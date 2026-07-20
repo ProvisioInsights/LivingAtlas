@@ -4,6 +4,7 @@ import type { Socket } from "node:net";
 import { bindLocalMcpDaemonSocket, createIdleShutdownTimer } from "./daemon-socket";
 import { buildLocalMcpContextFromEnv, localMcpSocketPathFromEnv } from "./context-from-env";
 import { createLivingAtlasLocalMcpServer, type LocalMcpServerAuthOptions } from "./server";
+import { startLocalMcpHttpListener, type LocalMcpHttpListener } from "./http-listener";
 import type { LocalMcpContext } from "./local-graph";
 
 export type LocalMcpDaemon = {
@@ -34,6 +35,13 @@ export async function startLocalMcpDaemon(
     socketPath: string;
     authorizationHeader?: string;
     idleTimeoutMs?: number;
+    /**
+     * When set, also expose the MCP over a loopback Streamable HTTP endpoint
+     * (for clients that connect by URL instead of the stdio proxy). Optional
+     * and best-effort: a bind failure is logged and the socket keeps serving,
+     * so a busy HTTP port never takes the whole daemon down under KeepAlive.
+     */
+    http?: { port: number; host?: string };
   }
 ): Promise<StartLocalMcpDaemonResult> {
   const bound = await bindLocalMcpDaemonSocket(options.socketPath);
@@ -42,6 +50,21 @@ export async function startLocalMcpDaemon(
   }
 
   const authOptions: LocalMcpServerAuthOptions = { authorizationHeader: options.authorizationHeader };
+
+  let httpListener: LocalMcpHttpListener | undefined;
+  if (options.http) {
+    try {
+      httpListener = await startLocalMcpHttpListener(context, {
+        port: options.http.port,
+        host: options.http.host,
+        authorizationHeader: options.authorizationHeader
+      });
+    } catch (error) {
+      console.error(
+        `local-mcp: HTTP listener failed to start (socket still serving): ${error instanceof Error ? error.message : error}`
+      );
+    }
+  }
   const idleTimer = createIdleShutdownTimer({
     timeoutMs: options.idleTimeoutMs ?? 0,
     onIdle: () => {
@@ -80,6 +103,9 @@ export async function startLocalMcpDaemon(
       socket.destroy();
     }
     await new Promise<void>((resolve) => bound.server.close(() => resolve()));
+    if (httpListener) {
+      await httpListener.close().catch(() => undefined);
+    }
   };
 
   return { ok: true, daemon: { socketPath: options.socketPath, close } };
@@ -93,7 +119,17 @@ if (isMain) {
     ? Number(process.env.LIVING_ATLAS_LOCAL_MCP_DAEMON_IDLE_MINUTES) * 60_000
     : 30 * 60_000;
 
-  const result = await startLocalMcpDaemon(context, { socketPath, authorizationHeader, idleTimeoutMs });
+  // Opt-in loopback HTTP endpoint. Host is forced to 127.0.0.1 unless
+  // explicitly overridden, and even then must be a loopback address — this is
+  // never meant to listen on a routable interface.
+  const httpPort = process.env.LIVING_ATLAS_LOCAL_MCP_HTTP_PORT
+    ? Number(process.env.LIVING_ATLAS_LOCAL_MCP_HTTP_PORT)
+    : undefined;
+  const http = httpPort
+    ? { port: httpPort, host: process.env.LIVING_ATLAS_LOCAL_MCP_HTTP_HOST ?? "127.0.0.1" }
+    : undefined;
+
+  const result = await startLocalMcpDaemon(context, { socketPath, authorizationHeader, idleTimeoutMs, http });
   if (!result.ok) {
     // Another daemon already owns this socket — nothing to do, exit quietly.
     // Whichever proxy spawned us will connect to that other daemon instead.
