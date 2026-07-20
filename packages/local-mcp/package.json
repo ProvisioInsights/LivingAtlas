@@ -7,7 +7,9 @@
     ".": "./src/index.ts"
   },
   "bin": {
-    "living-atlas-local-mcp": "./src/cli.ts"
+    "living-atlas-local-mcp": "./src/cli.ts",
+    "living-atlas-local-mcp-daemon": "./src/daemon.ts",
+    "living-atlas-local-mcp-proxy": "./src/proxy.ts"
   },
   "dependencies": {
     "@living-atlas/contracts": "workspace:*",
