@@ -51,6 +51,7 @@ docs control what graph facts mean.
 - [Metadata Leakage Budget](docs/architecture/metadata-leakage-budget.md) - Cloudflare-visible metadata and path/index constraints.
 - [Compaction And Retention](docs/architecture/compaction-and-retention.md) - tombstones, snapshots, long-offline clients, and erasure.
 - [Local MCP Authentication](docs/architecture/local-mcp-authentication.md) - local auth, capabilities, admin mode, and localhost threat model.
+- [Connecting Clients to the Local MCP](docs/architecture/local-mcp-clients.md) - the two ways a client reaches the daemon: stdio proxy (default) and loopback Streamable HTTP URL.
 - [Security and Access Model](docs/architecture/security-and-access-model.md) - trust tiers, encryption, policy enforcement.
 - [CRUD Observability](docs/architecture/crud-observability.md) - how create/read/update/delete activity is seen and audited.
 - [Implementation Plan](docs/implementation-plan.md) - build phases and validation gates.
@@ -176,6 +177,65 @@ encrypted quarantine records. Explicit `defer` decisions are treated as
 reviewed quarantine: the source stays accounted for and withheld, but it no
 longer appears as open review work. Keep the packet and resolution map out of
 the public repo.
+
+## Connecting an MCP Client
+
+The local MCP is served by one long-lived **daemon** that solely owns the graph
+replica; clients never open the replica directly. There are two ways to connect,
+and both reach the same daemon and the same store. See
+[Connecting Clients to the Local MCP](docs/architecture/local-mcp-clients.md)
+for the full contract.
+
+### Method 1 — stdio proxy (default, works in every client)
+
+Point the client at the launcher script. It runs a thin proxy that reaches the
+daemon over a `0600` Unix domain socket (starting the daemon if needed). No token
+in client config — the socket is filesystem-restricted to your user.
+
+```jsonc
+// Claude Code .mcp.json  /  Claude Desktop claude_desktop_config.json
+{
+  "mcpServers": {
+    "living-atlas-local": {
+      "command": "/path/to/deploy/scripts/run-local-mcp.sh"
+    }
+  }
+}
+```
+
+```toml
+# Codex ~/.codex/config.toml
+[mcp_servers.living-atlas-local]
+command = "/path/to/deploy/scripts/run-local-mcp.sh"
+```
+
+### Method 2 — loopback HTTP URL (remote-like)
+
+The daemon can also expose the MCP over **Streamable HTTP** — the same transport
+remote MCP servers use — bound to `127.0.0.1` only (never a routable interface),
+for clients that connect by URL instead of the stdio proxy. Enable it by setting
+`LIVING_ATLAS_LOCAL_MCP_HTTP_PORT` on the daemon. Every request must carry the
+bearer token (a loopback TCP port is reachable by any local process, unlike the
+socket), it is checked in constant time, a tokenless listener fails closed, and
+DNS-rebinding protection rejects non-loopback `Host` headers.
+
+```jsonc
+// Claude Code .mcp.json (HTTP transport)
+{
+  "mcpServers": {
+    "living-atlas-local": {
+      "type": "http",
+      "url": "http://127.0.0.1:<port>/mcp",
+      "headers": { "Authorization": "Bearer <local-mcp-token>" }
+    }
+  }
+}
+```
+
+Method 1 keeps the token in the OS keychain and the surface as a `0600` socket;
+Method 2 is the most remote-like and drops the proxy but opens a loopback port
+and puts the token in client config. Prefer Method 1 for sensitive graphs and
+use Method 2 for clients that only accept a URL.
 
 Topic review can use the same private-map pattern. For a conservative first
 pass, generate a curated draft that promotes only recurring wikilink tag groups
