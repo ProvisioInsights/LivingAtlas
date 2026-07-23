@@ -21,6 +21,7 @@
     "@living-atlas/local-keyring": "workspace:*",
     "@living-atlas/mcp-contract": "workspace:*",
     "@living-atlas/policy": "workspace:*",
+    "@living-atlas/review-projection": "workspace:*",
     "@modelcontextprotocol/sdk": "1.29.0",
     "zod": "4.4.3"
   }

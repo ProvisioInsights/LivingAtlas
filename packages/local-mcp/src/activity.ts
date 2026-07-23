@@ -1,4 +1,13 @@
-import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync } from "node:fs";
+import {
+  appendFileSync,
+  chmodSync,
+  closeSync,
+  existsSync,
+  fstatSync,
+  mkdirSync,
+  openSync,
+  readSync
+} from "node:fs";
 import { dirname } from "node:path";
 import {
   type AccessClass,
@@ -13,6 +22,41 @@ export type LocalMcpActivitySink = {
   record(event: LiveActivityEvent): void;
   read?(limit: number): LiveActivityEvent[];
 };
+
+const ActivityReadChunkBytes = 1024 * 1024;
+const ActivityMaximumLineBytes = 1024 * 1024;
+
+function recentActivityLines(path: string, limit: number): string[] {
+  if (limit <= 0) return [];
+  const handle = openSync(path, "r");
+  try {
+    const size = fstatSync(handle).size;
+    let position = size;
+    let newlineCount = 0;
+    let bufferedBytes = 0;
+    const chunks: Buffer[] = [];
+    while (position > 0 && newlineCount <= limit) {
+      const bytes = Math.min(ActivityReadChunkBytes, position);
+      position -= bytes;
+      const chunk = Buffer.allocUnsafe(bytes);
+      readSync(handle, chunk, 0, bytes, position);
+      chunks.unshift(chunk);
+      bufferedBytes += bytes;
+      for (const byte of chunk) {
+        if (byte === 0x0a) newlineCount += 1;
+      }
+      if (bufferedBytes > Math.max(ActivityMaximumLineBytes, ActivityReadChunkBytes * 16)) {
+        throw new Error("local-mcp-activity-tail-window-too-large");
+      }
+    }
+    return Buffer.concat(chunks).toString("utf8")
+      .split("\n")
+      .filter((line) => line.trim())
+      .slice(-limit);
+  } finally {
+    closeSync(handle);
+  }
+}
 
 export class InMemoryLocalMcpActivitySink implements LocalMcpActivitySink {
   readonly events: LiveActivityEvent[] = [];
@@ -42,9 +86,7 @@ export class FileLocalMcpActivitySink implements LocalMcpActivitySink {
     if (!existsSync(this.path)) {
       return [];
     }
-    return readFileSync(this.path, "utf8")
-      .split("\n")
-      .filter((line) => line.trim().length > 0)
+    return recentActivityLines(this.path, limit)
       .map((line) => LiveActivityEventSchema.parse(JSON.parse(line)))
       .slice(-limit);
   }

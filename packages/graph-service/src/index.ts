@@ -82,7 +82,12 @@ export type LivingAtlasBatchResult = {
 
 const ToolNameSet = new Set<string>(LivingAtlasMcpToolNames);
 const BatchToolNames = new Set<LivingAtlasMcpToolName>(["object_batch", "edge_batch"]);
-const LocalOnlyToolNames = new Set<LivingAtlasMcpToolName>(["resolution_apply"]);
+const LocalOnlyToolNames = new Set<LivingAtlasMcpToolName>([
+  "review_list",
+  "review_read",
+  "review_decide",
+  "resolution_apply"
+]);
 const BatchMaxBytes = 1024 * 1024;
 const LocalBatchMaxItems = 100;
 const RemoteBatchMaxItems = 10;

@@ -8,7 +8,7 @@ import {
 } from "@living-atlas/contracts";
 import { createCanonicalMarkdownMigration } from "@living-atlas/importer";
 import { localResolutionApply } from "@living-atlas/local-mcp";
-import { projectLocalReviewQueue, type LocalReviewQueue, type LocalReviewQueueItem } from "./review-projection";
+import { projectLocalReviewQueue, type LocalReviewQueue, type LocalReviewQueueItem } from "@living-atlas/review-projection";
 import { applyExactPreservation, planExactPreservation } from "./review-auto-apply";
 
 vi.mock("@living-atlas/local-mcp", async (importOriginal) => ({

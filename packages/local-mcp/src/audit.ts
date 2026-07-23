@@ -1,5 +1,14 @@
 import { z } from "zod";
-import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync } from "node:fs";
+import {
+  appendFileSync,
+  chmodSync,
+  closeSync,
+  existsSync,
+  fstatSync,
+  mkdirSync,
+  openSync,
+  readSync
+} from "node:fs";
 import { dirname } from "node:path";
 import {
   AccessClassSchema,
@@ -67,6 +76,65 @@ export type LocalMcpAuditSink = {
   read?(limit: number): LocalMcpAuditEvent[];
 };
 
+const AuditReadChunkBytes = 1024 * 1024;
+const AuditMaximumLineBytes = 1024 * 1024;
+
+function forEachAuditLine(path: string, callback: (line: string) => void): void {
+  const handle = openSync(path, "r");
+  const buffer = Buffer.allocUnsafe(AuditReadChunkBytes);
+  let pending = "";
+  try {
+    for (;;) {
+      const bytesRead = readSync(handle, buffer, 0, buffer.length, null);
+      if (bytesRead === 0) break;
+      pending += buffer.toString("utf8", 0, bytesRead);
+      const lines = pending.split("\n");
+      pending = lines.pop() ?? "";
+      for (const line of lines) {
+        if (line.trim()) callback(line);
+      }
+      if (Buffer.byteLength(pending, "utf8") > AuditMaximumLineBytes) {
+        throw new Error("local-mcp-audit-line-too-large");
+      }
+    }
+    if (pending.trim()) callback(pending);
+  } finally {
+    closeSync(handle);
+  }
+}
+
+function recentAuditLines(path: string, limit: number): string[] {
+  if (limit <= 0) return [];
+  const handle = openSync(path, "r");
+  try {
+    const size = fstatSync(handle).size;
+    let position = size;
+    let newlineCount = 0;
+    let bufferedBytes = 0;
+    const chunks: Buffer[] = [];
+    while (position > 0 && newlineCount <= limit) {
+      const bytes = Math.min(AuditReadChunkBytes, position);
+      position -= bytes;
+      const chunk = Buffer.allocUnsafe(bytes);
+      readSync(handle, chunk, 0, bytes, position);
+      chunks.unshift(chunk);
+      bufferedBytes += bytes;
+      for (const byte of chunk) {
+        if (byte === 0x0a) newlineCount += 1;
+      }
+      if (bufferedBytes > Math.max(AuditMaximumLineBytes, AuditReadChunkBytes * 16)) {
+        throw new Error("local-mcp-audit-tail-window-too-large");
+      }
+    }
+    return Buffer.concat(chunks).toString("utf8")
+      .split("\n")
+      .filter((line) => line.trim())
+      .slice(-limit);
+  } finally {
+    closeSync(handle);
+  }
+}
+
 function auditEventIdentity(event: LocalMcpAuditEvent): string | undefined {
   if (!event.operation_id || !event.idempotency_key) return undefined;
   return JSON.stringify([
@@ -115,11 +183,10 @@ export class FileLocalMcpAuditSink implements LocalMcpAuditSink {
     if (this.identitiesLoaded) return;
     this.identitiesLoaded = true;
     if (!existsSync(this.path)) return;
-    for (const line of readFileSync(this.path, "utf8").split("\n")) {
-      if (line.trim().length === 0) continue;
+    forEachAuditLine(this.path, (line) => {
       const identity = auditEventIdentity(LocalMcpAuditEventSchema.parse(JSON.parse(line)));
       if (identity) this.identities.add(identity);
-    }
+    });
   }
 
   record(event: LocalMcpAuditEvent): void {
@@ -142,9 +209,7 @@ export class FileLocalMcpAuditSink implements LocalMcpAuditSink {
     if (!existsSync(this.path)) {
       return [];
     }
-    return readFileSync(this.path, "utf8")
-      .split("\n")
-      .filter((line) => line.trim().length > 0)
+    return recentAuditLines(this.path, limit)
       .map((line) => LocalMcpAuditEventSchema.parse(JSON.parse(line)))
       .slice(-limit);
   }

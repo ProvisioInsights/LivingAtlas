@@ -1,0 +1,14 @@
+{
+  "name": "@living-atlas/review-projection",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@living-atlas/contracts": "workspace:*",
+    "@living-atlas/graph-service": "workspace:*",
+    "@living-atlas/importer": "workspace:*"
+  }
+}

@@ -12,6 +12,9 @@ export type LivingAtlasMcpToolName =
   | "object_update"
   | "object_delete"
   | "object_batch"
+  | "review_list"
+  | "review_read"
+  | "review_decide"
   | "resolution_apply"
   | "search"
   | "traverse"
@@ -353,6 +356,40 @@ export const LivingAtlasMcpToolDefinitions = [
     }, ["authority_id", "items"])
   },
   {
+    name: "review_list",
+    description: "List canonical Living Atlas review items through the authenticated local projection, including evidence counts and safe bulk-compatibility groups.",
+    inputSchema: objectSchema({
+      queue: {
+        type: "string",
+        enum: ["actionable", "owner-review", "research", "deferred", "automatic", "all"]
+      },
+      limit: { type: "integer", minimum: 1, maximum: 100 }
+    })
+  },
+  {
+    name: "review_read",
+    description: "Read one canonical Living Atlas review item with its evidence, destination graph, rationale, and temporal context.",
+    inputSchema: objectSchema({
+      candidate_id: { type: "string", pattern: "^la_candidate_[A-Za-z0-9_-]{8,}$" }
+    }, ["candidate_id"])
+  },
+  {
+    name: "review_decide",
+    description: "Preview or commit one or more compatible canonical review decisions. Commits require the exact fresh preview token and resolve through resolution_apply.",
+    inputSchema: objectSchema({
+      action: { type: "string", enum: ["keep", "research", "defer"] },
+      candidate_ids: {
+        type: "array",
+        minItems: 1,
+        maxItems: 100,
+        uniqueItems: true,
+        items: { type: "string", pattern: "^la_candidate_[A-Za-z0-9_-]{8,}$" }
+      },
+      preview_only: { type: "boolean" },
+      preview_token: { type: "string", pattern: "^sha256:[a-f0-9]{64}$" }
+    }, ["action", "candidate_ids"])
+  },
+  {
     name: "resolution_apply",
     description: "Apply one fully validated canonical review resolution atomically on the authenticated local Atlas replica.",
     inputSchema: objectSchema({
@@ -507,7 +544,14 @@ export const LivingAtlasMcpToolDefinitions = [
 export const LivingAtlasMcpToolNames = LivingAtlasMcpToolDefinitions.map((tool) => tool.name);
 
 /** Tools that must never be advertised or callable through remote MCP transports. */
-export const LocalOnlyLivingAtlasMcpToolNames = ["resolution_apply", "migration_open", "migration_seal"] as const satisfies readonly LivingAtlasMcpToolName[];
+export const LocalOnlyLivingAtlasMcpToolNames = [
+  "review_list",
+  "review_read",
+  "review_decide",
+  "resolution_apply",
+  "migration_open",
+  "migration_seal"
+] as const satisfies readonly LivingAtlasMcpToolName[];
 export type RemoteLivingAtlasMcpToolName = Exclude<
   LivingAtlasMcpToolName,
   (typeof LocalOnlyLivingAtlasMcpToolNames)[number]

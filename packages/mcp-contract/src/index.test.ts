@@ -11,6 +11,22 @@ describe("Living Atlas MCP contract", () => {
     expect(LivingAtlasMcpToolNames).toContain("edge_batch");
   });
 
+  it("publishes the local canonical review workflow with preview-gated decisions", () => {
+    expect(LivingAtlasMcpToolNames).toEqual(expect.arrayContaining([
+      "review_list",
+      "review_read",
+      "review_decide"
+    ]));
+    expect(livingAtlasMcpToolDefinition("review_decide").inputSchema).toMatchObject({
+      required: ["action", "candidate_ids"],
+      properties: {
+        action: { enum: ["keep", "research", "defer"] },
+        candidate_ids: { minItems: 1, maxItems: 100, uniqueItems: true },
+        preview_token: { pattern: "^sha256:[a-f0-9]{64}$" }
+      }
+    });
+  });
+
   it("defines operation-specific batch item schemas", () => {
     const objectBatch = livingAtlasMcpToolDefinition("object_batch");
     const edgeBatch = livingAtlasMcpToolDefinition("edge_batch");

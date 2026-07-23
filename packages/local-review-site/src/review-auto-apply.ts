@@ -14,7 +14,7 @@ import {
   projectLocalReviewQueue,
   type LocalReviewQueue,
   type LocalReviewQueueItem
-} from "./review-projection";
+} from "@living-atlas/review-projection";
 
 const PlanSchema = "living-atlas-exact-preservation-plan:v1" as const;
 

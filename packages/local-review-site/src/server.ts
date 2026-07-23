@@ -10,7 +10,7 @@ import {
   type CanonicalReviewItemPayload
 } from "@living-atlas/contracts";
 import { authenticateLocalMcp, localResolutionApply, type LocalMcpContext } from "@living-atlas/local-mcp";
-import { projectLocalReviewQueue, type LocalReviewQueueItem } from "./review-projection";
+import { projectLocalReviewQueue, type LocalReviewQueueItem } from "@living-atlas/review-projection";
 import {
   applyExactPreservation,
   planExactPreservation,

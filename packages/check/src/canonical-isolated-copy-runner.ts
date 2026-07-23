@@ -26,7 +26,7 @@ import {
   InMemoryLocalMcpAuditSink,
   InMemoryLocalMcpMutationOutboxSink
 } from "@living-atlas/local-mcp";
-import { projectLocalReviewQueue } from "@living-atlas/local-review-site/review-projection";
+import { projectLocalReviewQueue } from "@living-atlas/review-projection";
 import { applyExactPreservation, planExactPreservation } from "@living-atlas/local-review-site/review-auto-apply";
 import {
   assertSemanticSourceDiscoveryComplete,

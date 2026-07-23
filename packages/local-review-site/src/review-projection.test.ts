@@ -7,7 +7,7 @@ import {
 } from "@living-atlas/contracts";
 import { createCanonicalMarkdownMigration } from "@living-atlas/importer";
 import { canonicalResearchMutationFingerprint } from "@living-atlas/graph-service";
-import { accountSourceMeaning, projectLocalReviewQueue } from "./review-projection";
+import { accountSourceMeaning, projectLocalReviewQueue } from "@living-atlas/review-projection";
 
 const now = "2026-07-10T12:00:00.000Z";
 const reviewId = "la_object_reviewsite0001";

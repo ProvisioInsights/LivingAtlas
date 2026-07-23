@@ -20,7 +20,7 @@ import { createFixtureLocalControlState } from "../../local-control-store/src";
 import { FileLocalGraphStore } from "../../local-graph-store/src/local-graph-store";
 import { createDefaultLocalKeyring, decryptGraphObjectPayload } from "../../local-keyring/src";
 import { createLocalReviewSiteServer } from "./server";
-import type { LocalReviewQueue, LocalReviewQueueItem } from "./review-projection";
+import type { LocalReviewQueue, LocalReviewQueueItem } from "@living-atlas/review-projection";
 
 const servers: Array<ReturnType<typeof createLocalReviewSiteServer>> = [];
 afterEach(() => servers.splice(0).forEach((server) => server.close()));

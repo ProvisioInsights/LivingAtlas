@@ -10,6 +10,14 @@ import {
 import { z } from "zod";
 import { PlaintextGraphObjectDraftSchema } from "@living-atlas/local-keyring";
 import {
+  localReviewDecide,
+  localReviewList,
+  localReviewRead,
+  type LocalReviewDecideInput,
+  type LocalReviewListInput,
+  type LocalReviewReadInput
+} from "./review";
+import {
   LocalGraphExpectedVersionSchema,
   LocalGraphObjectInputSchema,
   LocalGraphUpdatePatchSchema,
@@ -122,6 +130,19 @@ const ResolutionApplyInputSchema = {
   expected_review_version: z.number().int().nonnegative(),
   objects: z.array(PlaintextGraphObjectDraftSchema).min(1)
 };
+const ReviewListInputSchema = {
+  queue: z.enum(["actionable", "owner-review", "research", "deferred", "automatic", "all"]).optional(),
+  limit: z.number().int().min(1).max(100).optional()
+};
+const ReviewReadInputSchema = {
+  candidate_id: z.string().regex(/^la_candidate_[A-Za-z0-9_-]{8,}$/)
+};
+const ReviewDecideInputSchema = {
+  action: z.enum(["keep", "research", "defer"]),
+  candidate_ids: z.array(z.string().regex(/^la_candidate_[A-Za-z0-9_-]{8,}$/)).min(1).max(100),
+  preview_only: z.boolean().optional(),
+  preview_token: z.string().regex(/^sha256:[a-f0-9]{64}$/).optional()
+};
 const ActivityReadInputSchema = {
   authority_id: AuthorityIdSchema.describe("Living Atlas authority id.").optional(),
   operation_id: z.string().optional(),
@@ -216,6 +237,9 @@ export const LocalMcpToolInputSchemas = {
   object_update: UpdateObjectInputSchema,
   object_delete: TombstoneObjectInputSchema,
   object_batch: ObjectBatchInputSchema,
+  review_list: ReviewListInputSchema,
+  review_read: ReviewReadInputSchema,
+  review_decide: ReviewDecideInputSchema,
   resolution_apply: ResolutionApplyInputSchema,
   search: SearchInputSchema,
   traverse: TraverseInputSchema,
@@ -282,6 +306,18 @@ function withTombstoneAuthorization(input: unknown, options: LocalMcpServerAuthO
 
 function withResolutionAuthorization(input: unknown, options: LocalMcpServerAuthOptions): LocalResolutionApplyInput {
   return withAuthorization(input, options) as LocalResolutionApplyInput;
+}
+
+function withReviewListAuthorization(input: unknown, options: LocalMcpServerAuthOptions): LocalReviewListInput {
+  return withAuthorization(input, options) as LocalReviewListInput;
+}
+
+function withReviewReadAuthorization(input: unknown, options: LocalMcpServerAuthOptions): LocalReviewReadInput {
+  return withAuthorization(input, options) as LocalReviewReadInput;
+}
+
+function withReviewDecideAuthorization(input: unknown, options: LocalMcpServerAuthOptions): LocalReviewDecideInput {
+  return withAuthorization(input, options) as LocalReviewDecideInput;
 }
 
 function withSearchAuthorization(input: unknown, options: LocalMcpServerAuthOptions): LocalGraphSearchToolInput {
@@ -354,6 +390,12 @@ export function createLivingAtlasLocalMcpServer(
           return localUpdateObject(context, withUpdateAuthorization(input, options));
         case "object_delete":
           return localTombstoneObject(context, withTombstoneAuthorization(input, options));
+        case "review_list":
+          return localReviewList(context, withReviewListAuthorization(input, options));
+        case "review_read":
+          return localReviewRead(context, withReviewReadAuthorization(input, options));
+        case "review_decide":
+          return localReviewDecide(context, withReviewDecideAuthorization(input, options));
         case "resolution_apply":
           return localResolutionApply(context, withResolutionAuthorization(input, options));
         case "object_batch":
@@ -568,6 +610,61 @@ export function createLivingAtlasLocalMcpServer(
       }
     },
     async (input: unknown) => asToolContent(await callLocalTool("object_batch", input))
+  );
+
+  server.registerTool(
+    "review_list",
+    {
+      title: "List review cards",
+      description: toolMetadata("review_list").description,
+      inputSchema: LocalMcpToolInputSchemas.review_list,
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false
+      }
+    },
+    async (input: unknown) => {
+      try {
+        return asToolContent(await callLocalTool("review_list", input));
+      } catch (error) {
+        console.error("Living Atlas review_list projection failed", error);
+        throw error;
+      }
+    }
+  );
+
+  server.registerTool(
+    "review_read",
+    {
+      title: "Read review evidence",
+      description: toolMetadata("review_read").description,
+      inputSchema: LocalMcpToolInputSchemas.review_read,
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false
+      }
+    },
+    async (input: unknown) => asToolContent(await callLocalTool("review_read", input))
+  );
+
+  server.registerTool(
+    "review_decide",
+    {
+      title: "Preview or decide reviews",
+      description: toolMetadata("review_decide").description,
+      inputSchema: LocalMcpToolInputSchemas.review_decide,
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false
+      }
+    },
+    async (input: unknown) => asToolContent(await callLocalTool("review_decide", input))
   );
 
   server.registerTool(

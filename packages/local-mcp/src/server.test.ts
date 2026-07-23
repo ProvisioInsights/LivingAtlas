@@ -4,6 +4,7 @@ import { fixtureLocalClientId } from "@living-atlas/fixtures";
 import { InMemoryLocalMcpAuditSink } from "./audit";
 import { hashLocalMcpToken, InMemoryLocalMcpCredentialStore } from "./auth";
 import { createFixtureLocalMcpContext, localReadObject } from "./local-graph";
+import { localReviewList } from "./review";
 import { createLivingAtlasLocalMcpServer, LocalMcpToolInputSchemas } from "./server";
 
 describe("local MCP server wrapper", () => {
@@ -33,6 +34,9 @@ describe("local MCP server wrapper", () => {
     expect(LocalMcpToolInputSchemas.object_create).not.toHaveProperty("authorization");
     expect(LocalMcpToolInputSchemas.object_update).not.toHaveProperty("authorization");
     expect(LocalMcpToolInputSchemas.object_delete).not.toHaveProperty("authorization");
+    expect(LocalMcpToolInputSchemas.review_list).not.toHaveProperty("authorization");
+    expect(LocalMcpToolInputSchemas.review_read).not.toHaveProperty("authorization");
+    expect(LocalMcpToolInputSchemas.review_decide).not.toHaveProperty("authorization");
     const resolutionInputSchema = (LocalMcpToolInputSchemas as Record<string, unknown>).resolution_apply;
     expect(LivingAtlasMcpToolNames).toContain("resolution_apply");
     expect(resolutionInputSchema).toEqual(expect.objectContaining({
@@ -56,6 +60,17 @@ describe("local MCP server wrapper", () => {
           object_id: "la_object_privateedge0001",
           access_class: "local-private"
         })
+      })
+    });
+    await expect(localReviewList(context, {
+      authorization: `Bearer ${token}`,
+      queue: "actionable"
+    })).resolves.toEqual({
+      ok: true,
+      result: expect.objectContaining({
+        schema: "living-atlas.review-list:v1",
+        items: expect.any(Array),
+        compatible_groups: expect.any(Array)
       })
     });
   });

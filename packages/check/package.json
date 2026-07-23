@@ -21,6 +21,7 @@
     "@living-atlas/local-mcp": "workspace:*",
     "@living-atlas/local-review-site": "workspace:*",
     "@living-atlas/policy": "workspace:*",
+    "@living-atlas/review-projection": "workspace:*",
     "@living-atlas/sync-agent": "workspace:*",
     "@modelcontextprotocol/sdk": "1.29.0"
   }

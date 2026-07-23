@@ -115,6 +115,9 @@ importers:
       '@living-atlas/policy':
         specifier: workspace:*
         version: link:../policy
+      '@living-atlas/review-projection':
+        specifier: workspace:*
+        version: link:../review-projection
       '@living-atlas/sync-agent':
         specifier: workspace:*
         version: link:../sync-agent
@@ -311,6 +314,9 @@ importers:
       '@living-atlas/policy':
         specifier: workspace:*
         version: link:../policy
+      '@living-atlas/review-projection':
+        specifier: workspace:*
+        version: link:../review-projection
       '@modelcontextprotocol/sdk':
         specifier: 1.29.0
         version: 1.29.0(@cfworker/json-schema@4.1.1)(zod@4.4.3)
@@ -332,6 +338,9 @@ importers:
       '@living-atlas/local-mcp':
         specifier: workspace:*
         version: link:../local-mcp
+      '@living-atlas/review-projection':
+        specifier: workspace:*
+        version: link:../review-projection
     devDependencies:
       '@living-atlas/fixtures':
         specifier: workspace:*
@@ -381,6 +390,18 @@ importers:
       zod:
         specifier: 4.4.3
         version: 4.4.3
+
+  packages/review-projection:
+    dependencies:
+      '@living-atlas/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+      '@living-atlas/graph-service':
+        specifier: workspace:*
+        version: link:../graph-service
+      '@living-atlas/importer':
+        specifier: workspace:*
+        version: link:../importer
 
   packages/sync-agent:
     dependencies:
