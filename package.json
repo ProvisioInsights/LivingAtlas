@@ -85,7 +85,7 @@
     "backup:restore": "tsx packages/check/src/backup-restore.ts"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "4.20260621.1",
+    "@cloudflare/workers-types": "5.20260723.1",
     "@types/node": "26.1.1",
     "tsx": "4.23.0",
     "typescript": "7.0.2",
