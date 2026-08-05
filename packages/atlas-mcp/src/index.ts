@@ -1,5 +1,6 @@
 export * from "./access.js";
 export * from "./audit.js";
+export * from "./audit-file.js";
 export * from "./credentials.js";
 export * from "./grant.js";
 export * from "./graph.js";

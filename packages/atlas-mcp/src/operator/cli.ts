@@ -1,8 +1,8 @@
 #!/usr/bin/env -S npx tsx
-import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { readFileSync } from "node:fs";
 import { CONTRACT_REVISION } from "@living-atlas/atlas-contract";
-import { MemoryAuditJournal, type AuditEvent, type AuditJournal } from "../audit.js";
+import { MemoryAuditJournal, type AuditJournal } from "../audit.js";
+import { DurableFileAuditJournal } from "../audit-file.js";
 import {
   InMemoryCredentialDirectory,
   credentialResolver,
@@ -55,16 +55,6 @@ function argument(name: string): string | undefined {
   return process.argv[index + 1];
 }
 
-/** Append-only, one JSON object per line, fsync-free — the log is not the graph. */
-function fileAuditJournal(path: string): AuditJournal {
-  mkdirSync(dirname(path), { recursive: true });
-  return {
-    append: (event: AuditEvent) => {
-      appendFileSync(path, `${JSON.stringify(event)}\n`, "utf8");
-    }
-  };
-}
-
 function loadCredentials(path: string): CredentialRecord[] {
   const parsed = JSON.parse(readFileSync(path, "utf8")) as unknown;
   if (!Array.isArray(parsed)) throw new Error("the credentials file must hold a JSON array");
@@ -91,10 +81,14 @@ process.stderr.write(`[atlas-operator-mcp] ${directory.size} operator credential
 // read path is served from the same log this server appends to, so a read of
 // the log is itself recorded in it.
 const journal = new MemoryAuditJournal();
-const file = fileAuditJournal(auditLog);
+const file = new DurableFileAuditJournal(auditLog);
 const teed: AuditJournal = {
   append: (event) => {
     journal.append(event);
+    // The durable leg LAST, and it is the one that may throw: `append` returns
+    // only once this event would survive a crash, so a result describing work
+    // whose event is not yet on disk cannot be returned. The in-memory leg
+    // feeds this plane's own audit read path and is not a durability claim.
     file.append(event);
   }
 };
