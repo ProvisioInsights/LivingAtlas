@@ -219,15 +219,114 @@ type InputRequiredResult = {
   inputRequests: Record<string, { method: string; params: Record<string, unknown> }>;
 };
 
-function readInputRequests(result: Record<string, unknown>): InputRequiredResult | undefined {
+/**
+ * The input-request kinds this client can answer, and the client capability each
+ * one requires the client to have DECLARED.
+ *
+ * One entry, and the narrowness is the point. `inputRequests` is
+ * server-controlled input and it is the one server-controlled input that reaches
+ * a human: every entry is handed to the host's owner-approval UI. The `-32021`
+ * contract exists so a server never sends a kind the client did not declare, but
+ * nothing enforces that from THIS side unless the client checks, and a
+ * compromised or hostile server can simply put another method in the map.
+ *
+ * Measured, before this table existed: a scripted server returning
+ * `{ k: { method: "sampling/createMessage", params: { messages: […] } } }` drove
+ * the decider of a client that had declared only `{ elicitation: {} }` — the
+ * exact confused deputy the `-32021` MUST is written to prevent, arriving from
+ * the direction nobody was guarding. Worse, `params.message` is absent on such a
+ * request, so `String(params["message"] ?? "")` degraded to `""` and the owner
+ * was asked to approve a BLANK prompt.
+ *
+ * `elicitation/create` is the only kind this client CAN service, whatever a host
+ * declares through `capabilities`: `ElicitationDecider` answers
+ * accept/decline/cancel over a `requestedSchema`, which is elicitation's shape
+ * and no other's. A host that services `sampling/createMessage` or `roots/list`
+ * does so on its own transport, not through this client's escalation path.
+ */
+const SERVICEABLE_INPUT_REQUESTS: Readonly<Record<string, string>> = { "elicitation/create": "elicitation" };
+
+/**
+ * The largest `requestState` this client will accept and echo back.
+ *
+ * The state is a signed envelope over a two-field payload — `v1.<payload>.<mac>`,
+ * measured at 258 characters against this server — so a few kilobytes is orders
+ * of magnitude of headroom and anything past it is not one of ours. Bounded
+ * rather than trusted because the party that minted it is the party this bound
+ * protects against: the value is ECHOED on the retry, so an unbounded one is
+ * memory here and a request body there, for free, on a channel the calling code
+ * never sees. A 2,000,000-character state was accepted and echoed verbatim
+ * before this existed.
+ */
+export const MAX_REQUEST_STATE_LENGTH = 8192;
+
+/**
+ * Refuse an oversized state on EITHER escalation channel.
+ *
+ * Both channels echo it back, so both need the bound. The published output
+ * schema for `reveal_input_request.request_state` carries only `minLength: 1`,
+ * and the revision is released and immutable — so the ceiling belongs to the
+ * client that would do the echoing, not to a schema change.
+ */
+function assertRequestStateBounded(state: string, tool: ContractToolName): void {
+  if (state.length <= MAX_REQUEST_STATE_LENGTH) return;
+  throw new AtlasContractViolation({
+    tool,
+    direction: "output",
+    errors: [
+      `requestState is ${state.length} characters, past the ${MAX_REQUEST_STATE_LENGTH} this client will echo; a signed v1 envelope is a few hundred`
+    ],
+    document: { requestStateLength: state.length }
+  });
+}
+
+/**
+ * Read an escalation, refusing anything this client cannot honestly answer.
+ *
+ * Refusing rather than skipping, deliberately. A silently-dropped entry leaves
+ * the client retrying with an answer the server never asked for and the caller
+ * none the wiser; a server probing for a confused deputy would learn nothing
+ * happened and try the next shape. `AtlasContractViolation` names the method, so
+ * the probe shows up in whatever the host logs.
+ */
+function readInputRequests(
+  result: Record<string, unknown>,
+  tool: ContractToolName,
+  declared: Readonly<Record<string, unknown>>
+): InputRequiredResult | undefined {
   const state = stringMember(result, "requestState");
   const requests = asRecord(result["inputRequests"]);
   if (state === undefined || requests === undefined) return undefined;
+
+  assertRequestStateBounded(state, tool);
+
   const parsed: InputRequiredResult["inputRequests"] = {};
   for (const [key, value] of Object.entries(requests)) {
     const entry = asRecord(value);
     const method = stringMember(entry, "method");
     if (entry === undefined || method === undefined) continue;
+
+    const capability = SERVICEABLE_INPUT_REQUESTS[method];
+    if (capability === undefined) {
+      throw new AtlasContractViolation({
+        tool,
+        direction: "output",
+        errors: [`the escalation asked for ${method}, which this client cannot service and never declared`],
+        document: { method }
+      });
+    }
+    if (declared[capability] === undefined) {
+      // Unreachable against a conformant server — it owes `-32021` instead —
+      // and asserted anyway, because "the server would not do that" is the
+      // assumption the check exists to stop relying on.
+      throw new AtlasContractViolation({
+        tool,
+        direction: "output",
+        errors: [`the escalation asked for ${method}, whose ${capability} capability this client did not declare`],
+        document: { method, declared: Object.keys(declared).sort() }
+      });
+    }
+
     parsed[key] = { method, params: asRecord(entry["params"]) ?? {} };
   }
   return { requestState: state, inputRequests: parsed };
@@ -472,6 +571,11 @@ export class AtlasConsumerClient {
     const structured = first.structured as AtlasToolShapes["atlas.sensitive.reveal.v1"]["result"];
     const inBand = structured.input_request;
     if (structured.outcome === "input-required" && inBand !== undefined) {
+      // The in-band state is echoed as a published ARGUMENT rather than on the
+      // protocol channel, so it never passes through `readInputRequests` and
+      // needs the ceiling applied here. The published schema bounds it below
+      // (`minLength: 1`) and not above.
+      assertRequestStateBounded(inBand.request_state, tool);
       const responses = await this.answerElicitations(
         tool,
         { [inBand.request_id]: { method: "elicitation/create", params: { message: inBand.prompt } } },
@@ -594,7 +698,7 @@ export class AtlasConsumerClient {
 
     const resultType = stringMember(result, "resultType");
     if (resultType === "input_required") {
-      const escalation = readInputRequests(result);
+      const escalation = readInputRequests(result, name, this.declaredCapabilities);
       if (escalation === undefined) {
         throw new AtlasContractViolation({
           tool: name,

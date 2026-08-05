@@ -39,23 +39,38 @@ function anEvent(recorder: AuditRecorder, tool: string): AuditEvent {
 }
 
 describe("the durable audit journal", () => {
-  it("fsyncs before append returns, so the event is durable before the result is", () => {
-    // The ordering IS the guarantee. `appendFileSync` — what both CLIs used —
-    // returns once the bytes reach the page cache, so a crash in the window
-    // that follows loses an event whose disclosure had already gone out.
+  it("writes THEN fsyncs THEN returns, so the event is durable before the result is", () => {
+    /**
+     * The ordering IS the guarantee. `appendFileSync` — what both CLIs used —
+     * returns once the bytes reach the page cache, so a crash in the window that
+     * follows loses an event whose disclosure had already gone out. ADR 0014
+     * OPEN-4 resolves to `writeSync` then `fsyncSync`, returning after the sync.
+     *
+     * What the injected `fsync` records is the FILE, not merely that it ran. A
+     * spy that pushes a bare `"fsync"` cannot tell `write`-then-`fsync` from
+     * `fsync`-then-`write`: both produce `["fsync", "append-returned"]`, and the
+     * second is precisely the `appendFileSync` defect this class exists to
+     * remove. Measured — that mutant survived the whole 1,536-test suite. Asking
+     * the filesystem how many bytes are on the file at the instant of the sync
+     * makes the two orderings different observations: bytes first, or nothing to
+     * sync.
+     */
     const order: string[] = [];
     const path = join(scratch(), "audit.log");
     const journal = new DurableFileAuditJournal(path, {
       fsync: () => {
-        order.push("fsync");
+        order.push(`fsync@${statSync(path).size}`);
       }
     });
     const recorder = new AuditRecorder({ journal, clock: fixedClock() });
 
-    anEvent(recorder, "atlas.sensitive.reveal.v1");
+    const event = anEvent(recorder, "atlas.sensitive.reveal.v1");
     order.push("append-returned");
 
-    expect(order).toEqual(["fsync", "append-returned"]);
+    // The whole serialized event, on the file, before the sync ran.
+    const bytes = Buffer.byteLength(`${JSON.stringify(event)}\n`, "utf8");
+    expect(bytes).toBeGreaterThan(0);
+    expect(order).toEqual([`fsync@${bytes}`, "append-returned"]);
   });
 
   it("syncs once per event rather than batching them", () => {

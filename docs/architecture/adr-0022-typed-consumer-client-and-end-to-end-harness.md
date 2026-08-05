@@ -139,6 +139,30 @@ The signed `requestState` is handed to the decider. The codec is signed and not
 encrypted, so a client can already read it; withholding it would protect nothing
 while making a host that persists an escalation across processes impossible.
 
+**The client also enforces the contract from its own side.** `inputRequests` is
+server-controlled input, and it is the one server-controlled input that reaches a
+human: every entry is handed to the host's owner-approval UI. The `-32021` MUST
+stops a *conformant* server sending a kind the client never declared; nothing
+stops a compromised one. Measured, before the check existed: a scripted server
+returning `{ method: "sampling/createMessage" }` drove the decider of a client
+that had declared only `{ elicitation: {} }` — the exact confused deputy that MUST
+exists to prevent, arriving from the unguarded direction — and because
+`params.message` does not exist on that shape, the owner was asked to approve a
+blank prompt. `elicitation/create` is now the only kind accepted, whatever a host
+declares through `capabilities`, because `ElicitationDecider` answers
+accept/decline/cancel over a `requestedSchema` and that is elicitation's shape
+and no other's. Anything else raises `AtlasContractViolation` naming the method
+rather than being skipped: a silently-dropped entry would leave a server probing
+for a deputy with nothing to see.
+
+`requestState` is bounded at 8 KiB on both escalation channels and refused rather
+than echoed past it. A real signed envelope measures 258 characters; the published
+schema bounds the field below (`minLength: 1`) and not above, and the revision is
+released and immutable, so the ceiling belongs to the client that would do the
+echoing. A 2,000,000-character state was accepted and echoed verbatim before it
+existed — memory here and a request body there, for free, on a channel the calling
+code never sees.
+
 ### 7. `packages/atlas-e2e` is a new package, and it is a harness, not a surface
 
 It declares no `exports` — nothing outside it can import it — and no binary. Its

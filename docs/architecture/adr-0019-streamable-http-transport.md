@@ -118,6 +118,30 @@ today; `responseMode: 'auto'` upgrades to SSE the moment a handler emits anythin
 before its result, and a rewrite that silently stopped working when a handler
 grew a progress notification would be the same defect wearing a different hat.
 
+**The SSE path is a stream transform, not a decision taken at fetch time.** The
+first version of this decided on `sink.size` once, when `handler.fetch` resolved,
+and returned a streaming response untouched when nothing was parked. That was the
+defect the paragraph above describes, arriving by the exact route it names: on an
+SSE upgrade `PerRequestHTTPServerTransport.upgradeToSse()` settles the response
+the moment the FIRST notification is written — before the handler has produced a
+result and therefore before any refusal exists — so the check answered "nothing to
+swap" every time and the raw result frame went out. An event-stream body is now
+piped through a `TransformStream` that applies the same per-frame rewriter as
+frames are serialised, which is the only instant at which the question has a
+settled answer, and the response keeps streaming instead of being buffered into a
+string. The JSON path keeps its fetch-time check, legitimately: that body is
+built from the terminal message, so anything parkable is already parked.
+
+**The swapped response carries HTTP `400`, not the result's `200`.**
+`MissingRequiredClientCapability` is the one in-band code the revision does not
+answer `200` on, and the SDK sends `400` from its own ladder table whenever it
+raises the error itself. Because this seam raises the error after a status was
+already chosen for the result being replaced, carrying that status through left
+the same server answering the same refusal two different ways depending on which
+path produced it. On a stream the status belongs to the stream and stays `200` —
+the SDK's table agrees, applying the ladder status only when the exchange has not
+upgraded.
+
 **The sink is per request, not per listener.** A refusal is parked under a
 JSON-RPC id; ids are chosen by the caller, and every client numbers its first
 request `1`. A listener-wide sink would hand one caller's `-32021` to whichever
@@ -126,6 +150,32 @@ response was serialised first. Each exchange gets its own sink, reached through 
 That property is asserted directly rather than through a race — a concurrency
 test can only lose a race by luck, and this one demonstrably did not catch a
 shared-sink mutant until the assertion was moved to the wiring itself.
+
+### 4b. The reveal HMAC key is scoped to the LISTENER, not to the request
+
+`createMcpHandler` calls the server factory once per request, so *everything*
+`buildAtlasServer` derives from randomness is re-derived on the next exchange.
+`createRevealStateCodec` defaults its `requestState` HMAC key to
+`randomBytes(32)`, which is exactly right on stdio — one process, one codec,
+every round of a flow — and silently fatal here: a state minted in round one was
+verified in round two against a key that no longer existed.
+
+The consequence was not a degraded escalation but no escalation at all.
+`atlas.sensitive.reveal.v1` returned `input_required` with a signed state, and
+every retry was refused — `-32602 invalid_request_state` on the protocol channel
+and `atlas.error:v1 code=invalid-request-state` on the published `request_state`
+argument. The whole disclosure surface was unusable over HTTP while the identical
+flow passed on stdio, which is precisely the transport branch §1 promises no
+consumer will ever have to make. Nothing caught it because parity covered the
+`-32021` refusal and not the two-round flow: a single-call comparison cannot see
+the seam *between* calls.
+
+So `atlasConsumerHttpHandler` mints one key per listener and threads it into
+every per-request server. A restart still mints a new one, which keeps the
+property the stdio default was chosen for — an owner decision that spans a
+restart fails closed rather than being honoured by a process that has forgotten
+why it was asked. Parity now drives both rounds on both transports, and both
+channels.
 
 ### 5. Loopback, Origin, and bearer — all three, in code
 
@@ -220,6 +270,15 @@ wire.
   the directory still has no revocation, rotation, or expiry, and a bearer token
   is exactly the credential where that absence is most visible, because it is
   presented on every request and travels through more intermediaries than a pipe.
+- **OPEN-12: a reveal escalation that spans more than one listener.** §4b scopes
+  the `requestState` key to one listener, which is correct for the single-process
+  deployment this repository ships and for nothing else. Two listeners behind one
+  address are two keys, so an escalation begun on one and retried on the other
+  fails closed — the safe direction, and a confusing one for whoever hits it.
+  `revealStateKey` can be supplied explicitly, but where a shared key would come
+  from, how it rotates without stranding live escalations, and whether an
+  escalation should instead be durable server-side state rather than a bearer
+  token the client holds, are not decided here.
 - **OPEN-11: `subscriptions/listen`.** The revision delivers long-lived change
   notifications on the response stream of a `subscriptions/listen` request. The
   handler supports it and Atlas registers no such surface, so a client asking for

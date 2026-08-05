@@ -80,16 +80,22 @@ export type RevealStateOptions = {
    */
   resolveBindingIdentity: (context: ServerContext) => string;
   /**
-   * The HMAC key. Optional, and a per-process random key is the right default
-   * for THIS transport specifically: one stdio process serves every round of a
-   * flow, so there is no second instance that would need the same key. A restart
-   * therefore invalidates every outstanding escalation, which is the behaviour
-   * we want — an owner decision that spans a server restart should fail closed
-   * rather than be honoured by a process that has forgotten why it was asked.
+   * The HMAC key. Optional, and the random default is only correct where ONE
+   * codec serves every round of a flow.
    *
-   * A shared-key deployment (any multi-instance HTTP surface) MUST supply one.
-   * That surface is out of scope for this run; the option exists so adding it
-   * later is configuration rather than a redesign.
+   * That holds on stdio by construction: one process, one `buildAtlasServer`,
+   * one codec for the life of the pipe. A restart mints a new key and therefore
+   * invalidates every outstanding escalation, which is the behaviour we want —
+   * an owner decision that spans a restart should fail closed rather than be
+   * honoured by a process that has forgotten why it was asked.
+   *
+   * It does NOT hold wherever the server is rebuilt per request, which is what
+   * `createMcpHandler` does: it takes a server FACTORY and calls it for every
+   * exchange, so a defaulted key here would be a DIFFERENT key on the retry and
+   * every escalation would die at round two. `http/consumer.ts` therefore mints
+   * one key per LISTENER and passes it in; nothing that builds a server per
+   * request may rely on this default. A multi-instance deployment must supply a
+   * shared key explicitly, for the same reason: two instances are two keys.
    */
   key?: Uint8Array | string;
   ttlSeconds?: number;

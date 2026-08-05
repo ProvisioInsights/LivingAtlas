@@ -21,6 +21,26 @@ import { capabilityErrorFor, type CapabilityRefusalSink } from "../capability-re
  * the moment a handler emits anything before its result, and a rewrite that
  * silently stopped working when a handler grew a progress notification would be
  * the same defect wearing a different hat.
+ *
+ * ## Why the SSE path may not consult the sink at fetch time
+ *
+ * It is tempting to decide "is there anything to swap" once, when
+ * `handler.fetch` resolves, and hand a streaming response straight back when the
+ * answer is no. That was the code here, and it was wrong for a measured reason:
+ * on an SSE upgrade the SDK's `PerRequestHTTPServerTransport.upgradeToSse()`
+ * calls `settleResponse` the moment the FIRST notification is written — before
+ * the handler has produced its result, and therefore before the refusal is
+ * parked. The sink is empty at that instant no matter what the handler is about
+ * to do, so the check answered "nothing to swap" and the raw `result` frame went
+ * out unrewritten. The spec MUST was silently unmet, and it was unmet in exactly
+ * the scenario the paragraph above says is the reason both shapes are handled.
+ *
+ * So an event-stream body is piped through a TRANSFORM instead. The sink is
+ * consulted as each frame is serialised, which is the only instant at which the
+ * question has a settled answer, and the response keeps streaming rather than
+ * being buffered to a string. The JSON path keeps its fetch-time check, and
+ * legitimately: `Response.json(message)` is built from the terminal message, so
+ * anything parkable has already been parked by the time that body exists.
  */
 
 /** SSE frames are separated by a blank line, which may be LF or CRLF delimited. */
@@ -93,35 +113,112 @@ export function rewriteSseBody(body: string, sink: CapabilityRefusalSink): strin
 }
 
 /**
+ * The end offset of the LAST complete frame boundary in `text`, or `0`.
+ *
+ * A stream arrives in chunks that respect nothing, so a buffer may end
+ * mid-boundary — `"…\n"` could be a frame that ended or the first half of a
+ * separator. Only the part up to a boundary that has definitely closed is
+ * handed on; the tail stays buffered until more bytes prove what it is.
+ */
+function lastBoundaryEnd(text: string): number {
+  const pattern = new RegExp(FRAME_BOUNDARY, "g");
+  let end = 0;
+  let match = pattern.exec(text);
+  while (match !== null) {
+    end = match.index + match[0].length;
+    match = pattern.exec(text);
+  }
+  return end;
+}
+
+/**
+ * Rewrite an SSE body frame by frame, AS IT STREAMS.
+ *
+ * Exported so the streaming behaviour is testable without a server: what has to
+ * be true is that a refusal parked AFTER the headers went out still reaches the
+ * wire, which is a statement about when the sink is read and not about what the
+ * frame rewriter does with it.
+ *
+ * Complete frames are forwarded as soon as they arrive, so a long-running
+ * exchange still streams; only a partial trailing frame is held, because a frame
+ * cannot be rewritten until it is whole.
+ */
+export function capabilityRefusalTransform(sink: CapabilityRefusalSink): TransformStream<Uint8Array, Uint8Array> {
+  const decoder = new TextDecoder();
+  const encoder = new TextEncoder();
+  let buffered = "";
+
+  return new TransformStream<Uint8Array, Uint8Array>({
+    transform(chunk, controller) {
+      buffered += decoder.decode(chunk, { stream: true });
+      const end = lastBoundaryEnd(buffered);
+      if (end === 0) return;
+      const complete = buffered.slice(0, end);
+      buffered = buffered.slice(end);
+      controller.enqueue(encoder.encode(rewriteSseBody(complete, sink)));
+    },
+    flush(controller) {
+      // A stream that ended without a final blank line still has to go out, and
+      // the rewriter handles an unterminated frame the same as a terminated one.
+      buffered += decoder.decode();
+      if (buffered.length === 0) return;
+      controller.enqueue(encoder.encode(rewriteSseBody(buffered, sink)));
+    }
+  });
+}
+
+/**
+ * The HTTP status a `-32021` answer carries.
+ *
+ * `400`, and not the `200` the swapped-out RESULT was travelling on. The
+ * revision mandates the status on the error itself with no origin condition —
+ * `MissingRequiredClientCapability` is the one in-band code that is not answered
+ * `200` — and `@modelcontextprotocol/server@2.0.0` produces exactly that when it
+ * raises the error itself, from its own `LADDER_ERROR_HTTP_STATUS` table. This
+ * seam raises the error AFTER the SDK has already chosen a status for the result
+ * it was replacing, so carrying that status through would leave a client
+ * branching on HTTP status unable to see a refusal the same server answers `400`
+ * on every other path. Only the single-JSON shape needs it: on a stream the
+ * status belongs to the stream, and the SDK's own table agrees — it applies the
+ * ladder status only when the exchange has not upgraded.
+ */
+export const CAPABILITY_REFUSAL_HTTP_STATUS = 400;
+
+/**
  * Replace an outbound HTTP response when this exchange parked a refusal.
  *
- * A response with nothing parked is returned by IDENTITY — same object, body
- * unread — so the common path costs nothing and a streaming response keeps
- * streaming. The sink is consulted first precisely so that reading the body is
- * something this function does only when it already knows it has work to do.
+ * A single-JSON response with nothing parked is returned by IDENTITY — same
+ * object, body unread — because that body is already complete when this runs, so
+ * an empty sink then is an empty sink for good.
+ *
+ * An event-stream response is ALWAYS wrapped, empty sink or not. The sink cannot
+ * be believed at this instant on that path: the response settled when the
+ * stream opened, which is before the handler produced the result that would park
+ * a refusal. See the header for the measurement.
  */
 export async function applyCapabilityRefusal(response: Response, sink: CapabilityRefusalSink): Promise<Response> {
-  if (sink.size === 0) return response;
-
   const contentType = response.headers.get("content-type") ?? "";
 
   if (contentType.includes("text/event-stream")) {
-    const streamed = await response.text();
-    const rewritten = rewriteSseBody(streamed, sink);
-    return new Response(rewritten, {
+    const body = response.body;
+    if (body === null) return response;
+    return new Response(body.pipeThrough(capabilityRefusalTransform(sink)), {
       status: response.status,
       statusText: response.statusText,
       headers: response.headers
     });
   }
 
+  if (sink.size === 0) return response;
+
   const text = await response.text();
   const rewritten = rewriteJsonText(text, sink);
   // `text` when nothing matched: the body has already been consumed, so the
   // original Response object can no longer be returned and an equivalent one is
-  // rebuilt around the same bytes.
+  // rebuilt around the same bytes — with the status it arrived on, because
+  // nothing was swapped.
   return new Response(rewritten ?? text, {
-    status: response.status,
+    status: rewritten === undefined ? response.status : CAPABILITY_REFUSAL_HTTP_STATUS,
     statusText: response.statusText,
     headers: response.headers
   });

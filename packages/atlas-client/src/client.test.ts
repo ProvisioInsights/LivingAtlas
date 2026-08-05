@@ -8,7 +8,7 @@ import {
   AtlasProtocolMismatch,
   AtlasToolRefusal
 } from "./errors.js";
-import { AtlasConsumerClient, ATLAS_CREDENTIAL_META_KEY } from "./client.js";
+import { AtlasConsumerClient, ATLAS_CREDENTIAL_META_KEY, MAX_REQUEST_STATE_LENGTH } from "./client.js";
 import type { AtlasTransport, JsonRpcRequest, JsonRpcResponse } from "./transport.js";
 
 /**
@@ -462,6 +462,115 @@ describe("the multi-round-trip escalation", () => {
     // `call()` is the generic path and has no business inventing an answer, so
     // it points at the method that carries one instead of silently accepting.
     await expect(client.call("atlas.sensitive.reveal.v1", { redaction_id: "x", reason: "y" })).rejects.toThrow(/revealSensitive/);
+  });
+});
+
+describe("an escalation from a server that is not behaving", () => {
+  /**
+   * `inputRequests` is the one server-controlled input that reaches a human.
+   *
+   * Every entry in it is handed to the host's owner-approval UI. The `-32021`
+   * MUST stops a CONFORMANT server sending a kind the client never declared;
+   * nothing stops a compromised or hostile one, so the client checks — and until
+   * it did, a scripted server drove the decider of a client that had declared
+   * only `{ elicitation: {} }` with a `sampling/createMessage` request, and the
+   * owner was asked to approve a blank prompt because `params.message` does not
+   * exist on that shape.
+   */
+  function hostileEscalation(inputRequests: Record<string, unknown>, requestState = "v1.s.m"): AtlasTransport {
+    return scriptedTransport((request) =>
+      request.method === "server/discover" ? discoverResult() : { resultType: "input_required", requestState, inputRequests }
+    ).transport;
+  }
+
+  /** Records every request the decider was asked to answer. Should stay empty. */
+  function recordingClient(transport: AtlasTransport): { client: AtlasConsumerClient; seen: string[] } {
+    const seen: string[] = [];
+    const client = new AtlasConsumerClient({
+      transport,
+      credential: "s",
+      elicitation: (request) => {
+        seen.push(request.method);
+        return { action: "accept", content: { approve: true } };
+      }
+    });
+    return { client, seen };
+  }
+
+  it("refuses a sampling request rather than driving the owner-approval UI with it", async () => {
+    const { client, seen } = recordingClient(
+      hostileEscalation({
+        k: { method: "sampling/createMessage", params: { messages: [{ role: "user", content: { type: "text", text: "x" } }] } }
+      })
+    );
+
+    const failure = await client
+      .revealSensitive({ redaction_id: "la_redaction_x", reason: "checking" })
+      .catch((error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(AtlasContractViolation);
+    expect((failure as AtlasContractViolation).errors.join(" ")).toContain("sampling/createMessage");
+    // The decider was never reached, so no human was ever asked.
+    expect(seen).toEqual([]);
+  });
+
+  it("refuses a roots/list request the same way", async () => {
+    const { client, seen } = recordingClient(hostileEscalation({ k: { method: "roots/list", params: {} } }));
+
+    await expect(client.revealSensitive({ redaction_id: "la_redaction_x", reason: "checking" })).rejects.toBeInstanceOf(
+      AtlasContractViolation
+    );
+    expect(seen).toEqual([]);
+  });
+
+  it("reports rather than silently skips, so a probe for a confused deputy is visible", async () => {
+    // A dropped entry would leave the client retrying with an answer nobody
+    // asked for and the caller none the wiser — the server would learn nothing
+    // happened and try the next shape.
+    const { client, seen } = recordingClient(
+      hostileEscalation({
+        good: { method: "elicitation/create", params: { message: "approve?" } },
+        bad: { method: "sampling/createMessage", params: {} }
+      })
+    );
+
+    await expect(client.revealSensitive({ redaction_id: "la_redaction_x", reason: "checking" })).rejects.toBeInstanceOf(
+      AtlasContractViolation
+    );
+    expect(seen).toEqual([]);
+  });
+
+  it("refuses a requestState too large to be one of ours rather than echoing it back", async () => {
+    // The state is ECHOED on the retry, so an unbounded one is memory here and a
+    // request body there, for free. A real signed envelope is a few hundred
+    // characters.
+    const enormous = "v1.".padEnd(MAX_REQUEST_STATE_LENGTH + 1, "A");
+    const { client, seen } = recordingClient(
+      hostileEscalation({ k: { method: "elicitation/create", params: { message: "approve?" } } }, enormous)
+    );
+
+    const failure = await client
+      .revealSensitive({ redaction_id: "la_redaction_x", reason: "checking" })
+      .catch((error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(AtlasContractViolation);
+    expect((failure as AtlasContractViolation).errors.join(" ")).toContain(String(MAX_REQUEST_STATE_LENGTH));
+    expect(seen).toEqual([]);
+  });
+
+  it("still accepts a state right at the ceiling, so the bound is not a rounding error", async () => {
+    const atLimit = "v1.".padEnd(MAX_REQUEST_STATE_LENGTH, "A");
+    const { client, seen } = recordingClient(
+      hostileEscalation({ k: { method: "elicitation/create", params: { message: "approve?" } } }, atLimit)
+    );
+
+    // The second round is answered with the same escalation, so this ends in the
+    // one-round refusal rather than a result — which is exactly the point: the
+    // state was accepted and carried, and the failure is about rounds, not size.
+    await expect(client.revealSensitive({ redaction_id: "la_redaction_x", reason: "checking" })).rejects.toThrow(
+      /exactly one round/
+    );
+    expect(seen).toEqual(["elicitation/create"]);
   });
 });
 

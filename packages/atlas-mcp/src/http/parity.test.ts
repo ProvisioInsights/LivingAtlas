@@ -378,6 +378,151 @@ describe("the same call over stdio and over HTTP", () => {
   });
 });
 
+describe("the reveal escalation, both rounds, on both transports", () => {
+  /**
+   * The case the `-32021` parity test could not reach.
+   *
+   * `atlas.sensitive.reveal.v1` is the only tool on this plane that needs TWO
+   * round trips, and a single-call comparison cannot see the seam between them:
+   * round one mints a signed `requestState`, round two echoes it back and the
+   * server verifies it against the key that minted it. Compare only round one
+   * and both transports look identical while one of them is incapable of ever
+   * completing the flow.
+   *
+   * That is not hypothetical — it is what shipped. `createMcpHandler` calls the
+   * server factory PER REQUEST, so `buildAtlasServer` ran again for round two
+   * and `createRevealStateCodec` defaulted a fresh `randomBytes(32)` HMAC key.
+   * Round two therefore refused every genuine state, on both channels, while the
+   * identical flow passed over stdio. The whole disclosure surface was unusable
+   * on the transport whose server instructions tell every client "never branch on
+   * which transport you connected over". The key is now minted once per listener
+   * (`http/consumer.ts`) and this drives both rounds on both transports so that
+   * un-hoisting it fails here rather than in a deployment.
+   */
+  const REASON = "checking a citation";
+
+  /** The stub id the consumer sees for the fixture's sealed row. */
+  function sealedStub(graph: SyntheticGraph): string {
+    const page = graph.assertions.query({});
+    if (!page.ok) throw new Error("the fixture query hit the history floor");
+    const sealed = page.hits.find((hit) => hit.assertion.sensitivity.withheld);
+    if (!sealed) throw new Error("the fixture holds no withheld assertion");
+    return redactionId(sealed.assertion.assertion_id, CONSUMER_PRINCIPAL);
+  }
+
+  it("escalates, carries the owner decision, and discloses the same record either way", async () => {
+    const both = await bothTransports((graph) => seedWithheldAssertion(graph), "shared");
+    const stubId = sealedStub(both.graphs.stdio);
+
+    const round = (id: number, extra?: Record<string, unknown>) =>
+      callTool({
+        id,
+        name: "atlas.sensitive.reveal.v1",
+        args: { redaction_id: stubId, reason: REASON },
+        meta: meta(),
+        ...(extra === undefined ? {} : { extra })
+      });
+
+    const [firstOverStdio, firstOverHttp] = await Promise.all([both.stdio(round(1)), both.http(round(1))]);
+
+    /**
+     * Round one is compared structurally rather than byte for byte, and only
+     * here. The escalation's `request_id` is minted per escalation and is
+     * SHORTER than the 26-character ULID body `normaliseMintedIds` recognises,
+     * and the `requestState` is an HMAC over a per-listener key — two values
+     * that cannot agree across two servers by construction. Everything a
+     * consumer branches on is compared: the result type, the number of requests,
+     * the method, and the prompt the owner is shown.
+     */
+    for (const [label, response] of [["stdio", firstOverStdio], ["http", firstOverHttp]] as const) {
+      expect(response.error, label).toBeUndefined();
+      expect(response.result?.["resultType"], label).toBe("input_required");
+      expect(String(response.result?.["requestState"]).startsWith("v1."), label).toBe(true);
+      const requests = Object.values(
+        response.result?.["inputRequests"] as Record<string, { method: string; params: Record<string, unknown> }>
+      );
+      expect(requests, label).toHaveLength(1);
+      expect(requests[0]?.method, label).toBe("elicitation/create");
+      // The same prompt, verbatim: what the owner is asked must not depend on
+      // how the client connected.
+      expect(String(requests[0]?.params["message"]), label).toContain(REASON);
+    }
+
+    const second = (first: WireResponse) => {
+      const state = first.result?.["requestState"] as string;
+      const requestId = Object.keys(first.result?.["inputRequests"] as Record<string, unknown>)[0] as string;
+      return round(2, {
+        requestState: state,
+        inputResponses: { [requestId]: { action: "accept", content: { approve: true } } }
+      });
+    };
+
+    const [overStdio, overHttp] = await Promise.all([
+      both.stdio(second(firstOverStdio)),
+      both.http(second(firstOverHttp))
+    ]);
+
+    // Round two IS compared byte for byte. Nothing nondeterministic survives
+    // into the disclosure payload — the request id and the state stay on the
+    // escalation — so the disclosed record, the audit receipt and the horizon
+    // are held to literal equality on `shared` fixtures.
+    const left = normaliseMintedIds(comparable(overStdio));
+    const right = normaliseMintedIds(comparable(overHttp));
+    expect(right.text).toBe(left.text);
+
+    // And it is a real disclosure, not two matching refusals.
+    const payload = overHttp.result?.["structuredContent"] as Record<string, unknown>;
+    expect(payload["outcome"]).toBe("revealed");
+    expect(payload["record"]).toMatchObject({ record_schema: "atlas.assertion:v1", predicate: "medical-note" });
+
+    // Two calls, two events, on each side: the escalation is audited and so is
+    // the disclosure, and the change of transport does not change the count.
+    expect(both.audits.http.events).toHaveLength(2);
+    expect(both.audits.http.events.map((event) => event["outcome"])).toEqual(
+      both.audits.stdio.events.map((event) => event["outcome"])
+    );
+  });
+
+  it("verifies a state echoed on the published request_state ARGUMENT over HTTP too", async () => {
+    /**
+     * The second channel, which a harness with no multi-round-trip support uses:
+     * `request_state` is a published INPUT argument, so re-calling the tool needs
+     * no protocol support at all. It went through the same per-request codec and
+     * so failed the same way — with `atlas.error:v1 code=invalid-request-state`
+     * rather than `-32602`, which is why fixing one channel without the other
+     * would have left half the surface broken.
+     *
+     * No owner answer rides an argument, so the correct end state is
+     * `owner-decision-missing`: reaching it proves the state itself VERIFIED,
+     * because an unverifiable state refuses earlier and with a different code.
+     */
+    const both = await bothTransports((graph) => seedWithheldAssertion(graph), "shared");
+    const stubId = sealedStub(both.graphs.http);
+
+    const first = await both.http(
+      callTool({
+        id: 1,
+        name: "atlas.sensitive.reveal.v1",
+        args: { redaction_id: stubId, reason: REASON },
+        meta: meta()
+      })
+    );
+    const state = first.result?.["requestState"] as string;
+
+    const second = await both.http(
+      callTool({
+        id: 2,
+        name: "atlas.sensitive.reveal.v1",
+        args: { redaction_id: stubId, reason: REASON, request_state: state },
+        meta: meta()
+      })
+    );
+
+    const payload = second.result?.["structuredContent"] as Record<string, unknown>;
+    expect(payload["error"]).toMatchObject({ code: "owner-decision-missing" });
+  });
+});
+
 describe("a write that crosses transports", () => {
   it("replays the original receipt rather than committing twice", async () => {
     /**

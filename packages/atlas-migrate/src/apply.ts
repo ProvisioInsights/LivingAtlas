@@ -104,6 +104,22 @@ export type MigrationApplyAudit = {
   plan_digest: string;
   recorded_at: string;
   mode: "apply" | "refused";
+  /**
+   * What the run actually DID, as distinct from what it set out to do.
+   *
+   * Separate from `mode` because the two answer different questions and
+   * collapsing them is how the defect got in: `mode` says which operation was
+   * attempted, and a run that committed every record and then hit an alias
+   * conflict is unambiguously an `apply`. Whether it SUCCEEDED is another fact,
+   * and it used to be recorded nowhere — a conflicted run wrote
+   * `mode: "apply", gate_verdict: "pass"` and returned `ok: false`, so the
+   * durable event said the run went fine while the caller was told it had not.
+   * The only trace was that `alias_rows_written + alias_rows_reused` fell short
+   * of the outcome count, which a reader can only notice if they already
+   * suspect. AGENTS.md requires a durable inspectable event for every mutating
+   * operation; an event that misreports its own outcome is not one.
+   */
+  outcome: "committed" | "alias-ledger-conflict" | "closure-gate-failed";
   gate_verdict: "pass" | "fail";
   source_object_count: number;
   refused_source_objects: number;
@@ -113,6 +129,12 @@ export type MigrationApplyAudit = {
   assertions_minted: number;
   alias_rows_written: number;
   alias_rows_reused: number;
+  /**
+   * Alias rows this run planned that the ledger already held pointing somewhere
+   * ELSE. Non-zero is the conflict, counted so the event states the size of the
+   * disagreement rather than leaving it to be inferred from a shortfall.
+   */
+  alias_rows_conflicted: number;
   resolution_assertions_written: number;
 };
 
@@ -207,6 +229,7 @@ export async function applyProjectionPlan(input: ApplyProjectionPlanInput): Prom
       plan_digest: plan.plan_digest,
       recorded_at: recordedAt,
       mode: "refused",
+      outcome: "closure-gate-failed",
       gate_verdict: "fail",
       source_object_count: plan.breakdown.source_object_count,
       refused_source_objects: plan.breakdown.refused_count,
@@ -216,6 +239,7 @@ export async function applyProjectionPlan(input: ApplyProjectionPlanInput): Prom
       assertions_minted: 0,
       alias_rows_written: 0,
       alias_rows_reused: 0,
+      alias_rows_conflicted: 0,
       resolution_assertions_written: 0
     };
     await input.audit.record(refusedAudit);
@@ -239,6 +263,19 @@ export async function applyProjectionPlan(input: ApplyProjectionPlanInput): Prom
       if (isEntityRecord(record)) {
         entityIdBySlot.set(record.slot, existing.object_id);
       }
+      // The counter advances on a REPLAY too, and that is not bookkeeping —
+      // it is the per-assertion seq invariant. A run that died part-way (sink
+      // throw, full disk, killed process) leaves some keys with receipts and
+      // some without; the resume replays the committed ones and commits the
+      // rest. With the counter left at zero across the replays, the first
+      // record the resume actually commits would be handed seq=1 — a number a
+      // record already committed in the failed run is holding. Measured: a
+      // tombstoned object's entity record committed seq=1 in the first run and
+      // its retraction committed seq=1 in the resume.
+      seqByLegacyObject.set(
+        record.provenance.legacy_object_id,
+        Math.max(seqByLegacyObject.get(record.provenance.legacy_object_id) ?? 0, existing.seq)
+      );
       receipts.push(existing);
       recordsReplayed += 1;
       continue;
@@ -327,6 +364,9 @@ export async function applyProjectionPlan(input: ApplyProjectionPlanInput): Prom
     aliasRowsWritten += 1;
   }
 
+  // Built AFTER the alias loop, so the outcome the event reports is the outcome
+  // the caller is about to be given rather than the one the run was hoping for.
+  // Still exactly one event per call.
   const audit: MigrationApplyAudit = {
     event_schema: MigrationApplyAuditSchemaName,
     authority_id: plan.authority_id,
@@ -334,6 +374,7 @@ export async function applyProjectionPlan(input: ApplyProjectionPlanInput): Prom
     plan_digest: plan.plan_digest,
     recorded_at: recordedAt,
     mode: "apply",
+    outcome: conflicts.length > 0 ? "alias-ledger-conflict" : "committed",
     gate_verdict: "pass",
     source_object_count: plan.breakdown.source_object_count,
     refused_source_objects: plan.breakdown.refused_count,
@@ -343,6 +384,7 @@ export async function applyProjectionPlan(input: ApplyProjectionPlanInput): Prom
     assertions_minted: assertionsMinted,
     alias_rows_written: aliasRowsWritten,
     alias_rows_reused: aliasRowsReused,
+    alias_rows_conflicted: conflicts.length,
     resolution_assertions_written: committedKinds.filter((kind) => ResolutionBearingRecordKinds.has(kind)).length
   };
   await input.audit.record(audit);

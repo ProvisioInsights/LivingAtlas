@@ -137,9 +137,31 @@ Apply looks up the original receipt for each key. A key that already has one is
 replayed from that receipt — no second commit, no second mint, no second alias
 row, and no change to the already-recorded time of record.
 
+**A replay advances the per-legacy-object `seq` counter, and that is the
+invariant rather than bookkeeping.** Re-running a *complete* apply is the easy
+case: everything replays and nothing is numbered. The case that matters is a
+resume after a run died part-way — a sink throw, a full disk, a killed process —
+where some keys have receipts and some do not. With the counter left at zero
+across the replays, the first record the resume actually commits is handed `seq=1`
+while a record committed in the failed run already holds it. Measured on the
+fixture: the tombstoned organisation's entity record committed `seq=1` in the
+failed run and its retraction committed `seq=1` in the resume. The counter is
+therefore raised to the replayed receipt's own `seq` before the loop continues,
+so numbering survives however many runs it took.
+
 One audit event per apply call carries aggregate counts. Per-record audit fanout
 would make the audit log a second copy of the graph and would leak the shape of
 the corpus to anyone allowed to read audit.
+
+**That event names its own outcome.** `mode` says which operation was attempted;
+`outcome` says what happened. They are separate because collapsing them is how a
+run that committed every record, then hit an alias-ledger conflict, and returned
+`ok: false` came to write `mode: "apply", gate_verdict: "pass"` with no field
+naming the conflict — a durable event indistinguishable from a clean run, whose
+only trace was that `alias_rows_written + alias_rows_reused` fell short of the
+outcome count. `outcome` is one of `committed`, `alias-ledger-conflict` or
+`closure-gate-failed`, and `alias_rows_conflicted` carries the size of the
+disagreement. The event is still built after the alias loop and written once.
 
 ### 7. What is deliberately not carried across
 
@@ -166,12 +188,16 @@ dry-run artifact is the last place that should hold plaintext.
 
 ## Open questions
 
-- **OPEN — binding to the target plane.** `packages/atlas-core` does not exist at
-  the commit this lane branched from, so the projector emits its own typed record
-  shapes and writes through three ports (`EntityRegistry`, `AliasLedger`,
-  `TargetPlaneSink`) with in-memory reference implementations. Binding those ports
-  to the real plane, and reconciling the projected record shapes with the
-  canonical payload schemas, is not decided here.
+- **OPEN — binding to the target plane.** The projector emits its own typed
+  record shapes and writes through three ports (`EntityRegistry`, `AliasLedger`,
+  `TargetPlaneSink`), which are still wired to the in-memory reference
+  implementations in `in-memory-plane.ts`. The indirection is deliberate: a
+  projector that imported `packages/atlas-core`'s payload schemas directly would
+  make every legacy shape a change to the canonical ones, and the reconciliation
+  between the two — which projected fields map onto which canonical members, and
+  what a legacy shape with no canonical home does — is the decision this lane
+  does not make. Binding the ports to the real plane, and that reconciliation,
+  are undecided.
 - **OPEN — temporal events.** Legacy `event` objects currently land in `other` and
   fail the gate. Whether they project to occurrence entities, to relationship
   assertions, or are refused with a named reason is undecided; failing loudly is
