@@ -461,6 +461,177 @@ export function createLegacyGraphFixture(): GraphObjectEnvelope[] {
   ];
 }
 
+export const legacyVenueFixtureIds = {
+  venueRestaurant: "la_object_legacy_venue_r",
+  venueHotel: "la_object_legacy_venue_h",
+  city: "la_object_legacy_venue_city",
+  lawFirm: "la_object_legacy_venue_firm",
+  segment: "la_object_legacy_venue_seg",
+  conflictedSegment: "la_object_legacy_venue_bad",
+  personOneEmployer: "la_object_legacy_venue_p1",
+  personNoEmployer: "la_object_legacy_venue_p0",
+  personTwoEmployers: "la_object_legacy_venue_p2",
+  employerA: "la_object_legacy_venue_ea",
+  employerB: "la_object_legacy_venue_eb",
+  edgeOccurredAt: "la_object_legacy_venue_eoc",
+  edgeEmployOne: "la_object_legacy_venue_e1",
+  edgeEmployTwoA: "la_object_legacy_venue_e2a",
+  edgeEmployTwoB: "la_object_legacy_venue_e2b"
+} as const;
+
+/**
+ * A legacy graph in the OLD vocabulary — retired subtypes and the denormalised
+ * attributes that the venue split and the attribute deduplication exist to fix.
+ *
+ * It is separate from `createLegacyGraphFixture` on purpose. That fixture now
+ * speaks the target vocabulary and proves the projector still reads a modern
+ * export unchanged; this one proves it reads what the old store actually wrote.
+ * A projector tested only against the new shape would pass every test and refuse
+ * the entire real corpus.
+ *
+ * Content is invented. `Venue 0`, `Employer A` and `Person 1` are placeholders.
+ */
+export function createLegacyVenueFixture(): GraphObjectEnvelope[] {
+  const ids = legacyVenueFixtureIds;
+  return [
+    // The parent place a venue is contained in.
+    plaintextEnvelope(ids.city, "entity", endpointPayload(ids.city, "location", "City 1", { subtype: "city" })),
+
+    // THE VENUE SPLIT: one row meaning a place AND a business. Carries attributes
+    // of both kinds so the allocation rule has something to divide.
+    plaintextEnvelope(
+      ids.venueRestaurant,
+      "entity",
+      endpointPayload(ids.venueRestaurant, "location", "Venue 0", {
+        subtype: "restaurant",
+        parent_location_ref: ids.city,
+        geo: { latitude: 1.5, longitude: 2.5 },
+        timezone: "UTC",
+        founded_year: "1998",
+        homepage_ref: "https://example.invalid/venue-0"
+      })
+    ),
+    plaintextEnvelope(
+      ids.venueHotel,
+      "entity",
+      endpointPayload(ids.venueHotel, "location", "Venue 1", {
+        subtype: "hotel",
+        parent_location_ref: ids.city
+      })
+    ),
+
+    // A non-venue subtype: classification without a split.
+    plaintextEnvelope(
+      ids.lawFirm,
+      "entity",
+      endpointPayload(ids.lawFirm, "organization", "Employer C", { subtype: "law-firm" })
+    ),
+
+    // provider/airline/merchant, three date names, and both participant lists.
+    plaintextEnvelope(
+      ids.segment,
+      "entity",
+      endpointPayload(ids.segment, "occurrence", "Segment 0", {
+        subtype: "segment",
+        airline: "Carrier 0",
+        merchant: "Agency 0",
+        date: "2023-04-05",
+        purchase_date: "2023-04-05",
+        participant_refs: [ids.personNoEmployer],
+        organizer_refs: [ids.personOneEmployer]
+      })
+    ),
+    // G8 said provider and airline never co-occur. This one makes them disagree,
+    // so the enforcement has something to refuse.
+    plaintextEnvelope(
+      ids.conflictedSegment,
+      "entity",
+      endpointPayload(ids.conflictedSegment, "occurrence", "Segment 1", {
+        subtype: "segment",
+        provider: "Carrier 0",
+        airline: "Carrier 1",
+        date: "2023-06-07"
+      })
+    ),
+
+    plaintextEnvelope(ids.employerA, "entity", endpointPayload(ids.employerA, "organization", "Employer A")),
+    plaintextEnvelope(ids.employerB, "entity", endpointPayload(ids.employerB, "organization", "Employer B")),
+
+    // Exactly one employer: job_title becomes attrs.role on that edge.
+    plaintextEnvelope(
+      ids.personOneEmployer,
+      "entity",
+      endpointPayload(ids.personOneEmployer, "person", "Person 1", { job_title: "Title 1" })
+    ),
+    // No employer edge, but company_current names one: backfill, then the title
+    // has exactly one edge to land on.
+    plaintextEnvelope(
+      ids.personNoEmployer,
+      "entity",
+      endpointPayload(ids.personNoEmployer, "person", "Person 2", {
+        company_current: "Employer D",
+        job_title: "Title 2"
+      })
+    ),
+    // Two employers: the title cannot be placed without choosing one.
+    plaintextEnvelope(
+      ids.personTwoEmployers,
+      "entity",
+      endpointPayload(ids.personTwoEmployers, "person", "Person 3", { job_title: "Title 3" })
+    ),
+
+    plaintextEnvelope(
+      ids.edgeOccurredAt,
+      "edge",
+      edgePayload("la_edge_legacy_venue_occ", {
+        source_object_id: ids.segment,
+        source_type: "occurrence",
+        // Declares `location`, which is how it routes to the location half.
+        target_object_id: ids.venueRestaurant,
+        target_type: "location",
+        predicate: "occurred-at",
+        valid_from: "2023-04-05"
+      })
+    ),
+    plaintextEnvelope(
+      ids.edgeEmployOne,
+      "edge",
+      edgePayload("la_edge_legacy_venue_em1", {
+        source_object_id: ids.personOneEmployer,
+        source_type: "person",
+        target_object_id: ids.employerA,
+        target_type: "organization",
+        predicate: "employed-by",
+        valid_from: "2020-01-01"
+      })
+    ),
+    plaintextEnvelope(
+      ids.edgeEmployTwoA,
+      "edge",
+      edgePayload("la_edge_legacy_venue_em2", {
+        source_object_id: ids.personTwoEmployers,
+        source_type: "person",
+        target_object_id: ids.employerA,
+        target_type: "organization",
+        predicate: "employed-by",
+        valid_from: "2019-01-01"
+      })
+    ),
+    plaintextEnvelope(
+      ids.edgeEmployTwoB,
+      "edge",
+      edgePayload("la_edge_legacy_venue_em3", {
+        source_object_id: ids.personTwoEmployers,
+        source_type: "person",
+        target_object_id: ids.employerB,
+        target_type: "organization",
+        predicate: "employed-by",
+        valid_from: "2021-01-01"
+      })
+    )
+  ];
+}
+
 /**
  * Seeded negative control for the closure gate: an object_type this projector
  * never declared a mapping for. It must FAIL the gate rather than pass through

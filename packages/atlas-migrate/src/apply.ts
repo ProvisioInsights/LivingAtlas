@@ -5,8 +5,11 @@ import type { ProjectionPlan, SourceDispositionKind, SourceOutcome } from "./pro
 import {
   ResolutionBearingRecordKinds,
   isEntityRecord,
+  legacyObjectIdOf,
+  provenanceGroupKey,
   type EntitySlot,
   type MigrationIdempotencyKey,
+  type ProjectedProvenance,
   type ProjectedRecord,
   type ProjectedRecordKind
 } from "./target-plane.js";
@@ -15,12 +18,21 @@ export type EntityMintRequest = {
   slot: EntitySlot;
   entity_type: EndpointType;
   entity_subtype?: EndpointSubtype;
-  legacy_object_id: string;
+  /**
+   * The legacy object this entity came from, ABSENT when the migration minted the
+   * node from an attribute value shared by many objects. Optional rather than
+   * filled in with a plausible id: a registry that logged one arbitrary
+   * contributor as the source of a shared topic node would record a provenance
+   * nobody could reproduce.
+   */
+  legacy_object_id?: string;
+  provenance: ProjectedProvenance;
 };
 
 export type AssertionMintRequest = {
   record_kind: Exclude<ProjectedRecordKind, "entity">;
-  legacy_object_id: string;
+  legacy_object_id?: string;
+  provenance: ProjectedProvenance;
 };
 
 /**
@@ -38,6 +50,17 @@ export const AliasBasis = "mechanical-migration" as const;
 
 export type AliasLedgerTarget =
   | { kind: "redirect"; object_id: string; record_kind: ProjectedRecordKind }
+  /**
+   * The id became more than one entity, and the ledger says so instead of
+   * choosing. This mirrors the entity registry's own `ambiguous-split` row: there
+   * is NO primary, on purpose, because naming one would silently reattribute
+   * every historical reference to whichever half was nominated.
+   *
+   * A consumer holding the old id gets a refusal it can act on — "this is one of
+   * these two, and Atlas will not guess" — which is a different and far more
+   * useful answer than a redirect that quietly picked.
+   */
+  | { kind: "ambiguous-split"; candidate_object_ids: [string, string, ...string[]] }
   | {
       kind: "no-target";
       disposition: SourceDispositionKind;
@@ -197,6 +220,25 @@ function plannedAliasTarget(outcome: SourceOutcome, objectIdByRecordKey: Map<str
       detail: "planned redirect target was not committed in this run"
     };
   }
+
+  if (outcome.alias_target.kind === "ambiguous-split") {
+    const objectIds = outcome.alias_target.candidates.map((candidate) =>
+      objectIdByRecordKey.get(candidate.record_key)
+    );
+    const [first, second, ...rest] = objectIds;
+    if (first && second && objectIds.every((objectId): objectId is string => objectId !== undefined)) {
+      return { kind: "ambiguous-split", candidate_object_ids: [first, second, ...rest.filter((id): id is string => id !== undefined)] };
+    }
+    // A split whose candidates did not all commit cannot be written as a split:
+    // the row would name a subset and read as though the missing half never
+    // existed, which is the silent pick this path exists to avoid.
+    return {
+      kind: "no-target",
+      disposition: outcome.disposition.kind,
+      detail: "planned split candidates were not all committed in this run"
+    };
+  }
+
   return {
     kind: "no-target",
     disposition: outcome.alias_target.disposition,
@@ -272,36 +314,42 @@ export async function applyProjectionPlan(input: ApplyProjectionPlanInput): Prom
       // record already committed in the failed run is holding. Measured: a
       // tombstoned object's entity record committed seq=1 in the first run and
       // its retraction committed seq=1 in the resume.
+      const replayedGroup = provenanceGroupKey(record.provenance);
       seqByLegacyObject.set(
-        record.provenance.legacy_object_id,
-        Math.max(seqByLegacyObject.get(record.provenance.legacy_object_id) ?? 0, existing.seq)
+        replayedGroup,
+        Math.max(seqByLegacyObject.get(replayedGroup) ?? 0, existing.seq)
       );
       receipts.push(existing);
       recordsReplayed += 1;
       continue;
     }
 
-    const seq = (seqByLegacyObject.get(record.provenance.legacy_object_id) ?? 0) + 1;
-    seqByLegacyObject.set(record.provenance.legacy_object_id, seq);
+    const group = provenanceGroupKey(record.provenance);
+    const seq = (seqByLegacyObject.get(group) ?? 0) + 1;
+    seqByLegacyObject.set(group, seq);
 
     let objectId: string;
     let resolved: CommitResolution;
 
     if (isEntityRecord(record)) {
+      const legacyObjectId = legacyObjectIdOf(record);
       const minted = await registry.mintEntity({
         slot: record.slot,
         entity_type: record.entity_type,
         ...(record.entity_subtype === undefined ? {} : { entity_subtype: record.entity_subtype }),
-        legacy_object_id: record.provenance.legacy_object_id
+        ...(legacyObjectId === undefined ? {} : { legacy_object_id: legacyObjectId }),
+        provenance: record.provenance
       });
       objectId = minted.entity_id;
       entitiesMinted += 1;
       entityIdBySlot.set(record.slot, objectId);
       resolved = { record_kind: "entity" };
     } else {
+      const legacyObjectId = legacyObjectIdOf(record);
       const minted = await registry.mintAssertion({
         record_kind: record.record_kind,
-        legacy_object_id: record.provenance.legacy_object_id
+        ...(legacyObjectId === undefined ? {} : { legacy_object_id: legacyObjectId }),
+        provenance: record.provenance
       });
       objectId = minted.assertion_id;
       assertionsMinted += 1;

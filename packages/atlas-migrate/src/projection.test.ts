@@ -7,8 +7,12 @@ import {
   legacyFixturePayloadResolver,
   renderProjectionPlanReport,
   isEntityRecord,
+  isLegacyObjectProvenance,
   isRelationshipRecord,
   isRetractionRecord,
+  legacyObjectIdOf,
+  type LegacyProvenance,
+  type ProjectedProvenance,
   type ProjectionPlan,
   type SourceOutcome
 } from "./index.js";
@@ -31,6 +35,18 @@ function outcomeFor(plan: ProjectionPlan, legacyObjectId: string): SourceOutcome
 function refusalReason(plan: ProjectionPlan, legacyObjectId: string): string {
   const { disposition } = outcomeFor(plan, legacyObjectId);
   return disposition.kind === "refused" ? disposition.reason : `not-refused:${disposition.kind}`;
+}
+
+/**
+ * Narrows to the provenance of a record that came FROM a legacy object. Throwing
+ * on a minted node is the point: these assertions are about carrying the old
+ * store's bookkeeping across, and a node the migration invented has none to carry.
+ */
+function legacyProvenanceOf(record: { provenance: ProjectedProvenance } | undefined): LegacyProvenance {
+  if (!record || !isLegacyObjectProvenance(record.provenance)) {
+    throw new Error("expected a record projected from a legacy object");
+  }
+  return record.provenance;
 }
 
 function collectKeys(value: unknown, key: string, found: string[] = []): string[] {
@@ -65,11 +81,11 @@ describe("legacy projection", () => {
     const plan = planFixture();
     const entity = plan.records
       .filter(isEntityRecord)
-      .find((record) => record.provenance.legacy_object_id === legacyFixtureIds.organization1);
+      .find((record) => legacyObjectIdOf(record) === legacyFixtureIds.organization1);
 
     expect(entity?.entity_type).toBe("organization");
     expect(entity?.name).toBe("Employer 1");
-    expect(entity?.provenance.legacy_access_class).toBe("local-private");
+    expect(legacyProvenanceOf(entity).legacy_access_class).toBe("local-private");
   });
 
   it("stamps import origin and fidelity on every projected record", () => {
@@ -86,10 +102,10 @@ describe("legacy projection", () => {
     const plan = planFixture();
     const entity = plan.records
       .filter(isEntityRecord)
-      .find((record) => record.provenance.legacy_object_id === legacyFixtureIds.person);
+      .find((record) => legacyObjectIdOf(record) === legacyFixtureIds.person);
 
-    expect(entity?.provenance.legacy_created_at).toBe("2024-03-04T09:00:00.000Z");
-    expect(entity?.provenance.legacy_updated_at).toBe("2025-11-19T17:30:00.000Z");
+    expect(legacyProvenanceOf(entity).legacy_created_at).toBe("2024-03-04T09:00:00.000Z");
+    expect(legacyProvenanceOf(entity).legacy_updated_at).toBe("2025-11-19T17:30:00.000Z");
     // recorded_at belongs to the commit, so a plan must not contain one anywhere.
     expect(collectKeys(plan, "recorded_at")).toEqual([]);
   });
@@ -108,7 +124,7 @@ describe("legacy projection", () => {
   it("reports world time at the fidelity the legacy edge actually had", () => {
     const plan = planFixture();
     const relationships = plan.records.filter(isRelationshipRecord);
-    const byLegacyId = new Map(relationships.map((record) => [record.provenance.legacy_object_id, record]));
+    const byLegacyId = new Map(relationships.map((record) => [legacyObjectIdOf(record), record]));
 
     expect(byLegacyId.get(legacyFixtureIds.edgeEmployment)?.valid_from_fidelity).toBe("exact");
     expect(byLegacyId.get(legacyFixtureIds.edgeFounder)?.valid_from_fidelity).toBe("approximate");
@@ -121,7 +137,7 @@ describe("legacy projection", () => {
     const plan = planFixture();
     const relationship = plan.records
       .filter(isRelationshipRecord)
-      .find((record) => record.provenance.legacy_object_id === legacyFixtureIds.edgeEmployment);
+      .find((record) => legacyObjectIdOf(record) === legacyFixtureIds.edgeEmployment);
 
     expect(relationship).toBeDefined();
     expect(Object.keys(relationship ?? {})).not.toContain("confidence");
@@ -132,10 +148,10 @@ describe("legacy projection", () => {
     const plan = planFixture();
     const entity = plan.records
       .filter(isEntityRecord)
-      .find((record) => record.provenance.legacy_object_id === legacyFixtureIds.organizationTombstoned);
+      .find((record) => legacyObjectIdOf(record) === legacyFixtureIds.organizationTombstoned);
     const retraction = plan.records
       .filter(isRetractionRecord)
-      .find((record) => record.provenance.legacy_object_id === legacyFixtureIds.organizationTombstoned);
+      .find((record) => legacyObjectIdOf(record) === legacyFixtureIds.organizationTombstoned);
 
     expect(entity).toBeDefined();
     expect(retraction?.retracts_idempotency_key).toBe(entity?.idempotency_key);
@@ -144,10 +160,10 @@ describe("legacy projection", () => {
 
     const edgeRelationship = plan.records
       .filter(isRelationshipRecord)
-      .find((record) => record.provenance.legacy_object_id === legacyFixtureIds.edgeMembershipTombstoned);
+      .find((record) => legacyObjectIdOf(record) === legacyFixtureIds.edgeMembershipTombstoned);
     const edgeRetraction = plan.records
       .filter(isRetractionRecord)
-      .find((record) => record.provenance.legacy_object_id === legacyFixtureIds.edgeMembershipTombstoned);
+      .find((record) => legacyObjectIdOf(record) === legacyFixtureIds.edgeMembershipTombstoned);
     expect(edgeRetraction?.retracts_idempotency_key).toBe(edgeRelationship?.idempotency_key);
   });
 
@@ -196,7 +212,7 @@ describe("legacy projection", () => {
     const plan = planFixture();
     const personEntity = plan.records
       .filter(isEntityRecord)
-      .find((record) => record.provenance.legacy_object_id === legacyFixtureIds.person);
+      .find((record) => legacyObjectIdOf(record) === legacyFixtureIds.person);
 
     for (const hop of [legacyFixtureIds.aliasHop1, legacyFixtureIds.aliasHop2]) {
       const outcome = outcomeFor(plan, hop);
@@ -216,10 +232,10 @@ describe("legacy projection", () => {
     const plan = planFixture();
     const personEntity = plan.records
       .filter(isEntityRecord)
-      .find((record) => record.provenance.legacy_object_id === legacyFixtureIds.person);
+      .find((record) => legacyObjectIdOf(record) === legacyFixtureIds.person);
     const relationship = plan.records
       .filter(isRelationshipRecord)
-      .find((record) => record.provenance.legacy_object_id === legacyFixtureIds.edgeThroughRedirect);
+      .find((record) => legacyObjectIdOf(record) === legacyFixtureIds.edgeThroughRedirect);
 
     expect(relationship?.source_slot).toBe(personEntity?.slot);
     expect(outcomeFor(plan, legacyFixtureIds.edgeThroughRedirect).disposition.kind).toBe(

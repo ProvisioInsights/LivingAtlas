@@ -1,9 +1,10 @@
 import {
   AuthorityIdSchema,
-  EndpointRecordSchema,
   TemporalEdgeSchema,
+  checkPredicateEndpoints,
   type EndpointType,
-  type GraphObjectEnvelope
+  type GraphObjectEnvelope,
+  type Predicate
 } from "@living-atlas/contracts";
 import {
   LegacyRedirectPayloadSchema,
@@ -15,11 +16,33 @@ import {
   type MigrationRefusalReason
 } from "./legacy-source.js";
 import {
+  LegacyEndpointPayloadSchema,
+  endpointAttributes,
+  isVenueLocation,
+  legacyOccurrenceSubtype,
+  legacyOccurredOn,
+  legacyProviderName,
+  legacyTypeWords,
+  type EdgeDerivation,
+  type LegacyEndpointPayload
+} from "./legacy-endpoint.js";
+import {
+  DerivedAttributeNamespaces,
+  DerivedNodeRegistry,
+  HandReviewReasonValues,
+  compareHandReviewItems,
+  type DerivedNodeHandle,
+  type HandReviewItem,
+  type HandReviewReason
+} from "./derived-nodes.js";
+import {
   MigrationOrigin,
   MigrationRecordedAtFidelity,
   ProjectorVersion,
   canonicalDigest,
   entitySlotForLegacyObject,
+  isLegacyObjectProvenance,
+  isRelationshipRecord,
   projectionIdempotencyKey,
   worldTimeFidelity,
   type EntitySlot,
@@ -52,6 +75,27 @@ export type SourceDisposition =
   | { kind: Exclude<SourceDispositionKind, "refused"> }
   | { kind: "refused"; reason: MigrationRefusalReason; detail: string };
 
+export type PlanAliasCandidate = {
+  record_key: MigrationIdempotencyKey;
+  record_kind: ProjectedRecordKind;
+  entity_type: EndpointType;
+  slot: EntitySlot;
+};
+
+/**
+ * `ambiguous-split` is the answer for a legacy id that became more than one node.
+ *
+ * A venue was one row that meant two things — the place and the business — so
+ * every reference to the old id is a reference to one of them and the migration
+ * cannot tell which. Nominating a primary would silently attribute every
+ * historical mention to whichever node won, which is the failure ADR 0007 names.
+ * The split refuses BY NAME and lists the candidates, exactly as the entity
+ * registry's own split path does.
+ *
+ * This is not in tension with edges landing deterministically on one side: an
+ * edge carries a declared endpoint TYPE, so it says which of the two it meant. A
+ * bare id does not, and inventing a discriminator it never had is the guess.
+ */
 export type PlanAliasTarget =
   | {
       kind: "record";
@@ -59,6 +103,7 @@ export type PlanAliasTarget =
       record_kind: ProjectedRecordKind;
       slot?: EntitySlot;
     }
+  | { kind: "ambiguous-split"; candidates: [PlanAliasCandidate, PlanAliasCandidate, ...PlanAliasCandidate[]] }
   | { kind: "no-target"; disposition: SourceDispositionKind; reason?: MigrationRefusalReason; detail: string };
 
 export type SourceOutcome = {
@@ -78,6 +123,16 @@ export type ProjectionBreakdown = {
   by_disposition: Array<{ disposition: SourceDispositionKind; count: number }>;
   refusals_by_reason: Array<{ reason: MigrationRefusalReason; count: number }>;
   records_by_kind: Array<{ record_kind: ProjectedRecordKind; count: number }>;
+  /**
+   * Nodes minted rather than projected, and edges computed from an attribute
+   * rather than carried from a legacy edge. Counted separately because they are
+   * the part of the plan with no source row behind it: a reviewer comparing the
+   * plan against the old store needs to know which records they will not find there.
+   */
+  entities_minted_from_attributes: number;
+  relationships_derived_from_attributes: number;
+  legacy_ids_split: number;
+  hand_review_by_reason: Array<{ reason: HandReviewReason; count: number }>;
 };
 
 export const ProjectionPlanSchemaName = "living-atlas-migration-projection-plan:v1" as const;
@@ -101,6 +156,12 @@ export type ProjectionPlan = {
   source_object_count: number;
   outcomes: SourceOutcome[];
   records: ProjectedRecord[];
+  /**
+   * Legacy attributes the projector could not place mechanically. Never a
+   * refusal — the object still projects — and never silence, which is what an
+   * unplaced attribute would otherwise be.
+   */
+  hand_review: HandReviewItem[];
   breakdown: ProjectionBreakdown;
   plan_digest: `sha256:${string}`;
 };
@@ -142,11 +203,26 @@ type Draft = {
    * into the envelope would silently refuse every encrypted edge in the corpus.
    */
   data?: Record<string, unknown>;
+  /** The parsed legacy endpoint, kept so the attribute passes need not re-parse. */
+  payload?: LegacyEndpointPayload;
   disposition?: SourceDisposition;
   records: ProjectedRecord[];
   primary?: PreparedPrimary;
+  /**
+   * Every entity this object became, keyed by endpoint type.
+   *
+   * This is what routes an edge after a venue split: the edge declared which type
+   * it meant, so it lands on the node of that type without anybody guessing. For
+   * an object that did not split the map holds one entry and behaviour is
+   * unchanged.
+   */
+  entitiesByType: Map<EndpointType, PreparedPrimary>;
+  /** Present only for a split, in a stable order, and the basis of the alias row. */
+  splitEntities?: PlanAliasCandidate[];
   alias_target?: PlanAliasTarget;
   redirects_to?: string;
+  /** Next free ordinal for a relationship keyed to this legacy object. */
+  nextRelationshipOrdinal: number;
 };
 
 function refuse(reason: MigrationRefusalReason, detail: string): SourceDisposition {
@@ -196,10 +272,18 @@ export function buildProjectionPlan(
 
   const drafts: Draft[] = [];
   const draftsById = new Map<string, Draft>();
+  const derivedNodes = new DerivedNodeRegistry(authorityId);
+  const handReview: HandReviewItem[] = [];
 
   for (const envelope of envelopes) {
     const { category, resolution } = classifyLegacySource(envelope, resolvePayload);
-    const draft: Draft = { envelope, category, records: [] };
+    const draft: Draft = {
+      envelope,
+      category,
+      records: [],
+      entitiesByType: new Map(),
+      nextRelationshipOrdinal: 0
+    };
 
     if (draftsById.has(envelope.object_id)) {
       // Two snapshots concatenated by hand would otherwise mint two entities for
@@ -239,14 +323,6 @@ export function buildProjectionPlan(
       continue;
     }
 
-    if (category === "derived-index") {
-      draft.disposition = refuse(
-        "derived-index-not-migrated",
-        "derived lookup table; the new plane rebuilds it from the records it indexes"
-      );
-      continue;
-    }
-
     if (category === "other") {
       draft.disposition = refuse(
         "unclassified-source-category",
@@ -271,47 +347,126 @@ export function buildProjectionPlan(
     }
 
     if (category === "entity-record" || category === "tombstoned-entity-record") {
-      const endpoint = EndpointRecordSchema.safeParse(unwrapLegacyRecord(resolution.data, "endpoint"));
+      const endpoint = LegacyEndpointPayloadSchema.safeParse(unwrapLegacyRecord(resolution.data, "endpoint"));
       if (!endpoint.success) {
         draft.disposition = refuse("invalid-legacy-payload", "legacy entity payload did not parse as an endpoint record");
         continue;
       }
-      const slot = entitySlotForLegacyObject(authorityId, envelope.object_id);
-      const entityKey = projectionIdempotencyKey({
-        authority_id: authorityId,
-        legacy_object_id: envelope.object_id,
-        record_kind: "entity",
-        ordinal: 0
-      });
-      const entityRecord: ProjectedEntityRecord = {
-        record_kind: "entity",
-        idempotency_key: entityKey,
-        origin: MigrationOrigin,
-        recorded_at_fidelity: MigrationRecordedAtFidelity,
-        provenance,
-        slot,
-        entity_type: endpoint.data.type,
-        ...(endpoint.data.type === "occurrence" ? { entity_subtype: endpoint.data.subtype } : {}),
-        name: endpoint.data.name,
-        aliases: [...endpoint.data.aliases],
-        ...(endpoint.data.description ? { description: endpoint.data.description } : {})
-      };
-      draft.records.push(entityRecord);
-      draft.primary = { record_key: entityKey, record_kind: "entity", slot, entity_type: endpoint.data.type };
-      if (tombstone) {
-        draft.records.push({
-          record_kind: "retraction",
-          idempotency_key: projectionIdempotencyKey({
-            authority_id: authorityId,
-            legacy_object_id: envelope.object_id,
-            record_kind: "retraction",
-            ordinal: 1
-          }),
+      const payload = endpoint.data;
+      draft.payload = payload;
+
+      let subtype: ProjectedEntityRecord["entity_subtype"];
+      if (payload.type === "occurrence") {
+        const resolved = legacyOccurrenceSubtype(payload);
+        if (!resolved.ok) {
+          draft.disposition = refuse("invalid-legacy-payload", resolved.detail);
+          continue;
+        }
+        subtype = resolved.subtype;
+      }
+
+      // THE VENUE SPLIT. A restaurant row was one node standing for two things,
+      // so it becomes two: the place it is and the business that runs it, joined
+      // by operated-by. The attributes divide by which node they are a property
+      // OF — geography stays with the place, because a business that moves
+      // premises is the same business and a different location.
+      const split = isVenueLocation(payload);
+      const entityTypes: EndpointType[] = split ? ["location", "organization"] : [payload.type];
+      const entityKeys: MigrationIdempotencyKey[] = [];
+
+      const attributesByType = new Map<EndpointType, Record<string, unknown>>();
+      for (const entityType of entityTypes) {
+        const allocated = endpointAttributes(payload, entityType);
+        attributesByType.set(entityType, allocated.attrs);
+        if (allocated.conflict) {
+          // An attribute-level problem gets an attribute-level outcome. Refusing
+          // the object would be an object-level answer to a question about one
+          // field, and it would throw away every other fact the row carried.
+          flagForHandReview(
+            handReview,
+            draft,
+            allocated.conflict.attribute,
+            "attribute-conflict",
+            allocated.conflict.detail
+          );
+        }
+      }
+
+      entityTypes.forEach((entityType, ordinal) => {
+        const slot = entitySlotForLegacyObject(authorityId, envelope.object_id, ordinal);
+        const entityKey = projectionIdempotencyKey({
+          authority_id: authorityId,
+          legacy_object_id: envelope.object_id,
+          record_kind: "entity",
+          ordinal
+        });
+        const entityRecord: ProjectedEntityRecord = {
+          record_kind: "entity",
+          idempotency_key: entityKey,
           origin: MigrationOrigin,
           recorded_at_fidelity: MigrationRecordedAtFidelity,
           provenance,
-          retracts_idempotency_key: entityKey,
-          retraction_basis: "legacy-tombstone"
+          slot,
+          entity_type: entityType,
+          ...(entityType === "occurrence" && subtype ? { entity_subtype: subtype } : {}),
+          // Name, aliases and description go to BOTH halves of a split. That is
+          // not duplication: a venue genuinely has one name that belongs to the
+          // place and to the business alike, and it is precisely why a bare id
+          // cannot say which was meant.
+          name: payload.name,
+          aliases: [...payload.aliases],
+          ...(payload.description ? { description: payload.description } : {}),
+          attrs: attributesByType.get(entityType) ?? {}
+        };
+        draft.records.push(entityRecord);
+        entityKeys.push(entityKey);
+        const prepared: PreparedPrimary = {
+          record_key: entityKey,
+          record_kind: "entity",
+          slot,
+          entity_type: entityType
+        };
+        draft.entitiesByType.set(entityType, prepared);
+        if (ordinal === 0) {
+          draft.primary = prepared;
+        }
+      });
+
+      if (split) {
+        draft.splitEntities = entityTypes.map((entityType) => {
+          const prepared = draft.entitiesByType.get(entityType);
+          if (!prepared?.slot) {
+            throw new Error(`venue split for ${envelope.object_id} produced no ${entityType} entity`);
+          }
+          return {
+            record_key: prepared.record_key,
+            record_kind: prepared.record_kind,
+            entity_type: entityType,
+            slot: prepared.slot
+          };
+        });
+      }
+
+      if (tombstone) {
+        // Both halves of a split are retracted. Retracting only the primary would
+        // leave the organization live after its source row was deleted — a node
+        // the old store had thrown away, standing in the new plane with nothing
+        // to retract it.
+        entityKeys.forEach((entityKey, index) => {
+          draft.records.push({
+            record_kind: "retraction",
+            idempotency_key: projectionIdempotencyKey({
+              authority_id: authorityId,
+              legacy_object_id: envelope.object_id,
+              record_kind: "retraction",
+              ordinal: index + 1
+            }),
+            origin: MigrationOrigin,
+            recorded_at_fidelity: MigrationRecordedAtFidelity,
+            provenance,
+            retracts_idempotency_key: entityKey,
+            retraction_basis: "legacy-tombstone"
+          });
         });
         draft.disposition = { kind: "projected-as-retraction" };
       } else {
@@ -329,6 +484,11 @@ export function buildProjectionPlan(
   // terminal object has produced a record.
   const redirectTargets = resolveRedirectTargets(drafts, draftsById);
   resolveEdges(drafts, draftsById, redirectTargets, authorityId);
+  // Attribute-derived edges come AFTER legacy edges, because the job-title pass
+  // has to see every employer a person already had before deciding whether the
+  // title has exactly one edge to land on.
+  deriveAttributeEdges(drafts, draftsById, redirectTargets, authorityId, derivedNodes, handReview);
+  placeJobTitles(drafts, authorityId, derivedNodes, handReview);
   assignRedirectAliasTargets(drafts, draftsById, redirectTargets);
   finalizeAliasTargets(drafts);
 
@@ -356,11 +516,12 @@ export function buildProjectionPlan(
     })
     .sort((left, right) => compareOutcomes(left, right));
 
-  const records = drafts
-    .flatMap((draft) => draft.records)
-    .sort((left, right) => (left.idempotency_key < right.idempotency_key ? -1 : left.idempotency_key > right.idempotency_key ? 1 : 0));
+  const records = [...drafts.flatMap((draft) => draft.records), ...derivedNodes.records()].sort((left, right) =>
+    left.idempotency_key < right.idempotency_key ? -1 : left.idempotency_key > right.idempotency_key ? 1 : 0
+  );
 
-  const breakdown = recomputeProjectionBreakdown(outcomes, records);
+  const sortedHandReview = [...handReview].sort(compareHandReviewItems);
+  const breakdown = recomputeProjectionBreakdown(outcomes, records, sortedHandReview);
   const plan: ProjectionPlanContent = {
     plan_schema: ProjectionPlanSchemaName,
     authority_id: authorityId,
@@ -368,6 +529,7 @@ export function buildProjectionPlan(
     source_object_count: sourceObjectCount,
     outcomes,
     records,
+    hand_review: sortedHandReview,
     breakdown
   };
 
@@ -384,6 +546,10 @@ export function projectionPlanDigest(plan: ProjectionPlanContent): `sha256:${str
     source_object_count: plan.source_object_count,
     outcomes: plan.outcomes,
     records: plan.records,
+    // Covered by the digest like everything else: a plan whose hand-review queue
+    // was edited between the dry run and the commit is a different plan, and the
+    // queue is exactly the part a reviewer is tempted to "just clear".
+    hand_review: plan.hand_review,
     breakdown: plan.breakdown
   });
 }
@@ -490,18 +656,22 @@ function resolveEdges(
         );
         break;
       }
-      const primary = endpointDraft.primary;
-      if (!primary?.slot) {
+      if (endpointDraft.entitiesByType.size === 0) {
         failure = refuse(
           "endpoint-not-projected",
           `edge ${endpoint.role} endpoint is present in the source but did not project to an entity`
         );
         break;
       }
-      if (primary.entity_type !== endpoint.declaredType) {
-        // The legacy edge asserted an endpoint type; the endpoint record says
-        // otherwise. Guessing which one is right is how the old importer created
-        // edges that no traversal could satisfy.
+      // THE SPLIT ROUTING RULE: the edge's own declared endpoint type picks which
+      // node it lands on. A venue became a location and an organization, and an
+      // edge that said `location` said which one it meant — so nothing is guessed
+      // and nothing needs "both". For an unsplit object the map holds one entry
+      // and this is the type check it always was: the legacy edge asserted a type,
+      // the endpoint record says otherwise, and guessing which is right is how the
+      // old importer created edges no traversal could satisfy.
+      const primary = endpointDraft.entitiesByType.get(endpoint.declaredType);
+      if (!primary?.slot) {
         failure = refuse(
           "endpoint-type-mismatch",
           `edge ${endpoint.role} endpoint type does not match the projected entity type`
@@ -524,11 +694,13 @@ function resolveEdges(
     }
 
     const provenance = provenanceFor(envelope);
+    const relationshipOrdinal = draft.nextRelationshipOrdinal;
+    draft.nextRelationshipOrdinal += 1;
     const relationshipKey = projectionIdempotencyKey({
       authority_id: authorityId,
       legacy_object_id: envelope.object_id,
       record_kind: "relationship",
-      ordinal: 0
+      ordinal: relationshipOrdinal
     });
     // Legacy `source` is free text that may embed a private file locator, and
     // legacy `confidence` is a bare band with no evidence behind it. Carrying
@@ -576,6 +748,418 @@ function resolveEdges(
     }
 
     draft.disposition = { kind: "projected-as-relationship" };
+  }
+}
+
+/**
+ * World time for an edge computed from an attribute.
+ *
+ * Always unknown, and deliberately so. The attribute it came from carried no
+ * validity — a `subtype` string never said when the classification started being
+ * true — and inventing one from a neighbouring field would manufacture a fact
+ * that reads exactly like a recorded one. Closing that gap honestly is what
+ * attribute valid time (D4) is for, and it is sequenced separately; synthesising
+ * a date here would prejudge it and leave 300 fabricated intervals to unpick.
+ */
+const DerivedEdgeValidFrom = "unknown";
+
+function pushDerivedRelationship(
+  draft: Draft,
+  authorityId: string,
+  input: {
+    predicate: Predicate;
+    derivation: EdgeDerivation;
+    source_slot: EntitySlot;
+    source_type: EndpointType;
+    target_slot: EntitySlot;
+    target_type: EndpointType;
+    attrs?: Record<string, unknown>;
+  }
+): ProjectedRelationshipRecord | undefined {
+  // The contract's own domain rule decides whether this edge may exist. A
+  // derivation is code the author wrote by hand against a table of predicates, so
+  // it is exactly the place a wrong-direction edge gets introduced; checking here
+  // means the projector cannot emit an edge the plane's validator would refuse.
+  if (!checkPredicateEndpoints(input.predicate, input.source_type, input.target_type).ok) {
+    return undefined;
+  }
+
+  const ordinal = draft.nextRelationshipOrdinal;
+  draft.nextRelationshipOrdinal += 1;
+  const record: ProjectedRelationshipRecord = {
+    record_kind: "relationship",
+    idempotency_key: projectionIdempotencyKey({
+      authority_id: authorityId,
+      legacy_object_id: draft.envelope.object_id,
+      record_kind: "relationship",
+      ordinal
+    }),
+    origin: MigrationOrigin,
+    recorded_at_fidelity: MigrationRecordedAtFidelity,
+    provenance: provenanceFor(draft.envelope),
+    derivation: input.derivation,
+    source_slot: input.source_slot,
+    source_type: input.source_type,
+    target_slot: input.target_slot,
+    target_type: input.target_type,
+    predicate: input.predicate,
+    valid_from: DerivedEdgeValidFrom,
+    valid_from_fidelity: worldTimeFidelity(DerivedEdgeValidFrom),
+    valid_to_fidelity: worldTimeFidelity(undefined),
+    status: "active",
+    attrs: input.attrs ?? {}
+  };
+  draft.records.push(record);
+  return record;
+}
+
+function flagForHandReview(
+  handReview: HandReviewItem[],
+  draft: Draft,
+  attribute: string,
+  reason: HandReviewReason,
+  detail: string
+): void {
+  handReview.push({ legacy_object_id: draft.envelope.object_id, attribute, reason, detail });
+}
+
+/**
+ * Resolves an attribute that names another legacy object, following the same
+ * redirect chain an edge endpoint would. An attribute reference is a reference;
+ * it has no business resolving differently from the edge beside it.
+ */
+function entityByRef(
+  draftsById: Map<string, Draft>,
+  redirectTargets: Map<string, string>,
+  ref: string,
+  wanted: readonly EndpointType[]
+): PreparedPrimary | undefined {
+  const target = draftsById.get(redirectTargets.get(ref) ?? ref);
+  if (!target) {
+    return undefined;
+  }
+  for (const type of wanted) {
+    const candidate = target.entitiesByType.get(type);
+    if (candidate?.slot) {
+      return candidate;
+    }
+  }
+  return undefined;
+}
+
+const AgentTypes = ["person", "organization"] as const satisfies readonly EndpointType[];
+
+/**
+ * Turns the deduplicated legacy attributes into edges.
+ *
+ * Every case here is one fact that used to live in a column: a classification, a
+ * parent place, a provider, a participant list. They became edges because an
+ * attribute cannot be bitemporal, cannot be identity-checked, and cannot hold
+ * more than one value — and each of those limits produced a measured defect.
+ */
+function deriveAttributeEdges(
+  drafts: Draft[],
+  draftsById: Map<string, Draft>,
+  redirectTargets: Map<string, string>,
+  authorityId: string,
+  derivedNodes: DerivedNodeRegistry,
+  handReview: HandReviewItem[]
+): void {
+  const counterpartyNode = (value: string): DerivedNodeHandle =>
+    derivedNodes.register({
+      origin: "legacy-counterparty-name",
+      attribute: DerivedAttributeNamespaces.counterparty,
+      value,
+      entity_type: "organization"
+    });
+
+  for (const draft of drafts) {
+    const payload = draft.payload;
+    if (!payload || draft.entitiesByType.size === 0) {
+      continue;
+    }
+
+    // CLASSIFICATION. Every retired subtype word becomes a has-type edge to a
+    // topic node — and on a split, BOTH halves carry it: the place is a
+    // restaurant and so is the business.
+    for (const word of legacyTypeWords(payload)) {
+      const topic = derivedNodes.register({
+        origin: "legacy-subtype-word",
+        attribute: DerivedAttributeNamespaces.subtype,
+        value: word,
+        entity_type: "topic"
+      });
+      for (const [entityType, entity] of draft.entitiesByType) {
+        if (!entity.slot) continue;
+        pushDerivedRelationship(draft, authorityId, {
+          predicate: "has-type",
+          derivation: "legacy-subtype",
+          source_slot: entity.slot,
+          source_type: entityType,
+          target_slot: topic.slot,
+          target_type: "topic"
+        });
+      }
+    }
+
+    // THE VENUE JOIN. operated-by launches with zero existing warrant by design:
+    // gate G6 found no venue with a matching organization, so there was no edge
+    // to migrate — this migration creates both the other end and the link.
+    const venueLocation = draft.entitiesByType.get("location");
+    const venueOrganization = draft.entitiesByType.get("organization");
+    if (draft.splitEntities && venueLocation?.slot && venueOrganization?.slot) {
+      pushDerivedRelationship(draft, authorityId, {
+        predicate: "operated-by",
+        derivation: "venue-split",
+        source_slot: venueLocation.slot,
+        source_type: "location",
+        target_slot: venueOrganization.slot,
+        target_type: "organization"
+      });
+    }
+
+    // parent_location_ref becomes contained-in, the rung-by-rung ladder an
+    // attribute could only ever hold one step of.
+    if (payload.parent_location_ref !== undefined && venueLocation?.slot) {
+      const parent = entityByRef(draftsById, redirectTargets, payload.parent_location_ref, ["location"]);
+      if (parent?.slot) {
+        pushDerivedRelationship(draft, authorityId, {
+          predicate: "contained-in",
+          derivation: "parent-location-ref",
+          source_slot: venueLocation.slot,
+          source_type: "location",
+          target_slot: parent.slot,
+          target_type: "location"
+        });
+      } else {
+        flagForHandReview(
+          handReview,
+          draft,
+          "parent_location_ref",
+          "unresolvable-attribute-reference",
+          "parent_location_ref names an id that did not project to a location"
+        );
+      }
+    }
+
+    // provider and airline are one attribute (G8), and it becomes offered-by.
+    const provider = legacyProviderName(payload);
+    if (!provider.ok) {
+      flagForHandReview(handReview, draft, provider.conflict.attribute, "attribute-conflict", provider.conflict.detail);
+    } else if (provider.provider !== undefined) {
+      const subject = draft.entitiesByType.get("offering") ?? draft.entitiesByType.get("occurrence");
+      if (subject?.slot && subject.entity_type) {
+        const organization = counterpartyNode(provider.provider);
+        pushDerivedRelationship(draft, authorityId, {
+          predicate: "offered-by",
+          derivation: "provider-attr",
+          source_slot: subject.slot,
+          source_type: subject.entity_type,
+          target_slot: organization.slot,
+          target_type: "organization"
+        });
+      } else {
+        flagForHandReview(
+          handReview,
+          draft,
+          "provider",
+          "unplaced-attribute",
+          "provider is only an offered-by edge from an offering or an occurrence"
+        );
+      }
+    }
+
+    // merchant is the counterparty of a sale, which is sold-by.
+    if (payload.merchant !== undefined) {
+      const subject =
+        draft.entitiesByType.get("item") ??
+        draft.entitiesByType.get("offering") ??
+        draft.entitiesByType.get("occurrence");
+      if (subject?.slot && subject.entity_type) {
+        const organization = counterpartyNode(payload.merchant);
+        pushDerivedRelationship(draft, authorityId, {
+          predicate: "sold-by",
+          derivation: "merchant-attr",
+          source_slot: subject.slot,
+          source_type: subject.entity_type,
+          target_slot: organization.slot,
+          target_type: "organization"
+        });
+      } else {
+        flagForHandReview(
+          handReview,
+          draft,
+          "merchant",
+          "unplaced-attribute",
+          "merchant is only a sold-by edge from an item, offering or occurrence"
+        );
+      }
+    }
+
+    // participant_refs and organizer_refs are one relation. An organizer is a
+    // participant with a job, so the distinction moves onto attrs.role rather
+    // than staying a second list nobody joined against.
+    const occurrence = draft.entitiesByType.get("occurrence");
+    if (occurrence?.slot) {
+      const participantRoles: Array<{ refs: string[]; derivation: EdgeDerivation; attrs?: Record<string, unknown> }> = [
+        { refs: payload.participant_refs, derivation: "participant-refs" },
+        { refs: payload.organizer_refs, derivation: "organizer-refs", attrs: { role: "organizer" } }
+      ];
+      for (const { refs, derivation, attrs } of participantRoles) {
+        for (const ref of refs) {
+          const agent = entityByRef(draftsById, redirectTargets, ref, AgentTypes);
+          if (!agent?.slot || !agent.entity_type) {
+            flagForHandReview(
+              handReview,
+              draft,
+              derivation === "organizer-refs" ? "organizer_refs" : "participant_refs",
+              "unresolvable-attribute-reference",
+              "a referenced participant did not project to a person or organization"
+            );
+            continue;
+          }
+          pushDerivedRelationship(draft, authorityId, {
+            predicate: "participant-in",
+            derivation,
+            source_slot: agent.slot,
+            source_type: agent.entity_type,
+            target_slot: occurrence.slot,
+            target_type: "occurrence",
+            ...(attrs ? { attrs } : {})
+          });
+        }
+      }
+    }
+  }
+
+  backfillEmploymentFromCompanyCurrent(drafts, authorityId, handReview, counterpartyNode);
+}
+
+function employedByEdgesFor(drafts: Draft[], slot: EntitySlot): ProjectedRelationshipRecord[] {
+  return drafts
+    .flatMap((draft) => draft.records)
+    .filter(isRelationshipRecord)
+    .filter((record) => record.predicate === "employed-by" && record.source_slot === slot);
+}
+
+/**
+ * `company_current` (309) is deleted by construction — the target person schema
+ * has no such field — so the only question is whether the fact it carried
+ * survives the deletion. Backfilling FIRST is what makes the deletion lossless
+ * rather than merely defensible.
+ *
+ * The organization is MINTED from the name and deliberately not matched against a
+ * same-named legacy organization. Matching would be an identity decision taken on
+ * a string, which is the "id = hash(title)" shortcut that merged two different
+ * people in the old store. A curator can merge the two later through the alias
+ * ledger, where the decision carries evidence and a record.
+ */
+function backfillEmploymentFromCompanyCurrent(
+  drafts: Draft[],
+  authorityId: string,
+  handReview: HandReviewItem[],
+  counterpartyNode: (value: string) => DerivedNodeHandle
+): void {
+  for (const draft of drafts) {
+    const payload = draft.payload;
+    const person = draft.entitiesByType.get("person");
+    if (!payload?.company_current || !person?.slot) {
+      continue;
+    }
+    if (employedByEdgesFor(drafts, person.slot).length > 0) {
+      // The person already has an employer edge, and nothing here can tell
+      // whether the string names that same organization. Asserting a second
+      // employment would invent a job; dropping it silently would lose a fact.
+      flagForHandReview(
+        handReview,
+        draft,
+        "company_current",
+        "unplaced-attribute",
+        "company_current sits alongside an explicit employed-by edge and may or may not name the same organization"
+      );
+      continue;
+    }
+    const organization = counterpartyNode(payload.company_current);
+    pushDerivedRelationship(draft, authorityId, {
+      predicate: "employed-by",
+      derivation: "company-current-attr",
+      source_slot: person.slot,
+      source_type: "person",
+      target_slot: organization.slot,
+      target_type: "organization"
+    });
+  }
+}
+
+/**
+ * `job_title` (300) is a fact about a RELATIONSHIP that was stored on a node. A
+ * title with no employer is not a fact about anybody, which is why it moves onto
+ * the employed-by edge as `attrs.role`.
+ *
+ * Three populations, three different answers, and the middle one is the reason
+ * this cannot be a one-liner: with exactly one employer the title has an
+ * unambiguous edge to land on; with none there is no edge at all and the title is
+ * an occupation, which is a classification and therefore a has-type topic; with
+ * more than one, choosing an edge would attach a real job to a possibly wrong
+ * employer, so it goes to a human instead.
+ */
+function placeJobTitles(
+  drafts: Draft[],
+  authorityId: string,
+  derivedNodes: DerivedNodeRegistry,
+  handReview: HandReviewItem[]
+): void {
+  for (const draft of drafts) {
+    const payload = draft.payload;
+    const person = draft.entitiesByType.get("person");
+    if (!payload?.job_title || !person?.slot) {
+      continue;
+    }
+
+    const employments = employedByEdgesFor(drafts, person.slot);
+    if (employments.length > 1) {
+      flagForHandReview(
+        handReview,
+        draft,
+        "job_title",
+        "ambiguous-employer",
+        `job_title cannot be placed on one of ${employments.length} employed-by edges without choosing an employer`
+      );
+      continue;
+    }
+
+    const employment = employments[0];
+    if (employment) {
+      if (employment.attrs.role === undefined) {
+        employment.attrs = { ...employment.attrs, role: payload.job_title };
+      } else if (employment.attrs.role !== payload.job_title) {
+        // The edge already states a role and the person states another. Both are
+        // real; overwriting either would decide which without grounds.
+        flagForHandReview(
+          handReview,
+          draft,
+          "job_title",
+          "attribute-conflict",
+          "job_title disagrees with the role the employed-by edge already carries"
+        );
+      }
+      continue;
+    }
+
+    const occupation = derivedNodes.register({
+      origin: "legacy-occupation-name",
+      attribute: DerivedAttributeNamespaces.jobTitle,
+      value: payload.job_title,
+      entity_type: "topic"
+    });
+    pushDerivedRelationship(draft, authorityId, {
+      predicate: "has-type",
+      derivation: "job-title-attr",
+      source_slot: person.slot,
+      source_type: "person",
+      target_slot: occupation.slot,
+      target_type: "topic"
+    });
   }
 }
 
@@ -650,13 +1234,30 @@ function assignRedirectAliasTargets(
     }
 
     draft.disposition = { kind: "projected-as-alias-redirect" };
-    draft.alias_target = {
+    // A redirect that lands on a split inherits the ambiguity. Resolving the old
+    // id to the split's first half would answer a question the terminal object
+    // itself refuses to answer, and the caller would never learn the id had two
+    // meanings.
+    draft.alias_target = aliasTargetFor(terminal);
+  }
+}
+
+function aliasTargetFor(draft: Draft): PlanAliasTarget | undefined {
+  if (draft.splitEntities) {
+    const [first, second, ...rest] = draft.splitEntities;
+    if (first && second) {
+      return { kind: "ambiguous-split", candidates: [first, second, ...rest] };
+    }
+  }
+  if (draft.primary) {
+    return {
       kind: "record",
-      record_key: terminal.primary.record_key,
-      record_kind: terminal.primary.record_kind,
-      ...(terminal.primary.slot ? { slot: terminal.primary.slot } : {})
+      record_key: draft.primary.record_key,
+      record_kind: draft.primary.record_kind,
+      ...(draft.primary.slot ? { slot: draft.primary.slot } : {})
     };
   }
+  return undefined;
 }
 
 /**
@@ -669,18 +1270,18 @@ function finalizeAliasTargets(drafts: Draft[]): void {
     if (draft.alias_target) {
       continue;
     }
-    if (draft.primary) {
-      draft.alias_target = {
-        kind: "record",
-        record_key: draft.primary.record_key,
-        record_kind: draft.primary.record_kind,
-        ...(draft.primary.slot ? { slot: draft.primary.slot } : {})
-      };
+    const target = aliasTargetFor(draft);
+    if (target) {
+      draft.alias_target = target;
     }
   }
 }
 
-export function recomputeProjectionBreakdown(outcomes: SourceOutcome[], records: ProjectedRecord[]): ProjectionBreakdown {
+export function recomputeProjectionBreakdown(
+  outcomes: SourceOutcome[],
+  records: ProjectedRecord[],
+  handReview: HandReviewItem[] = []
+): ProjectionBreakdown {
   const categories = outcomes.map((outcome) => outcome.category);
   const dispositions = outcomes.map((outcome) => outcome.disposition.kind);
   const refusalReasons = outcomes
@@ -704,10 +1305,31 @@ export function recomputeProjectionBreakdown(outcomes: SourceOutcome[], records:
     records_by_kind: countBy(
       records.map((record) => record.record_kind),
       ProjectedRecordKindUniverse
-    ).map(({ value, count }) => ({ record_kind: value, count }))
+    ).map(({ value, count }) => ({ record_kind: value, count })),
+    entities_minted_from_attributes: records.filter(
+      (record) => record.record_kind === "entity" && !isLegacyObjectProvenance(record.provenance)
+    ).length,
+    relationships_derived_from_attributes: records.filter(
+      (record) => record.record_kind === "relationship" && record.derivation !== undefined
+    ).length,
+    legacy_ids_split: outcomes.filter((outcome) => outcome.alias_target.kind === "ambiguous-split").length,
+    hand_review_by_reason: countBy(
+      handReview.map((item) => item.reason),
+      HandReviewReasonValues
+    ).map(({ value, count }) => ({ reason: value, count }))
   };
 }
 
+/**
+ * These two lists exist to give the breakdown a stable print order, and the
+ * `satisfies` is what keeps them honest: a value here that the source vocabulary
+ * does not declare fails to compile. It caught a real one — the projector carried
+ * a `derived-index` category and a `derived-index-not-migrated` refusal that
+ * `legacy-source.ts` never declared and `classifyLegacySource` could never
+ * produce, so the branch handling them was unreachable from the day it was
+ * written. An `index` object still lands in `other` and still fails the closure
+ * gate, which is what the seeded negative control asserts.
+ */
 const LegacySourceCategoryUniverse = [
   "entity-record",
   "typed-edge",
@@ -718,7 +1340,6 @@ const LegacySourceCategoryUniverse = [
   "opaque-object",
   "quarantined-object",
   "narrative-object",
-  "derived-index",
   "other"
 ] as const satisfies readonly LegacySourceCategory[];
 
@@ -733,7 +1354,6 @@ const MigrationRefusalReasonUniverse = [
   "alias-cycle",
   "dangling-alias-target",
   "unclassified-source-category",
-  "derived-index-not-migrated",
   "other"
 ] as const satisfies readonly MigrationRefusalReason[];
 

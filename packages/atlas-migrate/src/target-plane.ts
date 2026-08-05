@@ -13,6 +13,7 @@ import {
   PredicateSchema,
   Sha256HashSchema
 } from "@living-atlas/contracts";
+import { DerivedNodeOriginSchema, EdgeDerivationSchema } from "./legacy-endpoint.js";
 
 /**
  * Every assertion produced by this projector carries the same origin. A legacy
@@ -72,6 +73,65 @@ export const LegacyProvenanceSchema = z
 export type LegacyProvenance = z.infer<typeof LegacyProvenanceSchema>;
 
 /**
+ * Provenance for a node the migration MINTED rather than projected.
+ *
+ * A topic node for `restaurant` exists because forty legacy objects carried that
+ * word; a provider organization exists because a hundred segments named it. There
+ * is no single legacy object behind either, and handing one of them the
+ * provenance of the first contributor — the shortcut that fits the existing
+ * schema without changing it — would attach that object's `legacy_version` and
+ * `legacy_content_hash` to a node it does not describe. An auditor following
+ * those fields would be sent to one arbitrary segment to explain a node shared by
+ * all of them.
+ *
+ * So a minted node says what it actually is: a distinct VALUE, the attribute that
+ * carried it, and how many legacy objects named it. The count is an aggregate and
+ * never the ids, so this stays a summary rather than a second index of the corpus.
+ */
+export const DerivedProvenanceSchema = z
+  .object({
+    derived_from: DerivedNodeOriginSchema,
+    legacy_attribute: z.string().min(1),
+    /** The distinct value, which is also the minted node's name. */
+    legacy_value: z.string().min(1).max(8_192),
+    source_object_count: z.number().int().positive()
+  })
+  .strict();
+export type DerivedProvenance = z.infer<typeof DerivedProvenanceSchema>;
+
+/**
+ * The two variants are structurally disjoint — neither carries a key the other
+ * accepts, and both are strict — so a plain union discriminates cleanly without a
+ * tag field that would have to be kept honest by hand.
+ */
+export const ProjectedProvenanceSchema = z.union([LegacyProvenanceSchema, DerivedProvenanceSchema]);
+export type ProjectedProvenance = z.infer<typeof ProjectedProvenanceSchema>;
+
+export function isLegacyObjectProvenance(provenance: ProjectedProvenance): provenance is LegacyProvenance {
+  return "legacy_object_id" in provenance;
+}
+
+/**
+ * The legacy object a record was projected from, or undefined when the migration
+ * minted it. Callers that need to group by source object must handle the absence
+ * rather than assume one: a minted node belongs to no single source.
+ */
+export function legacyObjectIdOf(record: { provenance: ProjectedProvenance }): string | undefined {
+  return isLegacyObjectProvenance(record.provenance) ? record.provenance.legacy_object_id : undefined;
+}
+
+/**
+ * Grouping key for anything that must be counted per source, most importantly the
+ * per-source `seq` counter in apply. Minted nodes group by the value they were
+ * minted for, so two nodes minted from the same attribute value stay one group.
+ */
+export function provenanceGroupKey(provenance: ProjectedProvenance): string {
+  return isLegacyObjectProvenance(provenance)
+    ? provenance.legacy_object_id
+    : `derived:${provenance.legacy_attribute}=${provenance.legacy_value}`;
+}
+
+/**
  * World time carried across from a legacy edge is reported at the fidelity the
  * legacy value actually had. "unknown" is not a wildcard: a record whose world
  * time is unknown matches no interval query, and an approximate value must widen
@@ -91,7 +151,7 @@ const ProjectedRecordBaseSchema = z.object({
   idempotency_key: MigrationIdempotencyKeySchema,
   origin: z.literal(MigrationOrigin),
   recorded_at_fidelity: z.literal(MigrationRecordedAtFidelity),
-  provenance: LegacyProvenanceSchema
+  provenance: ProjectedProvenanceSchema
 });
 
 export const ProjectedEntityRecordSchema = ProjectedRecordBaseSchema.extend({
@@ -105,7 +165,16 @@ export const ProjectedEntityRecordSchema = ProjectedRecordBaseSchema.extend({
   entity_subtype: EndpointSubtypeSchema.optional(),
   name: z.string().min(1).max(8_192),
   aliases: z.array(z.string().min(1).max(8_192)),
-  description: z.string().min(1).max(8_192).optional()
+  description: z.string().min(1).max(8_192).optional(),
+  /**
+   * Endpoint attributes that survived deduplication and belong to THIS node.
+   *
+   * Deliberately not a passthrough of the legacy payload: an attribute is carried
+   * only if the vocabulary still has a place for it, and every attribute that
+   * became an edge is absent here. A record that kept both would state one fact
+   * twice in two mechanisms, and the two would eventually disagree.
+   */
+  attrs: z.record(z.string(), z.unknown())
 }).strict().superRefine((record, ctx) => {
   const carries = endpointTypeCarriesSubtype(record.entity_type);
   if (carries && record.entity_subtype === undefined) {
@@ -127,7 +196,13 @@ export type ProjectedEntityRecord = z.infer<typeof ProjectedEntityRecordSchema>;
 
 export const ProjectedRelationshipRecordSchema = ProjectedRecordBaseSchema.extend({
   record_kind: z.literal("relationship"),
-  legacy_edge_id: z.string().regex(/^la_edge_[A-Za-z0-9_-]{8,}$/),
+  legacy_edge_id: z.string().regex(/^la_edge_[A-Za-z0-9_-]{8,}$/).optional(),
+  /**
+   * The legacy attribute this edge was computed from, when no legacy edge exists.
+   * A classification that used to be a subtype string has no edge row behind it,
+   * so an auditor needs the attribute name to find the fact it came from.
+   */
+  derivation: EdgeDerivationSchema.optional(),
   source_slot: EntitySlotSchema,
   source_type: EndpointTypeSchema,
   target_slot: EntitySlotSchema,
@@ -139,7 +214,25 @@ export const ProjectedRelationshipRecordSchema = ProjectedRecordBaseSchema.exten
   valid_to_fidelity: WorldTimeFidelitySchema,
   status: EdgeStatusSchema,
   attrs: z.record(z.string(), z.unknown())
-}).strict();
+})
+  .strict()
+  .superRefine((record, ctx) => {
+    // Exactly one, never both and never neither. An edge carrying both would
+    // claim a source row it did not come from; an edge carrying neither is
+    // unauditable, and unauditable edges are what the old importer produced in
+    // bulk. Making it a schema rule means no code path can emit one by omission.
+    const carried = record.legacy_edge_id !== undefined;
+    const derived = record.derivation !== undefined;
+    if (carried === derived) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["derivation"],
+        message: carried
+          ? "a relationship carries a legacy_edge_id or a derivation, never both"
+          : "a relationship must name either the legacy edge it came from or the attribute it was derived from"
+      });
+    }
+  });
 export type ProjectedRelationshipRecord = z.infer<typeof ProjectedRelationshipRecordSchema>;
 
 /**
@@ -205,8 +298,56 @@ function hex(value: string, length: number): string {
   return createHash("sha256").update(value).digest("hex").slice(0, length);
 }
 
-export function entitySlotForLegacyObject(authorityId: string, legacyObjectId: string): EntitySlot {
-  return `slot_entity_${hex(`${ProjectorVersion}:${authorityId}:${legacyObjectId}`, 24)}`;
+/**
+ * One legacy object can become more than one entity — the venue split makes a
+ * restaurant into a location AND an organization — so the slot is qualified by an
+ * ordinal. Ordinal 0 keeps the original seed EXACTLY, byte for byte, so every
+ * object that does not split lands on the slot it already had and a re-plan of an
+ * unchanged source produces an unchanged plan.
+ */
+export function entitySlotForLegacyObject(
+  authorityId: string,
+  legacyObjectId: string,
+  ordinal = 0
+): EntitySlot {
+  const seed =
+    ordinal === 0
+      ? `${ProjectorVersion}:${authorityId}:${legacyObjectId}`
+      : `${ProjectorVersion}:${authorityId}:${legacyObjectId}:${ordinal}`;
+  return `slot_entity_${hex(seed, 24)}`;
+}
+
+/**
+ * The slot for a node minted from a distinct attribute VALUE rather than from a
+ * legacy object. Keyed by the value, which is what makes it shared: every legacy
+ * object naming `restaurant` resolves to the same topic slot, so the plan mints
+ * one node instead of one per mention.
+ */
+export function derivedEntitySlot(authorityId: string, attribute: string, value: string): EntitySlot {
+  return `slot_entity_${hex(`${ProjectorVersion}:${authorityId}:derived:${attribute}:${value}`, 24)}`;
+}
+
+/**
+ * Idempotency key for a minted node. It excludes the count of contributing
+ * objects on purpose: importing a further batch that names `restaurant` twenty
+ * more times must REPLAY the existing topic node, not commit a second one because
+ * its population grew.
+ */
+export function derivedIdempotencyKey(input: {
+  authority_id: string;
+  attribute: string;
+  value: string;
+  record_kind: ProjectedRecordKind;
+}): MigrationIdempotencyKey {
+  const seed = [
+    ProjectorVersion,
+    input.authority_id,
+    "derived",
+    input.attribute,
+    input.value,
+    input.record_kind
+  ].join("\n");
+  return `la_idem_${hex(seed, 32)}`;
 }
 
 /**

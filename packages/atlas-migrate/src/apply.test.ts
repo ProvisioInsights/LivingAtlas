@@ -9,8 +9,11 @@ import {
   legacyFixtureAuthorityId,
   legacyFixtureIds,
   legacyFixturePayloadResolver,
+  legacyObjectIdOf,
+  provenanceGroupKey,
   type InMemoryTargetPlane,
   type InMemoryTargetPlaneSink,
+  type ProjectedRecord,
   type ProjectionPlan,
   type TargetPlaneSink
 } from "./index.js";
@@ -129,7 +132,7 @@ describe("projection apply", () => {
 
     const personRecord = plan.records
       .filter(isEntityRecord)
-      .find((record) => record.provenance.legacy_object_id === legacyFixtureIds.person);
+      .find((record) => legacyObjectIdOf(record) === legacyFixtureIds.person);
     const personCommit = plane.sink.commits.find(
       (commit) => commit.idempotency_key === personRecord?.idempotency_key
     );
@@ -197,7 +200,7 @@ describe("projection apply", () => {
     await applyOnce(plan, plane, "2026-08-04T10:00:00.000Z");
 
     const tombstoned = plane.sink.commits
-      .filter((commit) => commit.record.provenance.legacy_object_id === legacyFixtureIds.organizationTombstoned)
+      .filter((commit) => legacyObjectIdOf(commit.record) === legacyFixtureIds.organizationTombstoned)
       .sort((left, right) => left.seq - right.seq);
 
     expect(tombstoned.map((commit) => commit.seq)).toEqual([1, 2]);
@@ -333,12 +336,15 @@ describe("resuming an apply that died part-way", () => {
     };
   }
 
-  /** Every `(legacy_object_id, seq)` pair that was committed more than once. */
-  function duplicateSequences(commits: { record: { provenance: { legacy_object_id: string } }; seq: number }[]): string[] {
+  /** Every `(source group, seq)` pair that was committed more than once. */
+  function duplicateSequences(commits: { record: ProjectedRecord; seq: number }[]): string[] {
     const seen = new Set<string>();
     const duplicates: string[] = [];
     for (const commit of commits) {
-      const key = `${commit.record.provenance.legacy_object_id}:${commit.seq}`;
+      // Grouped the way apply groups: a minted node belongs to no legacy object,
+      // so keying on the id alone would collapse every derived record into one
+      // bucket and invent duplicates that the seq counter never issued.
+      const key = `${provenanceGroupKey(commit.record.provenance)}:${commit.seq}`;
       if (seen.has(key)) duplicates.push(key);
       seen.add(key);
     }
@@ -395,7 +401,7 @@ describe("resuming an apply that died part-way", () => {
     await applyOnce(plan, plane, "2026-08-05T10:00:00.000Z");
 
     const tombstoned = plane.sink.commits
-      .filter((commit) => commit.record.provenance.legacy_object_id === legacyFixtureIds.organizationTombstoned)
+      .filter((commit) => legacyObjectIdOf(commit.record) === legacyFixtureIds.organizationTombstoned)
       .sort((left, right) => left.seq - right.seq);
 
     expect(tombstoned.map((commit) => commit.seq)).toEqual([1, 2]);
