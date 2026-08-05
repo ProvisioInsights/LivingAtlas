@@ -112,10 +112,18 @@ describe("PersonalOneDriveStore", () => {
     const big = Buffer.alloc(SIMPLE_UPLOAD_MAX_BYTES + 1, 7);
     await s.put("la_backup_000002/snapshot.enc", big, { retainUntilMs: 0 });
     expect(g.calls.some((c) => c.url.includes("createUploadSession"))).toBe(true);
-    // and the reassembled bytes must round-trip
-    expect(await s.get("la_backup_000002/snapshot.enc")).toEqual(big);
-    // Generous timeout: allocating + chunking a >4 MiB buffer is CPU-bound and can
-    // exceed vitest's 5s default under parallel contention (heavy import graph).
+    /**
+     * The reassembled bytes must round-trip, compared with `Buffer.compare`
+     * rather than `toEqual`.
+     *
+     * Same assertion — both are exact byte equality over the whole buffer — but
+     * `toEqual` walks a 4 MiB Buffer through vitest's structural-equality and
+     * diff machinery element by element. Measured on this repo: `Buffer.compare`
+     * 1 ms, `toEqual` 14,023 ms. That single line was ~14 of this test's ~17
+     * seconds, which sat it at 85% of its own 20-second budget and made it fail
+     * whenever the suite grew enough to add worker contention.
+     */
+    expect(Buffer.compare(await s.get("la_backup_000002/snapshot.enc"), big)).toBe(0);
   }, 20_000);
 
   it("deletes (soft copy — not WORM)", async () => {
