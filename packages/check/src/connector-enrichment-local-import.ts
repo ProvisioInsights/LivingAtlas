@@ -53,6 +53,18 @@ export type ConnectorEnrichmentImportLedger = {
      * has mapped — which used to arrive as a pile of plausible `meeting` nodes.
      */
     unmapped_occurrence_kind: number;
+    /**
+     * Promoted candidates that carried a classification the endpoint record
+     * cannot hold.
+     *
+     * ADR 0023 says the word "is not lost, it moves to a has-type edge". On the
+     * one-time migration it does; on this path it does not, because no import
+     * path mints the topic node the edge would need (OPEN-20). Counting it is
+     * what makes the gap a number rather than a silence: the candidate still
+     * promotes, and the operator can see how much classification the ongoing
+     * import is currently unable to carry.
+     */
+    dropped_classification: number;
   };
   by_connector: Record<string, number>;
   by_fact_kind: Record<string, number>;
@@ -287,6 +299,20 @@ function hasUnmappedOccurrenceKind(candidate: EnrichmentCandidate): boolean {
   return candidate.proposed_fact.endpoint_type === "occurrence" && resolvedOccurrenceSubtype(candidate) === undefined;
 }
 
+/**
+ * A classification on one of the seven types that no longer carries one. The
+ * endpoint record cannot hold it and this path cannot yet emit the `has-type`
+ * edge that would (OPEN-20), so it is counted rather than dropped in silence.
+ */
+function hasDroppedClassification(candidate: EnrichmentCandidate): boolean {
+  const type = candidate.proposed_fact.endpoint_type;
+  if (type === undefined || type === "occurrence") {
+    return false;
+  }
+  const payload = payloadRecord(candidate);
+  return stringField(payload, "subtype") !== undefined || stringField(payload, "classification") !== undefined;
+}
+
 function endpointRecordForCandidate(input: {
   authorityId: string;
   objectId: string;
@@ -334,7 +360,9 @@ function endpointRecordForCandidate(input: {
 
   // No subtype: the other seven types classify with has-type edges to topic
   // nodes, so a connector-supplied `subtype` field is not carried onto the
-  // endpoint at all.
+  // endpoint at all — and, until this path can mint the topic node the edge
+  // needs, not carried anywhere else either. `dropped_classification` counts it
+  // so the gap is a number rather than a silence.
   return EndpointRecordSchema.parse({
     ...base,
     type
@@ -526,11 +554,15 @@ export async function importConnectorEnrichmentPacket(input: {
   let promotedObjects = 0;
   let quarantineObjects = 0;
   let unmappedOccurrenceKind = 0;
+  let droppedClassification = 0;
 
   for (const candidate of packet.candidates) {
     const status = importStatusForCandidate(candidate);
     if (candidate.decision === "promote" && candidate.proposed_fact.confidence === "high" && hasUnmappedOccurrenceKind(candidate)) {
       unmappedOccurrenceKind += 1;
+    }
+    if (status === "promoted" && hasDroppedClassification(candidate)) {
+      droppedClassification += 1;
     }
     const existing = store.readObject(objectIdForCandidate(authorityId, candidate, status));
     const object = objectForCandidate({
@@ -616,7 +648,8 @@ export async function importConnectorEnrichmentPacket(input: {
       promoted_objects: promotedObjects,
       quarantine_objects: quarantineObjects,
       failed_objects: failedObjects,
-      unmapped_occurrence_kind: unmappedOccurrenceKind
+      unmapped_occurrence_kind: unmappedOccurrenceKind,
+      dropped_classification: droppedClassification
     },
     by_connector: report.by_connector,
     by_fact_kind: report.by_fact_kind,

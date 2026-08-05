@@ -218,11 +218,18 @@ five new registered requirements (C-42 … C-46).
   `about` and of nothing else. The ratified table says so explicitly; whether
   `project` should regain an inbound predicate or be reduced to a classification
   of another type is not decided here.
-- **The retypes themselves.** Moving 323 items to `occurrence/segment` in the same
-  transaction as their `owns` → `participant-in` migration, minting the 65 venue
-  organizations, and backfilling `has-type` from the retired enum values are
+- **The retypes themselves.** Moving the travel items to `occurrence/segment` in
+  the same transaction as their `owns` → `participant-in` migration, minting the
+  venue organizations, and backfilling `has-type` from the retired enum values are
   migration work with their own gates. This change makes the intermediate states
   unrepresentable — `owns` cannot take an occurrence — but performs none of them.
+- **OPEN-20. Ongoing import cannot emit `has-type`.** Minting a topic node needs
+  an identity decision — is this word the topic that already exists, or a new one
+  — and the migration answers it with a whole-run view of every carrier plus a
+  closure gate that refuses two nodes for one word. An importer sees one page at a
+  time and has neither. Giving it the same guarantees is its own change; until
+  then the classification is counted and queued, not carried, and the counts above
+  are the measure of what that change would be worth.
 
 ## Consequences
 
@@ -230,8 +237,18 @@ five new registered requirements (C-42 … C-46).
   table resolves `saas`, `device`, `hotel-room-type` and the rest to the TYPE
   alone; the connector import stops carrying a `subtype`; the topic-review
   pipeline loses its `subtype` axis and its `LIVING_ATLAS_LOGSEQ_TOPIC_REVIEW_CURATED_SUBTYPE`
-  setting. In each case the information is not lost, it moves to a `has-type` edge
-  decided with the topic node in hand.
+  setting.
+
+  **On the one-time migration the word moves to a `has-type` edge. On ongoing
+  import it is DROPPED, and this bullet used to claim otherwise.** Only
+  `buildProjectionPlan` emits a `has-type` edge, because only it mints the topic
+  node the edge needs; the importer and the connector import each omitted the
+  field with a comment describing an edge neither of them writes. That is
+  recorded as OPEN-20 below, and until it closes the loss is made **countable**
+  rather than silent: the importer queues one quarantined
+  `dropped-classification-review` row per dropped word, and the connector ledger
+  carries `import_totals.dropped_classification`. A number is not a fix, but it
+  is the difference between a gap somebody can size and a gap nobody can see.
 - **The importer emits one fewer property edge.** A topic's parent used to become a
   `part-of-topic` edge. That predicate is retired and nothing replaced it: `part-of`
   is occurrence-only, and a broader/narrower link is neither what a topic IS nor

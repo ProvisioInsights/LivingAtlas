@@ -733,6 +733,23 @@ export function canonicalizeOccurrenceSubtype(value: string | undefined): Occurr
 }
 
 /**
+ * Type aliases that are a SPELLING of the type and carry nothing else.
+ *
+ * The distinction matters because every other safe alias names a KIND the type
+ * does not say: `type:: saas` resolves to `offering` and the word `saas` is
+ * gone, while `type:: org` resolves to `organization` and nothing is gone
+ * because "org" and "organization" are one word twice. `company` is deliberately
+ * NOT here — it is a legal form, one of the values ADR 0023 names as having
+ * drifted into the subtype slot, so it is a classification like the rest.
+ *
+ * Kept as the small exception list rather than as a second copy of the alias
+ * table: the rule is "a safe alias carries a classification unless it is one of
+ * these four", so a new alias defaults to being counted rather than to being
+ * silently dropped.
+ */
+const TypeSpellingAliases = new Set<string>(["org", "orgs", "organisation", "place"]);
+
+/**
  * Seven of the eight types no longer take a subtype, so every alias that used to
  * carry one — `saas`, `device`, `hotel-room-type` and the rest — now resolves to
  * the TYPE alone. What the page is beyond its type is a has-type edge, decided
@@ -802,6 +819,50 @@ function canonicalizeEndpointType(value: string | undefined): EndpointTypeCanoni
     default:
       return { ok: false, reason: "unknown-endpoint-type" };
   }
+}
+
+/**
+ * The classification words this page carried that the endpoint record cannot.
+ *
+ * ADR 0023 said the word "is not lost, it moves to a has-type edge". On the
+ * one-time migration it does. On ONGOING import it does not: no import path
+ * emits a `has-type` edge, so `type:: saas` and `subtype:: threat-actor` were
+ * simply dropped — no edge, no attribute, no row, nothing to count. Until the
+ * importer can mint the topic node (OPEN-20), the honest move is to make the
+ * loss countable: one quarantined review row per dropped word, which is the same
+ * mechanism the suffix-tag and non-wikilink-property reviews already use.
+ *
+ * Two sources, and both are unambiguous. A `subtype::` on a type that no longer
+ * carries one is a classification by definition. A `type::` that resolved
+ * through a safe alias named a kind, unless it was one of the four spellings.
+ */
+function droppedClassificationWords(
+  parsed: ParsedLogseqFile,
+  canonicalization: EndpointTypeCanonicalization
+): string[] {
+  if (!canonicalization.ok) {
+    return [];
+  }
+  const words: string[] = [];
+
+  const typeWord = propertyValue(parsed.page_properties, "type")?.trim().toLowerCase();
+  if (
+    canonicalization.source === "safe-alias" &&
+    canonicalization.type !== "occurrence" &&
+    typeWord !== undefined &&
+    !TypeSpellingAliases.has(typeWord)
+  ) {
+    words.push(typeWord);
+  }
+
+  const subtypeWord = propertyValue(parsed.page_properties, "subtype")?.trim().toLowerCase();
+  // An occurrence's subtype survives as a real enum value, so emitting a row for
+  // it too would ask a reviewer to re-home a fact the record already carries.
+  if (canonicalization.type !== "occurrence" && subtypeWord !== undefined && subtypeWord.length > 0) {
+    words.push(subtypeWord);
+  }
+
+  return [...new Set(words)];
 }
 
 function parseTypedPageEndpoint(parsed: ParsedLogseqFile, options: {
@@ -1962,6 +2023,37 @@ function draftObjectsForFile(parsed: ParsedLogseqFile, options: {
             pathRedactionSecret: options.pathRedactionSecret,
             reasonCode: candidate.reason,
             value: candidate.value
+          })
+        }
+      }));
+    }
+    for (const word of droppedClassificationWords(parsed, canonicalizeEndpointType(propertyValue(parsed.page_properties, "type")))) {
+      // Countable, not carried. The row says a classification existed and this
+      // import had nowhere to put it; it does NOT assert an edge, because the
+      // topic node it would point at is not minted on this path (OPEN-20).
+      drafts.push(plannedObject({
+        authorityId: options.authorityId,
+        sourcePathRef: parsed.source_path_ref,
+        semanticKind: "edge-candidate",
+        objectType: "edge",
+        localRef: `dropped-classification-review:${shortHash(word, 24)}`,
+        accessClass: "quarantine",
+        decision: "quarantined",
+        reasonCode: "dropped-classification-review",
+        plaintextPayload: {
+          kind: "logseq-edge-candidate",
+          source_path_ref: parsed.source_path_ref,
+          source_text: `type/subtype:: ${word}`,
+          predicate_text: "has-type",
+          canonical_predicate: undefined,
+          canonicalization: "dropped-classification-review",
+          source_value_hash: sha256(`dropped-classification:${word}`),
+          property_key: "subtype",
+          ...reviewDeferralAttrs({
+            reviewDeferralIndex: options.reviewDeferralIndex,
+            pathRedactionSecret: options.pathRedactionSecret,
+            reasonCode: "dropped-classification-review",
+            value: word
           })
         }
       }));

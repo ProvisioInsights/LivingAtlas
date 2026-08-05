@@ -66,7 +66,12 @@ describe("Logseq semantic knowledge summary", () => {
       occurrence_with_participants_count: 1,
       topic_count: 1,
       edge_count: 1,
-      quarantine_object_count: 1
+      // The weak-tie suffix tag, PLUS the two classifications this import has
+      // nowhere to put: `type:: product` resolves to `offering` and `type::
+      // device` resolves to `item`, and in both cases the word is gone. They used
+      // to vanish with no row and no count. `type:: org` adds none, because "org"
+      // is a spelling of the type rather than a kind the type does not say.
+      quarantine_object_count: 3
     });
     expect(report.endpoint_type_counts).toMatchObject({
       occurrence: 1,
@@ -79,11 +84,64 @@ describe("Logseq semantic knowledge summary", () => {
       about: 1
     });
     expect(report.quarantine_reason_counts).toEqual({
-      "suffix-tag-weak-tie-needs-note": 1
+      "suffix-tag-weak-tie-needs-note": 1,
+      // The countable half of ADR 0023's consequence. Ongoing import cannot yet
+      // emit the `has-type` edge the ADR describes (OPEN-20), so the words the
+      // endpoint record cannot carry are queued for review instead of dropped.
+      "dropped-classification-review": 2
     });
     expect(report.semantic_kind_counts["typed-endpoint"]).toBe(5);
     expect(JSON.stringify(report)).not.toContain("Synthetic Weekly Meeting");
     expect(JSON.stringify(report)).not.toContain("Synthetic Topic");
     expect(JSON.stringify(report)).not.toContain("Synthetic Weak Tie");
+  });
+
+  /**
+   * ADR 0023 said the retired subtype "is not lost, it moves to a has-type edge".
+   * On ongoing import it does not: nothing here mints the topic node such an edge
+   * would need (OPEN-20). So the word is counted instead of carried, and this is
+   * the test that says which words count and which do not — a spelling of the
+   * type loses nothing and must not produce a row, or the queue fills with noise
+   * and nobody reads it.
+   */
+  it("counts a dropped classification and not a mere spelling of the type", () => {
+    const report = createLogseqSemanticKnowledgeSummary(
+      [
+        // Two words gone: `saas` is not what `offering` says, and `threat-actor`
+        // is not what `organization` says.
+        {
+          source_path: "/tmp/living-atlas-fixtures/Synthetic Platform.md",
+          markdown: "type:: saas\n\n- body text\n",
+          source_kind: "logseq" as const
+        },
+        {
+          source_path: "/tmp/living-atlas-fixtures/Synthetic Actor.md",
+          markdown: "type:: organization\nsubtype:: threat-actor\n\n- body text\n",
+          source_kind: "logseq" as const
+        },
+        // Nothing gone: "org" and "organization" are one word twice.
+        {
+          source_path: "/tmp/living-atlas-fixtures/Synthetic Company.md",
+          markdown: "type:: org\n\n- body text\n",
+          source_kind: "logseq" as const
+        },
+        // Nothing gone: an occurrence's subtype survives as a real enum value.
+        {
+          source_path: "/tmp/living-atlas-fixtures/Synthetic Standup.md",
+          markdown: "type:: occurrence\nsubtype:: meeting\noccurred-on:: 2026-06-24\n\n- body text\n",
+          source_kind: "logseq" as const
+        }
+      ],
+      {
+        authority_id: fixtureAuthorityId,
+        created_at: "2026-06-22T12:00:00.000Z",
+        path_redaction_secret: "fixture-path-redaction-secret-0001"
+      }
+    );
+
+    expect(report.quarantine_reason_counts["dropped-classification-review"]).toBe(2);
+    // Counted, never quoted: the row carries a hash of the word, not the corpus.
+    expect(JSON.stringify(report)).not.toContain("threat-actor");
+    expect(JSON.stringify(report)).not.toContain("saas");
   });
 });
