@@ -239,11 +239,46 @@ server did not perform.
 - **OPEN-1 (from ADR 0014) is now closed.** A credential is presented per request
   and resolved against a directory; the stdio CLI without a directory says on
   stderr that it attributes everything to one `client_id`.
-- **OPEN-5: credential transport binding.** On stdio the pipe is the trust
-  boundary and the `_meta` credential distinguishes consumers that already share
-  it. On HTTP the credential must come from `ctx.http.authInfo`, and whether the
-  `_meta` channel should then be *refused* rather than merely unused is not
-  decided here.
+- **OPEN-5: credential transport binding — now closed.** On stdio the pipe is the
+  trust boundary and the `_meta` credential distinguishes consumers that already
+  share it. HTTP has no pipe: a loopback socket is reachable by every process on
+  the host, so the request itself must carry proof. Resolved as follows, in
+  `packages/atlas-mcp/src/http/auth.ts`, and enforced in code rather than
+  described in a doc.
+
+  **The bearer token is the credential, and the grant is bound to it.**
+  `Authorization: Bearer <secret>` carries the same secret the `_meta` channel
+  carries on stdio, and it is resolved through the *same* `CredentialDirectory`
+  by the *same* `credentialResolver`. One directory, one principal, one grant,
+  whichever transport it arrived over. This is what keeps transport parity
+  structural: there is no second credential concept for HTTP to drift away from,
+  and `PrincipalResolver` still never learns how the request arrived.
+
+  **A disagreeing `_meta` credential is refused, not ignored.** Silently
+  preferring the bearer would let a caller that can set `_meta` but not the
+  `Authorization` header believe it is acting as one principal while the server
+  attributes its writes to another — the confused-deputy shape this ADR's
+  attribution section exists to prevent, and "silently ignored" is precisely how
+  it would hide. The comparison is constant-time over SHA-256 digests, because
+  both sides are attacker-influenced: a `===` would return faster on a longer
+  shared prefix and hand back the bearer a byte at a time. An *identical* `_meta`
+  credential is allowed through, so a client that populates both channels keeps
+  working. The refusal is reported as `credential-unknown` rather than a new
+  reason code — naming the conflict would confirm to a caller that the other
+  value it holds is the real one.
+
+  **There is no fixed-principal mode over HTTP.** `fixedPrincipalResolver`
+  collapses every caller onto one `client_id`; on stdio it is a documented
+  single-consumer dead end that the CLI announces on stderr. Over HTTP it would
+  mean an unauthenticated socket answering as a real principal, so a listener
+  built without a credential directory throws at construction rather than
+  listening on a socket that authenticates nobody. This is also why there is no
+  HTTP counterpart to the stdio demo binary: that binary's entire shape is one
+  fixed principal, which is exactly what this rule refuses.
+
+  Transport mechanics, and the tests that hold both transports to the same
+  answers, are in
+  [ADR 0019](adr-0019-streamable-http-transport.md).
 - **OPEN-6: credential lifecycle.** The directory has no revocation, rotation, or
   expiry. `LocalCredentialRecord` in `packages/contracts` has all three and is
   the obvious source; wiring it is out of scope for this run.
