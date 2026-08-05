@@ -17,7 +17,15 @@ import { AssertionLog, EntityRegistry, canonicalRecordedAt, type Entity, type En
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { MemoryAuditJournal } from "./audit.js";
-import { CREDENTIAL_META_KEY, fixedPrincipalResolver } from "./credentials.js";
+import {
+  CREDENTIAL_META_KEY,
+  InMemoryCredentialDirectory,
+  credentialResolver,
+  fixedPrincipalResolver,
+  hashCredential
+} from "./credentials.js";
+import { atlasConsumerHttpHandler, serveAtlasHttp } from "./http/consumer.js";
+import type { AtlasHttpServeOptions } from "./http/serve.js";
 import type { CapabilityGrant } from "./grant.js";
 import type { GraphSource } from "./graph.js";
 import type { Principal } from "./principal.js";
@@ -330,6 +338,162 @@ export function startHarness(options: HarnessOptions & { principal?: Principal }
   };
 
   return { client, handle, graph, auditJournal, principal };
+}
+
+// ---------------------------------------------------------------------------
+// the HTTP harness
+// ---------------------------------------------------------------------------
+
+/**
+ * The synthetic bearer secret. Fabricated, like everything else here.
+ *
+ * One constant so the stdio and HTTP halves of a parity test present the SAME
+ * secret through their respective channels — `_meta` on one, `Authorization` on
+ * the other — and therefore resolve, through one directory, to one principal
+ * with one `client_id`. If they resolved to two principals the comparison would
+ * be between two different callers and would prove nothing.
+ */
+export const SYNTHETIC_SECRET = "synthetic-bearer-secret-not-a-real-credential";
+
+/** A one-credential directory for `principal`, shared by both transports. */
+export function syntheticDirectory(principal: Principal = CONSUMER_PRINCIPAL): InMemoryCredentialDirectory {
+  return new InMemoryCredentialDirectory([{ token_hash: hashCredential(SYNTHETIC_SECRET), principal }]);
+}
+
+export type HttpHarness = {
+  /** POST one JSON-RPC message and return the parsed response. */
+  send(message: Record<string, unknown>, init?: { headers?: Record<string, string>; bearer?: string | null }): Promise<WireResponse>;
+  /** The same, but returning the raw `Response` — for the conformance assertions. */
+  raw(
+    message: Record<string, unknown> | undefined,
+    init?: {
+      method?: string;
+      headers?: Record<string, string>;
+      bearer?: string | null;
+      path?: string;
+      /** `false` omits the auto-derived `Mcp-*` headers, so a test can prove a missing one is refused. */
+      standard?: boolean;
+    }
+  ): Promise<Response>;
+  url: string;
+  graph: SyntheticGraph;
+  auditJournal: MemoryAuditJournal;
+  principal: Principal;
+  close(): Promise<void>;
+};
+
+/**
+ * The standard request headers the revision REQUIRES on every POST.
+ *
+ * Derived from the message rather than passed in, because that is the rule being
+ * honoured: `Mcp-Method` mirrors `method` and `Mcp-Name` mirrors `params.name`
+ * (or `params.uri`), and a harness that let a test set them independently would
+ * make the header/body agreement the tests assert on an accident of the harness.
+ * A test that means to send a MISMATCH overrides them explicitly.
+ */
+export function standardHeaders(message: Record<string, unknown>): Record<string, string> {
+  const method = message["method"];
+  const params = message["params"] as Record<string, unknown> | undefined;
+  const name = params?.["name"] ?? params?.["uri"];
+  return {
+    "MCP-Protocol-Version": CONTRACT_PROTOCOL_VERSION,
+    ...(typeof method === "string" ? { "Mcp-Method": method } : {}),
+    ...(typeof name === "string" ? { "Mcp-Name": name } : {})
+  };
+}
+
+export type HttpHarnessOptions = Omit<HarnessOptions, "transport"> & {
+  principal?: Principal;
+  /** Defaults to a directory-backed consumer resolver over `SYNTHETIC_SECRET`. */
+  directory?: InMemoryCredentialDirectory;
+  allowedOrigins?: string[];
+  onRejection?: AtlasHttpServeOptions["onRejection"];
+  /**
+   * Whether to bind a real loopback socket.
+   *
+   * Default `false`, which drives `handler.fetch` directly with a web-standard
+   * `Request`. That is the same code path a bound listener reaches — the
+   * listener is a thin adapter between Node streams and `Request`/`Response`
+   * and holds no Atlas logic — so the edge, the protocol ladder and the tool
+   * results are all exercised identically, without a port, a socket or a worker
+   * blocked on I/O.
+   *
+   * `true` for the cases where the socket IS the subject: the parity tests,
+   * which mean the claim to be about a real HTTP transport, and the handful of
+   * conformance cases that assert the Node-to-web conversion. Sockets are opt-in
+   * rather than the default because every test file that binds one competes for
+   * the same worker pool, and a suite that spends its parallelism on loopback
+   * connects starves the CPU-bound tests elsewhere in the repo.
+   */
+  socket?: boolean;
+};
+
+export async function startHttpHarness(options: HttpHarnessOptions = {}): Promise<HttpHarness> {
+  const graph = (options.graph as SyntheticGraph | undefined) ?? syntheticGraph();
+  const auditJournal = (options.auditJournal as MemoryAuditJournal | undefined) ?? new MemoryAuditJournal();
+  const principal = options.principal ?? CONSUMER_PRINCIPAL;
+  const directory = options.directory ?? syntheticDirectory(principal);
+
+  const shared = {
+    ...options,
+    contract: options.contract ?? testContract(),
+    graph,
+    auditJournal,
+    credentials: directory,
+    resolvePrincipal: credentialResolver({ directory, plane: principal.plane }),
+    ...(options.allowedOrigins === undefined ? {} : { allowedOrigins: options.allowedOrigins })
+  };
+
+  const listener =
+    options.socket === true
+      ? await serveAtlasHttp({
+          ...shared,
+          host: "127.0.0.1",
+          // Port 0: the OS picks a free one, so parallel test files never collide
+          // on a fixed port and no test ever depends on a port being available.
+          port: 0
+        })
+      : undefined;
+  const handler = listener === undefined ? atlasConsumerHttpHandler(shared) : undefined;
+
+  // Only ever used to build a syntactically valid URL when there is no socket.
+  const url = listener?.url ?? "http://127.0.0.1";
+
+  const raw: HttpHarness["raw"] = async (message, init = {}) => {
+    const bearer = init.bearer === undefined ? SYNTHETIC_SECRET : init.bearer;
+    const headers: Record<string, string> = {
+      "content-type": "application/json",
+      accept: "application/json, text/event-stream",
+      // `standard: false` lets a test send a request that OMITS a required
+      // header — which is the only way to assert that omitting it is refused.
+      ...(message === undefined || init.standard === false ? {} : standardHeaders(message)),
+      ...(bearer === null ? {} : { authorization: `Bearer ${bearer}` }),
+      ...(init.headers ?? {})
+    };
+    const target = `${url}${init.path ?? "/mcp"}`;
+    const request = {
+      method: init.method ?? "POST",
+      headers,
+      ...(message === undefined ? {} : { body: JSON.stringify(message) })
+    };
+    return listener === undefined ? handler!.fetch(new Request(target, request)) : fetch(target, request);
+  };
+
+  return {
+    url,
+    graph,
+    auditJournal,
+    principal,
+    raw,
+    send: async (message, init = {}) => {
+      const response = await raw(message, init);
+      return (await response.json()) as WireResponse;
+    },
+    close: async () => {
+      if (listener !== undefined) await listener.close();
+      else await handler!.close();
+    }
+  };
 }
 
 /** A well-formed 2026-07-28 request envelope. */
