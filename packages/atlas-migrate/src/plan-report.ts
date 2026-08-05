@@ -84,6 +84,41 @@ export function renderProjectionPlanReport(plan: ProjectionPlan, gate?: ClosureG
     ].filter(() => breakdown.entities_minted_from_attributes + breakdown.relationships_derived_from_attributes > 0))
   );
 
+  /**
+   * The two aggregates a reviewer reads FIRST, before the per-object rows.
+   *
+   * `attributes-without-a-contract-slot` is where the frozen-revision gap shows
+   * up as a number: the ratified table keeps `mode` as an attribute and the
+   * 2026.08.1 occurrence endpoint declares no key for one, so the count is the
+   * size of the contract change that closes it. `travel-endpoint-coverage` is
+   * the control on the rule that nothing is synthesised — gate G3 measured the
+   * shapes disjoint and incomplete, and a `none` row that fell to zero would
+   * mean a leg had been given an origin nobody recorded.
+   *
+   * Both are printed even though every underlying row is also enumerated below:
+   * a queue of hundreds of rows is not a number anybody checks.
+   */
+  const attributeSlotGaps = new Map<string, number>();
+  for (const item of plan.hand_review) {
+    if (item.reason === "no-contract-slot") {
+      attributeSlotGaps.set(item.attribute, (attributeSlotGaps.get(item.attribute) ?? 0) + 1);
+    }
+  }
+  lines.push(
+    ...section(
+      "attributes-without-a-contract-slot",
+      [...attributeSlotGaps.entries()]
+        .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+        .map(([attribute, count]) => `  ${pad(attribute)}${count}`)
+    )
+  );
+  lines.push(
+    ...section(
+      "travel-endpoint-coverage",
+      breakdown.travel_endpoint_coverage.map((entry) => `  ${pad(entry.coverage)}${entry.count}`)
+    )
+  );
+
   // Attributes nobody could place. Ids and reasons only: naming the VALUE would
   // put the very content a reviewer is deciding about into the report file.
   const handReviewLines: string[] = [];

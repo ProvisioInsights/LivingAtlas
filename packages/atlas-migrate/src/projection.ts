@@ -13,7 +13,18 @@ import {
   resolveMigratedPredicate,
   type EdgeMigrationRefusalReason
 } from "./edge-migration.js";
-import { mapLegacyNode } from "./node-mapping.js";
+import {
+  TravelEndpointCoverageKinds,
+  mapLegacyNode,
+  type TravelEndpointCoverage,
+  type TravelEndpointCoverageKind,
+  type UnplacedAttribute
+} from "./node-mapping.js";
+import {
+  TRAVEL_DESTINATION_ATTRIBUTE,
+  TRAVEL_ORIGIN_ATTRIBUTE,
+  TRAVEL_ROUTE_ATTRIBUTE
+} from "./legacy-vocabulary.js";
 import {
   LegacyRedirectPayloadSchema,
   classifyLegacySource,
@@ -51,6 +62,7 @@ import {
   entitySlotForLegacyObject,
   isLegacyObjectProvenance,
   isRelationshipRecord,
+  legacyObjectIdOf,
   mintedClassificationIdempotencyKey,
   mintedTopicIdempotencyKey,
   mintedTopicSlot,
@@ -144,6 +156,22 @@ export type ProjectionBreakdown = {
   relationships_derived_from_attributes: number;
   legacy_ids_split: number;
   hand_review_by_reason: Array<{ reason: HandReviewReason; count: number }>;
+  /**
+   * How many travel legs arrived with each endpoint shape, INCLUDING the ones
+   * that arrived with nothing.
+   *
+   * The `none` row is the one that matters and it is why this is a breakdown
+   * field rather than a count of hand-review rows: a leg with no origin has no
+   * attribute to queue, so counting rows would report the largest group as zero.
+   * Gate G3 measured the three shapes disjoint and incomplete, and the operator's
+   * check on the dry run is that this row still says so — a `none` count that
+   * fell to zero would mean somebody started synthesising endpoints.
+   *
+   * Recomputed by the closure gate from the records and the hand-review queue,
+   * like every other row here, so a plan cannot assert a coverage it did not
+   * produce.
+   */
+  travel_endpoint_coverage: Array<{ coverage: TravelEndpointCoverageKind; count: number }>;
 };
 
 export const ProjectionPlanSchemaName = "living-atlas-migration-projection-plan:v1" as const;
@@ -284,6 +312,20 @@ type ResolvedLegacyEntity = {
   description?: string;
   /** Retired subtype values this node is classified by, as `has-type` topics. */
   has_type_topics: string[];
+  /**
+   * Everything the mapper decided that the ENTITY RECORD has no room for.
+   *
+   * Carried out of the mapper rather than left behind it, because the record is
+   * not the only artifact the plan owes a reviewer. The mapper computed these,
+   * the projector dropped them on the floor, and the report the mapper builds
+   * for them has no production caller — so `mode` on every travel leg, every
+   * `route`, every `origin`, and both `project` nodes the table declined to
+   * decide left the migration with no row, no count and no trace. That is the
+   * silent drop the mapper's own comment says it exists to prevent.
+   */
+  unplaced_attributes: UnplacedAttribute[];
+  travel_endpoints?: TravelEndpointCoverage;
+  hand_review?: string;
 };
 
 /**
@@ -314,7 +356,8 @@ function resolveLegacyEntity(
       name: canonical.data.name,
       aliases: [...canonical.data.aliases],
       ...(canonical.data.description ? { description: canonical.data.description } : {}),
-      has_type_topics: []
+      has_type_topics: [],
+      unplaced_attributes: []
     };
   }
 
@@ -348,8 +391,38 @@ function resolveLegacyEntity(
     name,
     aliases,
     ...(description === undefined ? {} : { description }),
-    has_type_topics: mapping.outcome.has_type_topics
+    has_type_topics: mapping.outcome.has_type_topics,
+    unplaced_attributes: mapping.outcome.unplaced_attributes,
+    ...(mapping.outcome.travel_endpoints === undefined ? {} : { travel_endpoints: mapping.outcome.travel_endpoints }),
+    ...(mapping.outcome.hand_review === undefined ? {} : { hand_review: mapping.outcome.hand_review })
   };
+}
+
+/**
+ * The travel-leg attributes that carry an endpoint, by the coverage shape that
+ * produced them. Keyed off the shape rather than read off the payload so the
+ * hand-review rows and `readTravelEndpoints` cannot disagree about which
+ * attributes a leg actually held — and so a `partial` leg reports exactly the
+ * one end it knows, which is the whole reason `partial` is a separate answer.
+ */
+function travelEndpointAttributes(coverage: TravelEndpointCoverage): string[] {
+  switch (coverage.kind) {
+    case "route":
+      return [TRAVEL_ROUTE_ATTRIBUTE];
+    case "origin-destination":
+      return [TRAVEL_ORIGIN_ATTRIBUTE, TRAVEL_DESTINATION_ATTRIBUTE];
+    case "partial":
+      return [
+        ...(coverage.origin === undefined ? [] : [TRAVEL_ORIGIN_ATTRIBUTE]),
+        ...(coverage.destination === undefined ? [] : [TRAVEL_DESTINATION_ATTRIBUTE])
+      ];
+    case "none":
+      // A leg with no endpoint data holds no attribute to report. Its absence is
+      // counted by `travel_endpoint_coverage`, which is the honest place for it:
+      // "we know nothing about where this went" is a fact about the corpus, not
+      // an attribute a reviewer can be asked to re-home.
+      return [];
+  }
 }
 
 function countBy<T extends string>(values: T[], universe: readonly T[]): Array<{ value: T; count: number }> {
@@ -480,6 +553,34 @@ export function buildProjectionPlan(
         continue;
       }
       const subtype: ProjectedEntityRecord["entity_subtype"] = resolved.entity_subtype;
+
+      // EVERYTHING THE MAPPER DECIDED THAT THE RECORD CANNOT HOLD, into the one
+      // queue the plan digests, reports and hands to a reviewer. The attribute
+      // NAME travels and the value never does: derived-nodes.ts sets that rule
+      // because a plan is written to whatever directory a dry run is read in.
+      for (const unplaced of resolved.unplaced_attributes) {
+        flagForHandReview(
+          handReview,
+          draft,
+          unplaced.attribute,
+          "no-contract-slot",
+          "the ratified table keeps this as an attribute and the frozen endpoint revision declares no key for it"
+        );
+      }
+      if (resolved.travel_endpoints) {
+        for (const attribute of travelEndpointAttributes(resolved.travel_endpoints)) {
+          flagForHandReview(
+            handReview,
+            draft,
+            attribute,
+            "no-contract-slot",
+            "a travel endpoint the frozen occurrence endpoint revision declares no key for; it is reported, never synthesised"
+          );
+        }
+      }
+      if (resolved.hand_review !== undefined) {
+        flagForHandReview(handReview, draft, "subtype", "ratified-table-declined", resolved.hand_review);
+      }
 
       // THE VENUE SPLIT. A restaurant row was one node standing for two things,
       // so it becomes two: the place it is and the business that runs it, joined
@@ -1618,9 +1719,62 @@ export function recomputeProjectionBreakdown(
     hand_review_by_reason: countBy(
       handReview.map((item) => item.reason),
       HandReviewReasonValues
-    ).map(({ value, count }) => ({ reason: value, count }))
+    ).map(({ value, count }) => ({ reason: value, count })),
+    travel_endpoint_coverage: countBy(travelEndpointCoverages(records, handReview), TravelEndpointCoverageKinds).map(
+      ({ value, count }) => ({ coverage: value, count })
+    )
   };
 }
+
+/**
+ * Reconstructs each segment's endpoint coverage from the plan alone.
+ *
+ * Deliberately derived rather than carried: the closure gate recomputes the
+ * whole breakdown and compares it against the plan's own copy, and a field it
+ * could not recompute would be a number the plan asserts and nothing checks.
+ * The reconstruction is exact because `travelEndpointAttributes` queues one row
+ * per endpoint attribute the leg actually held, so the row set IS the shape.
+ */
+function travelEndpointCoverages(
+  records: ProjectedRecord[],
+  handReview: HandReviewItem[]
+): TravelEndpointCoverageKind[] {
+  const endpointAttributesById = new Map<string, Set<string>>();
+  for (const item of handReview) {
+    if (item.reason !== "no-contract-slot" || !TravelEndpointAttributes.has(item.attribute)) {
+      continue;
+    }
+    const bucket = endpointAttributesById.get(item.legacy_object_id) ?? new Set<string>();
+    bucket.add(item.attribute);
+    endpointAttributesById.set(item.legacy_object_id, bucket);
+  }
+
+  const coverages: TravelEndpointCoverageKind[] = [];
+  for (const record of records) {
+    if (record.record_kind !== "entity" || record.entity_subtype !== "segment") {
+      continue;
+    }
+    const legacyObjectId = legacyObjectIdOf(record);
+    if (legacyObjectId === undefined) {
+      continue;
+    }
+    const held = endpointAttributesById.get(legacyObjectId) ?? new Set<string>();
+    if (held.has(TRAVEL_ROUTE_ATTRIBUTE)) {
+      coverages.push("route");
+      continue;
+    }
+    const origin = held.has(TRAVEL_ORIGIN_ATTRIBUTE);
+    const destination = held.has(TRAVEL_DESTINATION_ATTRIBUTE);
+    coverages.push(origin && destination ? "origin-destination" : origin || destination ? "partial" : "none");
+  }
+  return coverages;
+}
+
+const TravelEndpointAttributes = new Set<string>([
+  TRAVEL_ROUTE_ATTRIBUTE,
+  TRAVEL_ORIGIN_ATTRIBUTE,
+  TRAVEL_DESTINATION_ATTRIBUTE
+]);
 
 /**
  * These two lists exist to give the breakdown a stable print order, and the

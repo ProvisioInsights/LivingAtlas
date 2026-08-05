@@ -164,10 +164,10 @@ disagree silently.
 - **OPEN-14 — `mode`, `route`, `origin` and `destination` have no home.** The
   ratified table says the mode of travel stays an attribute. The 2026.08.1
   occurrence endpoint is `.strict()` and has no key for one, nor for a route or an
-  origin. Both statements cannot be satisfied today. The mapper therefore reports
-  them as `attributes_without_a_contract_slot` rather than dropping them or
-  widening a frozen revision from inside a migration. This needs a contract
-  change, and it is the same sequencing problem as OPEN-11.
+  origin. Both statements cannot be satisfied today. They are therefore reported
+  rather than dropped, and rather than widening a frozen revision from inside a
+  migration. This needs a contract change, and it is the same sequencing problem
+  as OPEN-11.
 - **OPEN-15 — `event` and `other` mint no topic.** Recorded as a table row with a
   stated basis rather than as a silent omission. If the owner disagrees, the
   change is one field per row.
@@ -200,3 +200,36 @@ entity a draft produced, not from the primary alone, so both halves of ADR 0026'
 venue split are classified. Its idempotency key therefore names the classified
 entity's slot; keyed by legacy object alone, a split venue's two edges would have
 collided and the second would have been dropped as a replay of the first.
+
+## Amended after review: the mapper's findings reach the plan
+
+Sections 6 and 7 above described `mapLegacyNode` faithfully and stopped there.
+`resolveLegacyEntity` kept only the type, the subtype, the name, the aliases,
+the description and the topics; `unplaced_attributes`, `travel_endpoints` and
+the hand-review flag were computed and then discarded, and
+`buildLegacyNodeMappingReport` — the only thing that reads them — has no
+production caller. So the mode of every travel leg, every route, every origin,
+and both `project` nodes the table declined to decide left the migration with no
+row, no count and no trace: the exact silent drop the mapper's own comment says
+it exists to prevent, one layer further down.
+
+They now travel out of the mapper into `plan.hand_review`, under two reasons
+that are deliberately not the existing ones:
+
+- `no-contract-slot` — the ratified table keeps the value and the frozen
+  endpoint revision declares no key for it. Distinct from `unplaced-attribute`,
+  which means the projector had a slot and could not choose; the remedy here is a
+  contract change, and merging the two would hide the contract gap inside the
+  curator's queue.
+- `ratified-table-declined` — `project/tool` and `project/product`. The node
+  still projects; the decline is a question for a human, not a refusal.
+
+A leg that arrived with **no** endpoint data queues no row, because it holds no
+attribute to re-home. Its absence is counted instead, by
+`breakdown.travel_endpoint_coverage`, which the closure gate reconstructs from
+the records and the queue rather than trusting the plan's copy. That row is the
+control on the rule that nothing is synthesised: gate G3 measured the shapes
+disjoint and incomplete, and a `none` count that fell to zero would mean a leg
+had been given an origin nobody recorded. The plan report prints both aggregates
+above the per-object rows, because a queue of hundreds of rows is not a number
+anybody checks.

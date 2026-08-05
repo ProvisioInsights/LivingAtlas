@@ -131,7 +131,28 @@ export const HandReviewReasonValues = [
   "ambiguous-employer",
   "attribute-conflict",
   "unresolvable-attribute-reference",
-  "unplaced-attribute"
+  "unplaced-attribute",
+  /**
+   * An attribute the ratified table says survives and the frozen endpoint
+   * revision has no key for. `mode`, `route`, `origin` and `destination` on a
+   * travel leg are the whole population: the table says the mode of travel stays
+   * an attribute, the 2026.08.1 occurrence endpoint is `.strict()` and declares
+   * none of them, and both statements cannot be satisfied today.
+   *
+   * Distinct from `unplaced-attribute`, which means the projector had a slot and
+   * could not decide which one. This means there is NO slot, so the remedy is a
+   * contract change rather than a curator's judgement — and the two must not be
+   * counted together or the contract gap hides inside the judgement queue.
+   */
+  "no-contract-slot",
+  /**
+   * The ratified retype table looked at this node and declined to decide.
+   * `project/tool` and `project/product` are probably offerings; "probably" is
+   * not a mapping, so the node projects unchanged and a human is shown the row.
+   * Without this the decline was recorded in a report no production path builds,
+   * and the two nodes projected as ordinary projects with nobody told.
+   */
+  "ratified-table-declined"
 ] as const;
 export const HandReviewReasonSchema = z.enum(HandReviewReasonValues);
 export type HandReviewReason = z.infer<typeof HandReviewReasonSchema>;

@@ -21,6 +21,7 @@ import {
   projectionPlanDigest,
   readTravelEndpoints,
   recomputeProjectionBreakdown,
+  renderProjectionPlanReport,
   retypeRuleFor,
   travelModeFor,
   type LegacyNodeMapping,
@@ -56,7 +57,11 @@ function retallied(plan: ProjectionPlan, extra: ProjectedRecord): ProjectionPlan
     ...plan,
     records,
     minted_record_keys: [...plan.minted_record_keys, extra.idempotency_key].sort(),
-    breakdown: recomputeProjectionBreakdown(plan.outcomes, records)
+    // The hand-review queue is an INPUT to the breakdown, not decoration: the
+    // travel-endpoint coverage is reconstructed from it. Recomputing without it
+    // would hand the gate a breakdown that disagrees with the plan for a reason
+    // that has nothing to do with the record under test.
+    breakdown: recomputeProjectionBreakdown(plan.outcomes, records, plan.hand_review)
   };
   return { ...content, plan_digest: projectionPlanDigest(content) };
 }
@@ -403,10 +408,94 @@ describe("projecting the legacy vocabulary fixture", () => {
 
     // The table says the mode stays an attribute; the 2026.08.1 occurrence
     // endpoint is strict and has no key for one. Reporting the collision is the
-    // only move that neither drops 323 facts nor widens a frozen revision.
+    // only move that neither drops a fact per leg nor widens a frozen revision.
     expect(mode?.count).toBe(
       legacyVocabularyFixtureCount((spec) => spec.type === "item" && retypeRuleFor("item", spec.subtype ?? "")?.to_subtype === "segment")
     );
+  });
+
+  /**
+   * The two assertions above are about the mapper's own report, which no
+   * production path builds. These are the same properties asserted on the
+   * artifact the operator actually receives — the plan. Without them the mapper
+   * could compute a perfect report while `buildProjectionPlan` dropped every
+   * value on the floor, which is exactly what it was doing.
+   */
+  it("carries the unplaceable travel attributes into the plan's hand-review queue", () => {
+    const plan = planFixture();
+    const rows = plan.hand_review.filter((item) => item.reason === "no-contract-slot");
+    const counts = new Map<string, number>();
+    for (const row of rows) {
+      counts.set(row.attribute, (counts.get(row.attribute) ?? 0) + 1);
+    }
+
+    const segments = legacyVocabularyFixtureCount(
+      (spec) => spec.type === "item" && retypeRuleFor("item", spec.subtype ?? "")?.to_subtype === "segment"
+    );
+    expect(counts.get("mode")).toBe(segments);
+    expect(counts.get("route")).toBe(
+      legacyVocabularyFixtureCount((spec) => spec.type === "item" && spec.endpoints === "route")
+    );
+    expect(counts.get("origin")).toBe(
+      legacyVocabularyFixtureCount(
+        (spec) => spec.type === "item" && (spec.endpoints === "origin-destination" || spec.endpoints === "partial-origin-only")
+      )
+    );
+    expect(counts.get("destination")).toBe(
+      legacyVocabularyFixtureCount((spec) => spec.type === "item" && spec.endpoints === "origin-destination")
+    );
+
+    // The queue names the object and the attribute and never the value, because
+    // the plan is written to whatever directory a dry run is reviewed in.
+    for (const row of rows) {
+      expect(JSON.stringify(row)).not.toContain("Place ");
+      expect(JSON.stringify(row)).not.toContain("PT");
+    }
+  });
+
+  it("counts every endpoint coverage shape in the plan, including the legs that carried none", () => {
+    const plan = planFixture();
+    const coverage = new Map(plan.breakdown.travel_endpoint_coverage.map((entry) => [entry.coverage, entry.count]));
+
+    for (const [kind, shape] of [
+      ["none", "none"],
+      ["route", "route"],
+      ["origin-destination", "origin-destination"],
+      ["partial", "partial-origin-only"]
+    ] as const) {
+      expect(coverage.get(kind)).toBe(
+        legacyVocabularyFixtureCount((spec) => spec.type === "item" && spec.endpoints === shape)
+      );
+    }
+    // The largest group in the corpus is the one with nothing. A zero here would
+    // mean somebody had started filling endpoints in.
+    expect(coverage.get("none")).toBeGreaterThan(0);
+  });
+
+  it("shows the nodes the ratified table declined to decide", () => {
+    const plan = planFixture();
+    const declined = plan.hand_review.filter((item) => item.reason === "ratified-table-declined");
+
+    expect(declined).toHaveLength(
+      legacyVocabularyFixtureCount((spec) => spec.type === "project" && (spec.subtype === "tool" || spec.subtype === "product"))
+    );
+    expect(declined.length).toBeGreaterThan(0);
+    // They still project — the decline is a question for a human, not a refusal
+    // that throws the node away.
+    for (const item of declined) {
+      const outcome = plan.outcomes.find((candidate) => candidate.legacy_object_id === item.legacy_object_id);
+      expect(outcome?.disposition.kind).toBe("projected-as-entity");
+    }
+  });
+
+  it("renders the two aggregates a reviewer checks before the per-object rows", () => {
+    const report = renderProjectionPlanReport(planFixture());
+
+    expect(report).toContain("attributes-without-a-contract-slot");
+    expect(report).toContain("travel-endpoint-coverage");
+    expect(report).toContain("ratified-table-declined");
+    // Counts and ids only, never the corpus content behind them.
+    expect(report).not.toContain("Place ");
   });
 
   /**
