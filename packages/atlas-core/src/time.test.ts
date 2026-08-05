@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   canonicalRecordedAt,
   intervalContains,
+  resolvePoint,
   validTimeFidelity,
   type WorldTimeInterval
 } from "./time.js";
@@ -47,6 +48,59 @@ describe("world time: unknown is not a date", () => {
   it("distinguishes absent world time from unknown world time", () => {
     expect(validTimeFidelity(undefined)).toBe("absent");
     expect(validTimeFidelity({})).toBe("absent");
+  });
+
+  it("cannot be handed to resolvePoint at all, so there is no 'no span' value to leak", () => {
+    // The guard is the TYPE, not a branch. `resolvePoint` used to accept the
+    // whole union and answer `Span | undefined` for the unknown arm — an arm no
+    // caller could reach, because every caller ruled unknown out first. A
+    // returned "no answer" is the shape the old store abused: unknown became
+    // "9999" and satisfied every "before X" filter.
+    //
+    // Deliberately never invoked: the assertion lives in the type checker, and
+    // calling it would only crash on a value the signature already forbids.
+    const rejected = () =>
+      // @ts-expect-error an unknown endpoint denotes no span, so it is not a
+      // KnownWorldTimePoint. If this directive ever reports itself unused, the
+      // parameter has widened back and the unreachable branch is back with it —
+      // `tsc --noEmit` fails on the unused directive, which is the point.
+      resolvePoint({ kind: "unknown" });
+
+    expect(typeof rejected).toBe("function");
+  });
+});
+
+describe("resolvePoint is total over the endpoints that carry a date", () => {
+  it("answers a span for every known point, with no undefined to unwrap", () => {
+    // Totality is the property being asserted: each of these returns a Span,
+    // never `undefined`, so a caller has nothing optional to mishandle.
+    expect(resolvePoint({ kind: "exact", value: "2019" })).toEqual({
+      lower: Date.UTC(2019, 0, 1),
+      upper: Date.UTC(2020, 0, 1)
+    });
+    expect(resolvePoint({ kind: "exact", value: "2019-03" })).toEqual({
+      lower: Date.UTC(2019, 2, 1),
+      upper: Date.UTC(2019, 3, 1)
+    });
+    expect(resolvePoint({ kind: "exact", value: "2019-03-15" })).toEqual({
+      lower: Date.UTC(2019, 2, 15),
+      upper: Date.UTC(2019, 2, 16)
+    });
+  });
+
+  it("widens an approximate point by one unit of its own precision", () => {
+    // ~2019 could mean 2018 or 2020, so it spans 2018-01-01 up to 2021-01-01.
+    expect(resolvePoint({ kind: "approximate", value: "2019" })).toEqual({
+      lower: Date.UTC(2018, 0, 1),
+      upper: Date.UTC(2021, 0, 1)
+    });
+    // Strictly wider than the exact reading of the same string — an approximate
+    // point that resolved identically to an exact one is the defect that made
+    // "~2019" and "2019" indistinguishable in the old store.
+    const exact = resolvePoint({ kind: "exact", value: "2019" });
+    const approximate = resolvePoint({ kind: "approximate", value: "2019" });
+    expect(approximate.lower).toBeLessThan(exact.lower);
+    expect(approximate.upper).toBeGreaterThan(exact.upper);
   });
 });
 
