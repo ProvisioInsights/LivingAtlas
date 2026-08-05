@@ -1231,19 +1231,38 @@ describe("temporal contracts", () => {
       }
     }).success).toBe(false);
 
+    // An empty array on a structured attr is refused, not accepted as "no
+    // value". The predicate that used to carry this case (`intro-path-to`, with
+    // `via`) is retired, so it is exercised through `created_for`, which has the
+    // same `.min(1)` rule — the assertion is about the attr schema, not about
+    // which predicate happens to reference it.
     expect(TemporalEdgeSchema.safeParse({
       edge_id: "la_edge_contract0004",
       source_object_id: "la_object_contract0001",
       source_type: "person",
       target_object_id: "la_object_contract0002",
-      target_type: "person",
-      predicate: "intro-path-to",
+      target_type: "item",
+      predicate: "created",
       valid_from: "2026-06-21",
       source: "test",
       attrs: {
-        via: []
+        created_for: []
       }
     }).success).toBe(false);
+
+    expect(TemporalEdgeSchema.safeParse({
+      edge_id: "la_edge_contract0005",
+      source_object_id: "la_object_contract0001",
+      source_type: "person",
+      target_object_id: "la_object_contract0002",
+      target_type: "item",
+      predicate: "created",
+      valid_from: "2026-06-21",
+      source: "test",
+      attrs: {
+        created_for: ["la_object_contract0003"]
+      }
+    }).success).toBe(true);
   });
 
   it("rejects direction-flipping aliases instead of silently reversing them", () => {
