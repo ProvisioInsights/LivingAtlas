@@ -7,10 +7,11 @@
     "living-atlas-check": "./src/cli.ts"
   },
   "dependencies": {
-    "@living-atlas/contracts": "workspace:*",
     "@living-atlas/atlas-client": "workspace:*",
+    "@living-atlas/atlas-migrate": "workspace:*",
     "@living-atlas/backup": "workspace:*",
     "@living-atlas/cloudflare-worker": "workspace:*",
+    "@living-atlas/contracts": "workspace:*",
     "@living-atlas/fixtures": "workspace:*",
     "@living-atlas/graph-service": "workspace:*",
     "@living-atlas/importer": "workspace:*",

@@ -82,7 +82,8 @@
     "real-data:refresh-reconcile": "tsx packages/check/src/logseq-semantic-refresh-reconcile.ts",
     "real-data:backfill-outbox": "tsx packages/check/src/local-backfill-outbox.ts",
     "backup:run": "tsx packages/check/src/backup-run.ts",
-    "backup:restore": "tsx packages/check/src/backup-restore.ts"
+    "backup:restore": "tsx packages/check/src/backup-restore.ts",
+    "real-data:migration-plan": "tsx packages/check/src/migration-plan-dryrun.ts"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "4.20260621.1",

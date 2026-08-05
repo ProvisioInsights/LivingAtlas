@@ -47,6 +47,7 @@ export const LegacySourceCategoryValues = [
   "opaque-object",
   "quarantined-object",
   "narrative-object",
+  "derived-index",
   "other"
 ] as const;
 export const LegacySourceCategorySchema = z.enum(LegacySourceCategoryValues);
@@ -68,6 +69,37 @@ export type LegacyRedirectPayload = z.infer<typeof LegacyRedirectPayloadSchema>;
  * a drop is not.
  */
 const NarrativeObjectTypes = new Set<string>(["page", "block", "attachment"]);
+
+/**
+ * `object_type` is the STORAGE shape; `schema_namespace` is what the record
+ * means. Reading the first as if it were the second is what made the entity
+ * branch unreachable: every typed endpoint in a real graph is stored as
+ * `object_type: "page"`, so it fell straight through to the narrative check and
+ * the whole node layer was refused as prose — taking every edge that referenced
+ * it down as `endpoint-not-projected` one hop later.
+ *
+ * Namespace is therefore checked FIRST, and it wins. A node that happens to be
+ * persisted as a page is still a node.
+ */
+const EntitySchemaNamespaces = new Set<string>([
+  "import/logseq-semantic/typed-endpoint",
+  "import/logseq-topic-review/promoted",
+  "import/connector-enrichment/promoted"
+]);
+
+const TypedEdgeSchemaNamespaces = new Set<string>([
+  "edge/temporal",
+  "import/logseq-semantic/typed-edge"
+]);
+
+/**
+ * Derived lookup tables rebuilt from the records they index. Migrating one would
+ * copy a cache into a store that can regenerate it, and a stale copy of an index
+ * is worse than no copy: it answers confidently and wrongly.
+ */
+const DerivedIndexSchemaNamespaces = new Set<string>([
+  "import/logseq-semantic/reference-index"
+]);
 
 export type LegacySourceClassification = {
   category: LegacySourceCategory;
@@ -100,11 +132,24 @@ export function classifyLegacySource(
     return { category: "legacy-redirect", resolution };
   }
 
-  if (envelope.object_type === "entity") {
+  const namespace = envelope.visible_metadata.schema_namespace;
+
+  // Meaning before storage shape — see EntitySchemaNamespaces.
+  if (namespace !== undefined && DerivedIndexSchemaNamespaces.has(namespace)) {
+    return { category: "derived-index", resolution };
+  }
+
+  if (
+    envelope.object_type === "entity" ||
+    (namespace !== undefined && EntitySchemaNamespaces.has(namespace))
+  ) {
     return { category: tombstone ? "tombstoned-entity-record" : "entity-record", resolution };
   }
 
-  if (envelope.object_type === "edge") {
+  if (
+    envelope.object_type === "edge" ||
+    (namespace !== undefined && TypedEdgeSchemaNamespaces.has(namespace))
+  ) {
     return { category: tombstone ? "tombstoned-typed-edge" : "typed-edge", resolution };
   }
 
@@ -126,6 +171,14 @@ export const MigrationRefusalReasonValues = [
   "alias-cycle",
   "dangling-alias-target",
   "unclassified-source-category",
+  /**
+   * A derived lookup table the new plane rebuilds for itself. Distinct from
+   * `unclassified-source-category` on purpose: that one means "nobody decided
+   * what this is" and must fail the gate, this one means "we decided, and the
+   * decision is not to carry it". Collapsing them would let a real unmapped
+   * shape hide behind a deliberate omission.
+   */
+  "derived-index-not-migrated",
   "other"
 ] as const;
 export const MigrationRefusalReasonSchema = z.enum(MigrationRefusalReasonValues);
