@@ -103,6 +103,20 @@ export type AuditEvent = {
  * The durability port. Synchronous, like `LogJournal` in atlas-core and for the
  * same reason: the call returns after the event is written, so a result can
  * never reach a consumer describing a disclosure the log does not know about.
+ *
+ * "Written" means DURABLE, not merely handed to the operating system. An
+ * implementation MUST NOT return until the event would survive a crash — see
+ * `DurableFileAuditJournal` in `audit-file.ts`, which is `commit()`'s
+ * fsync-before-acknowledge discipline applied to this log. Both CLIs previously
+ * used `appendFileSync`, which returns once the bytes reach the page cache, so
+ * a crash could lose the event AFTER the disclosure it records had already been
+ * returned. That is the one direction the discrepancy must never point: a graph
+ * that was read and a log that says it was not.
+ *
+ * An implementation that cannot make the event durable MUST throw rather than
+ * silently degrade. The dispatcher treats that throw as the call failing, which
+ * is what makes the guarantee fail-closed: no disclosure is returned whose event
+ * could not be written. (ADR 0014 OPEN-4, resolved 2026-08-04.)
  */
 export type AuditJournal = {
   append(event: AuditEvent): void;
@@ -200,8 +214,18 @@ export class AuditRecorder {
       protocol_version: input.protocolVersion
     };
 
-    this.journal.append(event);
+    // Counted BEFORE the append, not after.
+    //
+    // `writes` is what the dispatcher consults to decide whether this call has
+    // already had its event, so it has to mean "handed to the journal" rather
+    // than "the journal returned". Counting after left it stale whenever
+    // `append` threw: the dispatcher then believed nothing had been written and
+    // wrote a second time, so a failing journal was hit twice for one call —
+    // the per-call fanout this class exists to prevent, reached through the
+    // error path. A duplicate audit event is also worse than a missing one,
+    // because a reader cannot tell it from two real calls.
     this.count += 1;
+    this.journal.append(event);
     return event;
   }
 }

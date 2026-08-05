@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { CLIENT_CAPABILITIES_META_KEY } from "@modelcontextprotocol/server";
 import { redactionId } from "./access.js";
+import type { AuditJournal } from "./audit.js";
 import {
   CONSUMER_PRINCIPAL,
   callTool,
@@ -373,5 +374,88 @@ describe("atlas.sensitive.reveal.v1", () => {
     client.send(callTool({ id: 1, name: "atlas.sensitive.reveal.v1", args: { redaction_id: stubId, reason: "why" } }));
     const response = await client.await(1);
     expect(structured(response)["error"]).toMatchObject({ code: "reveal-not-available" });
+  });
+});
+
+describe("a disclosure is not returned before its audit event is durable", () => {
+  /**
+   * ADR 0014 OPEN-4, resolved conservatively: the reveal returns only after the
+   * event is durably written. The ORDER was already right — the dispatcher
+   * writes before it builds the result — so what this locks down is the other
+   * half: a journal that CANNOT write must stop the disclosure rather than let
+   * it past. `DurableFileAuditJournal.append` throws instead of degrading, and
+   * these assert that the throw costs the caller the record.
+   */
+  function refusingJournal(): AuditJournal {
+    return {
+      append() {
+        throw new Error("no space left on device");
+      }
+    };
+  }
+
+  it("withholds the record when the audit event cannot be written", async () => {
+    const { graph, stubId } = sealedFixture();
+    const { client } = harness({ graph, auditJournal: refusingJournal() as never });
+
+    // Round one escalates; even this writes an event, so it fails here.
+    client.send(callTool({ id: 1, name: "atlas.sensitive.reveal.v1", args: { redaction_id: stubId, reason: "why" } }));
+    const response = await client.await(1);
+
+    // No disclosure, and no escalation state either: the caller cannot proceed
+    // toward a reveal whose first event was never recorded.
+    const payload = structured(response);
+    expect(payload["outcome"]).not.toBe("revealed");
+    expect(payload["record"]).toBeUndefined();
+    expect(response.result?.["requestState"]).toBeUndefined();
+    // Fail-closed, not fail-open: the call is an error rather than a success
+    // with a missing log line.
+    expect(response.result?.["isError"] ?? response.error !== undefined).toBeTruthy();
+  });
+
+  it("does not leak the record through the in-band escalation path either", async () => {
+    // The in-band form returns a COMPLETE result rather than using the protocol
+    // channel, so it is the path where a payload could most plausibly slip out
+    // ahead of the event.
+    const { graph, stubId } = sealedFixture();
+    const { client } = harness({
+      graph,
+      revealEscalationInBand: true,
+      auditJournal: refusingJournal() as never
+    });
+
+    client.send(callTool({ id: 1, name: "atlas.sensitive.reveal.v1", args: { redaction_id: stubId, reason: "why" } }));
+    const response = await client.await(1);
+
+    expect(JSON.stringify(response)).not.toContain("medical-note");
+  });
+
+  it("hands the successful disclosure an event the journal has already accepted", async () => {
+    // The positive case: on the happy path the record and the event both exist,
+    // and the receipt in the payload names the event that is in the journal —
+    // so a consumer can verify the disclosure was recorded before it was told.
+    const { graph, stubId } = sealedFixture();
+    const { client, auditJournal } = harness({ graph });
+
+    client.send(callTool({ id: 1, name: "atlas.sensitive.reveal.v1", args: { redaction_id: stubId, reason: "why" } }));
+    const first = await client.await(1);
+    const state = first.result?.["requestState"] as string;
+    const requestId = Object.keys(first.result?.["inputRequests"] as Record<string, unknown>)[0];
+
+    client.send(
+      callTool({
+        id: 2,
+        name: "atlas.sensitive.reveal.v1",
+        args: { redaction_id: stubId, reason: "why" },
+        extra: { requestState: state, inputResponses: { [requestId as string]: { action: "accept", content: { approve: true } } } }
+      })
+    );
+    const payload = structured(await client.await(2));
+
+    expect(payload["outcome"]).toBe("revealed");
+    const receipt = payload["audit"] as Record<string, unknown>;
+    const disclosure = auditJournal.events.find((event) => event.event_id === receipt["event_id"]);
+    expect(disclosure).toBeDefined();
+    expect(disclosure?.counts).toMatchObject({ revealed: 1 });
   });
 });

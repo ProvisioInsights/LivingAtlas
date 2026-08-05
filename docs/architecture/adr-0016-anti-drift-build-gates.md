@@ -228,11 +228,18 @@ entry from `released.lock.json`.
 
 ## Open questions
 
-- **OPEN-1 — the git leg has no baseline yet.** `packages/atlas-contract/` is
-  untracked at the time of writing, so `git_checked_revisions=0` and only the
-  content leg runs. This closes on the first commit that tracks the schema
-  directory. Until then, a hand-edit accompanied by a re-freeze of the lock would
-  pass. The runner reports the count so a reader can see which legs ran.
+- **~~OPEN-1 — the git leg has no baseline yet.~~ RESOLVED 2026-08-04.** The
+  schema directory is tracked, so the leg runs: `git_checked_revisions` now
+  equals the number of released revisions rather than 0, and the hand-edit-plus-
+  re-freeze hole is closed — a working-tree diff under a released revision fails
+  regardless of what the lock file says.
+
+  The gate is deliberately still tolerant of `no-baseline`, because it must run
+  outside a git checkout (an exported tarball has no history to consult). That
+  tolerance is what made the original condition silent, so the guard is a test
+  rather than a gate failure: `gates.test.ts` asserts that in THIS repository
+  every released revision is checked by the git leg. Gitignoring the schema
+  directory would otherwise remove the second leg with every gate still green.
 - **OPEN-2 — the operator plane's caps coincide with the consumer's.**
   `OPERATOR_LIMITS` holds `max_page_size: 200` and `default_page_size: 50`, the
   same values the consumer contract publishes, and they are deliberately

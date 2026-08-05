@@ -240,10 +240,22 @@
             "summary": "The named feed epoch is not the running one. Every cursor from a prior epoch is invalid."
           },
           {
+            "code": "handler-failed",
+            "origin": "store",
+            "retryable": false,
+            "summary": "Audit-only reason code: a tool threw while serving the call. The event records THAT the call failed and never what failed, because a fault message carries stack frames and whatever graph value provoked it. The caller receives internal-error."
+          },
+          {
             "code": "idempotency-key-conflict",
             "origin": "store",
             "retryable": false,
             "summary": "This (client_id, idempotency_key) already committed a DIFFERENT payload. Neither version is silently accepted."
+          },
+          {
+            "code": "internal-error",
+            "origin": "store",
+            "retryable": false,
+            "summary": "A tool failed while serving this request. Deliberately uninformative: the failure is recorded in the server's audit log under handler-failed, and returning the fault detail would make an error message a channel for graph content and server internals."
           },
           {
             "code": "invalid-argument",

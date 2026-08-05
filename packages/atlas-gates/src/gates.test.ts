@@ -155,6 +155,23 @@ describe("gate 4 — released revisions are immutable", () => {
     expect(Number(result.examined["files"])).toBeGreaterThan(30);
   });
 
+  it("runs its GIT leg here, not only the content leg", () => {
+    // ADR 0016 OPEN-1: while `packages/atlas-contract/` was untracked the git
+    // leg reported `no-baseline` and silently contributed nothing, so only the
+    // content check ran — and that check reads a lock file which travels in the
+    // same commit as any change to it. A hand-edit plus a re-freeze passed.
+    //
+    // The schema directory is tracked now, so the leg runs. Asserted rather
+    // than assumed, because the failure mode is SILENT: `gitStatusUnder`
+    // returns `no-baseline` for an untracked path and pushes no failure, so
+    // gitignoring the directory would take the second leg away with every gate
+    // still green. This is the guard that would notice.
+    const result = runImmutableRevisionGate();
+    const released = Number(result.examined["released"]);
+    expect(released).toBeGreaterThan(0);
+    expect(Number(result.examined["git_checked_revisions"])).toBe(released);
+  });
+
   it("fails when one byte of a released schema changes", () => {
     const root = makeTemporaryRepo();
     const path = join(schemaRoot(root), CONTRACT_REVISION, "tools", "atlas.assertion.query.v1.input.json");

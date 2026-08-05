@@ -1,10 +1,9 @@
 #!/usr/bin/env -S npx tsx
-import { appendFileSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadContract, schemaDirectory, CONTRACT_REVISION, CONTRACT_TOOL_NAMES } from "@living-atlas/atlas-contract";
 import { AssertionLog, EntityRegistry, canonicalRecordedAt, type Entity, type EntityId } from "@living-atlas/atlas-core";
-import type { AuditEvent, AuditJournal } from "./audit.js";
+import { DurableFileAuditJournal } from "./audit-file.js";
 import { fixedPrincipalResolver } from "./credentials.js";
 import type { GraphSource } from "./graph.js";
 import type { Principal } from "./principal.js";
@@ -45,16 +44,6 @@ function argument(name: string): string | undefined {
   const index = process.argv.indexOf(`--${name}`);
   if (index < 0) return undefined;
   return process.argv[index + 1];
-}
-
-/** Append-only, one JSON object per line, fsync-free — the log is not the graph. */
-function fileAuditJournal(path: string): AuditJournal {
-  mkdirSync(dirname(path), { recursive: true });
-  return {
-    append: (event: AuditEvent) => {
-      appendFileSync(path, `${JSON.stringify(event)}\n`, "utf8");
-    }
-  };
 }
 
 function emptyGraph(): GraphSource {
@@ -117,7 +106,9 @@ const packageRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "a
 serveAtlasStdio({
   contract: loadContract(schemaDirectory(packageRoot, CONTRACT_REVISION)),
   graph: emptyGraph(),
-  auditJournal: fileAuditJournal(auditLog),
+  // fsynced before each call returns: a disclosure whose event is not yet
+  // durable is a disclosure the log could lose. See `audit-file.ts`.
+  auditJournal: new DurableFileAuditJournal(auditLog),
   resolvePrincipal: fixedPrincipalResolver(principal),
   // stderr, never stdout: stdout is the JSON-RPC wire, and a stray line on it
   // corrupts the framing for every message after it.

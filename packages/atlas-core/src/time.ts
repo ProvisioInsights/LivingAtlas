@@ -64,6 +64,23 @@ export const WorldTimePointSchema = z.union([
 
 export type WorldTimePoint = z.infer<typeof WorldTimePointSchema>;
 
+/**
+ * A world-time endpoint that actually carries a date.
+ *
+ * Named so that `resolvePoint` can REQUIRE one. `unknown` is the absence of
+ * knowledge, and the only honest span for it is no span at all — so a
+ * `resolvePoint` accepting the full union had to return `Span | undefined`, and
+ * every caller then had to handle an `undefined` that its own guard had already
+ * ruled out. That optional is exactly the shape the old store abused: a
+ * "no answer" value flowing into arithmetic is how `normalizedDateKey` came to
+ * map unknown onto "9999" and satisfy every "before X" filter.
+ *
+ * Narrowing the PARAMETER instead deletes the branch rather than trusting
+ * callers to check: an unknown endpoint cannot be handed to `resolvePoint` at
+ * all, so there is no unreachable arm left to rot and no optional to unwrap.
+ */
+export type KnownWorldTimePoint = Extract<WorldTimePoint, { kind: "exact" | "approximate" }>;
+
 export function precisionOf(value: string): WorldTimePrecision {
   if (value.length === 4) return "year";
   if (value.length === 7) return "month";
@@ -113,8 +130,12 @@ function widen(value: string): Span {
   return { lower: Date.UTC(year, month - 1, day - 1), upper: Date.UTC(year, month - 1, day + 2) };
 }
 
-export function resolvePoint(point: WorldTimePoint): Span | undefined {
-  if (point.kind === "unknown") return undefined;
+/**
+ * The epoch-millisecond span an endpoint denotes. Total, because the type of
+ * its argument excludes the one input that has no span — see
+ * `KnownWorldTimePoint`.
+ */
+export function resolvePoint(point: KnownWorldTimePoint): Span {
   return point.kind === "approximate" ? widen(point.value) : spanOf(point.value);
 }
 

@@ -8,7 +8,7 @@ import { CONTRACT_PROTOCOL_VERSION, CONTRACT_TOOL_NAMES } from "@living-atlas/at
 import { gateInbound } from "./protocol-gate.js";
 import { SERVER_INFO } from "./server.js";
 import { SUPPORTED_PROTOCOL_VERSIONS } from "./stdio.js";
-import { callTool, envelope, startHarness, testContract, type Harness } from "./testing.js";
+import { callTool, envelope, listTools, startHarness, testContract, type Harness } from "./testing.js";
 
 const started: Harness[] = [];
 
@@ -109,7 +109,10 @@ describe("server/discover", () => {
     expect(response.error).toBeUndefined();
     const result = response.result ?? {};
     expect(result["supportedVersions"]).toEqual([CONTRACT_PROTOCOL_VERSION]);
-    expect(result["capabilities"]).toMatchObject({ tools: {} });
+    // EXACT, not `toMatchObject`. The permissive form is how this went unnoticed:
+    // it accepted extra members, and the SDK was quietly advertising
+    // `tools.listChanged: true` — a notification this server never sends.
+    expect(result["capabilities"]).toEqual({ tools: { listChanged: false } });
     expect(String(result["instructions"])).toContain("atlas.contract.describe.v1");
     // serverInfo rides the reserved `_meta` key rather than a top-level member:
     // that is where the 2026-07-28 revision puts it, and inventing a second
@@ -129,6 +132,46 @@ describe("server/discover", () => {
     const response = await client.await(1);
     expect(response.error?.code).toBe(-32022);
     expect(response.error?.data).toMatchObject({ supported: [CONTRACT_PROTOCOL_VERSION] });
+  });
+
+  it("does not claim tools/list_changed, because it has no connection-scoped list to push", async () => {
+    const { client } = harness();
+    client.send({ jsonrpc: "2.0", id: 1, method: "server/discover", params: { _meta: meta() } });
+    const capabilities = (await client.await(1)).result?.["capabilities"] as {
+      tools?: { listChanged?: boolean };
+    };
+
+    // Declared false, never merely absent. `McpServer.registerTool` turns an
+    // absent bit into `true` (`getCapabilities().tools?.listChanged ?? true`),
+    // so "we did not mention it" is advertised to clients as "we support it",
+    // and the SDK then ACKNOWLEDGES a client's toolsListChanged subscription
+    // against that bit. The server would be acking a notification it never
+    // sends, and a client that believed the ack would wait instead of
+    // re-reading `tools/list`.
+    expect(capabilities.tools?.listChanged).toBe(false);
+    expect(Object.hasOwn(capabilities.tools ?? {}, "listChanged")).toBe(true);
+  });
+
+  it("never sends a tools/list_changed notification, on any path", async () => {
+    // The listing varies by the credential on the REQUEST, so a grant change is
+    // not an event about this CONNECTION and there is nothing to push. Exercise
+    // the paths that could plausibly emit one — a listing, a call, and a listing
+    // by a credential with a different grant — and assert the wire stayed clean.
+    const { client } = harness();
+
+    client.send(listTools({ id: 1, meta: meta() }));
+    await client.await(1);
+    client.send(callTool({ id: 2, name: "atlas.contract.describe.v1", args: {} }));
+    await client.await(2);
+    client.send(listTools({ id: 3, meta: meta() }));
+    await client.await(3);
+
+    // Non-vacuity: the client really did capture the three responses, so an
+    // empty notification list means "none were sent" and not "nothing was read".
+    expect(client.responses).toHaveLength(3);
+    const notifications = client.responses.filter((message) => !("id" in message) || message.id === undefined);
+    expect(notifications).toEqual([]);
+    expect(JSON.stringify(client.responses)).not.toContain("list_changed");
   });
 });
 

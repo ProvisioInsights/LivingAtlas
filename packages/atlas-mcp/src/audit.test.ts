@@ -1,7 +1,13 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { CONTRACT_LIMITS, CONTRACT_TOOL_NAMES } from "@living-atlas/atlas-contract";
 import { redactionId } from "./access.js";
-import { AuditRecorder, MAX_AUDIT_SUBJECTS, MemoryAuditJournal } from "./audit.js";
+import {
+  AuditRecorder,
+  MAX_AUDIT_SUBJECTS,
+  MemoryAuditJournal,
+  type AuditEvent,
+  type AuditJournal
+} from "./audit.js";
 import {
   CONSUMER_PRINCIPAL,
   callTool,
@@ -10,7 +16,8 @@ import {
   seedWithheldAssertion,
   startHarness,
   syntheticGraph,
-  type Harness
+  type Harness,
+  type SyntheticGraph
 } from "./testing.js";
 
 const started: Harness[] = [];
@@ -258,5 +265,90 @@ describe("the audit log", () => {
     expect(new Set(auditJournal.events.map((event) => event.event_id)).size).toBe(CONTRACT_TOOL_NAMES.length);
     const stamps = auditJournal.events.map((event) => event.recorded_at);
     expect([...stamps].sort()).toEqual(stamps);
+  });
+});
+
+describe("a tool that throws is still an audited call", () => {
+  /**
+   * A graph whose scan faults, which is what a storage error looks like from
+   * inside a handler. Injected through the `GraphSource` port rather than
+   * through a test-only hook on the server, so the path under test is the real
+   * one: nothing in `server.ts` knows this call came from a test.
+   */
+  function faultingGraph(): SyntheticGraph {
+    return {
+      ...syntheticGraph(),
+      searchableEntities: () => {
+        throw new Error("simulated storage fault reading segment-0007 for subject Synthetic Person 0");
+      }
+    };
+  }
+
+  it("writes exactly one event, with outcome error, when the handler throws", async () => {
+    const { client, auditJournal } = harness({ graph: faultingGraph() });
+
+    client.send(callTool({ id: 1, name: "atlas.text.search.v1", args: { query: "synthetic" } }));
+    const response = await client.await(1);
+
+    // The call fails for the caller...
+    expect(response.result?.["isError"]).toBe(true);
+
+    // ...and the failure reaches the journal. Before this, `McpServer`'s own
+    // `tools/call` catch flattened the throw into a text tool error and nothing
+    // was written, so a tool crashing on crafted input read as silence.
+    expect(auditJournal.events).toHaveLength(1);
+    const event = auditJournal.events[0];
+    expect(event).toBeDefined();
+    if (!event) return;
+    expect(event.tool).toBe("atlas.text.search.v1");
+    expect(event.outcome).toBe("error");
+    expect(event.reason_code).toBe("handler-failed");
+    // Still attributed: the credential resolved, and which credential made the
+    // call that broke the tool is the fact an audit reader most needs.
+    expect(event.client_id).toBe(CONSUMER_PRINCIPAL.client_id);
+    expect(event.arguments_digest).toMatch(/^sha256:/);
+  });
+
+  it("leaks nothing about the fault, to the wire or to the journal", async () => {
+    const { client, auditJournal } = harness({ graph: faultingGraph() });
+
+    client.send(callTool({ id: 1, name: "atlas.text.search.v1", args: { query: "synthetic" } }));
+    const response = await client.await(1);
+
+    // The thrown message named an internal file and a graph subject. A fault
+    // message is a channel for both, so neither the response nor the event may
+    // carry it: the event records that a call failed, never what failed.
+    const onTheWire = JSON.stringify(response);
+    const inTheJournal = JSON.stringify(auditJournal.events);
+    for (const leak of ["simulated storage fault", "segment-0007", "Synthetic Person 0"]) {
+      expect(onTheWire).not.toContain(leak);
+      expect(inTheJournal).not.toContain(leak);
+    }
+
+    const content = response.result?.["content"] as { text: string }[] | undefined;
+    const record = JSON.parse(content?.[0]?.text ?? "{}") as Record<string, unknown>;
+    expect(record["record_schema"]).toBe("atlas.error:v1");
+    expect(record["code"]).toBe("internal-error");
+    expect(record["retryable"]).toBe(false);
+  });
+
+  it("does not write a SECOND event when the throw happens after one was written", async () => {
+    // The guard is the recorder's own counter, not the position of the try
+    // block, so a throw DOWNSTREAM of the write must not produce a duplicate.
+    // Here the journal itself fails immediately after accepting the event, so
+    // the dispatcher has written exactly once and then thrown.
+    const written: AuditEvent[] = [];
+    const exploding: AuditJournal = {
+      append(event) {
+        written.push(event);
+        throw new Error("journal accepted the event and then failed");
+      }
+    };
+
+    const { client } = harness({ auditJournal: exploding as MemoryAuditJournal });
+    client.send(callTool({ id: 1, name: "atlas.contract.describe.v1", args: {} }));
+    await client.await(1);
+
+    expect(written).toHaveLength(1);
   });
 });

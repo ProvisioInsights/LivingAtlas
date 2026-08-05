@@ -212,6 +212,50 @@ table that can be lost is a reveal that silently stops working; and a hash rathe
 than the id itself, because an identifier is frequently the sensitive part of a
 withheld record.
 
+### 7. `tools.listChanged` is declared FALSE, on both planes
+
+Resolved 2026-08-04. Both servers passed `capabilities: { tools: {} }` and
+neither ever sent `notifications/tools/list_changed`. That is not the same as
+not advertising it. Measured against `@modelcontextprotocol/server@2.0.0`,
+`McpServer.registerTool` runs
+
+```
+registerCapabilities({ tools: { listChanged: getCapabilities().tools?.listChanged ?? true } })
+```
+
+so an absent bit became an advertised `true`, and `server/discover` answered
+`{"tools":{"listChanged":true}}`. The existing assertion used `toMatchObject`,
+which accepts extra members, so nothing caught it.
+
+The claim had consequences rather than being cosmetic. The SDK activates a
+client's list-changed handler only when the server advertises the bit, and
+`honoredSubset` acknowledges a client's `toolsListChanged` subscription against
+that same bit — the acknowledgement is documented as reflecting "what the server
+can actually deliver". This server was therefore acknowledging a subscription it
+would never satisfy, and a client trusting the acknowledgement would wait for a
+push instead of re-reading `tools/list`.
+
+**Declared false rather than wired**, because there is nothing coherent to send.
+`tools/list` here is a pure function of the credential presented on the REQUEST
+(§ADR 0015), so there is no connection-scoped tool list that could change. A
+stdio pipe may carry several credentials. A notification is addressed to the
+CONNECTION and names no credential, so firing one when some grant was revised
+would (a) disclose to whoever holds the pipe that another principal's grant
+moved, and (b) be exactly the tool set varying "as a side effect of other
+requests on the connection", which the specification forbids in the same
+paragraph that permits varying by the authorization presented.
+
+The operator plane is where a push would be most tempting, since an operator's
+tool set moves when a grant is revised — and most harmful, since the event a
+notification would carry is "somebody's grant was just edited". `tools/list`'s
+cache TTL bounds how long a revision goes unnoticed without telling one
+credential about another, and `atlas.scope.describe.v1` answers for the
+credential that asked.
+
+Tested on both planes: the advertised bit is asserted `false` *exactly* rather
+than with `toMatchObject`, and a sequence that returns two different tool sets
+over one connection is asserted to emit no notification at all.
+
 ## The forks resolved here
 
 **`outcome: "input-required"` needed a reachable path.** The contract publishes
@@ -277,10 +321,28 @@ function and cannot disagree.
 - **OPEN-3: `disclosure_level` policy.** The gap-based rule (≤1 rank above the
   ceiling reveals the record kind; further reveals only existence) is a
   defensible default, not an evidenced one.
-- **OPEN-4: audit durability.** `AuditJournal` is a synchronous port and the CLI
-  writes newline-delimited JSON with no fsync. Whether a disclosure event must be
-  fsync-durable before the disclosure is returned — as `commit()` is — is not
-  settled.
+- **~~OPEN-4: audit durability.~~ RESOLVED 2026-08-04: yes, and for every event,
+  not only disclosures.** The port now specifies that `append` returns only once
+  the event would survive a crash, and `DurableFileAuditJournal`
+  (`audit-file.ts`) implements it with `SegmentWriter.appendGroup`'s discipline —
+  one open handle, `writeSync` then `fsyncSync`, return after the sync. Both CLIs
+  use it in place of `appendFileSync`, which returned once the bytes reached the
+  page cache and so could lose an event *after* the disclosure it recorded had
+  been returned: a surviving graph that was read and a log that says it was not,
+  the one direction the discrepancy must never point.
+
+  Applied uniformly rather than to reveals alone. A journal durable only for the
+  calls someone remembered to mark has a guarantee nobody can state, and uniform
+  durability means the reveal path needs no special case — it inherits the
+  property from the port. The cost is one fsync per tool call.
+
+  The ordering half was already correct (the dispatcher writes before it builds
+  the result). What is new is the failure half: an implementation that cannot
+  make the event durable MUST throw, and the dispatcher turns that into a failed
+  call, so a disclosure whose event could not be written never reaches the
+  caller. Tested both ways — a refusing journal yields no record and no
+  escalation state on either the protocol or the in-band path, and the happy
+  path's receipt names an event already in the journal.
 - **OPEN-5: an owner channel independent of the requesting client.** §3.1: the
   elicitation answer comes back on the caller's own channel, so the disclosure
   gate is the client's human-in-the-loop. Whether a disclosure should instead
