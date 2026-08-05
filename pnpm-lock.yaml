@@ -45,6 +45,9 @@ importers:
 
   packages/atlas-client:
     dependencies:
+      '@living-atlas/atlas-contract':
+        specifier: workspace:*
+        version: link:../atlas-contract
       '@living-atlas/contracts':
         specifier: workspace:*
         version: link:../contracts
@@ -60,7 +63,13 @@ importers:
       '@living-atlas/mcp-contract':
         specifier: workspace:*
         version: link:../mcp-contract
+      '@modelcontextprotocol/server':
+        specifier: 2.0.0
+        version: 2.0.0
     devDependencies:
+      '@living-atlas/atlas-mcp':
+        specifier: workspace:*
+        version: link:../atlas-mcp
       '@living-atlas/fixtures':
         specifier: workspace:*
         version: link:../fixtures
@@ -80,6 +89,24 @@ importers:
       '@living-atlas/contracts':
         specifier: workspace:*
         version: link:../contracts
+
+  packages/atlas-e2e:
+    dependencies:
+      '@living-atlas/atlas-client':
+        specifier: workspace:*
+        version: link:../atlas-client
+      '@living-atlas/atlas-contract':
+        specifier: workspace:*
+        version: link:../atlas-contract
+      '@living-atlas/atlas-core':
+        specifier: workspace:*
+        version: link:../atlas-core
+      '@living-atlas/atlas-mcp':
+        specifier: workspace:*
+        version: link:../atlas-mcp
+      '@modelcontextprotocol/server':
+        specifier: 2.0.0
+        version: 2.0.0
 
   packages/atlas-gates:
     dependencies:
@@ -113,6 +140,15 @@ importers:
       '@modelcontextprotocol/server':
         specifier: 2.0.0
         version: 2.0.0
+      zod:
+        specifier: 4.4.3
+        version: 4.4.3
+
+  packages/atlas-migrate:
+    dependencies:
+      '@living-atlas/contracts':
+        specifier: workspace:*
+        version: link:../contracts
       zod:
         specifier: 4.4.3
         version: 4.4.3
