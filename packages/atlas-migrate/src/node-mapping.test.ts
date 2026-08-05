@@ -8,6 +8,7 @@ import {
   distinctTopicValues,
   evaluateClosureGate,
   isEntityRecord,
+  legacyObjectIdOf,
   isMintedEntityRecord,
   isMintedRelationshipRecord,
   legacyVocabularyFixtureAuthorityId,
@@ -385,9 +386,7 @@ describe("projecting the legacy vocabulary fixture", () => {
     if (outcome?.disposition.kind === "refused") {
       expect(outcome.disposition.reason).toBe("unmapped-legacy-subtype");
     }
-    expect(plan.records.filter(isEntityRecord).some((record) => record.provenance.legacy_object_id === legacyId)).toBe(
-      false
-    );
+    expect(plan.records.filter(isEntityRecord).some((record) => legacyObjectIdOf(record) === legacyId)).toBe(false);
   });
 
   it("reports the segments with no endpoint data rather than filling them in", () => {

@@ -2,6 +2,8 @@ export * from "./target-plane.js";
 export * from "./legacy-source.js";
 export * from "./legacy-vocabulary.js";
 export * from "./node-mapping.js";
+export * from "./legacy-endpoint.js";
+export * from "./derived-nodes.js";
 export * from "./projection.js";
 export * from "./closure-gate.js";
 export * from "./plan-report.js";

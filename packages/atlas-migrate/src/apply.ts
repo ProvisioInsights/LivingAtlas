@@ -7,8 +7,11 @@ import {
   hasLegacyProvenance,
   isEntityRecord,
   isMintedEntityRecord,
+  legacyObjectIdOf,
+  provenanceGroupKey,
   type EntitySlot,
   type MigrationIdempotencyKey,
+  type ProjectedProvenance,
   type ProjectedRecord,
   type ProjectedRecordKind
 } from "./target-plane.js";
@@ -18,16 +21,31 @@ export type EntityMintRequest = {
   entity_type: EndpointType;
   entity_subtype?: EndpointSubtype;
   /**
-   * Absent for a node this migration minted rather than imported. Optional
-   * rather than a sentinel string, so a registry that logs it cannot print a
+   * The legacy object this entity came from, ABSENT when the migration minted
+   * the node from a value shared by many objects. Optional rather than a
+   * sentinel or a plausible-looking id: a registry that logged one arbitrary
+   * contributor as the source of a shared topic node would record a provenance
+   * nobody could reproduce, and a registry that logged a sentinel would print a
    * legacy id for something no legacy object ever held.
    */
   legacy_object_id?: string;
+  /**
+   * Also absent for a minted entity, and for the same reason one level up: that
+   * record carries no `provenance` at all. A DERIVED node does carry one, so
+   * this stays required-when-present rather than being dropped -- the two cases
+   * are different and the registry must be able to tell them apart.
+   */
+  provenance?: ProjectedProvenance;
 };
 
 export type AssertionMintRequest = {
+  /**
+   * `minted-entity` is excluded because it goes through `mintEntity`; every
+   * other kind, including `minted-relationship`, is an assertion.
+   */
   record_kind: Exclude<ProjectedRecordKind, "entity" | "minted-entity">;
   legacy_object_id?: string;
+  provenance: ProjectedProvenance;
 };
 
 /**
@@ -45,6 +63,17 @@ export const AliasBasis = "mechanical-migration" as const;
 
 export type AliasLedgerTarget =
   | { kind: "redirect"; object_id: string; record_kind: ProjectedRecordKind }
+  /**
+   * The id became more than one entity, and the ledger says so instead of
+   * choosing. This mirrors the entity registry's own `ambiguous-split` row: there
+   * is NO primary, on purpose, because naming one would silently reattribute
+   * every historical reference to whichever half was nominated.
+   *
+   * A consumer holding the old id gets a refusal it can act on — "this is one of
+   * these two, and Atlas will not guess" — which is a different and far more
+   * useful answer than a redirect that quietly picked.
+   */
+  | { kind: "ambiguous-split"; candidate_object_ids: [string, string, ...string[]] }
   | {
       kind: "no-target";
       disposition: SourceDispositionKind;
@@ -195,9 +224,17 @@ const RecordKindOrder: Record<ProjectedRecordKind, number> = {
  * runs for the same reason its slot is, and cannot collide with a legacy id
  * because the two are built from different prefixes.
  */
+/**
+ * Two independent reasons a record has no legacy object to be counted against,
+ * and this composes both: a minted entity has no `provenance` field at all, and
+ * a derived node has one whose variant names an attribute value rather than an
+ * object. Reading `provenance.legacy_object_id` directly -- as this did when
+ * only the first case existed -- would put every derived node into a single
+ * `undefined` stream and hand two of them the same seq.
+ */
 function seqStreamKey(record: ProjectedRecord): string {
   return hasLegacyProvenance(record)
-    ? record.provenance.legacy_object_id
+    ? provenanceGroupKey(record.provenance)
     : `minted-topic:${record.minted_basis.legacy_value}`;
 }
 
@@ -207,7 +244,7 @@ function seqStreamKey(record: ProjectedRecord): string {
  * registry's own log claim the topic node was imported.
  */
 function legacyObjectIdFor(record: ProjectedRecord): string | undefined {
-  return hasLegacyProvenance(record) ? record.provenance.legacy_object_id : undefined;
+  return hasLegacyProvenance(record) ? legacyObjectIdOf(record) : undefined;
 }
 
 function orderRecords(records: ProjectedRecord[]): ProjectedRecord[] {
@@ -232,6 +269,25 @@ function plannedAliasTarget(outcome: SourceOutcome, objectIdByRecordKey: Map<str
       detail: "planned redirect target was not committed in this run"
     };
   }
+
+  if (outcome.alias_target.kind === "ambiguous-split") {
+    const objectIds = outcome.alias_target.candidates.map((candidate) =>
+      objectIdByRecordKey.get(candidate.record_key)
+    );
+    const [first, second, ...rest] = objectIds;
+    if (first && second && objectIds.every((objectId): objectId is string => objectId !== undefined)) {
+      return { kind: "ambiguous-split", candidate_object_ids: [first, second, ...rest.filter((id): id is string => id !== undefined)] };
+    }
+    // A split whose candidates did not all commit cannot be written as a split:
+    // the row would name a subset and read as though the missing half never
+    // existed, which is the silent pick this path exists to avoid.
+    return {
+      kind: "no-target",
+      disposition: outcome.disposition.kind,
+      detail: "planned split candidates were not all committed in this run"
+    };
+  }
+
   return {
     kind: "no-target",
     disposition: outcome.alias_target.disposition,
@@ -307,17 +363,19 @@ export async function applyProjectionPlan(input: ApplyProjectionPlanInput): Prom
       // record already committed in the failed run is holding. Measured: a
       // tombstoned object's entity record committed seq=1 in the first run and
       // its retraction committed seq=1 in the resume.
+      const replayedGroup = seqStreamKey(record);
       seqByLegacyObject.set(
-        seqStreamKey(record),
-        Math.max(seqByLegacyObject.get(seqStreamKey(record)) ?? 0, existing.seq)
+        replayedGroup,
+        Math.max(seqByLegacyObject.get(replayedGroup) ?? 0, existing.seq)
       );
       receipts.push(existing);
       recordsReplayed += 1;
       continue;
     }
 
-    const seq = (seqByLegacyObject.get(seqStreamKey(record)) ?? 0) + 1;
-    seqByLegacyObject.set(seqStreamKey(record), seq);
+    const group = seqStreamKey(record);
+    const seq = (seqByLegacyObject.get(group) ?? 0) + 1;
+    seqByLegacyObject.set(group, seq);
 
     let objectId: string;
     let resolved: CommitResolution;
@@ -327,20 +385,32 @@ export async function applyProjectionPlan(input: ApplyProjectionPlanInput): Prom
       const minted = await registry.mintEntity({
         slot: record.slot,
         entity_type: record.entity_type,
+        // `"entity_subtype" in record` rather than a bare property read: a
+        // minted entity has no such key, and the ratified vocabulary leaves
+        // seven of the eight endpoint types with no subtype at all.
         ...("entity_subtype" in record && record.entity_subtype !== undefined
           ? { entity_subtype: record.entity_subtype }
           : {}),
-        ...(legacyObjectId === undefined ? {} : { legacy_object_id: legacyObjectId })
+        ...(legacyObjectId === undefined ? {} : { legacy_object_id: legacyObjectId }),
+        // Absent for a minted entity, present (and possibly `derived`) for
+        // every other entity. Spread rather than assigned so the key does not
+        // appear holding `undefined`, which a sink would persist as a recorded
+        // absence rather than as no record at all.
+        ...(hasLegacyProvenance(record) ? { provenance: record.provenance } : {})
       });
       objectId = minted.entity_id;
       entitiesMinted += 1;
       entityIdBySlot.set(record.slot, objectId);
       resolved = { record_kind: "entity" };
     } else {
-      const legacyObjectId = legacyObjectIdFor(record);
+      // Narrowed past both entity kinds, so `provenance` is known to be present
+      // here -- which is why this reads it directly while the entity branch
+      // above has to ask.
+      const legacyObjectId = legacyObjectIdOf(record);
       const minted = await registry.mintAssertion({
         record_kind: record.record_kind,
-        ...(legacyObjectId === undefined ? {} : { legacy_object_id: legacyObjectId })
+        ...(legacyObjectId === undefined ? {} : { legacy_object_id: legacyObjectId }),
+        provenance: record.provenance
       });
       objectId = minted.assertion_id;
       assertionsMinted += 1;

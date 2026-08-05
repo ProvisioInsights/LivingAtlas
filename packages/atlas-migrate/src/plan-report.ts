@@ -77,14 +77,34 @@ export function renderProjectionPlanReport(plan: ProjectionPlan, gate?: ClosureG
   }
   lines.push(...section("refusals", refusalLines));
 
+  lines.push(
+    ...section("derived-from-attributes", [
+      `  ${pad("entities minted")}${breakdown.entities_minted_from_attributes}`,
+      `  ${pad("relationships derived")}${breakdown.relationships_derived_from_attributes}`
+    ].filter(() => breakdown.entities_minted_from_attributes + breakdown.relationships_derived_from_attributes > 0))
+  );
+
+  // Attributes nobody could place. Ids and reasons only: naming the VALUE would
+  // put the very content a reviewer is deciding about into the report file.
+  const handReviewLines: string[] = [];
+  for (const entry of breakdown.hand_review_by_reason) {
+    handReviewLines.push(`  ${pad(entry.reason)}${entry.count}`);
+    for (const item of plan.hand_review.filter((candidate) => candidate.reason === entry.reason)) {
+      handReviewLines.push(`    ${item.legacy_object_id} ${item.attribute}`);
+    }
+  }
+  lines.push(...section("hand-review", handReviewLines));
+
   const aliasRows = plan.outcomes.length;
   const aliasRedirects = plan.outcomes.filter((outcome) => outcome.alias_target.kind === "record").length;
+  const aliasSplits = breakdown.legacy_ids_split;
   lines.push(
     "",
     "alias-ledger",
     `  ${pad("rows planned")}${aliasRows}`,
     `  ${pad("redirects to a new record")}${aliasRedirects}`,
-    `  ${pad("no-target rows")}${aliasRows - aliasRedirects}`
+    `  ${pad("ambiguous splits (no primary)")}${aliasSplits}`,
+    `  ${pad("no-target rows")}${aliasRows - aliasRedirects - aliasSplits}`
   );
 
   if (gate) {

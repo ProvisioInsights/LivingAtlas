@@ -1,12 +1,13 @@
 import type { EndpointType, OccurrenceSubtype } from "@living-atlas/contracts";
 import {
   HandReviewSubtypes,
-  LegacyEndpointPayloadSchema,
+  LegacyVocabularyPayloadSchema,
   TRAVEL_DESTINATION_ATTRIBUTE,
   TRAVEL_MODE_ATTRIBUTE,
   TRAVEL_ORIGIN_ATTRIBUTE,
   TRAVEL_ROUTE_ATTRIBUTE,
   isKnownEndpointType,
+  isOccurrenceSubtype,
   normalizeTopicValue,
   retypeRuleFor,
   typeHasEnumeratedRetypes,
@@ -148,7 +149,7 @@ function participantRefCount(payload: Record<string, unknown>): number {
  * was.
  */
 export function mapLegacyNode(payload: Record<string, unknown>): LegacyNodeMapping {
-  const parsed = LegacyEndpointPayloadSchema.safeParse(payload);
+  const parsed = LegacyVocabularyPayloadSchema.safeParse(payload);
   if (!parsed.success) {
     return {
       legacy_object_id: String(payload["object_id"] ?? "<unidentified>"),
@@ -229,6 +230,31 @@ function mapEnumeratedType(
 
   const rule = retypeRuleFor(legacyType, legacySubtype);
   if (!rule) {
+    /**
+     * A word that is ALREADY one of the four ratified occurrence values needs no
+     * retype, and refusing it would be the table punishing a node for being
+     * correct. The retype table maps legacy words onto ratified ones, so a
+     * ratified word is simply absent from it.
+     *
+     * This is only reachable because the projector now hands every entity
+     * payload to the mapper. It used to try the strict contract schema first and
+     * that caught the already-ratified case -- but only for a payload carrying
+     * no legacy attributes, which on a real corpus is almost none of them.
+     */
+    if (legacyType === "occurrence" && isOccurrenceSubtype(legacySubtype)) {
+      return {
+        ...base,
+        outcome: {
+          kind: "mapped",
+          entity_type: "occurrence",
+          entity_subtype: legacySubtype,
+          retyped: false,
+          has_type_topics: [],
+          unplaced_attributes: [],
+          backfilled_from_participants: false
+        }
+      };
+    }
     return {
       ...base,
       outcome: {

@@ -10,6 +10,7 @@ import {
   isEntityRecord,
   isMintedEntityRecord,
   isMintedRelationshipRecord,
+  isProjectedFromLegacyObject,
   isRelationshipRecord,
   isRetractionRecord,
   slotMintedBy,
@@ -92,7 +93,7 @@ export type ClosureGateOptions = {
 
 export function evaluateClosureGate(plan: ProjectionPlan, options: ClosureGateOptions = {}): ClosureGateResult {
   const findings: ClosureGateFinding[] = [];
-  const breakdown = recomputeProjectionBreakdown(plan.outcomes, plan.records);
+  const breakdown = recomputeProjectionBreakdown(plan.outcomes, plan.records, plan.hand_review);
 
   findings.push(...checkArithmetic(plan, breakdown, options));
   findings.push(...checkPlanIntegrity(plan));
@@ -333,20 +334,39 @@ function checkRecordAccounting(outcomes: SourceOutcome[], records: ProjectedReco
       }
     }
   }
-  // Minted entities are excluded because no outcome CAN claim them: they are
-  // shared by every node that carried the value. `checkMintedRecords` holds them
-  // to the plan-level claim instead, so they are checked once, not never.
+
+  /**
+   * A record is accounted for in exactly one of two ways, and which one is
+   * readable off the record itself rather than off a list the plan asserts.
+   *
+   * A record PROJECTED from a legacy object must be claimed by that object's
+   * outcome — that is the closure property. A node the migration MINTED has no
+   * source object, so it must be claimed by NO outcome: a minted node appearing
+   * in some object's record_keys would mean one arbitrary contributor had been
+   * made to own a node shared by hundreds, and the shortfall would never show up
+   * in the arithmetic.
+   *
+   * `isProjectedFromLegacyObject` answers this for both minted kinds at once —
+   * the entity that has no provenance field and the derived node whose
+   * provenance variant is `derived`. Minted entities remain checked, not
+   * skipped: `checkMintedRecords` holds them to the plan-level claim, so they
+   * are accounted for once rather than never.
+   */
   const unclaimed = records
-    .filter((record) => !isMintedEntityRecord(record))
+    .filter((record) => isProjectedFromLegacyObject(record))
     .map((record) => record.idempotency_key)
     .filter((key) => !claimed.has(key));
+  const mintedButClaimed = records
+    .filter((record) => !isProjectedFromLegacyObject(record))
+    .map((record) => record.idempotency_key)
+    .filter((key) => claimed.has(key));
 
-  const accountingProblems = [...claimedTwice, ...claimedMissing, ...unclaimed];
+  const accountingProblems = [...claimedTwice, ...claimedMissing, ...unclaimed, ...mintedButClaimed];
   if (accountingProblems.length > 0) {
     findings.push(
       finding(
         "record-not-accounted",
-        "every projected record must be claimed by exactly one source outcome",
+        "a projected record must be claimed by exactly one source outcome, and a minted node by none",
         accountingProblems
       )
     );
@@ -417,8 +437,20 @@ function checkAliasRows(outcomes: SourceOutcome[], records: ProjectedRecord[]): 
     );
   }
 
+  // A split names candidates instead of a target, and EVERY candidate has to
+  // exist. A split with one reachable candidate is worse than a plain redirect:
+  // it tells a caller the id is ambiguous and then hands them a list they cannot
+  // fully resolve.
   const brokenTargets = outcomes
-    .filter((outcome) => outcome.alias_target.kind === "record" && !recordKeys.has(outcome.alias_target.record_key))
+    .filter((outcome) => {
+      if (outcome.alias_target.kind === "record") {
+        return !recordKeys.has(outcome.alias_target.record_key);
+      }
+      if (outcome.alias_target.kind === "ambiguous-split") {
+        return outcome.alias_target.candidates.some((candidate) => !recordKeys.has(candidate.record_key));
+      }
+      return false;
+    })
     .map((outcome) => outcome.legacy_object_id);
   if (brokenTargets.length > 0) {
     findings.push(

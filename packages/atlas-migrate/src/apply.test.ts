@@ -10,9 +10,12 @@ import {
   legacyFixtureAuthorityId,
   legacyFixtureIds,
   legacyFixturePayloadResolver,
+  legacyObjectIdOf,
+  provenanceGroupKey,
   type CommitRequest,
   type InMemoryTargetPlane,
   type InMemoryTargetPlaneSink,
+  type ProjectedRecord,
   type ProjectionPlan,
   type TargetPlaneSink
 } from "./index.js";
@@ -131,7 +134,7 @@ describe("projection apply", () => {
 
     const personRecord = plan.records
       .filter(isEntityRecord)
-      .find((record) => record.provenance.legacy_object_id === legacyFixtureIds.person);
+      .find((record) => legacyObjectIdOf(record) === legacyFixtureIds.person);
     const personCommit = plane.sink.commits.find(
       (commit) => commit.idempotency_key === personRecord?.idempotency_key
     );
@@ -202,7 +205,7 @@ describe("projection apply", () => {
       .filter(
         (commit) =>
           hasLegacyProvenance(commit.record) &&
-          commit.record.provenance.legacy_object_id === legacyFixtureIds.organizationTombstoned
+          legacyObjectIdOf(commit.record) === legacyFixtureIds.organizationTombstoned
       )
       .sort((left, right) => left.seq - right.seq);
 
@@ -340,17 +343,24 @@ describe("resuming an apply that died part-way", () => {
   }
 
   /**
-   * Every `(stream, seq)` pair that was committed more than once. A minted node
-   * has no legacy object, so it counts in a stream of its own -- named here
-   * independently of how apply names it, so a bug in that naming shows up as a
-   * duplicate rather than being reproduced by the assertion.
+   * Every `(stream, seq)` pair that was committed more than once.
+   *
+   * Two kinds of record belong to no legacy object and each needs its own
+   * stream: a minted node has no `provenance` at all, and a derived node has one
+   * that names an attribute value. Keying on a legacy id alone would collapse
+   * every one of them into a single bucket and invent duplicates the seq counter
+   * never issued.
+   *
+   * Written independently of how `apply` names its streams, so a bug in that
+   * naming shows up here as a duplicate rather than being reproduced by the
+   * assertion.
    */
   function duplicateSequences(commits: CommitRequest[]): string[] {
     const seen = new Set<string>();
     const duplicates: string[] = [];
     for (const commit of commits) {
       const stream = hasLegacyProvenance(commit.record)
-        ? commit.record.provenance.legacy_object_id
+        ? provenanceGroupKey(commit.record.provenance)
         : `minted:${commit.record.minted_basis.legacy_value}`;
       const key = `${stream}:${commit.seq}`;
       if (seen.has(key)) duplicates.push(key);
@@ -412,7 +422,7 @@ describe("resuming an apply that died part-way", () => {
       .filter(
         (commit) =>
           hasLegacyProvenance(commit.record) &&
-          commit.record.provenance.legacy_object_id === legacyFixtureIds.organizationTombstoned
+          legacyObjectIdOf(commit.record) === legacyFixtureIds.organizationTombstoned
       )
       .sort((left, right) => left.seq - right.seq);
 

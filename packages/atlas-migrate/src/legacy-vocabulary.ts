@@ -235,13 +235,22 @@ export function normalizeTopicValue(value: string): string {
   return value.trim().toLowerCase();
 }
 
-export const LegacyEndpointPayloadSchema = z.looseObject({
+/**
+ * The four fields the VOCABULARY mapper needs, and nothing else.
+ *
+ * Deliberately loose and deliberately distinct from `legacy-endpoint.ts`'s
+ * `LegacyEndpointPayloadSchema`, which is the projector's full attribute-bearing
+ * superset. Two modules briefly exported the same name for these two different
+ * jobs; a barrel that re-exports both then has one name for two shapes, and
+ * whichever import won would silently decide which fields a caller could see.
+ */
+export const LegacyVocabularyPayloadSchema = z.looseObject({
   object_id: z.string().min(1),
   type: z.string().min(1),
   subtype: z.string().min(1).optional(),
   name: z.string().min(1)
 });
-export type LegacyEndpointPayload = z.infer<typeof LegacyEndpointPayloadSchema>;
+export type LegacyVocabularyPayload = z.infer<typeof LegacyVocabularyPayloadSchema>;
 
 export function isKnownEndpointType(value: string): value is EndpointType {
   return EndpointTypeSchema.safeParse(value).success;
