@@ -22,7 +22,19 @@ export const CONSUMER_PLANE: GatedPlane = {
   enforcement: "enforced",
   toolNames: CONTRACT_TOOL_NAMES,
   sources: {
-    roots: ["packages/atlas-contract/src", "packages/atlas-mcp/src", "packages/atlas-gates/src"],
+    // The CLIENT is on this plane too, and it belongs here for the same reason
+    // the server does: it is a second reader of the published contract, and the
+    // failure mode a consumer client has is precisely the one these detectors
+    // look for — a limit or a tool-name set written down again in the code that
+    // calls, rather than read from the document that publishes it. A client that
+    // drifted would refuse arguments the server accepts, with a reason visible
+    // from neither side.
+    roots: [
+      "packages/atlas-contract/src",
+      "packages/atlas-mcp/src",
+      "packages/atlas-client/src",
+      "packages/atlas-gates/src"
+    ],
     authoring: [
       // The single authoring point for every published number and every
       // published tool name. Exempt because it is the source the rest of the
