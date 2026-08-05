@@ -1,4 +1,4 @@
-# ADR 0019: A Typed Consumer Client Derived From The Contract, And An End-To-End Harness That Mocks Nothing
+# ADR 0022: A Typed Consumer Client Derived From The Contract, And An End-To-End Harness That Mocks Nothing
 
 Status: Accepted for implementation
 Date: 2026-08-04

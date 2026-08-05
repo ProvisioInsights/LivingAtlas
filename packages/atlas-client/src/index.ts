@@ -7,7 +7,7 @@
  * Cloudflare and canonical-copy scripts in `packages/check` still drive it — but
  * it no longer answers to the name "the Atlas client": it is at
  * `@living-atlas/atlas-client/legacy`, and importing it says so at the import
- * site. See ADR 0019.
+ * site. See ADR 0022.
  */
 
 export * from "./records.js";

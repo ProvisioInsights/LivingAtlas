@@ -8,7 +8,7 @@ surface this contract replaces still exists — the live Cloudflare and
 canonical-copy scripts in `packages/check` drive it — but it no longer answers to
 the name "the Atlas client": it is at `@living-atlas/atlas-client/legacy`, and
 importing it says so at the import site. See
-`docs/architecture/adr-0019-typed-consumer-client-and-end-to-end-harness.md`.
+`docs/architecture/adr-0022-typed-consumer-client-and-end-to-end-harness.md`.
 
 ## What it does that a hand-rolled caller does not
 

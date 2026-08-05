@@ -1,4 +1,4 @@
-# ADR 0011: Legacy Projection, Tombstone Disposition, and the Closure Gate
+# ADR 0021: Legacy Projection, Tombstone Disposition, and the Closure Gate
 
 Status: Accepted for implementation
 Date: 2026-08-04
