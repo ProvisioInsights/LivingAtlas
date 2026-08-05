@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:living-atlas:contract:2026.08.0:tool:atlas.assertion.propose.v1:output",
+  "title": "atlas.assertion.propose.v1 — result",
+  "description": "Commit one or more assertions under a single idempotency key. The submission is all-or-nothing: one submission is one durable commit group. A retry with the same (client_id, idempotency_key) returns the ORIGINAL receipt with the ORIGINAL ids; the same key with a different payload is a typed conflict, never a silent accept of either version.",
+  "type": "object",
+  "properties": {
+    "submission": {
+      "$ref": "urn:living-atlas:contract:2026.08.0:common:output#/$defs/submission_receipt"
+    },
+    "results": {
+      "type": "array",
+      "items": {
+        "$ref": "urn:living-atlas:contract:2026.08.0:common:output#/$defs/submission_item_result"
+      },
+      "minItems": 1
+    },
+    "committed": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "refused": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "error": {
+      "$ref": "urn:living-atlas:contract:2026.08.0:record:atlas.error:v1"
+    },
+    "horizon": {
+      "$ref": "urn:living-atlas:contract:2026.08.0:record:atlas.horizon:v1"
+    }
+  },
+  "required": [
+    "submission",
+    "results",
+    "committed",
+    "refused",
+    "horizon"
+  ]
+}

@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:living-atlas:contract:2026.08.0:record:atlas.entity:v1",
+  "title": "atlas.entity:v1",
+  "type": "object",
+  "description": "A thing the graph makes claims about. There is no `merged` or `redirected` status field: a second place the redirect state is written is a second place that can disagree with the alias ledger. The ledger is the only redirect authority and atlas.entity.resolve.v1 is the only way to ask.",
+  "properties": {
+    "record_schema": {
+      "const": "atlas.entity:v1"
+    },
+    "entity_id": {
+      "$ref": "urn:living-atlas:contract:2026.08.0:common:output#/$defs/entity_id"
+    },
+    "type": {
+      "type": "string",
+      "enum": [
+        "person",
+        "organization",
+        "place",
+        "concept",
+        "source-document",
+        "event",
+        "other"
+      ]
+    },
+    "type_label": {
+      "type": "string",
+      "description": "Required when type is `other`, forbidden otherwise. This is the open half of a two-layer typing scheme: a kind of thing added in 2031 reaches a 2026 consumer as type `other` plus a label it can display, never as a token it might branch on by accident.",
+      "minLength": 1,
+      "x-atlas-vocabulary": "entity_subtype",
+      "x-atlas-known-values": [
+        "project",
+        "offering",
+        "offering-item",
+        "topic",
+        "occurrence",
+        "source-block",
+        "evidence"
+      ],
+      "x-atlas-registry-tool": "atlas.contract.describe.v1"
+    },
+    "display_name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "also_known_as": {
+      "type": "array",
+      "description": "Nicknames, not aliases. In Atlas an alias is a row in the id ledger; letting one word mean both a nickname and an id redirect is how a rename becomes a re-identification. Renaming writes no ledger row and cannot move an id.",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "registered_at": {
+      "$ref": "urn:living-atlas:contract:2026.08.0:common:output#/$defs/recorded_at"
+    },
+    "updated_at": {
+      "$ref": "urn:living-atlas:contract:2026.08.0:common:output#/$defs/recorded_at"
+    },
+    "provenance": {
+      "$ref": "urn:living-atlas:contract:2026.08.0:common:output#/$defs/provenance"
+    },
+    "sensitivity": {
+      "$ref": "urn:living-atlas:contract:2026.08.0:common:output#/$defs/sensitivity"
+    }
+  },
+  "required": [
+    "record_schema",
+    "entity_id",
+    "type",
+    "display_name",
+    "also_known_as",
+    "registered_at",
+    "updated_at",
+    "provenance",
+    "sensitivity"
+  ]
+}

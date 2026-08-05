@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:living-atlas:contract:2026.08.0:tool:atlas.assertion.read.v1:input",
+  "title": "atlas.assertion.read.v1 — arguments",
+  "description": "Read specific assertions whether or not they are still believed, optionally with their lineage. An id compaction reclaimed returns a typed atlas.error:v1 carrying the reclamation note — never a bare not-found, because a dangling reference and a typo must not look the same.",
+  "type": "object",
+  "properties": {
+    "assertion_ids": {
+      "type": "array",
+      "items": {
+        "$ref": "urn:living-atlas:contract:2026.08.0:common:input#/$defs/assertion_id"
+      },
+      "minItems": 1,
+      "maxItems": 100
+    },
+    "include_lineage": {
+      "type": "boolean",
+      "default": false,
+      "description": "Also return what each assertion supersedes and what superseded it, one hop in each direction."
+    }
+  },
+  "required": [
+    "assertion_ids"
+  ],
+  "additionalProperties": false
+}
