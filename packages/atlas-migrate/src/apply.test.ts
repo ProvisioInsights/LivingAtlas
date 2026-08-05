@@ -5,10 +5,12 @@ import {
   createInMemoryTargetPlane,
   createLegacyGraphFixture,
   createUnmappedCategoryFixture,
+  hasLegacyProvenance,
   isEntityRecord,
   legacyFixtureAuthorityId,
   legacyFixtureIds,
   legacyFixturePayloadResolver,
+  type CommitRequest,
   type InMemoryTargetPlane,
   type InMemoryTargetPlaneSink,
   type ProjectionPlan,
@@ -197,7 +199,11 @@ describe("projection apply", () => {
     await applyOnce(plan, plane, "2026-08-04T10:00:00.000Z");
 
     const tombstoned = plane.sink.commits
-      .filter((commit) => commit.record.provenance.legacy_object_id === legacyFixtureIds.organizationTombstoned)
+      .filter(
+        (commit) =>
+          hasLegacyProvenance(commit.record) &&
+          commit.record.provenance.legacy_object_id === legacyFixtureIds.organizationTombstoned
+      )
       .sort((left, right) => left.seq - right.seq);
 
     expect(tombstoned.map((commit) => commit.seq)).toEqual([1, 2]);
@@ -333,12 +339,20 @@ describe("resuming an apply that died part-way", () => {
     };
   }
 
-  /** Every `(legacy_object_id, seq)` pair that was committed more than once. */
-  function duplicateSequences(commits: { record: { provenance: { legacy_object_id: string } }; seq: number }[]): string[] {
+  /**
+   * Every `(stream, seq)` pair that was committed more than once. A minted node
+   * has no legacy object, so it counts in a stream of its own -- named here
+   * independently of how apply names it, so a bug in that naming shows up as a
+   * duplicate rather than being reproduced by the assertion.
+   */
+  function duplicateSequences(commits: CommitRequest[]): string[] {
     const seen = new Set<string>();
     const duplicates: string[] = [];
     for (const commit of commits) {
-      const key = `${commit.record.provenance.legacy_object_id}:${commit.seq}`;
+      const stream = hasLegacyProvenance(commit.record)
+        ? commit.record.provenance.legacy_object_id
+        : `minted:${commit.record.minted_basis.legacy_value}`;
+      const key = `${stream}:${commit.seq}`;
       if (seen.has(key)) duplicates.push(key);
       seen.add(key);
     }
@@ -395,7 +409,11 @@ describe("resuming an apply that died part-way", () => {
     await applyOnce(plan, plane, "2026-08-05T10:00:00.000Z");
 
     const tombstoned = plane.sink.commits
-      .filter((commit) => commit.record.provenance.legacy_object_id === legacyFixtureIds.organizationTombstoned)
+      .filter(
+        (commit) =>
+          hasLegacyProvenance(commit.record) &&
+          commit.record.provenance.legacy_object_id === legacyFixtureIds.organizationTombstoned
+      )
       .sort((left, right) => left.seq - right.seq);
 
     expect(tombstoned.map((commit) => commit.seq)).toEqual([1, 2]);

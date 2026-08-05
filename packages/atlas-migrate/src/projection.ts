@@ -3,8 +3,10 @@ import {
   EndpointRecordSchema,
   TemporalEdgeSchema,
   type EndpointType,
-  type GraphObjectEnvelope
+  type GraphObjectEnvelope,
+  type OccurrenceSubtype
 } from "@living-atlas/contracts";
+import { mapLegacyNode } from "./node-mapping.js";
 import {
   LegacyRedirectPayloadSchema,
   classifyLegacySource,
@@ -20,6 +22,9 @@ import {
   ProjectorVersion,
   canonicalDigest,
   entitySlotForLegacyObject,
+  mintedClassificationIdempotencyKey,
+  mintedTopicIdempotencyKey,
+  mintedTopicSlot,
   projectionIdempotencyKey,
   worldTimeFidelity,
   type EntitySlot,
@@ -101,6 +106,16 @@ export type ProjectionPlan = {
   source_object_count: number;
   outcomes: SourceOutcome[];
   records: ProjectedRecord[];
+  /**
+   * Records the PLAN owns rather than any one source object.
+   *
+   * A minted topic node is asked for by every legacy node that carried the same
+   * retired value, so no single outcome can claim it -- and the gate's rule that
+   * every record is claimed by exactly one outcome would otherwise report the
+   * whole controlled vocabulary as unaccounted. Listed here so the claim is
+   * still explicit and still checked, just at the level that actually owns it.
+   */
+  minted_record_keys: MigrationIdempotencyKey[];
   breakdown: ProjectionBreakdown;
   plan_digest: `sha256:${string}`;
 };
@@ -147,6 +162,12 @@ type Draft = {
   primary?: PreparedPrimary;
   alias_target?: PlanAliasTarget;
   redirects_to?: string;
+  /**
+   * Retired subtype values this node carried, normalised. Collected during the
+   * entity pass and spent by the minting pass, because the minting pass has to
+   * see the WHOLE run before it knows how many nodes share a value.
+   */
+  classifications?: string[];
 };
 
 function refuse(reason: MigrationRefusalReason, detail: string): SourceDisposition {
@@ -170,6 +191,83 @@ function unwrapLegacyRecord(data: unknown, key: "endpoint" | "edge"): unknown {
     if (inner && typeof inner === "object") return inner;
   }
   return data;
+}
+
+type ResolvedLegacyEntity = {
+  ok: true;
+  entity_type: EndpointType;
+  entity_subtype?: OccurrenceSubtype;
+  name: string;
+  aliases: string[];
+  description?: string;
+  /** Retired subtype values this node is classified by, as `has-type` topics. */
+  has_type_topics: string[];
+};
+
+/**
+ * Reads a legacy entity payload, in the ratified vocabulary FIRST.
+ *
+ * The order matters and is a strict widening, never a relaxation. A payload that
+ * already satisfies an endpoint schema is accepted exactly as it was before this
+ * lane existed -- same fields, same strictness, no chance for a legacy reading to
+ * quietly reinterpret a record the contract already accepts. Only a payload the
+ * contract REFUSES reaches the legacy mapper, which is precisely the population
+ * the mapper is for: `organization/airline` is refused by the strict schema
+ * because organizations no longer carry a subtype, and refusing it outright
+ * would strand every classified node in the corpus.
+ *
+ * The mapper never rescues a payload by loosening a rule the contract enforces
+ * on the same shape; it answers a different question -- what does this retired
+ * word map onto -- and it refuses by name when it has no answer.
+ */
+function resolveLegacyEntity(
+  payload: unknown
+): ResolvedLegacyEntity | { ok: false; reason: MigrationRefusalReason; detail: string } {
+  const canonical = EndpointRecordSchema.safeParse(payload);
+  if (canonical.success) {
+    return {
+      ok: true,
+      entity_type: canonical.data.type,
+      ...(canonical.data.type === "occurrence" ? { entity_subtype: canonical.data.subtype } : {}),
+      name: canonical.data.name,
+      aliases: [...canonical.data.aliases],
+      ...(canonical.data.description ? { description: canonical.data.description } : {}),
+      has_type_topics: []
+    };
+  }
+
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    return { ok: false, reason: "invalid-legacy-payload", detail: "legacy entity payload is not an object" };
+  }
+
+  const mapping = mapLegacyNode(payload as Record<string, unknown>);
+  if (mapping.outcome.kind === "refused") {
+    return {
+      ok: false,
+      reason: mapping.outcome.reason === "unmapped-legacy-subtype" ? "unmapped-legacy-subtype" : "invalid-legacy-payload",
+      detail: mapping.outcome.detail
+    };
+  }
+
+  const loose = payload as Record<string, unknown>;
+  const name = typeof loose["name"] === "string" ? loose["name"] : undefined;
+  if (name === undefined || name.length === 0) {
+    return { ok: false, reason: "invalid-legacy-payload", detail: "legacy entity payload carries no name" };
+  }
+  const aliases = Array.isArray(loose["aliases"])
+    ? loose["aliases"].filter((alias): alias is string => typeof alias === "string" && alias.length > 0)
+    : [];
+  const description = typeof loose["description"] === "string" && loose["description"].length > 0 ? loose["description"] : undefined;
+
+  return {
+    ok: true,
+    entity_type: mapping.outcome.entity_type,
+    ...(mapping.outcome.entity_subtype === undefined ? {} : { entity_subtype: mapping.outcome.entity_subtype }),
+    name,
+    aliases,
+    ...(description === undefined ? {} : { description }),
+    has_type_topics: mapping.outcome.has_type_topics
+  };
 }
 
 function countBy<T extends string>(values: T[], universe: readonly T[]): Array<{ value: T; count: number }> {
@@ -271,9 +369,9 @@ export function buildProjectionPlan(
     }
 
     if (category === "entity-record" || category === "tombstoned-entity-record") {
-      const endpoint = EndpointRecordSchema.safeParse(unwrapLegacyRecord(resolution.data, "endpoint"));
-      if (!endpoint.success) {
-        draft.disposition = refuse("invalid-legacy-payload", "legacy entity payload did not parse as an endpoint record");
+      const resolved = resolveLegacyEntity(unwrapLegacyRecord(resolution.data, "endpoint"));
+      if (!resolved.ok) {
+        draft.disposition = refuse(resolved.reason, resolved.detail);
         continue;
       }
       const slot = entitySlotForLegacyObject(authorityId, envelope.object_id);
@@ -290,14 +388,15 @@ export function buildProjectionPlan(
         recorded_at_fidelity: MigrationRecordedAtFidelity,
         provenance,
         slot,
-        entity_type: endpoint.data.type,
-        ...(endpoint.data.type === "occurrence" ? { entity_subtype: endpoint.data.subtype } : {}),
-        name: endpoint.data.name,
-        aliases: [...endpoint.data.aliases],
-        ...(endpoint.data.description ? { description: endpoint.data.description } : {})
+        entity_type: resolved.entity_type,
+        ...(resolved.entity_subtype === undefined ? {} : { entity_subtype: resolved.entity_subtype }),
+        name: resolved.name,
+        aliases: [...resolved.aliases],
+        ...(resolved.description ? { description: resolved.description } : {})
       };
       draft.records.push(entityRecord);
-      draft.primary = { record_key: entityKey, record_kind: "entity", slot, entity_type: endpoint.data.type };
+      draft.primary = { record_key: entityKey, record_kind: "entity", slot, entity_type: resolved.entity_type };
+      draft.classifications = resolved.has_type_topics;
       if (tombstone) {
         draft.records.push({
           record_kind: "retraction",
@@ -329,6 +428,7 @@ export function buildProjectionPlan(
   // terminal object has produced a record.
   const redirectTargets = resolveRedirectTargets(drafts, draftsById);
   resolveEdges(drafts, draftsById, redirectTargets, authorityId);
+  const mintedRecords = mintClassificationTopics(drafts, authorityId);
   assignRedirectAliasTargets(drafts, draftsById, redirectTargets);
   finalizeAliasTargets(drafts);
 
@@ -356,8 +456,7 @@ export function buildProjectionPlan(
     })
     .sort((left, right) => compareOutcomes(left, right));
 
-  const records = drafts
-    .flatMap((draft) => draft.records)
+  const records = [...drafts.flatMap((draft) => draft.records), ...mintedRecords]
     .sort((left, right) => (left.idempotency_key < right.idempotency_key ? -1 : left.idempotency_key > right.idempotency_key ? 1 : 0));
 
   const breakdown = recomputeProjectionBreakdown(outcomes, records);
@@ -368,6 +467,7 @@ export function buildProjectionPlan(
     source_object_count: sourceObjectCount,
     outcomes,
     records,
+    minted_record_keys: mintedRecords.map((record) => record.idempotency_key).sort(),
     breakdown
   };
 
@@ -384,6 +484,7 @@ export function projectionPlanDigest(plan: ProjectionPlanContent): `sha256:${str
     source_object_count: plan.source_object_count,
     outcomes: plan.outcomes,
     records: plan.records,
+    minted_record_keys: plan.minted_record_keys,
     breakdown: plan.breakdown
   });
 }
@@ -580,6 +681,91 @@ function resolveEdges(
 }
 
 /**
+ * Turns the retired subtype values the entity pass collected into ONE topic node
+ * each, plus a `has-type` edge from every node that carried the value.
+ *
+ * Minting once per VALUE rather than once per carrier is the entire change. The
+ * topic nodes are the controlled vocabulary: if nine organizations that each
+ * said `airline` minted nine `airline` nodes, the plane would hold nine
+ * unrelated concepts with one spelling, "which of these are airlines" would
+ * answer with a ninth of the truth, and merging them afterwards would be an
+ * identity decision nobody has evidence for. The slot is derived from the value,
+ * so a second run of the projection resolves to the same node instead of minting
+ * a tenth.
+ *
+ * Runs AFTER edge resolution so the `has-type` edges cannot be mistaken for
+ * legacy edges by anything that walks the drafts, and so a node whose entity
+ * record was refused contributes no classification.
+ */
+function mintClassificationTopics(drafts: Draft[], authorityId: string): ProjectedRecord[] {
+  const carriers = new Map<string, Draft[]>();
+
+  for (const draft of drafts) {
+    const slot = draft.primary?.slot;
+    if (!draft.classifications || draft.classifications.length === 0 || slot === undefined) {
+      continue;
+    }
+    for (const topic of draft.classifications) {
+      const bucket = carriers.get(topic) ?? [];
+      bucket.push(draft);
+      carriers.set(topic, bucket);
+    }
+  }
+
+  const minted: ProjectedRecord[] = [];
+
+  for (const topic of [...carriers.keys()].sort()) {
+    const bucket = carriers.get(topic) ?? [];
+    const slot = mintedTopicSlot(authorityId, topic);
+    const basis = { kind: "retired-subtype-value" as const, legacy_value: topic };
+
+    minted.push({
+      record_kind: "minted-entity",
+      idempotency_key: mintedTopicIdempotencyKey(authorityId, topic),
+      origin: MigrationOrigin,
+      recorded_at_fidelity: MigrationRecordedAtFidelity,
+      minted_basis: basis,
+      slot,
+      entity_type: "topic",
+      // The legacy word verbatim. A prettier label would be a curator's choice,
+      // and a migration that renames the vocabulary it carries makes the old
+      // corpus unsearchable by the words it was written with.
+      name: topic,
+      classified_node_count: bucket.length
+    });
+
+    for (const draft of bucket) {
+      const sourceSlot = draft.primary?.slot;
+      const sourceType = draft.primary?.entity_type;
+      if (sourceSlot === undefined || sourceType === undefined) {
+        continue;
+      }
+      const key = mintedClassificationIdempotencyKey(authorityId, draft.envelope.object_id, topic);
+      draft.records.push({
+        record_kind: "minted-relationship",
+        idempotency_key: key,
+        origin: MigrationOrigin,
+        recorded_at_fidelity: MigrationRecordedAtFidelity,
+        minted_basis: basis,
+        provenance: provenanceFor(draft.envelope),
+        source_slot: sourceSlot,
+        source_type: sourceType,
+        target_slot: slot,
+        target_type: "topic",
+        predicate: "has-type",
+        // A subtype string carried no time. Stamping today's date would assert
+        // that the organization became an airline when we ran the migration.
+        valid_from: "unknown",
+        valid_from_fidelity: "unknown",
+        status: "active"
+      });
+    }
+  }
+
+  return minted;
+}
+
+/**
  * Flattens every legacy redirect chain to the id it ends at. Leaving the chain
  * intact would force every later lookup of an old id to walk N hops and would
  * let a cycle hang the reader; both were real failure modes of the old id-rewrite
@@ -734,6 +920,7 @@ const MigrationRefusalReasonUniverse = [
   "dangling-alias-target",
   "unclassified-source-category",
   "derived-index-not-migrated",
+  "unmapped-legacy-subtype",
   "other"
 ] as const satisfies readonly MigrationRefusalReason[];
 
@@ -741,5 +928,7 @@ const ProjectedRecordKindUniverse = [
   "entity",
   "relationship",
   "retraction",
-  "absence"
+  "absence",
+  "minted-entity",
+  "minted-relationship"
 ] as const satisfies readonly ProjectedRecordKind[];

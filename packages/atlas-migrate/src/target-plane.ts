@@ -171,14 +171,125 @@ export const ProjectedAbsenceRecordSchema = ProjectedRecordBaseSchema.extend({
 }).strict();
 export type ProjectedAbsenceRecord = z.infer<typeof ProjectedAbsenceRecordSchema>;
 
+/**
+ * Why a record exists that no legacy object does.
+ *
+ * The legacy store held a classification as a STRING in a subtype slot. The
+ * ratified vocabulary holds it as an edge to a node, so the node has to come
+ * from somewhere -- and it does not come from any one legacy object, because
+ * every organization that said `airline` is asking for the same node.
+ *
+ * The basis is recorded rather than left implicit so a reader of the new plane
+ * can tell a minted node from an imported one without diffing against the old
+ * store. A topic node that looked imported would carry the authority of a thing
+ * somebody wrote down, which nobody did.
+ */
+export const MintedBasisSchema = z
+  .object({
+    kind: z.literal("retired-subtype-value"),
+    /** The legacy value, verbatim after case folding. Never a prettified label. */
+    legacy_value: z.string().min(1).max(512)
+  })
+  .strict();
+export type MintedBasis = z.infer<typeof MintedBasisSchema>;
+
+const MintedRecordBaseSchema = z.object({
+  idempotency_key: MigrationIdempotencyKeySchema,
+  origin: z.literal(MigrationOrigin),
+  recorded_at_fidelity: z.literal(MigrationRecordedAtFidelity),
+  minted_basis: MintedBasisSchema
+});
+
+/**
+ * A node this migration creates because the ratified vocabulary needs one and
+ * the legacy store had none.
+ *
+ * It carries NO `provenance`, and that absence is load-bearing: every other
+ * projected record can name the legacy object it came from, and this one
+ * genuinely cannot. Filling the field with the first contributor's id would
+ * make an arbitrary choice look like a recorded fact -- and would make the node
+ * disappear from the plane if that one legacy object were ever re-examined.
+ */
+export const ProjectedMintedEntityRecordSchema = MintedRecordBaseSchema.extend({
+  record_kind: z.literal("minted-entity"),
+  slot: EntitySlotSchema,
+  // Only `topic` is minted today. Left as the full enum because the ratified
+  // table also mints organizations for venues, and a literal here would have to
+  // be widened by whoever lands that -- at which point the widening is invisible.
+  entity_type: EndpointTypeSchema,
+  name: z.string().min(1).max(8_192),
+  /** How many legacy nodes asked for this one node. Counted, never enumerated. */
+  classified_node_count: z.number().int().positive()
+}).strict();
+export type ProjectedMintedEntityRecord = z.infer<typeof ProjectedMintedEntityRecordSchema>;
+
+/**
+ * The `has-type` edge that carries a retired subtype forward.
+ *
+ * Unlike the minted node, this one HAS a legacy provenance: the classification
+ * was written down, on that node, in its subtype slot. What it does not have is
+ * a `legacy_edge_id`, because the legacy store never held an edge here -- so the
+ * field is absent rather than invented.
+ *
+ * `valid_from` is `unknown`. A subtype string carried no time, and stamping the
+ * import date would assert that the organization became an airline on the day we
+ * ran the migration.
+ */
+export const ProjectedMintedRelationshipRecordSchema = MintedRecordBaseSchema.extend({
+  record_kind: z.literal("minted-relationship"),
+  provenance: LegacyProvenanceSchema,
+  source_slot: EntitySlotSchema,
+  source_type: EndpointTypeSchema,
+  target_slot: EntitySlotSchema,
+  target_type: EndpointTypeSchema,
+  predicate: PredicateSchema,
+  valid_from: MixedPrecisionDateSchema,
+  valid_from_fidelity: WorldTimeFidelitySchema,
+  status: EdgeStatusSchema
+}).strict();
+export type ProjectedMintedRelationshipRecord = z.infer<typeof ProjectedMintedRelationshipRecordSchema>;
+
 export const ProjectedRecordSchema = z.discriminatedUnion("record_kind", [
   ProjectedEntityRecordSchema,
   ProjectedRelationshipRecordSchema,
   ProjectedRetractionRecordSchema,
-  ProjectedAbsenceRecordSchema
+  ProjectedAbsenceRecordSchema,
+  ProjectedMintedEntityRecordSchema,
+  ProjectedMintedRelationshipRecordSchema
 ]);
 export type ProjectedRecord = z.infer<typeof ProjectedRecordSchema>;
 export type ProjectedRecordKind = ProjectedRecord["record_kind"];
+
+/**
+ * Records that name a legacy object. Written as a guard rather than as an
+ * inline `"provenance" in record` so the two record kinds that legitimately
+ * have no provenance cannot be reached through it by accident.
+ */
+export function hasLegacyProvenance(
+  record: ProjectedRecord
+): record is Exclude<ProjectedRecord, ProjectedMintedEntityRecord> {
+  return record.record_kind !== "minted-entity";
+}
+
+export function isMintedEntityRecord(record: ProjectedRecord): record is ProjectedMintedEntityRecord {
+  return record.record_kind === "minted-entity";
+}
+
+export function isMintedRelationshipRecord(record: ProjectedRecord): record is ProjectedMintedRelationshipRecord {
+  return record.record_kind === "minted-relationship";
+}
+
+/**
+ * Every record that puts an entity slot into the plane, minted or imported.
+ * The closure gate resolves relationship endpoints against this, and a gate that
+ * knew only about imported entities would call every `has-type` edge dangling.
+ */
+export function slotMintedBy(record: ProjectedRecord): EntitySlot | undefined {
+  if (record.record_kind === "entity" || record.record_kind === "minted-entity") {
+    return record.slot;
+  }
+  return undefined;
+}
 
 /**
  * Record kinds that would express an identity JUDGEMENT rather than a mechanical
@@ -207,6 +318,43 @@ function hex(value: string, length: number): string {
 
 export function entitySlotForLegacyObject(authorityId: string, legacyObjectId: string): EntitySlot {
   return `slot_entity_${hex(`${ProjectorVersion}:${authorityId}:${legacyObjectId}`, 24)}`;
+}
+
+/**
+ * The slot a minted topic occupies, keyed by the VALUE rather than by any
+ * legacy object.
+ *
+ * This is what makes minting idempotent, and it is the one place a content-
+ * derived key is correct: the topic node's whole identity IS the word. Two runs
+ * over the same corpus, and nine organizations inside one run, all resolve to
+ * this slot -- which is the difference between one controlled vocabulary and
+ * nine unrelated nodes that happen to share a spelling.
+ *
+ * The `minted-topic` discriminator is in the seed so a minted slot can never
+ * collide with the slot of a legacy object whose id happened to be the value.
+ */
+export function mintedTopicSlot(authorityId: string, topicValue: string): EntitySlot {
+  return `slot_entity_${hex(`${ProjectorVersion}:${authorityId}:minted-topic:${topicValue}`, 24)}`;
+}
+
+export function mintedTopicIdempotencyKey(authorityId: string, topicValue: string): MigrationIdempotencyKey {
+  return `la_idem_${hex([ProjectorVersion, authorityId, "minted-topic", topicValue].join("\n"), 32)}`;
+}
+
+/**
+ * One key per (classified node, topic) pair. Keyed by both because a node may
+ * legitimately carry several classifications, and keying by the node alone
+ * would make the second `has-type` edge look like a replay of the first.
+ */
+export function mintedClassificationIdempotencyKey(
+  authorityId: string,
+  legacyObjectId: string,
+  topicValue: string
+): MigrationIdempotencyKey {
+  return `la_idem_${hex(
+    [ProjectorVersion, authorityId, "minted-classification", legacyObjectId, topicValue].join("\n"),
+    32
+  )}`;
 }
 
 /**

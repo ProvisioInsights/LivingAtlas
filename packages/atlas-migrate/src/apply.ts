@@ -4,7 +4,9 @@ import type { MigrationRefusalReason } from "./legacy-source.js";
 import type { ProjectionPlan, SourceDispositionKind, SourceOutcome } from "./projection.js";
 import {
   ResolutionBearingRecordKinds,
+  hasLegacyProvenance,
   isEntityRecord,
+  isMintedEntityRecord,
   type EntitySlot,
   type MigrationIdempotencyKey,
   type ProjectedRecord,
@@ -15,12 +17,17 @@ export type EntityMintRequest = {
   slot: EntitySlot;
   entity_type: EndpointType;
   entity_subtype?: EndpointSubtype;
-  legacy_object_id: string;
+  /**
+   * Absent for a node this migration minted rather than imported. Optional
+   * rather than a sentinel string, so a registry that logs it cannot print a
+   * legacy id for something no legacy object ever held.
+   */
+  legacy_object_id?: string;
 };
 
 export type AssertionMintRequest = {
-  record_kind: Exclude<ProjectedRecordKind, "entity">;
-  legacy_object_id: string;
+  record_kind: Exclude<ProjectedRecordKind, "entity" | "minted-entity">;
+  legacy_object_id?: string;
 };
 
 /**
@@ -170,10 +177,38 @@ export type ApplyProjectionPlanInput = {
 
 const RecordKindOrder: Record<ProjectedRecordKind, number> = {
   entity: 0,
+  // Minted entities commit in the same wave as imported ones and before any
+  // edge: a `has-type` edge resolves its target through the slot map, so a
+  // topic node committed after its edges would leave them unresolvable.
+  "minted-entity": 0,
   absence: 1,
   relationship: 2,
+  "minted-relationship": 2,
   retraction: 3
 };
+
+/**
+ * The stream a record's `seq` counts within.
+ *
+ * Imported records count within their legacy object. A minted topic has no
+ * legacy object, so it counts within its own value -- which is stable across
+ * runs for the same reason its slot is, and cannot collide with a legacy id
+ * because the two are built from different prefixes.
+ */
+function seqStreamKey(record: ProjectedRecord): string {
+  return hasLegacyProvenance(record)
+    ? record.provenance.legacy_object_id
+    : `minted-topic:${record.minted_basis.legacy_value}`;
+}
+
+/**
+ * What a mint request names as its origin. `undefined` for a minted node, and
+ * that is not a gap: passing a legacy id it did not come from would make the
+ * registry's own log claim the topic node was imported.
+ */
+function legacyObjectIdFor(record: ProjectedRecord): string | undefined {
+  return hasLegacyProvenance(record) ? record.provenance.legacy_object_id : undefined;
+}
 
 function orderRecords(records: ProjectedRecord[]): ProjectedRecord[] {
   return [...records].sort((left, right) => {
@@ -273,40 +308,44 @@ export async function applyProjectionPlan(input: ApplyProjectionPlanInput): Prom
       // tombstoned object's entity record committed seq=1 in the first run and
       // its retraction committed seq=1 in the resume.
       seqByLegacyObject.set(
-        record.provenance.legacy_object_id,
-        Math.max(seqByLegacyObject.get(record.provenance.legacy_object_id) ?? 0, existing.seq)
+        seqStreamKey(record),
+        Math.max(seqByLegacyObject.get(seqStreamKey(record)) ?? 0, existing.seq)
       );
       receipts.push(existing);
       recordsReplayed += 1;
       continue;
     }
 
-    const seq = (seqByLegacyObject.get(record.provenance.legacy_object_id) ?? 0) + 1;
-    seqByLegacyObject.set(record.provenance.legacy_object_id, seq);
+    const seq = (seqByLegacyObject.get(seqStreamKey(record)) ?? 0) + 1;
+    seqByLegacyObject.set(seqStreamKey(record), seq);
 
     let objectId: string;
     let resolved: CommitResolution;
 
-    if (isEntityRecord(record)) {
+    if (isEntityRecord(record) || isMintedEntityRecord(record)) {
+      const legacyObjectId = legacyObjectIdFor(record);
       const minted = await registry.mintEntity({
         slot: record.slot,
         entity_type: record.entity_type,
-        ...(record.entity_subtype === undefined ? {} : { entity_subtype: record.entity_subtype }),
-        legacy_object_id: record.provenance.legacy_object_id
+        ...("entity_subtype" in record && record.entity_subtype !== undefined
+          ? { entity_subtype: record.entity_subtype }
+          : {}),
+        ...(legacyObjectId === undefined ? {} : { legacy_object_id: legacyObjectId })
       });
       objectId = minted.entity_id;
       entitiesMinted += 1;
       entityIdBySlot.set(record.slot, objectId);
       resolved = { record_kind: "entity" };
     } else {
+      const legacyObjectId = legacyObjectIdFor(record);
       const minted = await registry.mintAssertion({
         record_kind: record.record_kind,
-        legacy_object_id: record.provenance.legacy_object_id
+        ...(legacyObjectId === undefined ? {} : { legacy_object_id: legacyObjectId })
       });
       objectId = minted.assertion_id;
       assertionsMinted += 1;
 
-      if (record.record_kind === "relationship") {
+      if (record.record_kind === "relationship" || record.record_kind === "minted-relationship") {
         const sourceEntityId = entityIdBySlot.get(record.source_slot);
         const targetEntityId = entityIdBySlot.get(record.target_slot);
         if (!sourceEntityId || !targetEntityId) {

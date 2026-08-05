@@ -47,6 +47,16 @@ export const LegacySourceCategoryValues = [
   "opaque-object",
   "quarantined-object",
   "narrative-object",
+  /**
+   * DECLARED HERE, PRODUCED ELSEWHERE. `projection.ts` already refuses this
+   * category, but the value it refuses with was never declared, so the package
+   * did not typecheck at all. The rule that produces it belongs to the lane that
+   * wrote the refusal and is deliberately not invented here: `object_type
+   * "index"` is the closure gate's seeded negative control, so classifying it
+   * would turn the gate's own canary green. Until that rule lands nothing
+   * returns this value, and `countBy` omits a category with no members.
+   */
+  "derived-index",
   "other"
 ] as const;
 export const LegacySourceCategorySchema = z.enum(LegacySourceCategoryValues);
@@ -126,6 +136,9 @@ export const MigrationRefusalReasonValues = [
   "alias-cycle",
   "dangling-alias-target",
   "unclassified-source-category",
+  /** Counterpart of the `derived-index` category above; same provenance. */
+  "derived-index-not-migrated",
+  "unmapped-legacy-subtype",
   "other"
 ] as const;
 export const MigrationRefusalReasonSchema = z.enum(MigrationRefusalReasonValues);

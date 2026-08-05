@@ -8,8 +8,11 @@ import {
 import {
   ProjectedRecordSchema,
   isEntityRecord,
+  isMintedEntityRecord,
+  isMintedRelationshipRecord,
   isRelationshipRecord,
   isRetractionRecord,
+  slotMintedBy,
   type ProjectedRecord
 } from "./target-plane.js";
 
@@ -30,6 +33,8 @@ export const ClosureGateFindingCodeValues = [
   "retraction-target-missing",
   "duplicate-idempotency-key",
   "record-not-accounted",
+  "minted-record-not-accounted",
+  "duplicate-minted-topic",
   "alias-row-missing",
   "alias-target-missing-record",
   "other"
@@ -93,6 +98,7 @@ export function evaluateClosureGate(plan: ProjectionPlan, options: ClosureGateOp
   findings.push(...checkPlanIntegrity(plan));
   findings.push(...checkNamedCategories(plan.outcomes));
   findings.push(...checkRecordAccounting(plan.outcomes, plan.records));
+  findings.push(...checkMintedRecords(plan));
   findings.push(...checkEndpointsResolve(plan.records));
   findings.push(...checkAliasRows(plan.outcomes, plan.records));
 
@@ -245,6 +251,53 @@ function checkNamedCategories(outcomes: SourceOutcome[]): ClosureGateFinding[] {
   return findings;
 }
 
+/**
+ * Minted records are owned by the PLAN, so they are checked against the plan's
+ * own claim list rather than against the outcomes.
+ *
+ * Two failures matter here and they are different. A minted record nobody claims
+ * is a node that would land in the plane with no reviewable reason for existing.
+ * Two minted nodes for one value is the defect the whole change exists to
+ * prevent: the topic set IS the controlled vocabulary, and a duplicate splits
+ * one concept into two that no query will ever rejoin.
+ */
+function checkMintedRecords(plan: ProjectionPlan): ClosureGateFinding[] {
+  const findings: ClosureGateFinding[] = [];
+  const claimed = new Set(plan.minted_record_keys);
+  const minted = plan.records.filter(isMintedEntityRecord);
+
+  const unaccounted = [
+    ...minted.filter((record) => !claimed.has(record.idempotency_key)).map((record) => record.idempotency_key),
+    ...plan.minted_record_keys.filter((key) => !minted.some((record) => record.idempotency_key === key))
+  ];
+  if (unaccounted.length > 0) {
+    findings.push(
+      finding(
+        "minted-record-not-accounted",
+        "every minted record must be claimed by the plan's minted list, and every claim must name a minted record",
+        unaccounted
+      )
+    );
+  }
+
+  const seenValues = new Map<string, number>();
+  for (const record of minted) {
+    seenValues.set(record.minted_basis.legacy_value, (seenValues.get(record.minted_basis.legacy_value) ?? 0) + 1);
+  }
+  const duplicated = [...seenValues.entries()].filter(([, count]) => count > 1).map(([value]) => value);
+  if (duplicated.length > 0) {
+    findings.push(
+      finding(
+        "duplicate-minted-topic",
+        "a retired value minted more than one topic node; the controlled vocabulary would hold two nodes for one concept",
+        duplicated
+      )
+    );
+  }
+
+  return findings;
+}
+
 function checkRecordAccounting(outcomes: SourceOutcome[], records: ProjectedRecord[]): ClosureGateFinding[] {
   const findings: ClosureGateFinding[] = [];
 
@@ -280,7 +333,13 @@ function checkRecordAccounting(outcomes: SourceOutcome[], records: ProjectedReco
       }
     }
   }
-  const unclaimed = records.map((record) => record.idempotency_key).filter((key) => !claimed.has(key));
+  // Minted entities are excluded because no outcome CAN claim them: they are
+  // shared by every node that carried the value. `checkMintedRecords` holds them
+  // to the plan-level claim instead, so they are checked once, not never.
+  const unclaimed = records
+    .filter((record) => !isMintedEntityRecord(record))
+    .map((record) => record.idempotency_key)
+    .filter((key) => !claimed.has(key));
 
   const accountingProblems = [...claimedTwice, ...claimedMissing, ...unclaimed];
   if (accountingProblems.length > 0) {
@@ -317,10 +376,14 @@ function checkRecordAccounting(outcomes: SourceOutcome[], records: ProjectedReco
  * exactly the class of bug that put unreachable edges in the old store.
  */
 function checkEndpointsResolve(records: ProjectedRecord[]): ClosureGateFinding[] {
-  const mintedSlots = new Set<string>(records.filter(isEntityRecord).map((record) => record.slot));
+  // Every slot the plan puts into the plane, imported or minted. Reading only
+  // the imported ones would report every `has-type` edge as dangling, because
+  // its target slot is by definition one this plan minted rather than imported.
+  const mintedSlots = new Set<string>(
+    records.map(slotMintedBy).filter((slot): slot is string => slot !== undefined)
+  );
 
-  const dangling = records
-    .filter(isRelationshipRecord)
+  const dangling = [...records.filter(isRelationshipRecord), ...records.filter(isMintedRelationshipRecord)]
     .filter((record) => !mintedSlots.has(record.source_slot) || !mintedSlots.has(record.target_slot))
     .map((record) => record.idempotency_key);
 
