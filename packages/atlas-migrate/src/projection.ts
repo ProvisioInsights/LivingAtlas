@@ -500,6 +500,21 @@ export function buildProjectionPlan(
       continue;
     }
 
+    if (category === "derived-index") {
+      // A lookup table the new plane rebuilds for itself. Refused under its OWN
+      // reason rather than the generic one: `unclassified-source-category` means
+      // nobody decided what this is and must fail the gate, while this means we
+      // decided and the decision is not to carry it. Without this branch the
+      // draft left the loop with no disposition at all, took the fall-through
+      // default, and reported a deliberate omission as an undecided shape —
+      // failing the closure gate on arithmetic for an object nobody had lost.
+      draft.disposition = refuse(
+        "derived-index-not-migrated",
+        "derived lookup tables are rebuilt by the new plane; a stale copy answers confidently and wrongly"
+      );
+      continue;
+    }
+
     if (category === "other") {
       draft.disposition = refuse(
         "unclassified-source-category",
@@ -589,7 +604,6 @@ export function buildProjectionPlan(
       // premises is the same business and a different location.
       const split = isVenueLocation(payload);
       const entityTypes: EndpointType[] = split ? ["location", "organization"] : [resolved.entity_type];
-      const entityKeys: MigrationIdempotencyKey[] = [];
 
       const attributesByType = new Map<EndpointType, Record<string, unknown>>();
       for (const entityType of entityTypes) {
@@ -636,7 +650,6 @@ export function buildProjectionPlan(
           attrs: attributesByType.get(entityType) ?? {}
         };
         draft.records.push(entityRecord);
-        entityKeys.push(entityKey);
         const prepared: PreparedPrimary = {
           record_key: entityKey,
           record_kind: "entity",
@@ -668,31 +681,11 @@ export function buildProjectionPlan(
         });
       }
 
-      if (tombstone) {
-        // Both halves of a split are retracted. Retracting only the primary would
-        // leave the organization live after its source row was deleted — a node
-        // the old store had thrown away, standing in the new plane with nothing
-        // to retract it.
-        entityKeys.forEach((entityKey, index) => {
-          draft.records.push({
-            record_kind: "retraction",
-            idempotency_key: projectionIdempotencyKey({
-              authority_id: authorityId,
-              legacy_object_id: envelope.object_id,
-              record_kind: "retraction",
-              ordinal: index + 1
-            }),
-            origin: MigrationOrigin,
-            recorded_at_fidelity: MigrationRecordedAtFidelity,
-            provenance,
-            retracts_idempotency_key: entityKey,
-            retraction_basis: "legacy-tombstone"
-          });
-        });
-        draft.disposition = { kind: "projected-as-retraction" };
-      } else {
-        draft.disposition = { kind: "projected-as-entity" };
-      }
+      // The retractions themselves are emitted AFTER every pass has run — see
+      // `retractTombstonedDrafts`. Emitting them here covered only the records
+      // that existed at this point, which is the entity records and nothing the
+      // attribute, job-title and minting passes were about to add.
+      draft.disposition = tombstone ? { kind: "projected-as-retraction" } : { kind: "projected-as-entity" };
       continue;
     }
 
@@ -714,6 +707,10 @@ export function buildProjectionPlan(
   // draft's classifications collected AND its primary slot assigned, and a node
   // whose entity record was refused must contribute no classification.
   const mintedRecords = mintClassificationTopics(drafts, authorityId);
+  // LAST of the record-producing passes, so it can see every record the drafts
+  // ended up holding rather than only the ones that existed when the entity was
+  // drafted.
+  retractTombstonedDrafts(drafts, authorityId);
   assignRedirectAliasTargets(drafts, draftsById, redirectTargets);
   finalizeAliasTargets(drafts);
 
@@ -1058,26 +1055,59 @@ function resolveEdges(
     draft.records.push(relationship);
     draft.primary = { record_key: relationshipKey, record_kind: "relationship" };
 
-    if (envelope.visible_metadata.tombstone) {
+    draft.disposition = envelope.visible_metadata.tombstone
+      ? { kind: "projected-as-retraction" }
+      : { kind: "projected-as-relationship" };
+  }
+}
+
+/**
+ * Retracts EVERY record a tombstoned source object produced, and does it after
+ * every producing pass has run.
+ *
+ * The argument was already written down for the second half of a venue split:
+ * retracting only the primary would leave the organization live after its source
+ * row was deleted. It extends unchanged to the records the later passes add. A
+ * tombstoned venue produces an `operated-by` edge, a `contained-in` edge and a
+ * `has-type` edge per half, and the old placement — inside the entity branch,
+ * before `deriveAttributeEdges`, `placeJobTitles` and `mintClassificationTopics`
+ * had run — could not see any of them. Those edges survived into the plane with
+ * nothing to retract them, pointing at nodes that were themselves retracted.
+ *
+ * Minted topic NODES are deliberately not retracted here. A topic is shared by
+ * every carrier of the word; deleting it because one carrier was deleted would
+ * take the concept away from all the others. The `has-type` edge is what belongs
+ * to this object, and that is what goes.
+ *
+ * Ordinals are assigned by position in the draft's own record list, so an object
+ * that produces one entity still retracts at ordinal 1 and a split still uses 1
+ * and 2 — the keys an earlier run committed do not move.
+ */
+function retractTombstonedDrafts(drafts: Draft[], authorityId: string): void {
+  for (const draft of drafts) {
+    if (!draft.envelope.visible_metadata.tombstone || draft.disposition?.kind !== "projected-as-retraction") {
+      continue;
+    }
+    const provenance = provenanceFor(draft.envelope);
+    const retractable = draft.records.filter(
+      (record) => record.record_kind !== "retraction" && record.record_kind !== "absence"
+    );
+    retractable.forEach((record, index) => {
       draft.records.push({
         record_kind: "retraction",
         idempotency_key: projectionIdempotencyKey({
           authority_id: authorityId,
-          legacy_object_id: envelope.object_id,
+          legacy_object_id: draft.envelope.object_id,
           record_kind: "retraction",
-          ordinal: 1
+          ordinal: index + 1
         }),
         origin: MigrationOrigin,
         recorded_at_fidelity: MigrationRecordedAtFidelity,
         provenance,
-        retracts_idempotency_key: relationshipKey,
+        retracts_idempotency_key: record.idempotency_key,
         retraction_basis: "legacy-tombstone"
       });
-      draft.disposition = { kind: "projected-as-retraction" };
-      continue;
-    }
-
-    draft.disposition = { kind: "projected-as-relationship" };
+    });
   }
 }
 
@@ -1779,12 +1809,17 @@ const TravelEndpointAttributes = new Set<string>([
 /**
  * These two lists exist to give the breakdown a stable print order, and the
  * `satisfies` is what keeps them honest: a value here that the source vocabulary
- * does not declare fails to compile. It caught a real one — the projector carried
- * a `derived-index` category and a `derived-index-not-migrated` refusal that
- * `legacy-source.ts` never declared and `classifyLegacySource` could never
- * produce, so the branch handling them was unreachable from the day it was
- * written. An `index` object still lands in `other` and still fails the closure
- * gate, which is what the seeded negative control asserts.
+ * does not declare fails to compile.
+ *
+ * The check runs one way only, and that is what let `derived-index` go missing.
+ * `classifyLegacySource` returns it for a reference-index namespace and
+ * `LegacySourceCategoryValues` declares it, but omitting it HERE compiles fine —
+ * so `countBy` silently dropped every such object out of `by_category`, the
+ * projector had no branch for it, and the fall-through default refused it as an
+ * undecided shape. One real index object would have failed the closure gate on
+ * arithmetic while nothing had actually been lost. `everyLegacySourceCategory`
+ * closes the other direction; an `index` object with no namespace still lands in
+ * `other` and still fails the gate, which is what the seeded control asserts.
  */
 const LegacySourceCategoryUniverse = [
   "entity-record",
@@ -1796,8 +1831,31 @@ const LegacySourceCategoryUniverse = [
   "opaque-object",
   "quarantined-object",
   "narrative-object",
+  "derived-index",
   "other"
 ] as const satisfies readonly LegacySourceCategory[];
+
+/**
+ * The reverse containment, as a compile-time obligation with no runtime cost.
+ * `satisfies` proves the list holds nothing extra; this proves it is missing
+ * nothing. A category the source vocabulary declares and this file forgets is a
+ * category that vanishes from every count the operator reads.
+ */
+type AssertNothingLeftOver<T extends never> = T;
+type EveryLegacySourceCategoryIsPrinted = AssertNothingLeftOver<
+  Exclude<LegacySourceCategory, (typeof LegacySourceCategoryUniverse)[number]>
+>;
+type EveryRefusalReasonIsPrinted = AssertNothingLeftOver<
+  Exclude<MigrationRefusalReason, (typeof MigrationRefusalReasonUniverse)[number]>
+>;
+type EveryRecordKindIsPrinted = AssertNothingLeftOver<
+  Exclude<ProjectedRecordKind, (typeof ProjectedRecordKindUniverse)[number]>
+>;
+export type ProjectionUniverseCoverage = [
+  EveryLegacySourceCategoryIsPrinted,
+  EveryRefusalReasonIsPrinted,
+  EveryRecordKindIsPrinted
+];
 
 const MigrationRefusalReasonUniverse = [
   "ciphertext-not-attempted",

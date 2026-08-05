@@ -3,6 +3,8 @@ import { PredicateRegistry } from "@living-atlas/contracts";
 import {
   buildProjectionPlan,
   createLegacyGraphFixture,
+  evaluateClosureGate,
+  hasLegacyProvenance,
   legacyFixtureAuthorityId,
   legacyFixtureIds,
   legacyFixturePayloadResolver,
@@ -273,6 +275,49 @@ describe("legacy projection", () => {
     // operator could not count the losses by predicate.
     const byReason = new Map(plan.breakdown.refusals_by_reason.map((entry) => [entry.reason, entry.count]));
     expect(byReason.get("invalid-legacy-payload")).toBe(1);
+  });
+
+  /**
+   * A deletion has to reach every record the deleted row produced, not the ones
+   * that happened to exist when the entity was drafted. The venue is the case
+   * that shows it: its `operated-by` and both `has-type` edges are appended by
+   * passes that run AFTER the entity branch, and they used to survive into the
+   * plane pointing at nodes that were themselves retracted.
+   */
+  it("retracts every record a tombstoned object produced, including the derived and minted edges", () => {
+    const plan = planFixture();
+    const produced = plan.records.filter(
+      (record) => hasLegacyProvenance(record) && legacyObjectIdOf(record) === legacyFixtureIds.tombstonedVenue
+    );
+    const retractions = produced.filter(isRetractionRecord);
+    const retracted = new Set(retractions.map((record) => record.retracts_idempotency_key));
+
+    const retractable = produced.filter((record) => record.record_kind !== "retraction");
+    expect(retractable.length).toBeGreaterThan(2);
+    for (const record of retractable) {
+      expect(retracted.has(record.idempotency_key)).toBe(true);
+    }
+    // The split's operated-by edge and both halves' has-type edges are the point.
+    expect(retractable.some((record) => record.record_kind === "relationship")).toBe(true);
+    expect(retractable.some((record) => record.record_kind === "minted-relationship")).toBe(true);
+    expect(retractions).toHaveLength(retractable.length);
+
+    // The shared topic NODE is not retracted: it belongs to every carrier of the
+    // word, and deleting it because one carrier went would take the concept from
+    // all the others.
+    expect(produced.some((record) => record.record_kind === "minted-entity")).toBe(false);
+  });
+
+  it("refuses a derived index under its own reason instead of as an undecided shape", () => {
+    const plan = planFixture();
+    const outcome = outcomeFor(plan, legacyFixtureIds.derivedIndex);
+
+    expect(outcome.category).toBe("derived-index");
+    expect(refusalReason(plan, legacyFixtureIds.derivedIndex)).toBe("derived-index-not-migrated");
+    // It is counted, so the arithmetic balances and the gate certifies a run that
+    // deliberately left a rebuildable table behind.
+    expect(plan.breakdown.by_category.some((entry) => entry.category === "derived-index")).toBe(true);
+    expect(evaluateClosureGate(plan).ok).toBe(true);
   });
 
   it("carries no unratified predicate into the plan", () => {

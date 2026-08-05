@@ -56,7 +56,20 @@ shape the author forgot fails loudly instead of vanishing: it is still counted,
 so the arithmetic balances, and the gate still refuses.
 
 Refusals carry a named reason from a closed enum. A refusal is countable; a drop
-is not.
+is not — and a refusal filed under the WRONG name is barely better, because the
+operator's remedy is chosen from the name. A derived lookup table (a
+reference-index namespace) is refused as `derived-index-not-migrated`, which
+means "we decided and the decision is not to carry it"; it is deliberately not
+`unclassified-source-category`, which means "nobody decided" and must fail the
+gate. The projector had the reason and no branch that produced it, so a real
+index object took the fall-through default, was refused as undecided, and failed
+the gate on arithmetic while nothing had been lost.
+
+Both directions of the category enum are now obligations the compiler checks:
+`satisfies` proves the projector's print order holds nothing the source
+vocabulary does not declare, and an `Exclude<>` assertion proves it is missing
+nothing. The one-way check is what let `derived-index` be declared, produced, and
+absent from every count the operator reads.
 
 ### 3. Tombstone disposition
 
@@ -64,7 +77,7 @@ A legacy tombstone is not one thing. Each is mapped to exactly one disposition:
 
 | Legacy shape | Disposition | Why |
 | --- | --- | --- |
-| Tombstoned entity or typed edge whose payload the caller can read | `projected-as-retraction` | We know what was deleted, so import the pre-deletion record **and** a retraction of it. Importing nothing would turn a recorded deletion into an absence of history. |
+| Tombstoned entity or typed edge whose payload the caller can read | `projected-as-retraction` | We know what was deleted, so import the pre-deletion record **and** a retraction of **every** record it produced. Importing nothing would turn a recorded deletion into an absence of history; retracting only the records that existed when the entity was drafted leaves the derived and minted edges behind, live and pointing at retracted nodes. |
 | Tombstoned object whose ciphertext is permanently unrecoverable | `unrecoverable-ciphertext` | An absence record states that an object existed and could not be carried across. It never invents the content. |
 | Object under `quarantine` access class | `redaction-stub` | Content is withheld by policy. Quarantine outranks readability in both directions: a readable quarantined object is still withheld, and an unreadable one is reported as withheld rather than lost. |
 | Anything else | `refused:<reason>` | Including `ciphertext-not-attempted` when no key material was loaded. Reporting content as permanently lost when we never tried to open it would be a false statement about absence. |

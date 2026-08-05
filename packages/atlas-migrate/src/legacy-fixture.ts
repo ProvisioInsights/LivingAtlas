@@ -65,8 +65,19 @@ export const legacyFixtureIds = {
   aliasHop1: "la_object_legacy_alias_1",
   aliasHop2: "la_object_legacy_alias_2",
   unmappedObject: "la_object_legacy_index_0",
+  /**
+   * A derived lookup table, named by its SCHEMA NAMESPACE rather than by an
+   * `index` object type. The two are different paths and only the first reaches
+   * the `derived-index` branch, which is why the seeded `other` control above
+   * could not stand in for it.
+   */
+  derivedIndex: "la_object_legacy_refindex_0",
+  /** A tombstoned venue: two entities plus three derived and minted edges. */
+  tombstonedVenue: "la_object_legacy_venue_dead",
   missingEndpoint: "la_object_legacy_missing_0"
 } as const;
+
+export const LegacyReferenceIndexSchemaNamespace = "import/logseq-semantic/reference-index";
 
 function sha256(value: string): `sha256:${string}` {
   return `sha256:${createHash("sha256").update(value).digest("hex")}`;
@@ -594,6 +605,26 @@ export function createLegacyGraphFixture(): GraphObjectEnvelope[] {
 
     plaintextEnvelope(legacyFixtureIds.narrativePage, "page", { title: "Note 0", body: "Synthetic narrative body." }),
     plaintextEnvelope(legacyFixtureIds.narrativeBlock, "block", { body: "Synthetic narrative block." }),
+
+    // Deliberately not migrated, and refused under its OWN reason: the new plane
+    // rebuilds this table, and a stale copy of an index answers confidently and
+    // wrongly. Distinct from `other`, which means nobody decided.
+    plaintextEnvelope(
+      legacyFixtureIds.derivedIndex,
+      "page",
+      { entries: 3 },
+      { schema_namespace: LegacyReferenceIndexSchemaNamespace }
+    ),
+
+    // A DELETED VENUE. One row that produced two entities, an operated-by edge
+    // and a has-type edge per half — five records, all of which the deletion has
+    // to reach.
+    plaintextEnvelope(
+      legacyFixtureIds.tombstonedVenue,
+      "entity",
+      endpointPayload(legacyFixtureIds.tombstonedVenue, "location", "Venue 2", { subtype: "restaurant" }),
+      { tombstone: true }
+    ),
 
     plaintextEnvelope(
       legacyFixtureIds.aliasHop1,

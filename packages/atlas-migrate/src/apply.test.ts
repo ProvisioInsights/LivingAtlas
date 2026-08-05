@@ -7,6 +7,7 @@ import {
   createUnmappedCategoryFixture,
   hasLegacyProvenance,
   isEntityRecord,
+  isMintedEntityRecord,
   legacyFixtureAuthorityId,
   legacyFixtureIds,
   legacyFixturePayloadResolver,
@@ -180,7 +181,13 @@ describe("projection apply", () => {
     const plane = createInMemoryTargetPlane();
     await applyOnce(plan, plane, "2026-08-04T10:00:00.000Z");
 
-    const entityRecordCount = plan.records.filter(isEntityRecord).length;
+    // BOTH entity-shaped kinds mint a registry identity: an imported entity and
+    // a minted topic node each need an id, and only the provenance differs.
+    // Counting the imported ones alone happened to be right for as long as the
+    // fixture carried no classified node, which is not a property of the code.
+    const entityRecordCount = plan.records.filter(
+      (record) => isEntityRecord(record) || isMintedEntityRecord(record)
+    ).length;
     expect(plane.registry.mintedEntities).toHaveLength(entityRecordCount);
     expect(plane.registry.mintedAssertions).toHaveLength(plan.records.length - entityRecordCount);
 
