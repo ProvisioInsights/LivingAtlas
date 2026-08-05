@@ -1,4 +1,4 @@
-# ADR 0024: The Venue Split and Attribute Deduplication
+# ADR 0026: The Venue Split and Attribute Deduplication
 
 Status: Accepted for implementation
 Date: 2026-08-05
@@ -185,3 +185,26 @@ attribute-level outcome, and neither value wins.
   with a reason naming that lane.
 - Whether minted counterparty organizations should later be reconciled against
   legacy organizations of the same name, and by what evidence.
+
+## Amended when the parallel lanes were merged
+
+**OPEN-15 is closed.** The retype table landed in ADR 0024, and the projector now
+maps every entity payload through it. An occurrence carrying a legacy subtype
+outside the four ratified values is retyped rather than refused.
+
+Closing it exposed a gap in that table, fixed here: a node whose subtype is
+*already* one of the four ratified values has no retype rule — the table maps
+legacy words onto ratified ones, so a ratified word is simply absent from it — and
+was being refused for being correct. It is now an identity mapping. This was
+reachable only after the merge, because the projector previously tried the strict
+contract schema first, which caught the already-ratified case for payloads
+carrying no legacy attributes: on a real corpus, almost none of them.
+
+**The subtype namespace lost its classifier here.** `deriveAttributeEdges` no
+longer reads the raw `subtype` word; ADR 0024's table-driven, normalised classifier
+owns it, and this ADR's derived-node registry keeps the counterparty and job-title
+namespaces. See ADR 0024's amendment for why. Subtype topics are therefore
+`minted-entity` records rather than derived entities, and the tests that asserted
+on their derived provenance now assert on `minted_basis` and
+`classified_node_count`, which carry the same two facts: the value, and how many
+legacy nodes asked for it.

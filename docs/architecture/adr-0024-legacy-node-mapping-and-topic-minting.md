@@ -180,3 +180,23 @@ disagree silently.
   nodes are minted today, though `minted-entity` carries the full endpoint-type
   enum so that lane does not have to widen it invisibly.
 - **Attribute valid time (D4 / OPEN-11).** Untouched, as in ADR-0023.
+
+## Amended when the parallel lanes were merged
+
+Two lanes independently built a subtype classifier. This one maps the legacy word
+through the ratified retype table and mints a `minted-entity` topic; ADR 0026's
+derived-node registry read the raw `subtype` string and minted an ordinary entity
+with derived provenance. Both were correct alone and neither fixture could see the
+other, so together they minted **two topic nodes for one concept** — the precise
+failure a controlled vocabulary exists to prevent.
+
+Resolved in favour of this ADR's classifier, because it normalises the value (so
+`Airline` and `airline` are one node) and honours the table's `absorbed` and
+`vacuous` dispositions (so no node is minted for `other`). The registry keeps the
+counterparty and job-title namespaces, which this ADR never claimed.
+
+One behaviour changed as a result: the `has-type` edge is now emitted from **every**
+entity a draft produced, not from the primary alone, so both halves of ADR 0026's
+venue split are classified. Its idempotency key therefore names the classified
+entity's slot; keyed by legacy object alone, a split venue's two edges would have
+collided and the second would have been dropped as a replay of the first.

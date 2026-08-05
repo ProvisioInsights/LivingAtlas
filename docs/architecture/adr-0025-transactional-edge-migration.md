@@ -1,4 +1,4 @@
-# ADR-0024: Transactional edge migration onto the ratified predicate vocabulary
+# ADR-0025: Transactional edge migration onto the ratified predicate vocabulary
 
 - Status: Accepted
 - Date: 2026-08-05
