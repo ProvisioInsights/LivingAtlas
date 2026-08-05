@@ -27,6 +27,30 @@ import { layoutFor } from "./layout.js";
  * same bytes, and the client is not told which of the two it is talking to.
  */
 
+/**
+ * The per-scenario time budget, which is NOT vitest's default.
+ *
+ * Every other test in this repository is in-process: it measures work, and 5 s
+ * is a generous ceiling for that. A scenario here spawns one or more real node
+ * child processes, each of which loads tsx, the server, and the contract schemas
+ * before it answers anything. That cost is dominated by process startup and
+ * scheduling, not by the code under test, so it scales with how many other test
+ * files the machine is running at the same time — not with anything this suite
+ * asserts.
+ *
+ * Measured on the merged tree: the heaviest scenario (kill and restart, which
+ * boots two servers) costs ~1.7 s alone and exceeded 5 s inside the full
+ * 170-file run. The budget below is deliberately far above the observed
+ * under-load cost, because the failure it exists to catch is a HANG — a dead
+ * pipe, a server that never prints its ready line — and a hang is caught just as
+ * well at 30 s as at 5 s. What a tight budget catches instead is a busy CI box,
+ * which is not a defect and must not be reported as one.
+ *
+ * It is set per file rather than globally so that raising it here can never
+ * silently relax the ceiling on an in-process test somewhere else.
+ */
+export const E2E_SCENARIO_TIMEOUT_MS = 30_000;
+
 const require = createRequire(import.meta.url);
 
 function serverEntryPath(): string {

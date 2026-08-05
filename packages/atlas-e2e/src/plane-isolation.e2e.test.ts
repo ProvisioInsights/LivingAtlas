@@ -1,8 +1,11 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { CONTRACT_PROTOCOL_VERSION, CONTRACT_TOOL_NAMES } from "@living-atlas/atlas-contract";
 import { ATLAS_CREDENTIAL_META_KEY, AtlasContractViolation, AtlasToolRefusal } from "@living-atlas/atlas-client";
 import { CLIENT_CAPABILITIES_META_KEY, CLIENT_INFO_META_KEY, PROTOCOL_VERSION_META_KEY } from "@modelcontextprotocol/server";
-import { startSharedSession, type SharedSession } from "./harness.js";
+import { E2E_SCENARIO_TIMEOUT_MS, startSharedSession, type SharedSession } from "./harness.js";
+// These scenarios spawn real child processes; see E2E_SCENARIO_TIMEOUT_MS.
+vi.setConfig({ testTimeout: E2E_SCENARIO_TIMEOUT_MS });
+
 
 /**
  * The operator plane, as seen from a consumer credential: not there.

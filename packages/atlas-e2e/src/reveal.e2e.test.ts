@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   AtlasCapabilityRequired,
   AtlasToolRefusal,
@@ -8,7 +8,10 @@ import {
   type ElicitationRequest
 } from "@living-atlas/atlas-client";
 import { SEALED_PREDICATE } from "./fixture.js";
-import { startSharedSession, type SharedSession } from "./harness.js";
+import { E2E_SCENARIO_TIMEOUT_MS, startSharedSession, type SharedSession } from "./harness.js";
+// These scenarios spawn real child processes; see E2E_SCENARIO_TIMEOUT_MS.
+vi.setConfig({ testTimeout: E2E_SCENARIO_TIMEOUT_MS });
+
 
 /**
  * Disclosure: refused, approved, and tampered with.

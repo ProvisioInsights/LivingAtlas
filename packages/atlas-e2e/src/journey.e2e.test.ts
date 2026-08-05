@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { CONTRACT_PROTOCOL_VERSION, CONTRACT_REVISION, CONTRACT_TOOL_NAMES } from "@living-atlas/atlas-contract";
 import {
   AtlasToolRefusal,
@@ -14,7 +14,10 @@ import {
   FIXTURE_HISTORY_FLOOR,
   WRITABLE_PREDICATE
 } from "./fixture.js";
-import { startSession, startSharedSession, type Session, type SharedSession } from "./harness.js";
+import { E2E_SCENARIO_TIMEOUT_MS, startSession, startSharedSession, type Session, type SharedSession } from "./harness.js";
+// These scenarios spawn real child processes; see E2E_SCENARIO_TIMEOUT_MS.
+vi.setConfig({ testTimeout: E2E_SCENARIO_TIMEOUT_MS });
+
 
 /**
  * The journey, end to end, with nothing on the path faked.

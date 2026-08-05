@@ -1,7 +1,10 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { isAssertion, isRedaction, type AtlasAssertionRow } from "@living-atlas/atlas-client";
 import { FIXTURE_ENTITY_NAMES, WRITABLE_PREDICATE } from "./fixture.js";
-import { connect, createWorkspace, startServer, type AtlasWorkspace, type ServerHandle } from "./harness.js";
+import { E2E_SCENARIO_TIMEOUT_MS, connect, createWorkspace, startServer, type AtlasWorkspace, type ServerHandle } from "./harness.js";
+// These scenarios spawn real child processes; see E2E_SCENARIO_TIMEOUT_MS.
+vi.setConfig({ testTimeout: E2E_SCENARIO_TIMEOUT_MS });
+
 
 /**
  * What identifies a row, whether it arrived as content or as a stub.
