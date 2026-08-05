@@ -105,6 +105,21 @@ const ForbiddenContentRules: Array<{ rule: string; pattern: RegExp; detail: stri
   { rule: "private-key", pattern: /-----BEGIN (?:RSA |EC |OPENSSH |)PRIVATE KEY-----/, detail: "Private keys must not be committed" }
 ];
 
+/**
+ * Source files that must stay TEXT, and the byte that stops them being text.
+ *
+ * git classifies a blob as binary when it finds a NUL in the first 8000 bytes,
+ * and a binary blob has no line diff, no `git blame` and no reviewable view in a
+ * pull request. This has now shipped three times, always the same way: a NUL
+ * separator typed literally into a template literal instead of written as the
+ * `\u0000` escape. The two files it last hit were the redaction decision and the
+ * HMAC request-state binding — the two a reviewer most needs to be able to read.
+ *
+ * The escape and the literal byte compile to the same string, so the rule costs
+ * nothing at runtime and is purely about whether the change can be reviewed.
+ */
+const SOURCE_EXTENSIONS = [".ts", ".tsx", ".mts", ".cts", ".js", ".mjs", ".cjs", ".jsx"];
+
 const SchemaGuardSkippedPaths = [
   /^packages\/contracts\/src\/temporal\.ts$/,
   /^packages\/contracts\/src\/contracts\.test\.ts$/,
@@ -183,6 +198,18 @@ export function scanRepoSafety(repoRoot: string): RepoSafetyResult {
       if (rule.pattern.test(content)) {
         findings.push({ path: relPath, rule: rule.rule, detail: rule.detail });
       }
+    }
+
+    // Scoped to source, not to every file: a fixture, a lockfile or a binary
+    // asset may legitimately hold any byte. A `.ts` file may not, because the
+    // whole reason it is checked in is that a human reads its diff.
+    if (SOURCE_EXTENSIONS.some((extension) => relPath.endsWith(extension)) && content.includes("\u0000")) {
+      findings.push({
+        path: relPath,
+        rule: "source-nul-byte",
+        detail:
+          "A source file holds a raw NUL byte, so git classifies it as binary and it has no reviewable diff. Write the \\u0000 escape instead — it compiles to the same string."
+      });
     }
 
     if (!SchemaGuardSkippedPaths.some((pattern) => pattern.test(relPath))) {

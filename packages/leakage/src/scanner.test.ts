@@ -86,6 +86,27 @@ describe("repo safety scanner", () => {
     }
   });
 
+  it("flags a raw NUL byte in a source file, because git then serves it as an unreviewable binary blob", () => {
+    const root = join(tmpdir(), `living-atlas-nul-guard-${process.pid}`);
+    rmSync(root, { force: true, recursive: true });
+    mkdirSync(join(root, "src"), { recursive: true });
+    // The literal byte and the escape compile to the same string, so only one of
+    // these two files is a finding — the difference is entirely whether a
+    // reviewer can read the diff that introduces it.
+    writeFileSync(join(root, "src", "binary.ts"), `const key = \`a${"\u0000"}b\`;\n`);
+    writeFileSync(join(root, "src", "text.ts"), String.raw`const key = \`a\u0000b\`;` + "\n");
+    // Not source: a fixture may legitimately hold any byte at all.
+    writeFileSync(join(root, "src", "fixture.bin"), `payload${"\u0000"}payload`);
+
+    try {
+      const result = scanRepoSafety(root);
+      const flagged = result.findings.filter((finding) => finding.rule === "source-nul-byte");
+      expect(flagged.map((finding) => finding.path)).toEqual(["src/binary.ts"]);
+    } finally {
+      rmSync(root, { force: true, recursive: true });
+    }
+  });
+
   it("flags ambiguous schema names outside contract guard files", () => {
     const root = join(tmpdir(), `living-atlas-schema-guard-${process.pid}`);
     rmSync(root, { force: true, recursive: true });
