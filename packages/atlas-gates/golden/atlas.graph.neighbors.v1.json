@@ -1,12 +1,12 @@
 {
   "case": "atlas.graph.neighbors.v1",
-  "contract_revision": "2026.08.0",
+  "contract_revision": "2026.08.1",
   "intent": "A one-hop traversal, truncated by max_depth, reporting a partial horizon.",
   "response": {
     "_meta": {
       "io.modelcontextprotocol/serverInfo": {
         "name": "living-atlas-consumer",
-        "version": "2026.08.0"
+        "version": "2026.08.1"
       }
     },
     "content": "<the text block is JSON.stringify(structuredContent)>",

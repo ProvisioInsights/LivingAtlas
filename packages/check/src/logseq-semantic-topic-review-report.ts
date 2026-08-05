@@ -1,6 +1,5 @@
 import { readFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
-import { TopicSubtypeSchema } from "@living-atlas/contracts";
 import { z } from "zod";
 import {
   SemanticTopicReviewPacketSchema,
@@ -23,7 +22,6 @@ export const TopicReviewResolutionSchema = z
     reason_code: TopicCandidateReasonSchema,
     decision: TopicReviewDecisionSchema,
     topic_title: z.string().min(1).max(256).optional(),
-    subtype: TopicSubtypeSchema.default("other"),
     aliases: z.array(z.string().min(1).max(256)).default([]),
     confidence: z.literal("high"),
     reviewed_at: z.string().refine((value) => value.includes("T") && !Number.isNaN(Date.parse(value))).optional(),
@@ -86,7 +84,6 @@ export type TopicReviewReport = {
     unresolved_candidate_count: number;
     by_decision: Record<TopicReviewDecision, number>;
     by_reason_code: Record<string, number>;
-    by_subtype: Record<string, number>;
   };
 };
 
@@ -123,7 +120,6 @@ export function buildTopicReviewReport(input: {
   const packetGroupKeys = new Set(input.packet.groups.map((group) => `${group.reason_code}:${group.target_hash}`));
   const byDecision = {} as Record<TopicReviewDecision, number>;
   const byReasonCode: Record<string, number> = {};
-  const bySubtype: Record<string, number> = {};
   const failures: string[] = [];
   const seenResolutions = new Set<string>();
   let duplicateResolutionCount = 0;
@@ -146,9 +142,6 @@ export function buildTopicReviewReport(input: {
     }
     increment(byDecision, resolution.decision);
     increment(byReasonCode, resolution.reason_code);
-    if (resolution.decision === "promote-topic") {
-      bySubtype[resolution.subtype] = (bySubtype[resolution.subtype] ?? 0) + 1;
-    }
   }
 
   const unresolvedGroups = input.packet.groups.filter((group) => !seenResolutions.has(`${group.reason_code}:${group.target_hash}`));
@@ -186,8 +179,7 @@ export function buildTopicReviewReport(input: {
       unresolved_group_count: unresolvedGroups.length,
       unresolved_candidate_count: unresolvedCandidateCount,
       by_decision: sortedRecord(byDecision),
-      by_reason_code: sortedRecord(byReasonCode),
-      by_subtype: sortedRecord(bySubtype)
+      by_reason_code: sortedRecord(byReasonCode)
     }
   };
 

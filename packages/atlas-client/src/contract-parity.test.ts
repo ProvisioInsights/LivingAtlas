@@ -1,7 +1,16 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { CONTRACT_REVISION, CONTRACT_TOOL_NAMES, packageRoot, schemaDirectory } from "@living-atlas/atlas-contract";
+import {
+  CONTRACT_PLANE_PREDICATES,
+  CONTRACT_REVISION,
+  CONTRACT_TOOL_NAMES,
+  KNOWN_VALUES,
+  SEED_PREDICATES,
+  packageRoot,
+  schemaDirectory
+} from "@living-atlas/atlas-contract";
+import { PredicateRegistry, RetiredPredicates } from "@living-atlas/contracts";
 import { publishedContract } from "./client.js";
 import {
   COMMON_OUTPUT_KEY_MANIFESTS,
@@ -148,6 +157,36 @@ describe("the shared blocks", () => {
     if (!declared) return;
     expect(manifestNames(declared.keys)).toEqual(propertyNames(schema));
     expect(manifestNames(declared.required)).toEqual(requiredNames(schema));
+  });
+});
+
+describe("the published open-vocabulary hint and the graph vocabulary", () => {
+  it("publishes exactly the graph's predicate vocabulary as the open-vocabulary hint", () => {
+    // The hint is published in `x-atlas-known-values` and the enforcing registry
+    // lives in @living-atlas/contracts, which the contract package cannot import
+    // without a dependency it does not have. So the two lists are held together
+    // HERE, in the one package that depends on both.
+    //
+    // The direction that matters is both: a predicate in the hint that the graph
+    // refuses builds a request that cannot succeed, and a predicate the graph
+    // accepts but the hint omits is a relation no consumer will discover.
+    const graph = new Set(Object.keys(PredicateRegistry));
+    const contractPlane = new Set(CONTRACT_PLANE_PREDICATES);
+    const seeded = SEED_PREDICATES.map((entry) => entry.predicate);
+
+    expect(seeded.filter((predicate) => graph.has(predicate)).sort()).toEqual([...graph].sort());
+    expect(seeded.filter((predicate) => !graph.has(predicate)).sort()).toEqual([...contractPlane].sort());
+    expect(new Set(seeded).size).toBe(seeded.length);
+
+    // Retired names must not survive in the hint. A consumer reading the hint is
+    // told what it may send; a retired name there is an invitation to a refusal.
+    for (const retired of Object.keys(RetiredPredicates)) {
+      expect(`${retired} still hinted: ${seeded.includes(retired)}`).toBe(`${retired} still hinted: false`);
+    }
+
+    // And the hint the consumer actually fetches is the one built from the seed,
+    // not a second copy that happens to agree today.
+    expect([...KNOWN_VALUES.predicate]).toEqual(seeded);
   });
 });
 

@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:living-atlas:contract:2026.08.1:tool:atlas.changes.read.v1:output",
+  "title": "atlas.changes.read.v1 — result",
+  "description": "Read changes after a cursor in total seq order within a feed_epoch. Delivery is at-least-once; deduplicate on change_id. A cursor below the retention floor is a typed refusal naming the re-scan entry point, never a silent empty page.",
+  "type": "object",
+  "properties": {
+    "changes": {
+      "type": "array",
+      "items": {
+        "$ref": "urn:living-atlas:contract:2026.08.1:record:atlas.change:v1"
+      }
+    },
+    "next_cursor_seq": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "has_more": {
+      "type": "boolean"
+    },
+    "feed_epoch": {
+      "type": "string",
+      "minLength": 1
+    },
+    "retention_floor_seq": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "cursor_before_retention_floor": {
+      "type": "boolean",
+      "description": "The cursor predates retained history, so this page is missing changes that once existed. A consumer that resumes past a hole cannot otherwise tell a compacted range from an uneventful one."
+    },
+    "error": {
+      "$ref": "urn:living-atlas:contract:2026.08.1:record:atlas.error:v1"
+    },
+    "horizon": {
+      "$ref": "urn:living-atlas:contract:2026.08.1:record:atlas.horizon:v1"
+    },
+    "cache": {
+      "$ref": "urn:living-atlas:contract:2026.08.1:common:output#/$defs/cache"
+    }
+  },
+  "required": [
+    "changes",
+    "next_cursor_seq",
+    "has_more",
+    "feed_epoch",
+    "retention_floor_seq",
+    "cursor_before_retention_floor",
+    "horizon",
+    "cache"
+  ]
+}

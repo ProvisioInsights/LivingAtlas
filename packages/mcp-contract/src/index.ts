@@ -39,44 +39,40 @@ export type LivingAtlasMcpToolDefinition = {
 };
 
 const EndpointTypeMcpEnum = ["person", "organization", "project", "location", "occurrence", "topic", "offering", "item"] as const;
+/**
+ * The graph predicate vocabulary, restated here because this legacy surface
+ * publishes JSON Schema rather than reading the zod registry. It is a SECOND
+ * declaration of a set the contract owns, which is exactly the drift the gates
+ * quarantine on this plane — but a copy that disagrees is strictly worse than a
+ * copy that agrees, so it is kept in step with
+ * `PredicateRegistry` in @living-atlas/contracts until this surface is deleted.
+ */
 const PredicateMcpEnum = [
   "employed-by",
-  "reports-to",
-  "founder-of",
-  "board-member-of",
-  "advises",
-  "invests-in",
-  "customer-of",
-  "engaged",
-  "acquired-by",
-  "merged-with",
-  "introduced-by",
-  "intro-path-to",
-  "connects",
   "member-of",
-  "alumnus-of",
+  "part-of",
+  "contained-in",
+  "has-type",
+  "operated-by",
   "based-in",
-  "participant-in",
   "occurred-at",
-  "hosted",
-  "discussed-at",
-  "about",
-  "offered-by",
-  "instance-of",
-  "purchased-from",
-  "purchased",
+  "participant-in",
+  "connects",
   "owns",
-  "created",
-  "created-for",
-  "related-topic",
-  "part-of-topic",
-  "spouse-of",
-  "partner-of",
+  "offered-by",
+  "sold-by",
+  "purchased",
+  "customer-of",
+  "founder-of",
+  "acquired-by",
+  "invests-in",
+  "about",
   "parent-of",
+  "spouse-of",
   "sibling-of",
-  "related-to",
   "estranged-from",
-  "mentor-of"
+  "introduced-by",
+  "created"
 ] as const;
 
 export const TemporalEdgeAttrsMcpSchema = {

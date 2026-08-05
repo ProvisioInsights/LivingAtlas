@@ -11,7 +11,7 @@ import {
   type RegisteredToolDefinition,
   type ToolHandler
 } from "./register.js";
-import { CONTRACT_REVISION, CONTRACT_TOOL_NAMES } from "./revision.js";
+import { CONTRACT_REVISION, CONTRACT_TOOL_NAMES, CONTRACT_URN_PREFIX } from "./revision.js";
 import { RECORD_SAMPLES, TOOL_INPUT_SAMPLES } from "./samples.js";
 import { createContractValidator } from "./validator.js";
 import { packageRoot, writeContract } from "./write-schemas.js";
@@ -82,7 +82,7 @@ describe("the manifest loader", () => {
     const directory = copyPublished();
     editManifest(directory, (manifest) => {
       const first = manifest.tools[0];
-      if (first) first.input_schema_id = "urn:living-atlas:contract:2026.08.0:tool:wrong:input";
+      if (first) first.input_schema_id = `${CONTRACT_URN_PREFIX}:tool:wrong:input`;
     });
     expect(() => loadContract(directory)).toThrow(/declares \$id/);
   });

@@ -30,7 +30,7 @@ import type { AtlasToolShapes } from "./tools.js";
 import type { AtlasTransport, JsonRpcRequest, JsonRpcResponse } from "./transport.js";
 
 /**
- * The typed consumer client for the published 2026.08.0 plane.
+ * The typed consumer client for the published consumer plane.
  *
  * Four properties are load-bearing, and each replaces a specific defect in the
  * client this rewrites:

@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { loadContract, schemaDirectory } from "./manifest.js";
 import { CONTRACT_LIMITS, CONTRACT_POLICY_DOCUMENT, CONTRACT_REVISION } from "./revision.js";
+import { recordUrn } from "./shape.js";
 import { packageRoot } from "./write-schemas.js";
 import type { JsonSchema } from "./shape.js";
 
@@ -158,7 +159,7 @@ describe("the policy document agrees with the published contract", () => {
   });
 
   it("tells consumers in the schema itself never to parse an error message", () => {
-    const error = contract.records["urn:living-atlas:contract:2026.08.0:record:atlas.error:v1"];
+    const error = contract.records[recordUrn("atlas.error:v1")];
     const properties = (error?.["properties"] ?? {}) as Record<string, JsonSchema>;
     expect(String(properties["message"]?.["description"])).toMatch(/never parse it.*branch on `code`/i);
     expect(error?.["required"]).toContain("code");

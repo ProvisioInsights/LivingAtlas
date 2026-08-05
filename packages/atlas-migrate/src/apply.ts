@@ -14,7 +14,7 @@ import {
 export type EntityMintRequest = {
   slot: EntitySlot;
   entity_type: EndpointType;
-  entity_subtype: EndpointSubtype;
+  entity_subtype?: EndpointSubtype;
   legacy_object_id: string;
 };
 
@@ -291,7 +291,7 @@ export async function applyProjectionPlan(input: ApplyProjectionPlanInput): Prom
       const minted = await registry.mintEntity({
         slot: record.slot,
         entity_type: record.entity_type,
-        entity_subtype: record.entity_subtype,
+        ...(record.entity_subtype === undefined ? {} : { entity_subtype: record.entity_subtype }),
         legacy_object_id: record.provenance.legacy_object_id
       });
       objectId = minted.entity_id;

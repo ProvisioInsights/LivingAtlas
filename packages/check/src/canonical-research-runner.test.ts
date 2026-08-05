@@ -138,7 +138,7 @@ describe("canonical research runner", () => {
       source_type: "person" as const,
       target_entity_id: "la_object_researchorganization0001",
       target_type: "organization" as const,
-      predicate: "advises" as const,
+      predicate: "member-of" as const,
       valid_from: "2026"
     };
     const output = await runCanonicalResearchCandidate(runnerInput({
@@ -217,7 +217,7 @@ describe("canonical research runner", () => {
       source_type: "person" as const,
       target_entity_id: "la_object_researchorganization0001",
       target_type: "organization" as const,
-      predicate: "advises" as const,
+      predicate: "member-of" as const,
       valid_from: "2026"
     };
     const source = transportResult(1, { proposal, relationship_basis: "explicit" });
@@ -302,7 +302,7 @@ describe("canonical research runner", () => {
           source_type: "person",
           target_entity_id: "la_object_researchorganization0001",
           target_type: "organization",
-          predicate: "advises",
+          predicate: "member-of",
           valid_from: "2026"
         }
       } as never)
@@ -347,7 +347,7 @@ describe("canonical research runner", () => {
           source_type: "person",
           target_entity_id: "la_object_researchorganization0001",
           target_type: "organization",
-          predicate: "advises",
+          predicate: "member-of",
           valid_from: "2026"
         }
       })
@@ -362,7 +362,7 @@ describe("canonical research runner", () => {
           source_type: "person",
           target_entity_id: "la_object_researchorganization0001",
           target_type: "organization",
-          predicate: "advises",
+          predicate: "member-of",
           valid_from: "2026",
           attrs: { whole_profile: { phone: "+1 555 0100" } }
         } as never

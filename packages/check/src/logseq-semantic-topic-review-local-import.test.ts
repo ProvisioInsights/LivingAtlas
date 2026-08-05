@@ -54,7 +54,6 @@ function fixtureResolutions() {
         reason_code: "hash-tag-topic-review",
         decision: "promote-topic",
         topic_title: "Fixture Topic Alpha",
-        subtype: "theme",
         aliases: ["Fixture Topic Alias"],
         confidence: "high"
       },

@@ -9,7 +9,6 @@ describe("canonical entity adapter", () => {
     const endpoint = EndpointRecordSchema.parse({
       object_id: "la_object_entity0001",
       type: "organization",
-      subtype: "company",
       name: "Synthetic Organization",
       aliases: ["Synthetic Org"],
       description: "Synthetic description",
@@ -29,7 +28,6 @@ describe("canonical entity adapter", () => {
       schema: "atlas.entity:v1",
       entity_id: "la_object_entity0001",
       type: "organization",
-      subtype: "company",
       name: "Synthetic Organization",
       aliases: ["Synthetic Org"],
       description: "Synthetic description",

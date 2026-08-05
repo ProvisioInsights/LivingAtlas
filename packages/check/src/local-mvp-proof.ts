@@ -124,7 +124,7 @@ async function main(): Promise<void> {
     assert(search.ok && search.result.results.length > 0, "authenticated local search did not query imported graph");
     const traverse = await localTraverseGraph(context, { authorization, start_object_id: edge.edge.source_object_id });
     assert(traverse.ok && traverse.result.edges.length > 0, "authenticated local traversal did not follow imported edge");
-    const timeline = await localTimelineQuery(context, { authorization, predicate: "advises" });
+    const timeline = await localTimelineQuery(context, { authorization, predicate: "member-of" });
     assert(timeline.ok && timeline.result.results.some((result) => result.field === "edge.valid_from"), "authenticated local timeline query did not find imported edge");
 
     const correctionId = "la_object_localmvpcorrect0001";

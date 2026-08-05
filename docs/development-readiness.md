@@ -174,10 +174,12 @@ LIVING_ATLAS_LOGSEQ_TOPIC_REVIEW_RESOLUTION_PATH=/private/topic-review-resolutio
 npm run logseq:semantic-topic-review-curated-draft
 ```
 
-Operators may tune `LIVING_ATLAS_LOGSEQ_TOPIC_REVIEW_CURATED_MIN_OCCURRENCES`,
-`LIVING_ATLAS_LOGSEQ_TOPIC_REVIEW_CURATED_PROMOTE_REASONS`, and
-`LIVING_ATLAS_LOGSEQ_TOPIC_REVIEW_CURATED_SUBTYPE`, but broad promotion of
-plain/hash tags should be treated as a deliberate local review decision. The
+Operators may tune `LIVING_ATLAS_LOGSEQ_TOPIC_REVIEW_CURATED_MIN_OCCURRENCES`
+and `LIVING_ATLAS_LOGSEQ_TOPIC_REVIEW_CURATED_PROMOTE_REASONS`, but broad
+promotion of plain/hash tags should be treated as a deliberate local review
+decision. There is no longer a curated-subtype setting: `topic` carries no
+subtype, and a promoted topic is classified after the fact with `has-type`
+edges. The
 command output is count-only; the generated resolution map contains private
 topic labels and must stay outside the repo.
 

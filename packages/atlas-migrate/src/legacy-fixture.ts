@@ -175,7 +175,6 @@ function edgePayload(
  */
 const decryptableFixturePayloads: Record<string, Record<string, unknown>> = {
   [legacyFixtureIds.organization1]: endpointPayload(legacyFixtureIds.organization1, "organization", "Employer 1", {
-    subtype: "company",
     aliases: ["Employer One"]
   }),
   [legacyFixtureIds.edgeInvestment]: edgePayload("la_edge_legacy_invest_1", {
@@ -223,7 +222,6 @@ export function createLegacyGraphFixture(): GraphObjectEnvelope[] {
       legacyFixtureIds.person,
       "entity",
       endpointPayload(legacyFixtureIds.person, "person", "Person 0", {
-        subtype: "individual",
         aliases: ["P. Zero"],
         description: "Synthetic person used by migration fixtures."
       })
@@ -231,39 +229,39 @@ export function createLegacyGraphFixture(): GraphObjectEnvelope[] {
     plaintextEnvelope(
       legacyFixtureIds.organization0,
       "entity",
-      endpointPayload(legacyFixtureIds.organization0, "organization", "Employer 0", { subtype: "company" })
+      endpointPayload(legacyFixtureIds.organization0, "organization", "Employer 0")
     ),
     ciphertextEnvelope(legacyFixtureIds.organization1, "entity"),
     plaintextEnvelope(
       legacyFixtureIds.organizationTombstoned,
       "entity",
-      endpointPayload(legacyFixtureIds.organizationTombstoned, "organization", "Employer 2", { subtype: "company" }),
+      endpointPayload(legacyFixtureIds.organizationTombstoned, "organization", "Employer 2"),
       { tombstone: true }
     ),
     plaintextEnvelope(
       legacyFixtureIds.project,
       "entity",
-      endpointPayload(legacyFixtureIds.project, "project", "Project 0", { subtype: "initiative" })
+      endpointPayload(legacyFixtureIds.project, "project", "Project 0")
     ),
     plaintextEnvelope(
       legacyFixtureIds.location,
       "entity",
-      endpointPayload(legacyFixtureIds.location, "location", "City 0", { subtype: "city" })
+      endpointPayload(legacyFixtureIds.location, "location", "City 0")
     ),
     plaintextEnvelope(
       legacyFixtureIds.topic,
       "entity",
-      endpointPayload(legacyFixtureIds.topic, "topic", "Topic 0", { subtype: "domain" })
+      endpointPayload(legacyFixtureIds.topic, "topic", "Topic 0")
     ),
     plaintextEnvelope(
       legacyFixtureIds.offering,
       "entity",
-      endpointPayload(legacyFixtureIds.offering, "offering", "Offering 0", { subtype: "service" })
+      endpointPayload(legacyFixtureIds.offering, "offering", "Offering 0")
     ),
     plaintextEnvelope(
       legacyFixtureIds.item,
       "entity",
-      endpointPayload(legacyFixtureIds.item, "item", "Item 0", { subtype: "device" })
+      endpointPayload(legacyFixtureIds.item, "item", "Item 0")
     ),
     plaintextEnvelope(
       legacyFixtureIds.occurrence,
@@ -293,8 +291,8 @@ export function createLegacyGraphFixture(): GraphObjectEnvelope[] {
       edgePayload("la_edge_legacy_founder_1", {
         source_object_id: legacyFixtureIds.person,
         source_type: "person",
-        target_object_id: legacyFixtureIds.project,
-        target_type: "project",
+        target_object_id: legacyFixtureIds.organization0,
+        target_type: "organization",
         predicate: "founder-of",
         valid_from: "~2018"
       })
@@ -341,9 +339,9 @@ export function createLegacyGraphFixture(): GraphObjectEnvelope[] {
       edgePayload("la_edge_legacy_instance_1", {
         source_object_id: legacyFixtureIds.item,
         source_type: "item",
-        target_object_id: legacyFixtureIds.offering,
-        target_type: "offering",
-        predicate: "instance-of",
+        target_object_id: legacyFixtureIds.organization0,
+        target_type: "organization",
+        predicate: "sold-by",
         valid_from: "2020-05-05"
       })
     ),

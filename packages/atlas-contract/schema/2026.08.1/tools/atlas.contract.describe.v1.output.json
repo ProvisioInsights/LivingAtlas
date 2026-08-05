@@ -1,0 +1,375 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:living-atlas:contract:2026.08.1:tool:atlas.contract.describe.v1:output",
+  "title": "atlas.contract.describe.v1 — result",
+  "description": "Return the running contract: revision, protocol revision, record schemas, tool list, live vocabularies, transport-invariant limits, machine-readable deprecations, and the history block. Call this first. Validate against the vocabularies it returns, not against a copy captured when your client shipped.",
+  "type": "object",
+  "properties": {
+    "revision": {
+      "type": "string",
+      "minLength": 1
+    },
+    "revisions_served": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "minItems": 1
+    },
+    "protocol_version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "policy_document": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The document normative for semantics. Cite a revision by this pair: contract revision plus this path."
+    },
+    "history": {
+      "type": "object",
+      "properties": {
+        "prior_versions_retained_before_cutover": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "The number, not a phrase. It is 0: nothing published before this contract is retained in a form this contract can serve, so there is no earlier response any consumer can replay."
+        },
+        "bitemporal_since": {
+          "$ref": "urn:living-atlas:contract:2026.08.1:common:output#/$defs/recorded_at"
+        },
+        "belief_time_meaningful_since_cutover_only": {
+          "type": "boolean"
+        },
+        "feed_epoch": {
+          "type": "string",
+          "minLength": 1
+        },
+        "retention_floor_seq": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "change_feed_floor_days": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "required": [
+        "prior_versions_retained_before_cutover",
+        "bitemporal_since",
+        "belief_time_meaningful_since_cutover_only",
+        "feed_epoch",
+        "change_feed_floor_days"
+      ]
+    },
+    "limits": {
+      "type": "object",
+      "description": "Transport-invariant. A transport may not narrow them, and these are the same numbers compiled into the published schemas.",
+      "properties": {
+        "max_page_size": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "default_page_size": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "max_batch_items": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "max_batch_bytes": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "max_traversal_depth": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "max_ids_per_request": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "snapshot_ttl_seconds": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "idempotency_ttl_days": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "change_feed_floor_days": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "deprecation_window_days": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Minimum notice before anything published is removed. Equal to change_feed_floor_days: a consumer promised it can resume after that long offline must not resume into a surface where its tool is gone."
+        }
+      },
+      "required": [
+        "max_page_size",
+        "default_page_size",
+        "max_batch_items",
+        "max_batch_bytes",
+        "max_traversal_depth",
+        "max_ids_per_request",
+        "snapshot_ttl_seconds",
+        "idempotency_ttl_days",
+        "change_feed_floor_days",
+        "deprecation_window_days"
+      ]
+    },
+    "record_schemas": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1
+          },
+          "schema_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "schema_path": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "name",
+          "schema_id",
+          "schema_path"
+        ]
+      },
+      "minItems": 1
+    },
+    "tools": {
+      "type": "array",
+      "description": "Deterministically ordered. The order is part of the contract so a diff of two tools/list responses is meaningful.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1
+          },
+          "input_schema_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "output_schema_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "requires_capabilities": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "deprecation": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "announced_at": {
+                    "$ref": "urn:living-atlas:contract:2026.08.1:common:output#/$defs/recorded_at"
+                  },
+                  "removal_not_before": {
+                    "$ref": "urn:living-atlas:contract:2026.08.1:common:output#/$defs/recorded_at"
+                  },
+                  "replacement_tool": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "reason": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "required": [
+                  "announced_at",
+                  "removal_not_before",
+                  "reason"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "name",
+          "title",
+          "input_schema_id",
+          "output_schema_id",
+          "requires_capabilities",
+          "deprecation"
+        ]
+      },
+      "minItems": 1
+    },
+    "vocabularies": {
+      "type": "object",
+      "description": "The LIVE registries. Open vocabularies are the graph's to grow, so a consumer validates against this answer rather than against the x-atlas-known-values hint frozen into the schema.",
+      "properties": {
+        "predicate": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "predicate": {
+                "type": "string",
+                "minLength": 1
+              },
+              "cardinality": {
+                "type": "string",
+                "enum": [
+                  "functional",
+                  "multi-valued",
+                  "other"
+                ]
+              },
+              "functional_key": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "relational": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "predicate",
+              "cardinality",
+              "relational"
+            ]
+          }
+        },
+        "entity_subtype": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "error_code": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "code": {
+                "type": "string",
+                "minLength": 1
+              },
+              "origin": {
+                "type": "string",
+                "enum": [
+                  "store",
+                  "identity",
+                  "protocol",
+                  "policy",
+                  "contract",
+                  "other"
+                ]
+              },
+              "jsonrpc_code": {
+                "type": "integer"
+              },
+              "retryable": {
+                "type": "boolean"
+              },
+              "summary": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": [
+              "code",
+              "origin",
+              "retryable",
+              "summary"
+            ]
+          }
+        }
+      },
+      "required": [
+        "predicate",
+        "entity_subtype",
+        "error_code"
+      ]
+    },
+    "deprecations": {
+      "type": "array",
+      "description": "Machine-readable, so a client can alert on its own use of something scheduled for removal instead of discovering it at removal time. Empty is a real answer: nothing is deprecated.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "target_kind": {
+            "type": "string",
+            "enum": [
+              "tool",
+              "field",
+              "error_code",
+              "record_schema",
+              "vocabulary_value",
+              "other"
+            ]
+          },
+          "target": {
+            "type": "string",
+            "minLength": 1
+          },
+          "announced_at": {
+            "$ref": "urn:living-atlas:contract:2026.08.1:common:output#/$defs/recorded_at"
+          },
+          "removal_not_before": {
+            "$ref": "urn:living-atlas:contract:2026.08.1:common:output#/$defs/recorded_at"
+          },
+          "replacement": {
+            "type": "string",
+            "minLength": 1
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "target_kind",
+          "target",
+          "announced_at",
+          "removal_not_before",
+          "reason"
+        ]
+      }
+    },
+    "cache": {
+      "$ref": "urn:living-atlas:contract:2026.08.1:common:output#/$defs/cache"
+    }
+  },
+  "required": [
+    "revision",
+    "revisions_served",
+    "protocol_version",
+    "policy_document",
+    "history",
+    "limits",
+    "record_schemas",
+    "tools",
+    "vocabularies",
+    "deprecations",
+    "cache"
+  ]
+}

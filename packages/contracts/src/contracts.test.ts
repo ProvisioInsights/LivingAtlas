@@ -834,7 +834,6 @@ describe("temporal contracts", () => {
     const parsed = EndpointRecordSchema.safeParse({
       object_id: "la_object_contract0001",
       type: "topic",
-      subtype: "theme",
       name: "Synthetic Market Theme",
       aliases: ["Synthetic Theme"],
       parent_topic_ref: "la_object_contract0002",
@@ -850,7 +849,6 @@ describe("temporal contracts", () => {
     expect(EndpointRecordSchema.safeParse({
       object_id: "la_object_contract0003",
       type: "topic",
-      subtype: "theme",
       name: "Synthetic Uncontrolled Topic",
       controlled: false,
       access_class: "local-private",
@@ -863,7 +861,6 @@ describe("temporal contracts", () => {
     expect(EndpointRecordSchema.safeParse({
       object_id: "la_object_contract0001",
       type: "offering",
-      subtype: "software-product",
       name: "Synthetic Security Product",
       provider_ref: "la_object_contract0002",
       homepage_ref: "https://example.invalid/product",
@@ -876,7 +873,6 @@ describe("temporal contracts", () => {
     expect(EndpointRecordSchema.safeParse({
       object_id: "la_object_contract0003",
       type: "item",
-      subtype: "device",
       name: "Synthetic Device",
       offering_ref: "la_object_contract0001",
       owner_ref: "la_object_contract0004",
@@ -893,7 +889,7 @@ describe("temporal contracts", () => {
     const parsed = EndpointRecordSchema.safeParse({
       object_id: "la_object_contract0001",
       type: "occurrence",
-      subtype: "social",
+      subtype: "meeting",
       name: "Synthetic Recurring Gathering",
       scheduled_start: "2026-06-21T12:00:00.000Z",
       recurrence: {
@@ -916,7 +912,7 @@ describe("temporal contracts", () => {
     const parsed = EndpointRecordSchema.safeParse({
       object_id: "la_object_contract0001",
       type: "occurrence",
-      subtype: "social",
+      subtype: "meeting",
       name: "Synthetic Scheduled Gathering",
       scheduled_start: "2026-06-21T12:00:00.000Z",
       access_class: "local-private",
@@ -931,7 +927,7 @@ describe("temporal contracts", () => {
     const parsed = EndpointRecordSchema.safeParse({
       object_id: "la_object_contract0001",
       type: "occurrence",
-      subtype: "social",
+      subtype: "meeting",
       name: "Synthetic Scheduled Gathering",
       scheduled_start: "2026-06-21T12:00:00.000Z",
       timezone: "America/Chicago",
@@ -1040,10 +1036,10 @@ describe("temporal contracts", () => {
     expect(TemporalEdgeSchema.safeParse({
       edge_id: "la_edge_contract0001",
       source_object_id: "la_object_contract0001",
-      source_type: "topic",
+      source_type: "organization",
       target_object_id: "la_object_contract0002",
-      target_type: "occurrence",
-      predicate: "discussed-at",
+      target_type: "topic",
+      predicate: "has-type",
       valid_from: "2026-06-21",
       source: "test"
     }).success).toBe(true);
@@ -1075,8 +1071,8 @@ describe("temporal contracts", () => {
       source_object_id: "la_object_contract0001",
       source_type: "concept",
       target_object_id: "la_object_contract0002",
-      target_type: "occurrence",
-      predicate: "discussed-at",
+      target_type: "topic",
+      predicate: "about",
       valid_from: "2026-06-21",
       source: "test"
     }).success).toBe(false);
@@ -1098,9 +1094,9 @@ describe("temporal contracts", () => {
       edge_id: "la_edge_contract0002",
       source_object_id: "la_object_contract0003",
       source_type: "item",
-      target_object_id: "la_object_contract0001",
-      target_type: "offering",
-      predicate: "instance-of",
+      target_object_id: "la_object_contract0002",
+      target_type: "organization",
+      predicate: "sold-by",
       valid_from: "2026",
       source: "test"
     }).success).toBe(true);
@@ -1118,13 +1114,14 @@ describe("temporal contracts", () => {
 
     expect(TemporalEdgeSchema.safeParse({
       edge_id: "la_edge_contract0004",
-      source_object_id: "la_object_contract0003",
-      source_type: "item",
-      target_object_id: "la_object_contract0004",
-      target_type: "person",
-      predicate: "created-for",
+      source_object_id: "la_object_contract0004",
+      source_type: "person",
+      target_object_id: "la_object_contract0003",
+      target_type: "item",
+      predicate: "created",
       valid_from: "2026",
-      source: "test"
+      source: "test",
+      attrs: { created_for: "la_object_contract0005" }
     }).success).toBe(true);
   });
 
@@ -1194,7 +1191,7 @@ describe("temporal contracts", () => {
       source_object_id: "la_object_contract0001",
       source_type: "person",
       target_object_id: "la_object_contract0002",
-      target_type: "project",
+      target_type: "organization",
       predicate: "invests-in",
       valid_from: "2026-06-21",
       source: "test",
@@ -1210,7 +1207,7 @@ describe("temporal contracts", () => {
       source_object_id: "la_object_contract0001",
       source_type: "person",
       target_object_id: "la_object_contract0002",
-      target_type: "project",
+      target_type: "organization",
       predicate: "invests-in",
       valid_from: "2026-06-21",
       source: "test",

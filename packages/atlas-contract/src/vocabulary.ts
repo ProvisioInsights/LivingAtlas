@@ -56,35 +56,58 @@ export type PredicateEntry = {
  *
  * A running Atlas serves its own registry through `atlas.contract.describe.v1`
  * and that answer, not this list, is what a consumer validates against.
+ *
+ * The graph-side relational names here are exactly the vocabulary in
+ * `@living-atlas/contracts`, and a parity test in `@living-atlas/atlas-client`
+ * holds the two lists together — this package cannot import that one without a
+ * dependency the workspace does not have, and a hint that quietly names a
+ * predicate the graph refuses is worse than no hint. The three non-relational
+ * and identity-plane entries below have no graph-side counterpart by design:
+ * they are properties of the CONTRACT, not edges anybody may assert.
  */
 export const SEED_PREDICATES: readonly PredicateEntry[] = [
   { predicate: "employed-by", cardinality: "multi-valued", relational: true },
-  { predicate: "reports-to", cardinality: "functional", functional_key: ["organization"], relational: true },
-  { predicate: "founder-of", cardinality: "multi-valued", relational: true },
-  { predicate: "board-member-of", cardinality: "multi-valued", relational: true },
-  { predicate: "advises", cardinality: "multi-valued", relational: true },
-  { predicate: "invests-in", cardinality: "multi-valued", relational: true },
-  { predicate: "customer-of", cardinality: "multi-valued", relational: true },
-  { predicate: "acquired-by", cardinality: "functional", relational: true },
-  { predicate: "merged-with", cardinality: "multi-valued", relational: true },
-  { predicate: "introduced-by", cardinality: "multi-valued", relational: true },
   { predicate: "member-of", cardinality: "multi-valued", relational: true },
-  { predicate: "alumnus-of", cardinality: "multi-valued", relational: true },
+  { predicate: "part-of", cardinality: "functional", relational: true },
+  { predicate: "contained-in", cardinality: "functional", relational: true },
+  // Multi-valued on purpose, and this is the load-bearing difference from the
+  // subtype enum it replaces: a state university is `has-type` government AND
+  // `has-type` university, which one enum slot could never say.
+  { predicate: "has-type", cardinality: "multi-valued", relational: true },
+  { predicate: "operated-by", cardinality: "multi-valued", relational: true },
   { predicate: "based-in", cardinality: "functional", relational: true },
-  { predicate: "participant-in", cardinality: "multi-valued", relational: true },
   { predicate: "occurred-at", cardinality: "functional", relational: true },
-  { predicate: "hosted", cardinality: "multi-valued", relational: true },
-  { predicate: "discussed-at", cardinality: "multi-valued", relational: true },
-  { predicate: "about", cardinality: "multi-valued", relational: true },
-  { predicate: "offered-by", cardinality: "functional", relational: true },
-  { predicate: "instance-of", cardinality: "functional", relational: true },
+  { predicate: "participant-in", cardinality: "multi-valued", relational: true },
+  { predicate: "connects", cardinality: "multi-valued", relational: true },
   { predicate: "owns", cardinality: "multi-valued", relational: true },
+  { predicate: "offered-by", cardinality: "functional", relational: true },
+  { predicate: "sold-by", cardinality: "functional", relational: true },
+  { predicate: "purchased", cardinality: "multi-valued", relational: true },
+  { predicate: "customer-of", cardinality: "multi-valued", relational: true },
+  { predicate: "founder-of", cardinality: "multi-valued", relational: true },
+  { predicate: "acquired-by", cardinality: "functional", relational: true },
+  { predicate: "invests-in", cardinality: "multi-valued", relational: true },
+  { predicate: "about", cardinality: "multi-valued", relational: true },
+  { predicate: "parent-of", cardinality: "multi-valued", relational: true },
+  { predicate: "spouse-of", cardinality: "multi-valued", relational: true },
+  { predicate: "sibling-of", cardinality: "multi-valued", relational: true },
+  { predicate: "estranged-from", cardinality: "multi-valued", relational: true },
+  { predicate: "introduced-by", cardinality: "multi-valued", relational: true },
   { predicate: "created", cardinality: "multi-valued", relational: true },
-  { predicate: "part-of-topic", cardinality: "multi-valued", relational: true },
-  { predicate: "related-to", cardinality: "multi-valued", relational: true },
   { predicate: "display-name", cardinality: "functional", relational: false },
   { predicate: "resolved-same-entity-as", cardinality: "multi-valued", relational: true },
   { predicate: "resolved-split-into", cardinality: "multi-valued", relational: true }
+];
+
+/**
+ * The entries above that are properties of the contract rather than edges in the
+ * graph, so the parity test can say which absences are intentional. Naming them
+ * here rather than in the test keeps the exemption beside the list it exempts.
+ */
+export const CONTRACT_PLANE_PREDICATES: readonly string[] = [
+  "display-name",
+  "resolved-same-entity-as",
+  "resolved-split-into"
 ];
 
 /**
