@@ -2,14 +2,22 @@ import { existsSync } from "node:fs";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { fixtureAuthorityId, fixtureDeviceId, fixtureUserId, sensitiveBaitRegistry } from "@living-atlas/fixtures";
+import type { LocalControlState } from "@living-atlas/contracts";
 import {
   FileLocalControlStore,
   createFixtureLocalControlState,
   createLocalProfile
 } from "@living-atlas/local-control-store";
+import {
+  FileLocalMcpActivitySink,
+  createLocalMcpContextFromControlState,
+  localCreateObject,
+  localGraphStatus,
+  localReadObject,
+  localTombstoneObject,
+  localUpdateObject
+} from "@living-atlas/local-mcp";
 import { SyntheticLocalSyncDaemon } from "@living-atlas/sync-agent";
 import { BootstrapClaimLockCore, InMemoryBootstrapClaimLockStorage } from "../../cloudflare-worker/src/bootstrap-lock";
 import { sha256TokenHash } from "../../cloudflare-worker/src/bootstrap";
@@ -34,23 +42,6 @@ function assert(condition: unknown, message: string): asserts condition {
 
 function fixedHash(seed: string): `sha256:${string}` {
   return `sha256:${seed.repeat(64).slice(0, 64)}`;
-}
-
-function textContent(result: unknown): string {
-  const content = (result as { content?: unknown }).content;
-  if (!Array.isArray(content)) {
-    return "";
-  }
-
-  const first = content[0] as { type?: unknown; text?: unknown } | undefined;
-  return first?.type === "text" && typeof first.text === "string" ? first.text : "";
-}
-
-function parseToolJson<T>(label: string, result: unknown, outputs: string[]): T {
-  const text = textContent(result);
-  outputs.push(text);
-  assert(text.length > 0, `${label} did not return text content`);
-  return JSON.parse(text) as T;
 }
 
 function syntheticObject(objectId: string, title: string) {
@@ -103,160 +94,105 @@ async function expectWorkerJson<T extends JsonObject>(
   return JSON.parse(text) as T;
 }
 
-async function exerciseLocalMcp(input: {
-  repoRoot: string;
-  tempDir: string;
-  controlStorePath: string;
+/**
+ * The local graph lifecycle a deployed profile must support, run against the
+ * profile's own control store and writing to the profile's own activity log.
+ *
+ * This drove the 30-tool stdio server as a subprocess until that server was
+ * retired (ADR 0017). Nothing here asserted anything about the transport: every
+ * assertion is about graph-command semantics — the starting fixture count, that
+ * a local-private object stays local-private, that a stale expected_version is
+ * refused rather than applied — so they are made directly against the commands
+ * the server used to wrap.
+ */
+async function exerciseLocalGraphCommands(input: {
+  controlState: LocalControlState;
   activityLogPath: string;
   outputs: string[];
 }): Promise<void> {
-  let client: Client | undefined;
-  const transport = new StdioClientTransport({
-    command: "npx",
-    args: ["tsx", "packages/local-mcp/src/cli.ts"],
-    cwd: input.repoRoot,
-    stderr: "pipe",
-    env: {
-      PATH: process.env.PATH ?? "",
-      HOME: input.tempDir,
-      LIVING_ATLAS_LOCAL_CONTROL_STORE: input.controlStorePath,
-      LIVING_ATLAS_LOCAL_CONTROL_STORE_PASSPHRASE: passphrase,
-      LIVING_ATLAS_LOCAL_MCP_TOKEN: localMcpToken,
-      LIVING_ATLAS_ACTIVITY_LOG: input.activityLogPath
+  const context = createLocalMcpContextFromControlState({
+    controlState: input.controlState,
+    activitySink: new FileLocalMcpActivitySink(input.activityLogPath),
+    now
+  });
+  const authorization = `Bearer ${localMcpToken}`;
+  const record = (label: string, value: unknown): void => {
+    input.outputs.push(`${label}:${JSON.stringify(value)}`);
+  };
+
+  const initialStatus = await localGraphStatus(context, { authorization });
+  record("status", initialStatus);
+  assert(initialStatus.ok === true, "status failed");
+  assert(initialStatus.result.object_count === 6, "local graph did not start with six fixture objects");
+  assert(initialStatus.result.profile === "local-full", "local credential did not authenticate as local-full");
+
+  const privateRead = await localReadObject(context, { authorization, object_id: "la_object_privatepage0001" });
+  record("object_read", privateRead);
+  assert(privateRead.ok === true, "local private read failed");
+  assert(privateRead.result.object.access_class === "local-private", "local private read returned wrong class");
+  assert(privateRead.result.object.payload.kind === "ciphertext-ref", "local private fixture should be ciphertext envelope in this slice");
+
+  const created = await localCreateObject(context, {
+    authorization,
+    object: syntheticObject("la_object_localdeploy0001", "Synthetic local deploy object")
+  });
+  record("object_create", created);
+  assert(created.ok === true, "local create failed");
+  assert(created.result.mutation === "created", "local create did not report created");
+  assert(created.result.object_count === 7 && created.result.new_version === 1, "local create returned unexpected version/count");
+
+  const updated = await localUpdateObject(context, {
+    authorization,
+    object_id: "la_object_localdeploy0001",
+    expected_version: 1,
+    patch: {
+      content_hash: fixedHash("f"),
+      visible_metadata: { size_class: "small" },
+      payload: {
+        kind: "plaintext-json",
+        data: {
+          title: "Synthetic local deploy object revised",
+          body: "Synthetic local deployment update payload."
+        }
+      }
     }
   });
-  const stderrChunks: string[] = [];
-  transport.stderr?.on("data", (chunk) => {
-    stderrChunks.push(Buffer.from(chunk).toString("utf8"));
+  record("object_update", updated);
+  assert(updated.ok === true, "local update failed");
+  assert(updated.result.previous_version === 1 && updated.result.new_version === 2, "local update did not advance version");
+
+  const versionConflict = await localUpdateObject(context, {
+    authorization,
+    object_id: "la_object_localdeploy0001",
+    expected_version: 1,
+    patch: { visible_metadata: { size_class: "medium" } }
   });
+  record("object_update_conflict", versionConflict);
+  assert(versionConflict.ok === false && versionConflict.reason === "version-conflict", "local update did not detect version conflict");
 
-  try {
-    client = new Client({ name: "living-atlas-local-deploy-synthetic", version: "0.1.0" });
-    await client.connect(transport);
+  const tombstoned = await localTombstoneObject(context, {
+    authorization,
+    object_id: "la_object_localdeploy0001",
+    expected_version: 2
+  });
+  record("object_delete", tombstoned);
+  assert(tombstoned.ok === true, "local tombstone failed");
+  assert(tombstoned.result.previous_version === 2 && tombstoned.result.new_version === 3, "local tombstone did not advance version");
 
-    const tools = await client.listTools();
-    const toolNames = tools.tools.map((tool) => tool.name).sort();
-    for (const required of [
-      "status",
-      "object_list",
-      "object_read",
-      "object_create",
-      "object_update",
-      "object_delete"
-    ]) {
-      assert(toolNames.includes(required), `local MCP missing tool ${required}`);
-    }
-    input.outputs.push(JSON.stringify(toolNames));
-
-    const initialStatus = parseToolJson<{
-      ok: boolean;
-      result?: { object_count?: number; profile?: string };
-    }>("status", await client.callTool({ name: "status", arguments: {} }), input.outputs);
-    assert(initialStatus.ok === true, "status failed");
-    assert(initialStatus.result?.object_count === 6, "local graph did not start with six fixture objects");
-    assert(initialStatus.result.profile === "local-full", "local MCP did not authenticate as local-full");
-
-    const privateRead = parseToolJson<{
-      ok: boolean;
-      result?: { object?: { access_class?: string; payload?: { kind?: string } } };
-    }>("object_read", await client.callTool({
-      name: "object_read",
-      arguments: { object_id: "la_object_privatepage0001" }
-    }), input.outputs);
-    assert(privateRead.ok === true, "local private read failed");
-    assert(privateRead.result?.object?.access_class === "local-private", "local private read returned wrong class");
-    assert(privateRead.result.object.payload?.kind === "ciphertext-ref", "local private fixture should be ciphertext envelope in this slice");
-
-    const created = parseToolJson<{
-      ok: boolean;
-      result?: { mutation?: string; object_count?: number; new_version?: number };
-    }>("object_create", await client.callTool({
-      name: "object_create",
-      arguments: {
-        object: syntheticObject("la_object_localdeploy0001", "Synthetic local deploy object")
-      }
-    }), input.outputs);
-    assert(created.ok === true, "local create failed");
-    assert(created.result?.mutation === "created", "local create did not report created");
-    assert(created.result.object_count === 7 && created.result.new_version === 1, "local create returned unexpected version/count");
-
-    const updated = parseToolJson<{
-      ok: boolean;
-      result?: { mutation?: string; previous_version?: number; new_version?: number };
-    }>("object_update", await client.callTool({
-      name: "object_update",
-      arguments: {
-        object_id: "la_object_localdeploy0001",
-        expected_version: 1,
-        patch: {
-          content_hash: fixedHash("f"),
-          visible_metadata: { size_class: "small" },
-          payload: {
-            kind: "plaintext-json",
-            data: {
-              title: "Synthetic local deploy object revised",
-              body: "Synthetic local deployment update payload."
-            }
-          }
-        }
-      }
-    }), input.outputs);
-    assert(updated.ok === true, "local update failed");
-    assert(updated.result?.previous_version === 1 && updated.result.new_version === 2, "local update did not advance version");
-
-    const versionConflict = parseToolJson<{ ok: boolean; reason?: string }>(
-      "object_update_conflict",
-      await client.callTool({
-        name: "object_update",
-        arguments: {
-          object_id: "la_object_localdeploy0001",
-          expected_version: 1,
-          patch: {
-            visible_metadata: { size_class: "medium" }
-          }
-        }
-      }),
-      input.outputs
-    );
-    assert(versionConflict.ok === false && versionConflict.reason === "version-conflict", "local update did not detect version conflict");
-
-    const tombstoned = parseToolJson<{
-      ok: boolean;
-      result?: { mutation?: string; previous_version?: number; new_version?: number };
-    }>("object_delete", await client.callTool({
-      name: "object_delete",
-      arguments: {
-        object_id: "la_object_localdeploy0001",
-        expected_version: 2
-      }
-    }), input.outputs);
-    assert(tombstoned.ok === true, "local tombstone failed");
-    assert(tombstoned.result?.previous_version === 2 && tombstoned.result.new_version === 3, "local tombstone did not advance version");
-
-    for (let index = 2; index <= 5; index += 1) {
-      const bulkCreate = parseToolJson<{
-        ok: boolean;
-        result?: { mutation?: string; new_version?: number };
-      }>(`object_create_bulk_${index}`, await client.callTool({
-        name: "object_create",
-        arguments: {
-          object: syntheticObject(`la_object_localdeploy000${index}`, `Synthetic local deploy object ${index}`)
-        }
-      }), input.outputs);
-      assert(bulkCreate.ok === true, `bulk local create ${index} failed`);
-      assert(bulkCreate.result?.mutation === "created" && bulkCreate.result.new_version === 1, `bulk local create ${index} returned unexpected result`);
-    }
-
-    const finalStatus = parseToolJson<{
-      ok: boolean;
-      result?: { object_count?: number };
-    }>("status_final", await client.callTool({ name: "status", arguments: {} }), input.outputs);
-    assert(finalStatus.ok === true && finalStatus.result?.object_count === 11, "local graph final object count should include bulk objects and tombstone");
-    console.log("ok local MCP deploy lifecycle");
-  } finally {
-    await client?.close();
-    assertNoLeak("local MCP stderr", stderrChunks.join("\n"));
+  for (let index = 2; index <= 5; index += 1) {
+    const bulkCreate = await localCreateObject(context, {
+      authorization,
+      object: syntheticObject(`la_object_localdeploy000${index}`, `Synthetic local deploy object ${index}`)
+    });
+    record(`object_create_bulk_${index}`, bulkCreate);
+    assert(bulkCreate.ok === true, `bulk local create ${index} failed`);
+    assert(bulkCreate.result.mutation === "created" && bulkCreate.result.new_version === 1, `bulk local create ${index} returned unexpected result`);
   }
+
+  const finalStatus = await localGraphStatus(context, { authorization });
+  record("status_final", finalStatus);
+  assert(finalStatus.ok === true && finalStatus.result.object_count === 11, "local graph final object count should include bulk objects and tombstone");
+  console.log("ok local graph command lifecycle");
 }
 
 async function exerciseLocalWorkerAndSyncDaemon(input: {
@@ -420,20 +356,18 @@ async function main(): Promise<void> {
     assertNoLeak("local control store", sealedStore);
     console.log("ok local profile and sealed control store");
 
-    await exerciseLocalMcp({
-      repoRoot: process.cwd(),
-      tempDir,
-      controlStorePath: profile.paths.control_store_path,
+    await exerciseLocalGraphCommands({
+      controlState,
       activityLogPath: profile.paths.activity_log_path,
       outputs
     });
 
-    assert(existsSync(profile.paths.activity_log_path), "local MCP activity log was not created");
+    assert(existsSync(profile.paths.activity_log_path), "local activity log was not created");
     const activity = await readFile(profile.paths.activity_log_path, "utf8");
     for (const expected of ["object_read", "object_create", "object_update", "object_delete"]) {
       assert(activity.includes(expected), `activity log missing ${expected}`);
     }
-    assertNoLeak("local MCP activity log", activity);
+    assertNoLeak("local activity log", activity);
 
     await exerciseLocalWorkerAndSyncDaemon({ controlState, outputs });
     assertNoLeak("local deploy outputs", outputs.join("\n"));

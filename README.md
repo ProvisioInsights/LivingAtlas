@@ -31,13 +31,13 @@ docs control what graph facts mean.
 - [V1 Architecture Decisions](docs/architecture/v1-architecture-decisions.md) - accepted V1 runtime and privacy decisions.
 - [Knowledge Schema Runtime Integration](docs/architecture/knowledge-schema-runtime-integration.md) - how temporal-edge semantics map onto the runtime/storage architecture.
 - [ADR 0001](docs/architecture/adr-0001-local-first-host-blind-sync.md) - Cloudflare byte custody with local-key sensitive sync.
-- [ADR 0002](docs/architecture/adr-0002-policy-scoped-mcp.md) - separate local and remote MCP authority.
+- [ADR 0002](docs/architecture/adr-0002-policy-scoped-mcp.md) - separate local and remote MCP authority. **Superseded by ADR 0015 and ADR 0017.**
 - [ADR 0003](docs/architecture/adr-0003-append-only-crud-ledger.md) - visible, auditable CRUD history.
 - [Runtime Topology Options](docs/architecture/runtime-topology-options.md) - chosen V1 topology plus alternate deployment profiles.
 - [Cloudflare-First Bootstrap And Local Sync](docs/architecture/cloudflare-first-bootstrap-and-local-sync.md) - first deployment, safe authority claim, browser-keyed setup, local link, and sync.
 - [Public Repo And Personal Cloudflare Deployment](docs/architecture/public-repo-personal-cloudflare-deployment.md) - public template/repo boundaries, Terraform/Wrangler split, and private personal deployment state.
 - [Remote-Primary With Local Sensitive Path](docs/architecture/remote-primary-local-sensitive-federation.md) - remote MCP for normal work, local/keyholding path for sensitive plaintext, and future federation hooks.
-- [Local MCP Boundary](docs/architecture/local-mcp-boundary.md) - local MCP as private authority and release producer, not a remote-call backend.
+- [Local MCP Boundary](docs/architecture/local-mcp-boundary.md) - local MCP as private authority and release producer, not a remote-call backend. **Superseded by ADR 0017.**
 - [Complete Cloudflare Custody Diagram](docs/architecture/complete-cloudflare-custody-diagram.md) - Cloudflare stores the complete graph while sensitive content remains local-key-only.
 - [Live Graph Activity And Audit](docs/architecture/live-graph-activity-and-audit.md) - near-live graph firing view plus repeatable CRUD audit/replay.
 - [100M Scale Plan](docs/architecture/scale-plan-100m.md) - segmented storage, indexes, compaction, and sync design for large graphs.
@@ -46,12 +46,13 @@ docs control what graph facts mean.
 - [Access Modes](docs/architecture/access-modes.md) - remote-safe, cloud-unlock session, and local-keyholding security modes.
 - [Identity, Configuration, And Key Control Plane](docs/architecture/identity-configuration-control-plane.md) - user/device/client setup, capability grants, key config, recovery, and admin surfaces.
 - [Event Subsystems](docs/architecture/event-subsystems.md) - sync change log, durable audit ledger, and live activity stream.
-- [MCP Tools](docs/mcp-tools.md) - canonical local/remote MCP tool catalog, access modes, batching, and Praxis integration notes.
-- [Graph Workbench](docs/graph-workbench.md) - synthetic local browser surface for visual graph review, CRUD shaping, validation, and MCP operation drafts.
+- [Knowledge Contract](docs/contract/atlas-knowledge-contract-2026.08.0.md) - the published consumer tool contract: record schemas, limits, coverage reporting, and the requirements register.
 - [Metadata Leakage Budget](docs/architecture/metadata-leakage-budget.md) - Cloudflare-visible metadata and path/index constraints.
 - [Compaction And Retention](docs/architecture/compaction-and-retention.md) - tombstones, snapshots, long-offline clients, and erasure.
-- [Local MCP Authentication](docs/architecture/local-mcp-authentication.md) - local auth, capabilities, admin mode, and localhost threat model.
-- [Connecting Clients to the Local MCP](docs/architecture/local-mcp-clients.md) - the two ways a client reaches the daemon: stdio proxy (default) and loopback Streamable HTTP URL.
+- [Local MCP Authentication](docs/architecture/local-mcp-authentication.md) - local auth, capabilities, admin mode, and localhost threat model. **Superseded by ADR 0015 and ADR 0017.**
+- [ADR 0014](docs/architecture/adr-0014-consumer-mcp-server-and-mrtr-escalation.md) - the consumer MCP server, protocol gating, and multi-round-trip reveal.
+- [ADR 0015](docs/architecture/adr-0015-operator-plane-and-capability-grants.md) - the operator plane and per-request capability grants.
+- [ADR 0017](docs/architecture/adr-0017-retiring-the-legacy-local-surface.md) - retirement of the 30-tool local surface and the review site, and the read-only migration source.
 - [Security and Access Model](docs/architecture/security-and-access-model.md) - trust tiers, encryption, policy enforcement.
 - [CRUD Observability](docs/architecture/crud-observability.md) - how create/read/update/delete activity is seen and audited.
 - [Implementation Plan](docs/implementation-plan.md) - build phases and validation gates.
@@ -132,10 +133,10 @@ npm run smoke:local
 ```
 
 `local:install-smoke` exercises the local install mode: it creates a sealed
-local control store and sealed local keyring, starts the local MCP over stdio,
-calls the fixture graph read and synthetic CRUD tools, creates a local-private
-plaintext draft through the MCP, and checks activity plus encrypted graph files
-for token/sensitive-bait/plaintext leakage.
+local control store and sealed local keyring, opens an encrypted local graph
+replica, runs the local graph commands (read, create, update, tombstone, plus a
+local-private plaintext draft), and checks the activity log and the encrypted
+graph files for token/sensitive-bait/plaintext leakage.
 `cloudflare:local-smoke` exercises the Worker bootstrap and sync routes
 in-process with fake D1/R2 bindings.
 
@@ -146,8 +147,8 @@ npm run local:deploy-synthetic
 ```
 
 This creates a temporary local profile, writes an encrypted local control
-store, starts the local MCP over stdio, performs synthetic read/create/update/
-tombstone operations, boots the local Worker harness, claims bootstrap, pushes
+store, performs synthetic read/create/update/tombstone operations through the
+local graph commands, boots the local Worker harness, claims bootstrap, pushes
 and pulls ciphertext sync batches through the sync daemon, checks stale and
 bad-token-binding rejection, and scans the resulting local artifacts for
 token/sensitive-bait leakage.
@@ -157,16 +158,6 @@ Run the local stress gate when changing CRUD, policy, sync, or leakage code:
 ```bash
 npm run stress:local
 ```
-
-Run the synthetic graph workbench:
-
-```bash
-npm run workbench:dev
-```
-
-The workbench is a local browser UI for graph visualization, CRUD shaping,
-validation, audit review, and MCP operation drafts. It uses synthetic data only
-until a policy-scoped MCP/API adapter is wired.
 
 Real Logseq semantic review runs can also use a local-private resolution map.
 Generate a review packet outside the repo, review each unresolved target, then
@@ -180,62 +171,27 @@ the public repo.
 
 ## Connecting an MCP Client
 
-The local MCP is served by one long-lived **daemon** that solely owns the graph
-replica; clients never open the replica directly. There are two ways to connect,
-and both reach the same daemon and the same store. See
-[Connecting Clients to the Local MCP](docs/architecture/local-mcp-clients.md)
-for the full contract.
+The consumer plane is `packages/atlas-mcp`. It speaks MCP revision
+**2026-07-28 only** — `serveStdio` runs `legacy: 'reject'`, so a client that
+opens with a 2025-era `initialize` is refused with `-32022` rather than served
+something it cannot validate. See
+[ADR 0014](docs/architecture/adr-0014-consumer-mcp-server-and-mrtr-escalation.md)
+for the server and [ADR 0015](docs/architecture/adr-0015-operator-plane-and-capability-grants.md)
+for the operator plane and capability grants.
 
-### Method 1 — stdio proxy (default, works in every client)
+The stdio entry point serves the SURFACE against an empty in-memory graph.
+Wiring a durable store to it is a separate, reviewable act, and migration
+against real data is blocked on offline backup media:
 
-Point the client at the launcher script. It runs a thin proxy that reaches the
-daemon over a `0600` Unix domain socket (starting the daemon if needed). No token
-in client config — the socket is filesystem-restricted to your user.
-
-```jsonc
-// Claude Code .mcp.json  /  Claude Desktop claude_desktop_config.json
-{
-  "mcpServers": {
-    "living-atlas-local": {
-      "command": "/path/to/deploy/scripts/run-local-mcp.sh"
-    }
-  }
-}
+```bash
+npm run atlas-mcp:consumer -- --audit-log /path/to/audit.jsonl
+npm run atlas-mcp:operator -- --audit-log /path/to/operator-audit.jsonl
 ```
 
-```toml
-# Codex ~/.codex/config.toml
-[mcp_servers.living-atlas-local]
-command = "/path/to/deploy/scripts/run-local-mcp.sh"
-```
-
-### Method 2 — loopback HTTP URL (remote-like)
-
-The daemon can also expose the MCP over **Streamable HTTP** — the same transport
-remote MCP servers use — bound to `127.0.0.1` only (never a routable interface),
-for clients that connect by URL instead of the stdio proxy. Enable it by setting
-`LIVING_ATLAS_LOCAL_MCP_HTTP_PORT` on the daemon. Every request must carry the
-bearer token (a loopback TCP port is reachable by any local process, unlike the
-socket), it is checked in constant time, a tokenless listener fails closed, and
-DNS-rebinding protection rejects non-loopback `Host` headers.
-
-```jsonc
-// Claude Code .mcp.json (HTTP transport)
-{
-  "mcpServers": {
-    "living-atlas-local": {
-      "type": "http",
-      "url": "http://127.0.0.1:<port>/mcp",
-      "headers": { "Authorization": "Bearer <local-mcp-token>" }
-    }
-  }
-}
-```
-
-Method 1 keeps the token in the OS keychain and the surface as a `0600` socket;
-Method 2 is the most remote-like and drops the proxy but opens a loopback port
-and puts the token in client config. Prefer Method 1 for sensitive graphs and
-use Method 2 for clients that only accept a URL.
+The 30-tool local surface these replace — its daemon, its Unix-socket proxy, and
+its loopback Streamable HTTP listener — is retired. See
+[ADR 0017](docs/architecture/adr-0017-retiring-the-legacy-local-surface.md) for
+what was removed, what was kept, and why.
 
 Topic review can use the same private-map pattern. For a conservative first
 pass, generate a curated draft that promotes only recurring wikilink tag groups
@@ -280,8 +236,9 @@ This runs the repo gate, the full synthetic local deployment exercise, the
 local stress gate, the Wrangler dry-run smoke, Terraform/OpenTofu formatting,
 and Terraform/OpenTofu validation against public-safe example inputs.
 
-`npm run check` runs the repo-safety/leakage check, TypeScript typecheck, and
-Vitest suite. The check CLI's default `all` mode runs:
+`npm run check` runs the repo-safety/leakage check, the anti-drift gates, the
+TypeScript typecheck, and the Vitest suite. The check CLI's default `all` mode
+runs:
 
 - `local`: contract, policy, leakage, path opacity, and repo-safety checks.
 - `cloudflare-deploy-readiness`: synthetic public-template deploy readiness,
@@ -291,6 +248,48 @@ Vitest suite. The check CLI's default `all` mode runs:
 - `first-run-guardrails`: synthetic bootstrap checks for sealed/unclaimed
   first-run behavior, token-required claim, token burn, concurrent first-claim
   lock behavior, and token-in-query guard coverage.
+
+### Anti-drift gates
+
+```bash
+npm run gates
+```
+
+Five build failures that stop a published contract from changing without saying
+so. Each has permanent negative controls in `packages/atlas-gates/src/*.test.ts`,
+so every one of them is known to fail on the defect it exists to catch.
+
+- **Single source.** A tool's shape, its existence, and the set it belongs to
+  have exactly one home. Fails on a tool-name set declared outside the contract,
+  on one limit written twice and chosen by transport, on an input shape authored
+  twice, and on a tool the catalog advertises that nothing serves.
+- **Golden fixtures.** One recorded response per published tool, matched against
+  the recorded bytes and validated against that tool's own published output
+  schema.
+- **Answer reproducibility.** A frozen synthetic graph and pinned
+  `(subject, as_of_valid, as_of_recorded)` queries with recorded answers. Any
+  change to an answer fails and is classified breaking: the remedy is a new
+  contract revision, not a re-recorded file.
+- **Released revisions are immutable.** Any change under a released
+  `schema/<revision>/` fails unconditionally, by content digest and again by
+  working-tree diff. A change is a new directory.
+- **Literal-constant lint.** Published counts and limits are generated into
+  `packages/atlas-gates/baseline/` from the published schemas and read from
+  there, never restated in code.
+
+Recording is a separate command from checking, deliberately:
+
+```bash
+npm run gates -- --write-baseline --write-goldens --write-corpus
+npm run gates -- --freeze-revision
+```
+
+`--freeze-revision` only ever adds a revision the lock has never seen. There is
+no flag that unfreezes one.
+
+See [ADR 0016](docs/architecture/adr-0016-anti-drift-build-gates.md) for the
+drift these were built against and the quarantine ledger that covers the surface
+being demolished.
 
 Run individual checks while iterating:
 
@@ -416,11 +415,16 @@ Workspace packages:
 - `@living-atlas/local-graph-store`: durable snapshot/journal graph replica for
   local CRUD and sync replay, with redacted or local-keyring-encrypted
   persistence by policy.
-- `@living-atlas/local-mcp`: local trusted-ingress MCP skeleton with bearer
-  token capability checks, sealed control-store loading, fixture graph
-  status/list/read plus synthetic CRUD tools backed by in-memory fixtures or the
+- `@living-atlas/atlas-mcp`: the consumer and operator MCP servers on protocol
+  revision 2026-07-28, with per-request capability grants, one audit event per
+  call, and multi-round-trip reveal for sensitive disclosure.
+- `@living-atlas/local-mcp`: the local graph-command library the retired 30-tool
+  surface was built on — bearer token capability checks, sealed control-store
+  loading, graph status/list/read plus CRUD backed by in-memory fixtures or the
   durable local graph store, redacted audit events, and optional durable
-  mutation outbox files for bidirectional sync daemon pickup.
+  mutation outbox files for bidirectional sync daemon pickup. It no longer
+  registers or serves any MCP tool (ADR 0017); it is retained because the
+  migration tooling in `packages/check` commits through it.
 - `@living-atlas/sync-agent`: local sync-agent that builds ciphertext batches,
   drains durable local MCP outbox files through a bidirectional push handshake,
   submits to the Worker sync route, fetches remote summaries/envelopes, and
@@ -655,31 +659,13 @@ sync acknowledgement. That pushes only the encrypted source capsules and marks
 the batch complete only when the old synced object count plus the new capsules
 matches the recomputed plan.
 
-Launch the fixture local MCP server with generated synthetic control state:
-
-```bash
-LIVING_ATLAS_LOCAL_MCP_TOKEN='replace-with-local-dev-token' \
-npm run local-mcp:fixture
-```
-
-Run it from an MCP client or the Inspector; a direct terminal run waits on
-stdio.
-
-Create an encrypted synthetic local control store for local MCP development:
+Create an encrypted synthetic local control store for local development:
 
 ```bash
 LIVING_ATLAS_LOCAL_CONTROL_STORE=/tmp/living-atlas-control-store.json \
 LIVING_ATLAS_LOCAL_CONTROL_STORE_PASSPHRASE='replace-with-local-dev-passphrase' \
 LIVING_ATLAS_LOCAL_MCP_TOKEN='replace-with-local-dev-token' \
 npm run local-control:fixture-store
-```
-
-Then launch the fixture local MCP server from that sealed store:
-
-```bash
-LIVING_ATLAS_LOCAL_CONTROL_STORE=/tmp/living-atlas-control-store.json \
-LIVING_ATLAS_LOCAL_CONTROL_STORE_PASSPHRASE='replace-with-local-dev-passphrase' \
-npm run local-mcp:fixture
 ```
 
 Cloudflare templates:

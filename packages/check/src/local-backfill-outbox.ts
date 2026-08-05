@@ -4,7 +4,7 @@ import { chmod, mkdir, readdir, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
-import { FileLocalGraphStore } from "@living-atlas/local-graph-store";
+import { LocalGraphMigrationSource, type LocalGraphReadHandle } from "@living-atlas/local-graph-store";
 import {
   FileLocalKeyringStore,
   resolveLocalSecret
@@ -49,7 +49,8 @@ export type StageBackfillResult = {
 };
 
 export async function stageBackfillOutbox(options: {
-  store: FileLocalGraphStore;
+  // Read-only: staging enumerates the replica, it never writes to it.
+  store: LocalGraphReadHandle;
   stagingDir: string;
   objectsPerFile?: number;
   now?: string;
@@ -164,13 +165,15 @@ async function main(): Promise<void> {
       "missing LIVING_ATLAS_LOCAL_KEYRING_PASSPHRASE (set it directly or via LIVING_ATLAS_LOCAL_KEYRING_PASSPHRASE_KEYCHAIN_SERVICE)"
     );
   }
-  const keyring = await new FileLocalKeyringStore(keyringPath).read(passphrase.value);
+  // The keyring is unsealed and discarded. Staging reads ciphertext envelopes
+  // and never decrypts one, but unsealing proves the operator running this holds
+  // the passphrase for the replica they are about to enumerate.
+  await new FileLocalKeyringStore(keyringPath).read(passphrase.value);
   const snapshot = JSON.parse(readFileSync(join(graphDir, "snapshot.json"), "utf8")) as { authority_id: string };
-  const store = await FileLocalGraphStore.open({
+  const store = await LocalGraphMigrationSource.open({
     directory: graphDir,
     authorityId: snapshot.authority_id,
-    plaintextPersistence: "redact",
-    keyring
+    plaintextPersistence: "redact"
   });
 
   if (process.env[stageAckEnv]?.trim() !== stageAckValue) {

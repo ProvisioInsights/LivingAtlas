@@ -1,7 +1,16 @@
 # Local MCP Boundary
 
-Status: Draft  
-Date: 2026-06-21
+Status: **Superseded by [ADR 0017](adr-0017-retiring-the-legacy-local-surface.md)** (was: Draft)  
+Date: 2026-06-21  
+Superseded: 2026-08-04
+
+> The boundary RULE this document states — that a remote surface must never be
+> able to call a local surface as a hidden backend — survives and is unchanged.
+> What is superseded is everything it says about the local MCP as a running
+> thing: the daemon, its socket, its tool surface, and its release-producer role
+> are retired. ADR 0017 records what replaced them.
+>
+> The body below is left as written.
 
 ## Purpose
 

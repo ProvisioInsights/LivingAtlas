@@ -185,6 +185,65 @@ describe("runBackup local encrypted graph capture", () => {
     }
   });
 
+  /**
+   * The obvious way to make the assertion above pass is to compact the replica
+   * before reading it — the snapshot on disk IS stale, and compaction is exactly
+   * the operation that makes it current. It is also the operation that truncates
+   * `journal.jsonl`, and until the migration lands that replica is the last copy
+   * of what it holds. So the backup opens a MIGRATION SOURCE (ADR 0017), and this
+   * pins the property rather than the mechanism: the bytes are the same
+   * afterwards.
+   */
+  it("leaves the replica byte-identical, so backing up cannot compact the thing being backed up", async () => {
+    const root = await mkdtemp(join(tmpdir(), "living-atlas-backup-readonly-"));
+    const graphDir = join(root, "graph");
+    const keyringPath = join(root, "keyring.json");
+    const stagingDir = join(root, "staging");
+    const { publicKey } = generateKeyPairSync("x25519");
+    const replicaBytes = async () => ({
+      snapshot: await readFile(join(graphDir, "snapshot.json"), "utf8"),
+      journal: await readFile(join(graphDir, "journal.jsonl"), "utf8")
+    });
+    try {
+      const keyring = createDefaultLocalKeyring({ authorityId, createdAt: timestamp });
+      await new FileLocalKeyringStore(keyringPath).write(keyring, "fixture-keyring-passphrase");
+      const graph = await FileLocalGraphStore.open({
+        directory: graphDir,
+        authorityId,
+        plaintextPersistence: "encrypt",
+        keyring,
+        now: () => timestamp
+      });
+      await graph.initializeFromObjects([], { created_at: timestamp });
+      await graph.createObject({
+        object: backupObject("la_object_backupreadonly0001"),
+        expected_generation: 0,
+        actor_id: fixtureLocalClientId,
+        recorded_at: "2026-07-09T00:01:00.000Z"
+      });
+
+      const before = await replicaBytes();
+      // The snapshot is behind its journal. That gap is the whole temptation.
+      expect(JSON.parse(before.snapshot).generation).toBe(0);
+      expect(before.journal.trim().split("\n")).toHaveLength(1);
+
+      withBackupEnv({
+        LIVING_ATLAS_BACKUP_STAGING_DIR: stagingDir,
+        LIVING_ATLAS_BACKUP_RECOVERY_PUBLIC_KEY_PEM: publicKey.export({ format: "pem", type: "spki" }).toString(),
+        LIVING_ATLAS_LOCAL_KEYRING: keyringPath,
+        LIVING_ATLAS_LOCAL_KEYRING_PASSPHRASE: "fixture-keyring-passphrase",
+        LIVING_ATLAS_LOCAL_GRAPH_DIR: graphDir,
+        LIVING_ATLAS_BACKUP_AUTHORITY_ID: authorityId,
+        LIVING_ATLAS_BACKUP_FULL_EVERY_MS: "1"
+      });
+      await expect(runBackup(1_000)).resolves.toBe(0);
+
+      expect(await replicaBytes()).toEqual(before);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("advances the backup serial after an immutable partial-write failure so retry uses a new ID", async () => {
     const root = await mkdtemp(join(tmpdir(), "living-atlas-backup-retry-"));
     const graphDir = join(root, "graph");

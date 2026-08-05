@@ -29,19 +29,33 @@ npx pnpm@<pinned> install     # see README for the pinned version
 npx pnpm@<pinned> check       # typecheck + tests + repo-safety gate
 ```
 
-## 3. Try it immediately (synthetic fixture mode)
+## 3. Try it immediately (empty in-memory graph)
 
-The fastest way to see the local MCP work — no real data, no keys:
+The fastest way to see the MCP surface — no real data, no keys:
 
 ```bash
-LIVING_ATLAS_LOCAL_MCP_TOKEN="dev-fixture-token" \
-  npx tsx packages/local-mcp/src/cli.ts
+npm run atlas-mcp:consumer -- --audit-log /tmp/living-atlas-audit.jsonl
 ```
 
-This starts an MCP **stdio** server over a synthetic in-memory graph. Point any
-MCP client at that command (see step 6) and you'll have `object_*`, `edge_*`,
-`search`, `traverse`, and `timeline` tools against fixture data. When you're
-ready for your own encrypted graph, continue below.
+This starts an MCP **stdio** server on protocol revision **2026-07-28** over an
+**empty** in-memory graph. It serves the surface, not data: `server/discover`,
+the twelve published tools, the envelope rules, and the escalation path. Start
+with `atlas.contract.describe.v1` (the live vocabularies, limits and history
+floor) and `atlas.scope.describe.v1` (your credential's grant).
+
+> The server runs `legacy: 'reject'`. A client that opens with a 2025-era
+> `initialize` is refused with `-32022` and told which revision is supported,
+> rather than served responses it has no schema for. Point a 2026-07-28 client
+> at it.
+
+The operator plane — migration windows, sync control, usage, the review queue —
+is a separate server sharing zero tool names:
+
+```bash
+npm run atlas-mcp:operator -- --audit-log /tmp/living-atlas-operator-audit.jsonl
+```
+
+When you're ready for your own encrypted graph, continue below.
 
 ## 4. Configure your encrypted local replica
 
@@ -110,42 +124,47 @@ export LIVING_ATLAS_AUDIT_LOG="$REPLICA/audit.jsonl"
 # Secrets resolved from the keychain at launch (never written to disk):
 export LIVING_ATLAS_LOCAL_CONTROL_STORE_PASSPHRASE="$(security find-generic-password -s io.livingatlas.<env>.control-store -w)"
 export LIVING_ATLAS_LOCAL_KEYRING_PASSPHRASE="$(security find-generic-password -s io.livingatlas.<env>.keyring -w)"
-export LIVING_ATLAS_LOCAL_MCP_TOKEN="$(security find-generic-password -s io.livingatlas.<env>.mcp-token -w)"
-
-cd "$REPO"
-exec npx tsx packages/local-mcp/src/cli.ts
 ```
 
-Save it (e.g. `run-local-mcp.sh`), `chmod +x` it, and use its path in the client
-configs below.
+These are the paths and secrets the local tooling in `packages/check` resolves —
+the backup, restore, import, reconciliation and readiness runners. Source this
+file before running any of them.
 
 ## 6. Connect an MCP client
 
-The local MCP is a **stdio** server, so it plugs into any local MCP host. Point
-each at your wrapper script.
+⚠ **Open question, and it is open rather than decided.** The 30-tool local
+server — with its daemon, its `0600` Unix-socket proxy and its loopback
+Streamable HTTP listener — is retired (see
+[ADR 0017](architecture/adr-0017-retiring-the-legacy-local-surface.md)). Its
+replacement, `packages/atlas-mcp`, serves an **empty in-memory graph**: binding
+it to a durable replica is deliberately a separate, reviewable act, and
+migrating real data into the new store is blocked on offline backup media.
 
-**Claude Code** — project `.mcp.json` at your repo root, or user-scoped:
+So there is currently **no supported way to point a client at your own graph**.
+Step 3 connects a client to the surface; it will answer every tool with an empty
+result. Do not read that as data loss — the replica is untouched and read-only,
+and `packages/backup` still backs it up.
+
+Client configuration for the replacement will be written when the store binding
+lands. Until then:
 
 ```jsonc
-{ "mcpServers": { "living-atlas-local": { "command": "/absolute/path/to/run-local-mcp.sh" } } }
+// Claude Code .mcp.json / Claude Desktop claude_desktop_config.json — SURFACE ONLY
+{
+  "mcpServers": {
+    "living-atlas": {
+      "command": "npx",
+      "args": ["tsx", "packages/atlas-mcp/src/cli.ts", "--audit-log", "/absolute/path/to/audit.jsonl"],
+      "cwd": "/absolute/path/to/LivingAtlas"
+    }
+  }
+}
 ```
 
-Or: `claude mcp add -s user living-atlas-local /absolute/path/to/run-local-mcp.sh`
-
-**Claude Desktop** — `~/Library/Application Support/Claude/claude_desktop_config.json`:
-
-```json
-{ "mcpServers": { "living-atlas-local": { "command": "/absolute/path/to/run-local-mcp.sh" } } }
-```
-
-**Codex** — `~/.codex/config.toml`:
-
-```toml
-[mcp_servers.living-atlas-local]
-command = "/absolute/path/to/run-local-mcp.sh"
-```
-
-Restart the app after editing its config so it picks up the new server.
+> **Client protocol revision matters.** The server accepts **2026-07-28 only**.
+> Clients still on a 2025 revision will be refused with `-32022` until they
+> update. That is intended: a dual-era server would have to guess which contract
+> a response is being validated against.
 
 > **ChatGPT and other remote/web clients** cannot spawn a local stdio process —
 > they need a hosted HTTP MCP URL. That is the **remote** MCP surface, which

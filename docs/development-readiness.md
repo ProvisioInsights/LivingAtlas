@@ -5,9 +5,9 @@ Date: 2026-06-22
 
 ## Purpose
 
-Give a developer a synthetic-only path from a clean checkout to local MCP
-fixture mode, local deploy rehearsal, and Cloudflare dry-run/preflight without
-touching real graph data or private deployment values.
+Give a developer a synthetic-only path from a clean checkout to the MCP surface,
+local deploy rehearsal, and Cloudflare dry-run/preflight without touching real
+graph data or private deployment values.
 
 This is the runbook to read before writing code or preparing any deployment.
 
@@ -37,9 +37,10 @@ meeting-derived content.
    npm run smoke:local
    ```
 
-   This covers sealed local control-store creation, fixture local MCP startup,
-   synthetic CRUD calls, activity-log leakage checks, and in-process Worker
-   bootstrap/sync routes with fake D1/R2 bindings.
+   This covers sealed local control-store creation, sealed keyring creation, an
+   encrypted local graph replica, synthetic CRUD through the local graph
+   commands, activity-log leakage checks, and in-process Worker bootstrap/sync
+   routes with fake D1/R2 bindings.
 
 4. Exercise the full synthetic local deploy rehearsal.
 
@@ -48,9 +49,10 @@ meeting-derived content.
    ```
 
    This is the first-run local deployment rehearsal. It creates a temporary
-   local profile, starts local MCP, claims bootstrap against the local Worker
-   harness, pushes/pulls ciphertext sync batches, checks stale and token-binding
-   rejection, and scans generated artifacts for token or sensitive-bait leaks.
+   local profile, runs the local graph commands against it, claims bootstrap
+   against the local Worker harness, pushes/pulls ciphertext sync batches,
+   checks stale and token-binding rejection, and scans generated artifacts for
+   token or sensitive-bait leaks.
 
 5. Run the Cloudflare public-template dry-run smoke.
 
@@ -77,28 +79,36 @@ Stop here for first-run readiness. A passing synthetic preflight means the
 public scaffold and local workflow are ready for the next implementation slice;
 it does not authorize real graph import or personal Cloudflare deployment.
 
-## Local MCP Fixture Mode
+## MCP Surface, And Local Fixture Stores
 
-There are two supported local MCP development modes.
-
-Use token-only fixture mode when you want a stdio MCP server backed by generated
-synthetic control state:
-
-```bash
-LIVING_ATLAS_LOCAL_MCP_TOKEN='replace-with-local-dev-token' \
-npm run local-mcp:fixture
-```
-
-Run it from an MCP client or the MCP Inspector; a plain terminal invocation will
-wait on stdio.
+The MCP servers are `packages/atlas-mcp`. Both speak protocol revision
+**2026-07-28 only** and both serve an **empty in-memory graph** — they exist so a
+client can be pointed at a real server and see the surface without any data
+being involved. Neither reads a profile directory, a graph path, or any location
+outside the directory it is told to write its audit log to.
 
 ```bash
-LIVING_ATLAS_LOCAL_MCP_TOKEN='replace-with-local-dev-token' \
-npm run mcp:inspect:local
+npm run atlas-mcp:consumer -- --audit-log /tmp/living-atlas-audit.jsonl
+npm run atlas-mcp:operator -- --audit-log /tmp/living-atlas-operator-audit.jsonl
 ```
 
-Use sealed-store fixture mode when you want to rehearse local initialization
-with an encrypted synthetic control store:
+A plain terminal invocation waits on stdio; drive it from an MCP client on the
+2026-07-28 revision, or by piping JSON-RPC lines. Binding a durable store to
+either server is deliberately a separate, reviewable act and has not landed; see
+[ADR 0017](architecture/adr-0017-retiring-the-legacy-local-surface.md).
+
+The 30-tool local stdio server, its daemon, its socket proxy and its loopback
+HTTP listener are retired by
+[ADR 0017](architecture/adr-0017-retiring-the-legacy-local-surface.md).
+`npm run local-mcp:fixture` and `npm run mcp:inspect:local` no longer exist.
+
+### Local fixture stores
+
+The local control store, keyring and graph replica are still what the tooling in
+`packages/check` reads — the import, backup, restore, reconciliation and
+readiness runners all resolve the same env vars.
+
+Create an encrypted synthetic control store:
 
 ```bash
 LIVING_ATLAS_LOCAL_CONTROL_STORE=/tmp/living-atlas-control-store.json \
@@ -107,50 +117,13 @@ LIVING_ATLAS_LOCAL_MCP_TOKEN='replace-with-local-dev-token' \
 npm run local-control:fixture-store
 ```
 
-Then launch local MCP from the sealed store:
-
-```bash
-LIVING_ATLAS_LOCAL_CONTROL_STORE=/tmp/living-atlas-control-store.json \
-LIVING_ATLAS_LOCAL_CONTROL_STORE_PASSPHRASE='replace-with-local-dev-passphrase' \
-npm run local-mcp:fixture
-```
-
-Optional activity-log capture for local MCP runs:
-
-```bash
-LIVING_ATLAS_ACTIVITY_LOG=/tmp/living-atlas-activity.jsonl \
-LIVING_ATLAS_LOCAL_MCP_TOKEN='replace-with-local-dev-token' \
-npm run local-mcp:fixture
-```
-
-Add `LIVING_ATLAS_LOCAL_GRAPH_DIR` when you want the local MCP to use the
-durable local graph store instead of the in-memory fixture graph:
-
-```bash
-LIVING_ATLAS_LOCAL_GRAPH_DIR=/tmp/living-atlas-graph \
-LIVING_ATLAS_LOCAL_MCP_TOKEN='replace-with-local-dev-token' \
-npm run local-mcp:fixture
-```
-
-Create a sealed fixture keyring when you want the durable store to persist
-encrypted payloads instead of redacted payload placeholders:
+Create a sealed fixture keyring so the durable store persists encrypted payloads
+instead of redacted payload placeholders:
 
 ```bash
 LIVING_ATLAS_LOCAL_KEYRING=/tmp/living-atlas-keyring.json \
 LIVING_ATLAS_LOCAL_KEYRING_PASSPHRASE='replace-with-local-keyring-passphrase' \
 npm run local-keyring:fixture-store
-```
-
-Then launch the local MCP with both the durable graph directory and keyring:
-
-```bash
-LIVING_ATLAS_LOCAL_GRAPH_DIR=/tmp/living-atlas-graph \
-LIVING_ATLAS_LOCAL_KEYRING=/tmp/living-atlas-keyring.json \
-LIVING_ATLAS_LOCAL_KEYRING_PASSPHRASE='replace-with-local-keyring-passphrase' \
-LIVING_ATLAS_LOCAL_CONTROL_STORE=/tmp/living-atlas-control-store.json \
-LIVING_ATLAS_LOCAL_CONTROL_STORE_PASSPHRASE='replace-with-local-dev-passphrase' \
-LIVING_ATLAS_LOCAL_MCP_TOKEN='replace-with-local-dev-token' \
-npm run local-mcp:fixture
 ```
 
 With a keyring, `snapshot.json` and `journal.jsonl` use
@@ -704,16 +677,18 @@ authority by default and exercises idempotent replay, stale-generation rejection
 same-generation concurrent race rejection, generation-gap rejection, and pull
 state after the race.
 
-The local MCP server can be inspected with the MCP Inspector, which is the
-closest current equivalent to a SwaggerUI-style developer surface for MCP:
-
-```bash
-npm run mcp:inspect:local
-```
-
-Use it for tool/resource/prompt discovery, schema inspection, test calls, and
-notifications while developing the local MCP. It is not a persistent API
-contract registry; the repo contracts and tests remain the source of truth.
+⚠ **No MCP Inspector script is provided, and that is deliberate.** The
+`mcp:inspect:local` script retired by
+[ADR 0017](architecture/adr-0017-retiring-the-legacy-local-surface.md) pointed
+the Inspector at a 2025-era server. The replacement
+runs `legacy: 'reject'`, so an Inspector build that opens with a 2025-era
+`initialize` is refused with `-32022` — and a documented script that cannot
+connect is worse than no script. Drive `packages/atlas-mcp` from a client on the
+2026-07-28 revision, or by piping JSON-RPC lines to
+`npm run atlas-mcp:consumer`. The published contract in
+`packages/atlas-contract/schema/` is the discovery surface: every tool's input
+and output schema is a file a consumer can fetch, which is what the Inspector
+was standing in for.
 
 The Cloudflare Worker now exposes a token-gated remote MCP JSON-RPC surface at
 `/mcp`. It supports `initialize`, `tools/list`, and `tools/call` for sync

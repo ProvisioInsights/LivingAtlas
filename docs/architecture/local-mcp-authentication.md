@@ -1,7 +1,19 @@
 # Local MCP Authentication
 
-Status: Draft required before implementation  
-Date: 2026-06-21
+Status: **Superseded by [ADR 0015](adr-0015-operator-plane-and-capability-grants.md) and [ADR 0017](adr-0017-retiring-the-legacy-local-surface.md)** (was: Draft required before implementation)  
+Date: 2026-06-21  
+Superseded: 2026-08-04
+
+> The threat model here is still right — binding to `localhost` is not a
+> security boundary, and a local server that can decrypt the graph must
+> authenticate every caller. What is superseded is the mechanism. ADR 0015
+> settles identity as **per-request input**: the credential rides `_meta` on the
+> request rather than being connection state, one refusal code is returned on the
+> wire for every cause while the audit event carries the precise one, and the
+> grant the credential resolves to is published by `atlas.scope.describe.v1`.
+> ADR 0017 records the removal of the server this document was written for.
+>
+> The body below is left as written.
 
 ## Purpose
 

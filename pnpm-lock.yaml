@@ -65,6 +65,58 @@ importers:
         specifier: workspace:*
         version: link:../fixtures
 
+  packages/atlas-contract:
+    dependencies:
+      '@living-atlas/atlas-core':
+        specifier: workspace:*
+        version: link:../atlas-core
+    devDependencies:
+      ajv:
+        specifier: 8.20.0
+        version: 8.20.0
+
+  packages/atlas-core:
+    dependencies:
+      '@living-atlas/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+
+  packages/atlas-gates:
+    dependencies:
+      '@living-atlas/atlas-contract':
+        specifier: workspace:*
+        version: link:../atlas-contract
+      '@living-atlas/atlas-core':
+        specifier: workspace:*
+        version: link:../atlas-core
+      '@living-atlas/atlas-mcp':
+        specifier: workspace:*
+        version: link:../atlas-mcp
+      '@living-atlas/graph-service':
+        specifier: workspace:*
+        version: link:../graph-service
+      '@living-atlas/local-mcp':
+        specifier: workspace:*
+        version: link:../local-mcp
+      '@living-atlas/mcp-contract':
+        specifier: workspace:*
+        version: link:../mcp-contract
+
+  packages/atlas-mcp:
+    dependencies:
+      '@living-atlas/atlas-contract':
+        specifier: workspace:*
+        version: link:../atlas-contract
+      '@living-atlas/atlas-core':
+        specifier: workspace:*
+        version: link:../atlas-core
+      '@modelcontextprotocol/server':
+        specifier: 2.0.0
+        version: 2.0.0
+      zod:
+        specifier: 4.4.3
+        version: 4.4.3
+
   packages/backup:
     dependencies:
       zod:
@@ -109,9 +161,6 @@ importers:
       '@living-atlas/local-mcp':
         specifier: workspace:*
         version: link:../local-mcp
-      '@living-atlas/local-review-site':
-        specifier: workspace:*
-        version: link:../local-review-site
       '@living-atlas/policy':
         specifier: workspace:*
         version: link:../policy
@@ -173,33 +222,6 @@ importers:
       '@living-atlas/local-keyring':
         specifier: workspace:*
         version: link:../local-keyring
-
-  packages/graph-workbench:
-    dependencies:
-      '@living-atlas/contracts':
-        specifier: workspace:*
-        version: link:../contracts
-      '@living-atlas/local-graph-store':
-        specifier: workspace:*
-        version: link:../local-graph-store
-      '@living-atlas/local-keyring':
-        specifier: workspace:*
-        version: link:../local-keyring
-      esbuild:
-        specifier: ^0.28.1
-        version: 0.28.1
-      graphology:
-        specifier: ^0.26.0
-        version: 0.26.0(graphology-types@0.24.8)
-      graphology-layout-forceatlas2:
-        specifier: ^0.10.1
-        version: 0.10.1(graphology-types@0.24.8)
-      graphology-layout-noverlap:
-        specifier: ^0.4.2
-        version: 0.4.2(graphology-types@0.24.8)
-      sigma:
-        specifier: ^3.0.3
-        version: 3.0.3(graphology-types@0.24.8)
 
   packages/importer:
     dependencies:
@@ -308,43 +330,12 @@ importers:
       '@living-atlas/local-keyring':
         specifier: workspace:*
         version: link:../local-keyring
-      '@living-atlas/mcp-contract':
-        specifier: workspace:*
-        version: link:../mcp-contract
       '@living-atlas/policy':
         specifier: workspace:*
         version: link:../policy
-      '@living-atlas/review-projection':
-        specifier: workspace:*
-        version: link:../review-projection
-      '@modelcontextprotocol/sdk':
-        specifier: 1.29.0
-        version: 1.29.0(@cfworker/json-schema@4.1.1)(zod@4.4.3)
       zod:
         specifier: 4.4.3
         version: 4.4.3
-
-  packages/local-review-site:
-    dependencies:
-      '@living-atlas/contracts':
-        specifier: workspace:*
-        version: link:../contracts
-      '@living-atlas/graph-service':
-        specifier: workspace:*
-        version: link:../graph-service
-      '@living-atlas/importer':
-        specifier: workspace:*
-        version: link:../importer
-      '@living-atlas/local-mcp':
-        specifier: workspace:*
-        version: link:../local-mcp
-      '@living-atlas/review-projection':
-        specifier: workspace:*
-        version: link:../review-projection
-    devDependencies:
-      '@living-atlas/fixtures':
-        specifier: workspace:*
-        version: link:../fixtures
 
   packages/mcp-contract: {}
 
@@ -750,6 +741,10 @@ packages:
   '@levischuck/tiny-cbor@0.2.11':
     resolution: {integrity: sha512-llBRm4dT4Z89aRsm6u2oEZ8tfwL/2l6BwpZ7JcyieouniDECM5AqNgr/y08zalEIvW3RSK4upYyybDcmjXqAow==}
 
+  '@modelcontextprotocol/core@2.0.0':
+    resolution: {integrity: sha512-pJCEwGG7Lfr/+PQp9ZTwKXNeO5wzbfKL7H3MYpCorM4oFBoQrdjnBgEoqG+RjhsvS1FKrDbKux+M1HhlnGWqcA==}
+    engines: {node: '>=20'}
+
   '@modelcontextprotocol/sdk@1.29.0':
     resolution: {integrity: sha512-zo37mZA9hJWpULgkRpowewez1y6ML5GsXJPY8FI0tBBCd77HEvza4jDqRKOXgHNn867PVGCyTdzqpz0izu5ZjQ==}
     engines: {node: '>=18'}
@@ -759,6 +754,10 @@ packages:
     peerDependenciesMeta:
       '@cfworker/json-schema':
         optional: true
+
+  '@modelcontextprotocol/server@2.0.0':
+    resolution: {integrity: sha512-YhHWdHfpFMQfd0prsEnxKeS3Qz3ytIGmsS0sth4KDjnacIT7hxk6hXHkJ9KysxlkvTM+WZAtQbbcUhdoP4Hvtw==}
+    engines: {node: '>=20'}
 
   '@napi-rs/wasm-runtime@1.1.6':
     resolution: {integrity: sha512-ZLv/JdUfkvOy9eCnnBaGfiO+XimbjebAeO+MRQqD/B+FR1tnRN0tpKSJHRbE8sFfS6aqsXZ67TQjfwfsxULVbg==}
@@ -1322,10 +1321,6 @@ packages:
   event-target-polyfill@0.0.4:
     resolution: {integrity: sha512-Gs6RLjzlLRdT8X9ZipJdIZI/Y6/HhRLyq9RdDlCsnpxr/+Nn6bU2EFGuC94GjxqhM+Nmij2Vcq98yoHrU8uNFQ==}
 
-  events@3.3.0:
-    resolution: {integrity: sha512-mQw+2fkQbALzQ7V0MY0IqdnXNOeTtP4r0lN9z7AAawCXgqea7bDii20AYrIBrFd/Hx0M2Ocz6S111CaFkUcb0Q==}
-    engines: {node: '>=0.8.x'}
-
   eventsource-parser@3.1.0:
     resolution: {integrity: sha512-kJezFj9YFAMLeORyi7aCLxLbD5/qWMQnoMVlVPyHIll7lgRJCc3JVln9Vgl9nwQi0YkMnhdGTMNn7CkRRAptMg==}
     engines: {node: '>=18.0.0'}
@@ -1406,29 +1401,6 @@ packages:
   gopd@1.2.0:
     resolution: {integrity: sha512-ZUKRh6/kUFoAiTAtTYPZJ3hw9wNxx+BIBOijnlG9PnrJsCcSjs1wyyD6vJpaYtgnzDrKYRSqf3OO6Rfa93xsRg==}
     engines: {node: '>= 0.4'}
-
-  graphology-layout-forceatlas2@0.10.1:
-    resolution: {integrity: sha512-ogzBeF1FvWzjkikrIFwxhlZXvD2+wlY54lqhsrWprcdPjopM2J9HoMweUmIgwaTvY4bUYVimpSsOdvDv1gPRFQ==}
-    peerDependencies:
-      graphology-types: '>=0.19.0'
-
-  graphology-layout-noverlap@0.4.2:
-    resolution: {integrity: sha512-13WwZSx96zim6l1dfZONcqLh3oqyRcjIBsqz2c2iJ3ohgs3605IDWjldH41Gnhh462xGB1j6VGmuGhZ2FKISXA==}
-    peerDependencies:
-      graphology-types: '>=0.19.0'
-
-  graphology-types@0.24.8:
-    resolution: {integrity: sha512-hDRKYXa8TsoZHjgEaysSRyPdT6uB78Ci8WnjgbStlQysz7xR52PInxNsmnB7IBOM1BhikxkNyCVEFgmPKnpx3Q==}
-
-  graphology-utils@2.5.2:
-    resolution: {integrity: sha512-ckHg8MXrXJkOARk56ZaSCM1g1Wihe2d6iTmz1enGOz4W/l831MBCKSayeFQfowgF8wd+PQ4rlch/56Vs/VZLDQ==}
-    peerDependencies:
-      graphology-types: '>=0.23.0'
-
-  graphology@0.26.0:
-    resolution: {integrity: sha512-8SSImzgUUYC89Z042s+0r/vMibY7GX/Emz4LDO5e7jYXhuoWfHISPFJYjpRLUSJGq6UQ6xlenvX1p/hJdfXuXg==}
-    peerDependencies:
-      graphology-types: '>=0.24.0'
 
   has-symbols@1.1.0:
     resolution: {integrity: sha512-1cDNdwJ2Jaohmb3sg4OmKaMBwuC48sYni5HUw2DvsC8LjGTLK9h+eb1X6RyuOHe4hT0ULCW68iomhjUoKUqlPQ==}
@@ -1780,9 +1752,6 @@ packages:
 
   siginfo@2.0.0:
     resolution: {integrity: sha512-ybx0WO1/8bSBLEWXZvEd7gMW3Sn3JFlW3TvX1nREbDLRNQNaeNN8WK0meBwPdAaOI7TtRRRJn/Es1zhrrCHu7g==}
-
-  sigma@3.0.3:
-    resolution: {integrity: sha512-5H0zFlx6/NTQpqBg4Rm569ZOpnBOXMaS25UQThIWMU3XyzI5AhmorK/gnl87BvJBLhQd0tW4C0LIp3enWzMoNw==}
 
   source-map-js@1.2.1:
     resolution: {integrity: sha512-UXWMKhLOwVKb728IUtQPXxfYU+usdybtUrK/8uGE8CQMvrhOpwvzDBwj0QhSL7MQc7vIsISBG8VQ8+IDQxpfQA==}
@@ -2263,6 +2232,10 @@ snapshots:
 
   '@levischuck/tiny-cbor@0.2.11': {}
 
+  '@modelcontextprotocol/core@2.0.0':
+    dependencies:
+      zod: 4.4.3
+
   '@modelcontextprotocol/sdk@1.29.0(@cfworker/json-schema@4.1.1)(zod@4.4.3)':
     dependencies:
       '@hono/node-server': 1.19.14(hono@4.12.26)
@@ -2286,6 +2259,11 @@ snapshots:
       '@cfworker/json-schema': 4.1.1
     transitivePeerDependencies:
       - supports-color
+
+  '@modelcontextprotocol/server@2.0.0':
+    dependencies:
+      '@modelcontextprotocol/core': 2.0.0
+      zod: 4.4.3
 
   '@napi-rs/wasm-runtime@1.1.6(@emnapi/core@1.10.0)(@emnapi/runtime@1.10.0)':
     dependencies:
@@ -2799,8 +2777,6 @@ snapshots:
 
   event-target-polyfill@0.0.4: {}
 
-  events@3.3.0: {}
-
   eventsource-parser@3.1.0: {}
 
   eventsource@3.0.7:
@@ -2900,27 +2876,6 @@ snapshots:
       es-object-atoms: 1.1.2
 
   gopd@1.2.0: {}
-
-  graphology-layout-forceatlas2@0.10.1(graphology-types@0.24.8):
-    dependencies:
-      graphology-types: 0.24.8
-      graphology-utils: 2.5.2(graphology-types@0.24.8)
-
-  graphology-layout-noverlap@0.4.2(graphology-types@0.24.8):
-    dependencies:
-      graphology-types: 0.24.8
-      graphology-utils: 2.5.2(graphology-types@0.24.8)
-
-  graphology-types@0.24.8: {}
-
-  graphology-utils@2.5.2(graphology-types@0.24.8):
-    dependencies:
-      graphology-types: 0.24.8
-
-  graphology@0.26.0(graphology-types@0.24.8):
-    dependencies:
-      events: 3.3.0
-      graphology-types: 0.24.8
 
   has-symbols@1.1.0: {}
 
@@ -3234,13 +3189,6 @@ snapshots:
       side-channel-weakmap: 1.0.2
 
   siginfo@2.0.0: {}
-
-  sigma@3.0.3(graphology-types@0.24.8):
-    dependencies:
-      events: 3.3.0
-      graphology-utils: 2.5.2(graphology-types@0.24.8)
-    transitivePeerDependencies:
-      - graphology-types
 
   source-map-js@1.2.1: {}
 
