@@ -177,7 +177,7 @@ describe("ids are minted, never derived from content", () => {
 
   it("keeps the id when a bullet is inserted above it", () => {
     // Inserting one bullet shifted every line below it, which re-identified
-    // 51,811 of 65,091 objects in the old store.
+    // the great majority of objects in the old store.
     const registry = new EntityRegistry({ clock: fixedClock().now });
     const first = matched(
       registry.resolveOrMint({ observation: observation({ block_ordinal: 7 }), draft: draft(), ...OWNER })
@@ -626,7 +626,7 @@ describe("redirect resolution always terminates", () => {
 
 describe("redirects are not assertions", () => {
   it("writes no assertion for a mechanical migration redirect", () => {
-    // 65,091 objects go through this path. Routing them through the assertion
+    // Every object goes through this path. Routing them through the assertion
     // layer would mean inventing an evidence record for each, which is exactly
     // the provenance pollution the split exists to prevent.
     const clock = fixedClock();

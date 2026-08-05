@@ -1476,7 +1476,7 @@ function employedByEdgesFor(drafts: Draft[], slot: EntitySlot): ProjectedRelatio
 }
 
 /**
- * `company_current` (309) is deleted by construction — the target person schema
+ * `company_current` is deleted by construction — the target person schema
  * has no such field — so the only question is whether the fact it carried
  * survives the deletion. Backfilling FIRST is what makes the deletion lossless
  * rather than merely defensible.
@@ -1525,7 +1525,7 @@ function backfillEmploymentFromCompanyCurrent(
 }
 
 /**
- * `job_title` (300) is a fact about a RELATIONSHIP that was stored on a node. A
+ * `job_title` is a fact about a RELATIONSHIP that was stored on a node. A
  * title with no employer is not a fact about anybody, which is why it moves onto
  * the employed-by edge as `attrs.role`.
  *

@@ -10,9 +10,9 @@ enum, and thirty-seven predicates. Measured against the corpus it was supposed t
 describe, both halves had failed in the same way: they had stopped
 discriminating.
 
-**The subtype enums did not classify.** `organization` declared ten values and put
-370 of its 470 nodes in `other`, with a further 27 carrying none. `project`
-declared seven values, and *all seven* had zero uses — every project that carried
+**The subtype enums did not classify.** `organization` declared ten values and its
+MODAL value was `other`, with a further group carrying none at all. `project`
+declared seven values and *all seven* had zero uses — every project that carried
 a subtype at all carried a value nobody had declared. An enum whose modal value is
 `other` is not a classification: it is a slot that answers every question
 plausibly and wrongly, which is strictly worse than answering nothing. Renaming
@@ -26,10 +26,10 @@ such as `company` and `nonprofit`. Whichever axis a curator chose, the other
 became unrecordable. The same collision
 appears in `offering`, where schema.org itself files software under three
 different branches, so borrowing `product`/`service` would have imported an
-unresolved ambiguity into a 24-node type.
+unresolved ambiguity into a small type.
 
-**Several predicates were one predicate.** `board-member-of` (27), `advises` (15)
-and `alumnus-of` (6) are all `member-of` with a different role. Keeping them apart
+**Several predicates were one predicate.** `board-member-of`, `advises` and
+`alumnus-of` are all `member-of` with a different role. Keeping them apart
 meant three query paths for one question, and a consumer that asked only one of
 them got a confidently incomplete answer.
 
@@ -38,7 +38,7 @@ them got a confidently incomplete answer.
 inverse. "Where is this organization based" and "who runs this place" were the
 same edge with the endpoints swapped, and nothing in code could tell a consumer
 which one it was holding. The same permissiveness let `owns` take an occurrence as
-its target, which is how 323 travel segments came to be things a person owns
+its target, which is how the travel segments came to be things a person owns
 rather than things a person did.
 
 ## Decision
@@ -61,14 +61,14 @@ refusal is the point: a caller sending `subtype: "company"` believes it has
 classified something, and failing is the only way to tell it otherwise.
 
 `occurrence` keeps four values and they cover its corpus with no residue:
-`segment` (323), `trip` (29), `stay` (40), `meeting` (72). `segment` is the only
-new subtype word in the whole vocabulary. The subtype is **required and has no
+`segment`, `trip`, `stay`, `meeting`. `segment` is the only new subtype word in
+the whole vocabulary. The subtype is **required and has no
 default**: `other` is gone, so any default would file an occurrence whose author
 did not choose under a word nobody chose, which is exactly what `other` did.
 
 `meeting` is deliberately the residual value. Meal, conference, event, social and
 incident are all "people were somewhere at a time", and the previous draft's
-instinct to keep `meeting` (4 nodes) while discarding ~32 structurally identical
+instinct to keep a sparsely-used `meeting` while discarding structurally identical
 records into `other` had the discrimination backwards.
 
 ### 2. Classification becomes `has-type`, a predicate pointing at a `topic` node
@@ -136,8 +136,8 @@ be added". The split takes that cost up front instead of at the first
 opening-hours attribute.
 
 `operated-by` launches with **zero existing edges by design**. Gate G6 measured
-that none of the 65 venue locations has a matching organization today, so this
-mints 65 organizations rather than de-duplicating existing ones. The direction is
+that NO venue location has a matching organization today, so this mints one
+organization per venue rather than de-duplicating existing ones. The direction is
 taken from OSM `operator=*` — "the entity who is directly in charge of the current
 operation of a map object" — and it is the correctly-directed counterpart of
 `based-in`, which is now domain-restricted so it can never express the inverse.

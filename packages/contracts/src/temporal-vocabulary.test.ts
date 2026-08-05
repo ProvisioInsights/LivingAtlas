@@ -107,7 +107,7 @@ describe("the occurrence subtype enum is total, and it is the only one left", ()
       );
     }
 
-    // `organization` is the type whose enum failed hardest — 370 of 470 nodes in
+    // `organization` is the type whose enum failed hardest — its MODAL value was in
     // `other` — so it is the one this pins.
     const organization = {
       object_id: "la_object_vocabulary0003",

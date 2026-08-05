@@ -12,7 +12,7 @@ import { RecordedAtSchema } from "./time.js";
  * This is the defect that made the old store unusable as a long-term reference.
  * A block's id was `sha256(sourcePathRef : lineIndex : text)`, so fixing a typo
  * minted a new id and inserting one bullet re-identified every block below it —
- * 51,811 of 65,091 objects. Content, position, file path, and encoding are
+ * the great majority of objects. Content, position, file path, and encoding are
  * therefore OBSERVATIONS about an entity (see `SourceObservationSchema`), never
  * inputs to its identity. An observation may change freely; the id may not move.
  */
@@ -140,7 +140,7 @@ export function validateEntityType(draft: {
  *
  * Every trait here is unstable on its own. A path changes when a file is
  * renamed, an ordinal changes when a bullet is inserted above, a digest changes
- * when a typo is fixed, and only 433 of 17,036 source bullets (2.5%) carry an
+ * when a typo is fixed, and only about one source bullet in forty carries an
  * explicit `id::` at all. The old store's mistake was not using these traits —
  * it was deriving identity FROM them, so any single change re-identified the
  * record. Here they are evidence for a match, weighed together, and the id they

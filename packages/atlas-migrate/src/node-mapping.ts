@@ -49,8 +49,8 @@ export type TravelEndpointCoverageKind = (typeof TravelEndpointCoverageKinds)[nu
  * for: the ratified table says the mode of travel stays an attribute, and the
  * 2026.08.1 occurrence endpoint is `.strict()` with no slot for one, so the two
  * statements cannot both be satisfied today. Reporting the collision is the only
- * honest move -- dropping the value would lose 323 facts silently, and widening
- * a frozen contract revision from inside a migration would be worse.
+ * honest move -- dropping the value would silently lose one fact per travel leg,
+ * and widening a frozen contract revision from inside a migration would be worse.
  */
 export type UnplacedAttribute = {
   attribute: string;

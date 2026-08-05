@@ -139,7 +139,7 @@ export function createLegacyVocabularyGraph(): LegacyGraph {
       edge("la_edge_fx_contained_org", ids.city, "contained-in", ids.org0),
       edge("la_edge_fx_manages", ids.person0, "manages", ids.org1),
       edge("la_edge_fx_unknown", ids.person0, "vibes-with", ids.person1),
-      // The 12 owns and 6 based-in dangles measured on the graph, in miniature.
+      // The owns and based-in dangles the graph carries, in miniature.
       edge("la_edge_fx_owns_dangle", ids.person0, "owns", ids.missing),
       edge("la_edge_fx_basedin_dangle", ids.person0, "based-in", ids.missing)
     ]

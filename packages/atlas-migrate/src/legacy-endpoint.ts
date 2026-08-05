@@ -62,8 +62,8 @@ export const LegacyEndpointPayloadSchema = z.object({
   homepage_ref: z.string().min(1).optional(),
 
   /**
-   * Three attribute names for one fact. `date` (323), `occurred_on` (29) and
-   * `purchase_date` (12) were never reconciled, so a query for "when" had to know
+   * Three attribute names for one fact. `date`, `occurred_on` and
+   * `purchase_date` were never reconciled, so a query for "when" had to know
    * which generation of writer produced the row.
    */
   date: MixedPrecisionDateSchema.optional(),
@@ -74,10 +74,10 @@ export const LegacyEndpointPayloadSchema = z.object({
   organizer_refs: z.array(ObjectIdSchema).default([]),
 
   /**
-   * `provider` (177) and `airline` (146) are the same fact under two names, and
-   * gate G8 measured them PERFECTLY DISJOINT — zero objects carry both. That
-   * measurement is enforced below rather than trusted: an object carrying both is
-   * a source that stopped matching the evidence this merge was authorised on.
+   * `provider` and `airline` are the same fact under two names, and gate G8
+   * measured them PERFECTLY DISJOINT — no object carries both. That measurement
+   * is enforced below rather than trusted: an object carrying both is a source
+   * that stopped matching the evidence this merge was authorised on.
    */
   provider: z.string().min(1).optional(),
   airline: z.string().min(1).optional(),
@@ -92,10 +92,10 @@ export type LegacyEndpointPayload = z.infer<typeof LegacyEndpointPayloadSchema>;
 /**
  * Location subtypes that name a VENUE — a place that is also a business.
  *
- * Gate G6 measured 65 of these and found ZERO with a same-named organization, so
- * the split mints 65 new organizations rather than reconciling duplicates. That
- * is why `operated-by` launches with no existing warrant: there was nothing for
- * it to connect until this migration created the other end.
+ * Gate G6 found NO venue with a same-named organization, so the split mints a
+ * new organization for each rather than reconciling duplicates. That is why
+ * `operated-by` launches with no existing warrant: there was nothing for it to
+ * connect until this migration created the other end.
  */
 export const VenueLocationSubtypes = ["restaurant", "hotel"] as const;
 export type VenueLocationSubtype = (typeof VenueLocationSubtypes)[number];

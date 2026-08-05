@@ -24,11 +24,11 @@ property, it is a bug wearing one.**
 
 Two further problems were settled by measurement rather than argument:
 
-- Gate **G6** found 65 venue locations (restaurants and hotels) and **zero** with
+- Gate **G6** found venue locations (restaurants and hotels) and **none** with
   a same-named organization. A venue row is one node standing for two things — a
   place and a business — and nothing in the graph could express the difference.
-- Gate **G8** found `provider` (177) and `airline` (146) **perfectly disjoint**:
-  no object carries both. They are one attribute under two names.
+- Gate **G8** found `provider` and `airline` **perfectly disjoint**: no object
+  carries both. They are one attribute under two names.
 
 ## Decision
 
@@ -51,9 +51,9 @@ unreviewable.
 A `location` whose legacy subtype is `restaurant` or `hotel` projects as **two**
 entity records — the location it already is, plus a newly minted organization —
 joined by `operated-by` (location → organization). Both carry `has-type` to the
-same topic node. G6 is why all 65 are minted rather than reconciled: there was no
-organization to merge with, so `operated-by` launches with zero existing warrant
-by design.
+same topic node. G6 is why every one is minted rather than reconciled: there was
+no organization to merge with, so `operated-by` launches with zero existing
+warrant by design.
 
 **Which node inherits which attribute** is decided by whose property it is, and
 the test is what survives change. A restaurant that moves premises is the same
@@ -158,7 +158,7 @@ attribute-level outcome, and neither value wins.
 
 - The projector reads the real legacy shape. The migration can be dry-run against
   an actual export rather than only against a fixture in the new vocabulary.
-- 65 organizations are minted that did not exist. They are new nodes, not
+- An organization is minted per venue that did not exist. They are new nodes, not
   discovered ones, and the plan reports them as such.
 - A consumer holding a venue's legacy id gets a refusal it can act on rather than
   a redirect that quietly picked a half.

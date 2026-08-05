@@ -20,12 +20,12 @@ could not have run.
 Two properties of the corpus, measured on the real graph, drive the design:
 
 - The legacy occurrence vocabulary is a **closed** set of about ten words that
-  collapse onto four survivors, and 323 travel legs were filed as `item` rather
+  collapse onto four survivors, and the travel legs were filed as `item` rather
   than as occurrences at all. Getting one of those wrong moves a node into a type
   whose edges mean something else, and nothing downstream can detect it.
-- The legacy organization and location vocabularies were never closed — 370 of
-  470 organizations sat in `other`. Enumerating them would move the residue from
-  a subtype slot into a mapping table without removing it.
+- The legacy organization and location vocabularies were never closed — the modal
+  organization value was `other`. Enumerating them would move the residue from a
+  subtype slot into a mapping table without removing it.
 
 ## Decision
 
@@ -173,8 +173,7 @@ disagree silently.
   change is one field per row.
 - **OPEN-16 — a `participant_refs` occurrence whose recorded subtype maps to
   something other than `meeting`.** The table governs and the backfill does not
-  fire. Measured on the real graph this affects a single node, whose recorded word
-  sends it to `trip`.
+  fire. This is a rare shape, and the recorded word wins wherever it appears.
 - **Venue splitting (D3).** `operated-by` and the minting of organizations for
   venue locations are a different change and are not implemented here. Only topic
   nodes are minted today, though `minted-entity` carries the full endpoint-type

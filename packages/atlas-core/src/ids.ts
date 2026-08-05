@@ -6,7 +6,7 @@ import { z } from "zod";
  * reference. `semanticObjectId` derived a block's id from
  * `sha256(sourcePathRef : lineIndex : text)`, so fixing a typo minted a new id
  * and inserting one bullet re-identified every block below it on the page —
- * across 51,811 of 65,091 objects. Two fallback paths made it worse: one
+ * across the great majority of objects. Two fallback paths made it worse: one
  * derived the path-redaction secret from the import run's own timestamp, the
  * other from `randomBytes(16)` per call, so a careless re-import produced a
  * completely disjoint id space for the entire corpus.

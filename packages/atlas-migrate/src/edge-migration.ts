@@ -99,11 +99,10 @@ export type LegacyGraph = {
 // ---------------------------------------------------------------------------
 
 /**
- * Legacy `item` subtypes that name a journey rather than a possession. Measured
- * on the graph: 165 rideshare, 146 flight, 6 car-service, 4 drive, 2 train — the
- * 323 objects that `owns` points at. A taxi ride is an event a person took part
- * in, not a thing they hold, and the whole `owns` -> `participant-in` rewrite
- * exists because the legacy plane could not tell those apart.
+ * Legacy `item` subtypes that name a journey rather than a possession, and the
+ * population `owns` points at. A taxi ride is an event a person took part in,
+ * not a thing they hold, and the whole `owns` -> `participant-in` rewrite exists
+ * because the legacy plane could not tell those apart.
  */
 export const TravelItemSubtypes = ["rideshare", "flight", "car-service", "drive", "train"] as const;
 export type TravelItemSubtype = (typeof TravelItemSubtypes)[number];

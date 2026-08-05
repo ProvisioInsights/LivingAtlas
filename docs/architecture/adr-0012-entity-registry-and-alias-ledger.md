@@ -14,7 +14,7 @@ mechanically:
    them.
 3. Renaming a file re-identified everything the file contained.
 
-51,811 of 65,091 objects were exposed to this. Two fallback paths made it worse:
+The great majority of objects were exposed to this. Two fallback paths made it worse:
 one derived the path-redaction secret from the import run's own timestamp, the
 other from `randomBytes(16)` per call, so a careless re-import produced a
 completely disjoint id space for the entire corpus.
@@ -191,7 +191,7 @@ cannot share one, because a segment is the unit of reclamation and their
 retention rules are opposites: the assertion log reclaims segments that have
 fallen below the history floor; the identity log reclaims nothing. Sharing would
 mean either that one alias row pins a segment permanently — making compaction
-useless once 65,091 migration rows exist — or that a bug in a retention guard
+useless once a migration row exists per object — or that a bug in a retention guard
 deletes identity.
 
 The separation is enforced in code: each reader refuses the other's records as
@@ -222,7 +222,7 @@ data-loss bug that looks like a sync.
 - **`id_property` is weighted like any other trait.** A bullet whose only
   surviving trait is the `id::` UUID the source explicitly declares — because it
   moved file *and* was edited — mints a new entity rather than carrying its id
-  forward. Only 433 of 17,036 source bullets (2.5%) carry `id::` at all, so the
+  forward. Only about one source bullet in forty carries `id::` at all, so the
   blast radius is small and the failure is a repairable duplicate rather than a
   conflation. Whether an explicit source-declared identifier should be
   authoritative on its own, rather than counting as one of four, is left open
@@ -258,7 +258,7 @@ Negative:
 
 ### Deriving ids from content, position, or a natural key
 
-Rejected: this is the defect. Only 433 of 17,036 bullets carry an `id::`, so no
+Rejected: this is the defect. Only about one bullet in forty carries an `id::`, so no
 natural key exists for 97.5% of the corpus, and every derivable key is unstable
 under ordinary editing.
 

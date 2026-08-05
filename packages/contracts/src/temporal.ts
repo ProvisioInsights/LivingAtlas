@@ -27,10 +27,10 @@ export const AnyEndpointTypes = EndpointTypeValues;
  * A subtype enum earns its slot only when BOTH hold: (a) the value changes which
  * attributes and edges the node carries, and (b) the enum can be made TOTAL —
  * every node of that type receives a real value, with no residual `other`.
- * `organization` failed both. 370 of its 470 nodes sat in `other`, and a single
- * slot cannot hold legal form and line of business at the same time. An enum
- * whose modal value is `other` does not classify: it produces plausible-looking
- * wrong answers, which is worse than no answer.
+ * `organization` failed both: its MODAL value was `other`, and a single slot
+ * cannot hold legal form and line of business at the same time. An enum whose
+ * modal value is `other` does not classify: it produces plausible-looking wrong
+ * answers, which is worse than no answer.
  *
  * These four cover the occurrence corpus with no residue: `segment` (one leg),
  * `trip` (the container its legs join via `part-of`), `stay`, and `meeting`.

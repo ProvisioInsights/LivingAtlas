@@ -102,7 +102,40 @@ const ForbiddenContentRules: Array<{ rule: string; pattern: RegExp; detail: stri
   { rule: "cloudflare-api-token", pattern: /["']?(?:CLOUDFLARE_API_TOKEN|CF_API_TOKEN)["']?\s*[:=]\s*(?<!\\)["']?[A-Za-z0-9_-]{20,}/, detail: "Cloudflare API tokens must not be committed" },
   { rule: "cloudflare-account-id", pattern: /(?:CLOUDFLARE_ACCOUNT_ID\s*[:=]\s*|["']?account_id["']?\s*[:=]\s*)(?<!\\)["'][0-9a-f]{32}["']/i, detail: "Personal Cloudflare account ids belong in ignored deployment overlays" },
   { rule: "bootstrap-claim-token", pattern: /bootstrap[_-]?claim[_-]?token\s*[:=]\s*["'][A-Za-z0-9._-]{16,}["']/i, detail: "Bootstrap claim tokens must be generated locally and shown once" },
-  { rule: "private-key", pattern: /-----BEGIN (?:RSA |EC |OPENSSH |)PRIVATE KEY-----/, detail: "Private keys must not be committed" }
+  { rule: "private-key", pattern: /-----BEGIN (?:RSA |EC |OPENSSH |)PRIVATE KEY-----/, detail: "Private keys must not be committed" },
+  /**
+   * A COUNT OF THE OWNER'S GRAPH, in a public repository.
+   *
+   * `.gitignore` already keeps the vocabulary proposal out for exactly this
+   * reason — those counts ARE a description of a private corpus, and this
+   * repository is public — and then the same counts were committed anyway, in
+   * source comments and ADRs, one design argument at a time. A per-type node
+   * census is a census. A per-subtype breakdown of travel legs is an itemised
+   * inventory of somebody's movements.
+   *
+   * The design arguments survive the numbers being removed, which is the test
+   * that they were never load-bearing: "the modal value was `other`" makes the
+   * same point and describes nothing. So the rule is narrow on purpose — it
+   * fires on a MEASUREMENT CLAIM carrying a multi-digit number, not on every
+   * number. A contract constant, a limit, a test count and a version are all
+   * numbers about the software rather than about the corpus, and none of them
+   * matches.
+   *
+   * This comment deliberately quotes no example. A lint that has to spell out
+   * the thing it forbids either exempts its own file or fails on itself, and an
+   * exemption is a hole the size of whatever it exempts.
+   */
+  {
+    rule: "corpus-census-ratio",
+    pattern: /\b\d{2,}\s+of\s+\d{2,}\b/,
+    detail: "A count of the owner's private graph. State the rule the measurement justifies, not the measurement"
+  },
+  {
+    rule: "corpus-census-measurement",
+    pattern:
+      /(?:measured\s+(?:on|against)\s+the\s+(?:real\s+)?(?:graph|corpus)|on\s+the\s+measured\s+corpus|gate\s+G\d[a-z]?)[^.\n]{0,160}\b\d{2,}\b|\b\d{2,}\b[^.\n]{0,160}(?:measured\s+(?:on|against)\s+the\s+(?:real\s+)?(?:graph|corpus)|on\s+the\s+measured\s+corpus|gate\s+G\d[a-z]?)/i,
+    detail: "A measurement of the owner's private graph with the number attached. Keep the rule, drop the count"
+  }
 ];
 
 /**
@@ -178,8 +211,43 @@ function walkFiles(root: string, current = root): string[] {
   return files;
 }
 
+/**
+ * Files `.gitignore` names OUTRIGHT — a literal path, no glob, no negation.
+ *
+ * Content rules ask "would this text be published?", and a file git will never
+ * stage cannot be. The working notes at the repo root are the case: they hold
+ * absolute local paths and a census of the owner's graph, which is exactly WHY
+ * they are ignored, so a content scan that failed on them would make the rule
+ * that protects the repository unusable inside it.
+ *
+ * File-EXISTENCE rules still apply to everything, deliberately. A `.env` sitting
+ * in the tree is worth naming whether or not git would stage it today, because
+ * the ignore entry is one edit away from not covering it.
+ */
+function ignoredLiteralPaths(repoRoot: string): Set<string> {
+  const paths = new Set<string>();
+  let text: string;
+  try {
+    text = readFileSync(join(repoRoot, ".gitignore"), "utf8");
+  } catch {
+    return paths;
+  }
+  for (const line of text.split(/\r?\n/)) {
+    const entry = line.trim();
+    if (entry.length === 0 || entry.startsWith("#") || entry.startsWith("!")) {
+      continue;
+    }
+    if (/[*?[\]]/.test(entry) || entry.endsWith("/") || entry.startsWith("/")) {
+      continue;
+    }
+    paths.add(entry);
+  }
+  return paths;
+}
+
 export function scanRepoSafety(repoRoot: string): RepoSafetyResult {
   const findings: RepoSafetyFinding[] = [];
+  const ignoredPaths = ignoredLiteralPaths(repoRoot);
 
   for (const relPath of walkFiles(repoRoot)) {
     for (const rule of ForbiddenFileRules) {
@@ -189,7 +257,7 @@ export function scanRepoSafety(repoRoot: string): RepoSafetyResult {
     }
 
     const fullPath = join(repoRoot, relPath);
-    if (statSync(fullPath).size > 2_000_000) {
+    if (statSync(fullPath).size > 2_000_000 || ignoredPaths.has(relPath)) {
       continue;
     }
 

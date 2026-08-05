@@ -27,7 +27,7 @@ import {
  *   RULE B — CLASSIFY. An open rule, for every other legacy subtype: the value
  *   becomes a `has-type` topic and the node keeps its type. Open because the
  *   legacy organization and location vocabularies were never closed either --
- *   370 of 470 organizations sat in `other` -- so enumerating them would only
+ *   the modal organization value was `other` -- so enumerating them would only
  *   move the residue from a subtype slot into a mapping table.
  *
  * Rule A is total over its own domain and REFUSES a value it does not name; it
@@ -69,7 +69,7 @@ export type RetypeRule = {
 /**
  * RULE A, the enumerated retypes.
  *
- * The travel rows are the 323 legs the legacy store filed as `item`. They are
+ * The travel rows are the legs the legacy store filed as `item`. They are
  * events, not possessions: the corpus asserted that a person OWNED a taxi ride.
  * Their mode of travel stays an attribute and is deliberately absent from this
  * table -- see `TRAVEL_MODE_ATTRIBUTE`.
@@ -166,7 +166,7 @@ export const RetypeRules: readonly RetypeRule[] = [
     to_type: "occurrence",
     to_subtype: "meeting",
     disposition: "vacuous",
-    basis: "`event` is the superclass of every occurrence; a topic true of all 435 of them partitions nothing"
+    basis: "`event` is the superclass of every occurrence; a topic true of every one of them partitions nothing"
   },
   {
     from_type: "occurrence",

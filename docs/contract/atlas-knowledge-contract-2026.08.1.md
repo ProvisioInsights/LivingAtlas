@@ -83,7 +83,7 @@ choose under a word nobody chose, which is exactly what `other` did.
 
 A subtype enum survives only when the value changes which attributes and edges the
 node carries AND the enum can be made total. Seven failed that test. The largest of
-them put 370 of 470 nodes in `other`, which is not a classification: it is a bucket
+them put the majority of its nodes in `other`, which is not a classification: it is a bucket
 that answers every question plausibly and wrongly.
 
 **Classification** is open and lives on edges. `has-type` points at a `topic` node, so

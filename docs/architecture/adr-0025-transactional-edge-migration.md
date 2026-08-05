@@ -12,17 +12,17 @@ ADR-0023 ratified 25 predicates, each with a domain rule enforced in code, and
 retired 14 names plus their aliases. The legacy graph does not speak that
 vocabulary. It carries `board-member-of`, `advises`, `alumnus-of`, `related-to`,
 `mentor-of`, `partner-of`, `engaged`, `purchased-from` and `created-for`, and it
-carries 348 `owns` edges of which 323 point at objects typed `item` that are not
-possessions at all — they are rideshares, flights, car services, drives and
+carries `owns` edges that point overwhelmingly at objects typed `item` which are
+not possessions at all — they are rideshares, flights, car services, drives and
 trains. Gate G1a measured this: `owns` is entirely `person -> item`.
 
-Those 323 items are retyped to `occurrence/segment`. The moment that retype
+Those items are retyped to `occurrence/segment`. The moment that retype
 lands, every `owns` edge still pointing at one asserts that a person owns an
 event — a claim the ratified `owns` range (`item`, `offering`, `organization`)
 exists specifically to make unwritable.
 
-Two further facts constrain the design. 12 `owns` edges and 6 `based-in` edges
-name ids that are not nodes. And `based-in` survived the ratification under its
+Two further facts constrain the design. Some `owns` and `based-in` edges name
+ids that are not nodes. And `based-in` survived the ratification under its
 own name while its domain rule changed, so a legacy `based-in` written
 `location -> organization` is now wrong without anything about its spelling
 having changed.
@@ -91,7 +91,7 @@ migrated":
 - `absorption-attr-conflict` — the absorption would overwrite a value the legacy
   edge already held.
 
-`dangling-edge-endpoint` covers the 12 `owns` and 6 `based-in` edges that name
+`dangling-edge-endpoint` covers the `owns` and `based-in` edges that name
 non-nodes; no target is invented for them. `retired-predicate-without-absorption`
 refuses a retired name with the contract's own successor text attached, so an
 operator is never told a word they are holding never existed — `reports-to` lands
@@ -136,8 +136,8 @@ a run stopped by a refusal reports what it did instead of what it intended.
   `meeting`. None of those is transactionally coupled to an edge rewrite, so they
   belong to the node lane. Only the `item -> occurrence/segment` travel retype is
   here, and only because `owns` cannot be rewritten without it.
-- **OPEN-17. `operated-by` is not minted here.** D3 mints 65 organizations for
-  venue locations. A legacy `contained-in` pointing at an organization is refused
+- **OPEN-17. `operated-by` is not minted here.** D3 mints an organization per
+  venue location. A legacy `contained-in` pointing at an organization is refused
   as a range violation rather than rewritten to `operated-by`, because the two
   nodes D3 calls for do not exist yet and this migration does not mint nodes.
 - **OPEN-11 (from ADR-0023) still stands.** Attribute valid time is sequenced
