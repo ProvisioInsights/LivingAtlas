@@ -47,6 +47,14 @@ export const LegacySourceCategoryValues = [
   "opaque-object",
   "quarantined-object",
   "narrative-object",
+  // Declared here because `projection.ts` already branches on it and its
+  // `LegacySourceCategoryUniverse` already lists it under a
+  // `satisfies readonly LegacySourceCategory[]`. The value arrived without this
+  // declaration when a shared worktree committed the consumer of the enum and
+  // not the enum, so the tree stopped typechecking while every test still
+  // passed. `classifyLegacySource` does not yet produce it, so the branch is
+  // unreached and no run changes behaviour.
+  "derived-index",
   "other"
 ] as const;
 export const LegacySourceCategorySchema = z.enum(LegacySourceCategoryValues);
@@ -126,6 +134,9 @@ export const MigrationRefusalReasonValues = [
   "alias-cycle",
   "dangling-alias-target",
   "unclassified-source-category",
+  // Paired with the `derived-index` category above, and declared for the same
+  // reason: `projection.ts` refuses with this name today.
+  "derived-index-not-migrated",
   "other"
 ] as const;
 export const MigrationRefusalReasonSchema = z.enum(MigrationRefusalReasonValues);
