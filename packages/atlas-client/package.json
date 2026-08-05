@@ -4,16 +4,23 @@
   "private": true,
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./legacy": "./src/legacy/index.ts"
   },
   "dependencies": {
+    "@living-atlas/atlas-contract": "workspace:*",
     "@living-atlas/contracts": "workspace:*",
     "@living-atlas/graph-service": "workspace:*",
     "@living-atlas/local-graph-store": "workspace:*",
     "@living-atlas/local-keyring": "workspace:*",
-    "@living-atlas/mcp-contract": "workspace:*"
+    "@living-atlas/mcp-contract": "workspace:*",
+    "@modelcontextprotocol/server": "2.0.0"
   },
   "devDependencies": {
+    "@living-atlas/atlas-mcp": "workspace:*",
     "@living-atlas/fixtures": "workspace:*"
+  },
+  "scripts": {
+    "test": "vitest run src"
   }
 }

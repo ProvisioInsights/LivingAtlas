@@ -6,7 +6,7 @@ import {
   type RemoteMcpToolArguments,
   type RemoteMcpToolResults,
   type RemoteMcpToolName
-} from "@living-atlas/atlas-client";
+} from "@living-atlas/atlas-client/legacy";
 import type { GraphObjectEnvelope } from "@living-atlas/contracts";
 import { printCloudflareLiveUsageGateResult, runCloudflareLiveUsageGate } from "./cloudflare-live-usage-gate";
 

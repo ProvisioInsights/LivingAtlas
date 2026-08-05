@@ -1,0 +1,17 @@
+{
+  "name": "@living-atlas/atlas-e2e",
+  "version": "0.1.0",
+  "private": true,
+  "description": "End-to-end harness: drives the real Living Atlas consumer server, spawned as a child process over real stdio, through the real typed client. A test harness, never a product surface — it publishes no runtime entry point and nothing outside this package may depend on it.",
+  "type": "module",
+  "dependencies": {
+    "@living-atlas/atlas-client": "workspace:*",
+    "@living-atlas/atlas-contract": "workspace:*",
+    "@living-atlas/atlas-core": "workspace:*",
+    "@living-atlas/atlas-mcp": "workspace:*",
+    "@modelcontextprotocol/server": "2.0.0"
+  },
+  "scripts": {
+    "test": "vitest run src"
+  }
+}
