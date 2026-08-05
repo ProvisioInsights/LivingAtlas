@@ -8,6 +8,11 @@ import {
   type OccurrenceSubtype,
   type Predicate
 } from "@living-atlas/contracts";
+import {
+  LegacyTemporalEdgeSchema,
+  resolveMigratedPredicate,
+  type EdgeMigrationRefusalReason
+} from "./edge-migration.js";
 import { mapLegacyNode } from "./node-mapping.js";
 import {
   LegacyRedirectPayloadSchema,
@@ -743,6 +748,56 @@ function applyNonProjectableDisposition(
   pushAbsenceRecord(draft, authorityId, provenance, disposition.kind, disposition.detail);
 }
 
+/**
+ * Restates an edge-migration refusal in the projector's vocabulary.
+ *
+ * The body is the identity function and the SIGNATURE is the entire point: it
+ * compiles only while every `EdgeMigrationRefusalReason` is also a
+ * `MigrationRefusalReason`. Add a reason to one enum and forget the other and
+ * the build fails here, which is the only way two enums describing one set of
+ * failures stay in step — the alternative is a `default:` arm that files a new,
+ * unnamed refusal under `other` and hides it from the closure gate.
+ */
+function projectorRefusalFor(reason: EdgeMigrationRefusalReason): MigrationRefusalReason {
+  return reason;
+}
+
+type ResolvedEdgeEndpoint = { slot: EntitySlot; entity_type: EndpointType };
+
+/**
+ * Picks the entity an edge endpoint lands on, AFTER the retype.
+ *
+ * Two rules, in this order, and the order is what makes them compatible:
+ *
+ * 1. THE SPLIT ROUTING RULE. The edge's declared endpoint type picks which node
+ *    it lands on. A venue became a location and an organization, and an edge
+ *    that said `location` said which one it meant — nothing is guessed and
+ *    nothing needs "both".
+ *
+ * 2. THE RETYPE JOIN. A travel leg was stored as an `item` and projects as an
+ *    `occurrence`, so an edge that faithfully said `item` finds no `item`
+ *    entity. Refusing it is what the projector used to do, and on the measured
+ *    corpus that withdrew every travel-participation edge while the retype
+ *    shipped — the exact intermediate state gate G1a exists to forbid, reached
+ *    by dropping the edges instead of rewriting them. The fallback fires only
+ *    when the edge AGREED with the legacy node's own type and the node produced
+ *    exactly one entity, so it can never paper over rule 1: an edge that said
+ *    `person` about an `item` still mismatches, and a split still routes by
+ *    declared type because both halves are present in the map.
+ */
+function resolveEdgeEndpoint(endpointDraft: Draft, declaredType: EndpointType): ResolvedEdgeEndpoint | undefined {
+  const declared = endpointDraft.entitiesByType.get(declaredType);
+  if (declared?.slot && declared.entity_type) {
+    return { slot: declared.slot, entity_type: declared.entity_type };
+  }
+
+  if (endpointDraft.payload?.type !== declaredType || endpointDraft.entitiesByType.size !== 1) {
+    return undefined;
+  }
+  const [only] = [...endpointDraft.entitiesByType.values()];
+  return only?.slot && only.entity_type ? { slot: only.slot, entity_type: only.entity_type } : undefined;
+}
+
 function resolveEdges(
   drafts: Draft[],
   draftsById: Map<string, Draft>,
@@ -755,7 +810,10 @@ function resolveEdges(
     }
 
     const envelope = draft.envelope;
-    const edge = TemporalEdgeSchema.safeParse(unwrapLegacyRecord(draft.data, "edge"));
+    // Parsed in the LEGACY vocabulary. Parsing with the ratified schema refused
+    // every retired name and every safe alias before the absorption table could
+    // see them, and reported all of it as a malformed payload.
+    const edge = LegacyTemporalEdgeSchema.safeParse(unwrapLegacyRecord(draft.data, "edge"));
     if (!edge.success) {
       draft.disposition = refuse("invalid-legacy-payload", "legacy edge payload did not parse as a temporal edge");
       continue;
@@ -766,7 +824,7 @@ function resolveEdges(
       { role: "target", legacyId: edge.data.target_object_id, declaredType: edge.data.target_type }
     ] as const;
 
-    const resolved: Array<{ slot: EntitySlot }> = [];
+    const resolved: ResolvedEdgeEndpoint[] = [];
     let failure: SourceDisposition | undefined;
     for (const endpoint of endpoints) {
       // An edge that names an id the legacy store itself redirected must attach
@@ -788,22 +846,15 @@ function resolveEdges(
         );
         break;
       }
-      // THE SPLIT ROUTING RULE: the edge's own declared endpoint type picks which
-      // node it lands on. A venue became a location and an organization, and an
-      // edge that said `location` said which one it meant — so nothing is guessed
-      // and nothing needs "both". For an unsplit object the map holds one entry
-      // and this is the type check it always was: the legacy edge asserted a type,
-      // the endpoint record says otherwise, and guessing which is right is how the
-      // old importer created edges no traversal could satisfy.
-      const primary = endpointDraft.entitiesByType.get(endpoint.declaredType);
-      if (!primary?.slot) {
+      const landed = resolveEdgeEndpoint(endpointDraft, endpoint.declaredType);
+      if (!landed) {
         failure = refuse(
           "endpoint-type-mismatch",
           `edge ${endpoint.role} endpoint type does not match the projected entity type`
         );
         break;
       }
-      resolved.push({ slot: primary.slot });
+      resolved.push(landed);
     }
 
     if (failure) {
@@ -811,10 +862,63 @@ function resolveEdges(
       continue;
     }
 
-    const sourceSlot = resolved[0]?.slot;
-    const targetSlot = resolved[1]?.slot;
-    if (!sourceSlot || !targetSlot) {
+    const source = resolved[0];
+    const target = resolved[1];
+    if (!source || !target) {
       draft.disposition = refuse("dangling-edge-endpoint", "edge endpoints did not both resolve");
+      continue;
+    }
+
+    // THE TYPES ARE THE PROJECTED ONES, never the edge's own copy. The legacy
+    // plane stored a copy of the endpoint type on the edge; trusting it here is
+    // precisely what would let the retype and the rewrite drift apart, with the
+    // node table saying `occurrence` while the edge still said `item`.
+    const types = { source: source.entity_type, target: target.entity_type };
+
+    const predicate = resolveMigratedPredicate(edge.data, types);
+    if (!predicate.ok) {
+      draft.disposition = refuse(projectorRefusalFor(predicate.reason), predicate.detail);
+      continue;
+    }
+
+    // The domain rule, on the types the entities actually have. Runs for every
+    // edge including the ones that kept their name: a legacy `based-in` written
+    // location -> organization is wrong in the new vocabulary no matter that its
+    // spelling survived.
+    const domain = checkPredicateEndpoints(predicate.predicate, types.source, types.target);
+    if (!domain.ok) {
+      draft.disposition = refuse(
+        projectorRefusalFor(domain.violations[0].code),
+        domain.violations.map((violation) => violation.message).join("; ")
+      );
+      continue;
+    }
+
+    const validTo = predicate.valid_to ?? edge.data.valid_to;
+    const status = predicate.status ?? edge.data.status;
+    // Re-parsed as a CONTRACT edge, so a relationship in the plan is valid by
+    // construction rather than by inspection. This is what catches the rules the
+    // predicate resolution does not speak about — a required attr the successor
+    // needs, a spine field smuggled into attrs, a structured attr with the wrong
+    // shape — and it catches them with their own named refusal.
+    const migrated = TemporalEdgeSchema.safeParse({
+      edge_id: edge.data.edge_id,
+      source_object_id: edge.data.source_object_id,
+      source_type: types.source,
+      target_object_id: edge.data.target_object_id,
+      target_type: types.target,
+      predicate: predicate.predicate,
+      valid_from: edge.data.valid_from,
+      ...(validTo === undefined ? {} : { valid_to: validTo }),
+      status,
+      source: edge.data.source,
+      attrs: predicate.attrs
+    });
+    if (!migrated.success) {
+      draft.disposition = refuse(
+        projectorRefusalFor("invalid-migrated-edge"),
+        migrated.error.issues.map((issue) => `${issue.path.join(".")}: ${issue.message}`).join("; ")
+      );
       continue;
     }
 
@@ -837,18 +941,18 @@ function resolveEdges(
       origin: MigrationOrigin,
       recorded_at_fidelity: MigrationRecordedAtFidelity,
       provenance,
-      legacy_edge_id: edge.data.edge_id,
-      source_slot: sourceSlot,
-      source_type: edge.data.source_type,
-      target_slot: targetSlot,
-      target_type: edge.data.target_type,
-      predicate: edge.data.predicate,
-      valid_from: edge.data.valid_from,
-      ...(edge.data.valid_to ? { valid_to: edge.data.valid_to } : {}),
-      valid_from_fidelity: worldTimeFidelity(edge.data.valid_from),
-      valid_to_fidelity: worldTimeFidelity(edge.data.valid_to),
-      status: edge.data.status,
-      attrs: { ...edge.data.attrs }
+      legacy_edge_id: migrated.data.edge_id,
+      source_slot: source.slot,
+      source_type: types.source,
+      target_slot: target.slot,
+      target_type: types.target,
+      predicate: migrated.data.predicate,
+      valid_from: migrated.data.valid_from,
+      ...(migrated.data.valid_to ? { valid_to: migrated.data.valid_to } : {}),
+      valid_from_fidelity: worldTimeFidelity(migrated.data.valid_from),
+      valid_to_fidelity: worldTimeFidelity(migrated.data.valid_to),
+      status: migrated.data.status,
+      attrs: { ...migrated.data.attrs }
     };
     draft.records.push(relationship);
     draft.primary = { record_key: relationshipKey, record_kind: "relationship" };
@@ -1554,6 +1658,15 @@ const MigrationRefusalReasonUniverse = [
   "unclassified-source-category",
   "derived-index-not-migrated",
   "unmapped-legacy-subtype",
+  "predicate-domain-violation",
+  "predicate-range-violation",
+  "retired-predicate-without-absorption",
+  "direction-unsafe-alias",
+  "unknown-predicate",
+  "absorption-requires-valid-to",
+  "absorption-endpoints-unavailable",
+  "absorption-attr-conflict",
+  "invalid-migrated-edge",
   "other"
 ] as const satisfies readonly MigrationRefusalReason[];
 

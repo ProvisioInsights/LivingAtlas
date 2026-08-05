@@ -187,6 +187,30 @@ export const MigrationRefusalReasonValues = [
    * classifier as undecided when one word is.
    */
   "unmapped-legacy-subtype",
+
+  /**
+   * THE PREDICATE REFUSALS, one per way a legacy edge can fail the ratified
+   * vocabulary. They are separate values rather than one `bad-predicate` because
+   * the remedy differs for each, and because they were previously ALL hidden
+   * inside `invalid-legacy-payload`: an edge carrying a retired name failed the
+   * strict edge schema at parse, so the operator was told the payload was
+   * malformed when the payload was fine and the WORD was retired. A refusal that
+   * does not name the predicate cannot be counted by predicate, and a migration
+   * whose losses cannot be counted by name is a migration nobody can review.
+   *
+   * These mirror `EdgeMigrationRefusalReasonValues` exactly, and
+   * `projectorRefusalFor` in the projector is the compile-time proof that they
+   * still do.
+   */
+  "predicate-domain-violation",
+  "predicate-range-violation",
+  "retired-predicate-without-absorption",
+  "direction-unsafe-alias",
+  "unknown-predicate",
+  "absorption-requires-valid-to",
+  "absorption-endpoints-unavailable",
+  "absorption-attr-conflict",
+  "invalid-migrated-edge",
   "other"
 ] as const;
 export const MigrationRefusalReasonSchema = z.enum(MigrationRefusalReasonValues);

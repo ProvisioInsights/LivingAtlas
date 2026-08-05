@@ -5,6 +5,8 @@ import {
   EdgeMigrationRefusalReasonValues,
   InMemoryMigrationGraph,
   MigrationTransactionRefused,
+  TravelItemSubtypes,
+  TravelOccurrenceSubtype,
   applyEdgeMigration,
   findStateDomainViolations,
   planEdgeMigration,
@@ -14,6 +16,7 @@ import {
   type MigrationTransaction
 } from "./edge-migration.js";
 import { createLegacyVocabularyGraph, legacyVocabularyIds } from "./edge-migration-fixture.js";
+import { RetypeRules } from "./legacy-vocabulary.js";
 
 function collectingAuditSink(): { events: EdgeMigrationAudit[]; record: (event: EdgeMigrationAudit) => Promise<void> } {
   const events: EdgeMigrationAudit[] = [];
@@ -450,5 +453,24 @@ describe("edge migration onto the ratified vocabulary", () => {
         rule.predicate === "sold-by";
       expect(carriesSomething, `${legacy} collapses without carrying anything across`).toBe(true);
     }
+  });
+
+  /**
+   * OPEN-18. Two modules still derive the travel retype from their own table:
+   * this one from `TravelItemSubtypes`, the projector from `RetypeRules`. They
+   * are collapsed onto one table by a later change; until then this is the pin,
+   * because the failure mode of two tables is that one of them silently stops
+   * naming a word the corpus actually holds and its edges quietly stop being
+   * rewritten.
+   */
+  it("names the same travel words as the projector's ratified retype table", () => {
+    const fromRetypeRules = RetypeRules.filter(
+      (rule) => rule.from_type === "item" && rule.to_type === "occurrence" && rule.to_subtype === TravelOccurrenceSubtype
+    )
+      .map((rule) => rule.from_subtype)
+      .sort();
+
+    expect([...TravelItemSubtypes].sort()).toEqual(fromRetypeRules);
+    expect(fromRetypeRules.length).toBeGreaterThan(0);
   });
 });

@@ -1,6 +1,10 @@
 import { z } from "zod";
 import {
+  ConfidenceSchema,
   EdgeStatusSchema,
+  EndpointTypeSchema,
+  MixedPrecisionDateSchema,
+  ObjectIdSchema,
   PredicateRegistry,
   RetiredPredicates,
   TemporalEdgeSchema,
@@ -14,6 +18,38 @@ import {
 import { canonicalDigest } from "./target-plane.js";
 
 export type EdgeStatus = z.infer<typeof EdgeStatusSchema>;
+
+/**
+ * A legacy edge AS STORED, with the predicate left as free text.
+ *
+ * It is the edge counterpart of `LegacyEndpointPayloadSchema` and it exists for
+ * the same reason: `TemporalEdgeSchema.predicate` is `PredicateSchema`, the
+ * ratified twenty-five, so parsing a legacy edge with it refuses every retired
+ * name, every safe alias and every direction-unsafe alias AT THE PARSE — before
+ * the absorption table has been consulted, and with `invalid-legacy-payload` as
+ * the only reason available to report. A `board-member-of` edge is not a
+ * malformed payload; it is a well-formed edge in the vocabulary the old store
+ * spoke, and reading it is the whole job.
+ *
+ * Every other field is the contract's, unchanged: the widening is the predicate
+ * and nothing else, so a legacy edge cannot smuggle a malformed date or a
+ * non-endpoint type past the projector on the strength of this schema.
+ */
+export const LegacyTemporalEdgeSchema = z.object({
+  edge_id: z.string().regex(/^la_edge_[A-Za-z0-9_-]{8,}$/),
+  source_object_id: ObjectIdSchema,
+  source_type: EndpointTypeSchema,
+  target_object_id: ObjectIdSchema,
+  target_type: EndpointTypeSchema,
+  predicate: z.string().min(1),
+  valid_from: MixedPrecisionDateSchema,
+  valid_to: MixedPrecisionDateSchema.optional(),
+  status: EdgeStatusSchema.default("active"),
+  confidence: ConfidenceSchema.default("medium"),
+  source: z.string().min(1),
+  attrs: z.record(z.string(), z.unknown()).default({})
+});
+export type LegacyTemporalEdge = z.infer<typeof LegacyTemporalEdgeSchema>;
 
 /**
  * A node as the legacy plane held it.
@@ -268,9 +304,25 @@ const AbsorptionRuleUniverse = Object.keys(EdgeAbsorptionRules).sort();
 // planning
 // ---------------------------------------------------------------------------
 
-type ResolvedTypes = { source: EndpointType; target: EndpointType };
+export type ResolvedTypes = { source: EndpointType; target: EndpointType };
 
-type PredicateResolution =
+/**
+ * The parts of a legacy edge the predicate resolution actually reads.
+ *
+ * Structural rather than nominal so BOTH callers pass their own shape without a
+ * conversion step: `planEdgeMigration` holds a `LegacyGraphEdge`, the projector
+ * holds a `LegacyTemporalEdge`, and a conversion between them is one more place
+ * for the two paths to disagree about what an absorption saw. The defect this
+ * prevents is the one the review found: the absorption table existed, was
+ * tested, and was reachable from exactly one caller — the test.
+ */
+export type LegacyEdgeFacts = {
+  predicate: string;
+  valid_to?: string;
+  attrs?: Record<string, unknown>;
+};
+
+export type PredicateResolution =
   | { ok: true; predicate: Predicate; attrs: Record<string, unknown>; status?: EdgeStatus; valid_to?: string }
   | { ok: false; reason: EdgeMigrationRefusalReason; detail: string };
 
@@ -281,7 +333,7 @@ type PredicateResolution =
 function applyAbsorption(
   legacyPredicate: string,
   rule: EdgeAbsorptionRule,
-  edge: LegacyGraphEdge,
+  edge: LegacyEdgeFacts,
   types: ResolvedTypes
 ): PredicateResolution {
   const definition = PredicateRegistry[rule.predicate];
@@ -360,9 +412,17 @@ function applyAbsorption(
  *
  * The `owns` case is the one that is not a vocabulary lookup: whether it stays
  * `owns` or becomes `participant-in` depends on what its TARGET turned into, so
- * the answer is a function of the retype and cannot be computed without it.
+ * the answer is a function of the retype and cannot be computed without it. That
+ * is why `types` must be the POST-retype types: passing the legacy types here
+ * would leave the rule looking at `item`, the rewrite would never fire, and the
+ * plan would assert that a person owns an event.
+ *
+ * Exported because the projector is the path that actually runs against the
+ * corpus and must reach the same answers as `planEdgeMigration`. Two
+ * implementations of the absorption table is how one of them silently stops
+ * being the one that ships.
  */
-function resolvePredicate(edge: LegacyGraphEdge, types: ResolvedTypes): PredicateResolution {
+export function resolveMigratedPredicate(edge: LegacyEdgeFacts, types: ResolvedTypes): PredicateResolution {
   const attrs: Record<string, unknown> = { ...(edge.attrs ?? {}) };
 
   if (edge.predicate === "owns" && types.target === "occurrence") {
@@ -457,7 +517,7 @@ export function planEdgeMigration(graph: LegacyGraph, options: PlanEdgeMigration
     }
 
     const types: ResolvedTypes = { source: sourceType, target: targetType };
-    const resolved = resolvePredicate(edge, types);
+    const resolved = resolveMigratedPredicate(edge, types);
     if (!resolved.ok) {
       refusals.push({
         edge_id: edge.edge_id,

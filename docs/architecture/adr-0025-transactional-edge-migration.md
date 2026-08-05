@@ -142,3 +142,50 @@ a run stopped by a refusal reports what it did instead of what it intended.
   nodes D3 calls for do not exist yet and this migration does not mint nodes.
 - **OPEN-11 (from ADR-0023) still stands.** Attribute valid time is sequenced
   separately, so no endpoint attribute is touched by this lane.
+
+## Amended after review: the absorption table now runs on the path that ships
+
+Everything above was true of `planEdgeMigration` and reachable from nothing
+else. The migration the operator actually runs is `buildProjectionPlan`, and it
+parsed every legacy edge with `TemporalEdgeSchema`, whose `predicate` is the
+ratified twenty-two. Every retired name, every safe alias and every
+direction-unsafe alias therefore died at the PARSE, reported as
+`invalid-legacy-payload` — a well-formed edge in the vocabulary the old store
+spoke, refused for being malformed, with the absorption table never consulted.
+The same path resolved an edge endpoint by the type the EDGE declared, so an
+`owns` edge naming a leg that had just been retyped to `occurrence` found no
+`item` entity and was refused. The retype shipped and the participation edge did
+not, which reaches gate G1a's forbidden state by subtraction rather than by
+assertion.
+
+Three changes close it, and none of them is a second implementation:
+
+- `LegacyTemporalEdgeSchema` widens **only** the predicate to free text. It is
+  the edge counterpart of `LegacyEndpointPayloadSchema` and exists for the same
+  reason: the legacy vocabulary has to be readable before it can be mapped.
+- `resolveMigratedPredicate` — this ADR's `resolvePredicate`, exported — is
+  called by both `planEdgeMigration` and the projector, over a structural
+  `LegacyEdgeFacts`. One absorption table, two callers, no conversion step to
+  drift.
+- `resolveEdgeEndpoint` resolves an endpoint against the POST-retype entity,
+  falling back to the retyped node only when the edge AGREED with the legacy
+  node's own type and that node produced exactly one entity. The venue split's
+  declared-type routing is unchanged, because both halves are present in the map
+  and rule 1 answers first.
+
+The projector's refusal vocabulary gains the nine predicate reasons so a loss is
+countable **by kind**: `projectorRefusalFor` is the identity function with a
+signature that fails to compile if the two enums drift, which is the whole of
+its body and the whole of its purpose.
+
+`InMemoryMigrationGraph` remains the model a durable store must satisfy, and
+`findStateDomainViolations` remains the statement of what "no person owns an
+event" means over a whole graph. What changed is that the property is now
+enforced on the path that produces the plan as well as in the store that would
+commit it.
+
+- **OPEN-18. Two modules can still plan the same retype.** `planEdgeMigration`
+  and `buildProjectionPlan` now share the predicate resolution but each still
+  derives the `item -> occurrence/segment` retype from its own table
+  (`TravelItemSubtypes` and `RetypeRules` respectively). They agree today and a
+  test pins the agreement; collapsing them onto one table is a separate change.

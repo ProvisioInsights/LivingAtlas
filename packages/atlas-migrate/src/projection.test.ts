@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { PredicateRegistry } from "@living-atlas/contracts";
 import {
   buildProjectionPlan,
   createLegacyGraphFixture,
@@ -206,6 +207,80 @@ describe("legacy projection", () => {
     expect(refusalReason(plan, legacyFixtureIds.edgeInvalidPayload)).toBe("invalid-legacy-payload");
     expect(refusalReason(plan, legacyFixtureIds.narrativePage)).toBe("no-typed-target-representation");
     expect(refusalReason(plan, legacyFixtureIds.liveUnavailable)).toBe("ciphertext-not-attempted");
+  });
+
+  /**
+   * GATE G1a, at the level the operator actually runs.
+   *
+   * The retype and the rewrite are inseparable: the moment a travel leg becomes
+   * an occurrence, an `owns` edge still pointing at it asserts that a person
+   * owns an event. The projector used to ship the retype and REFUSE the edge,
+   * which reaches the forbidden state by subtraction — the claim is gone and so
+   * is the fact. Both halves must appear in one plan.
+   */
+  it("retypes a travel leg and rewrites its owns edge in the same plan", () => {
+    const plan = planFixture();
+    const leg = plan.records
+      .filter(isEntityRecord)
+      .find((record) => legacyObjectIdOf(record) === legacyFixtureIds.travelSegment);
+    const edge = plan.records
+      .filter(isRelationshipRecord)
+      .find((record) => legacyObjectIdOf(record) === legacyFixtureIds.edgeOwnsSegment);
+
+    expect(leg?.entity_type).toBe("occurrence");
+    expect(leg?.entity_subtype).toBe("segment");
+    expect(edge?.predicate).toBe("participant-in");
+    // The edge's own copy of the endpoint type said `item`. Carrying that copy
+    // across is what would let the node table and the edge disagree.
+    expect(edge?.target_type).toBe("occurrence");
+    expect(edge?.target_slot).toBe(leg?.slot);
+    expect(outcomeFor(plan, legacyFixtureIds.edgeOwnsSegment).disposition.kind).toBe("projected-as-relationship");
+
+    // The forbidden state, checked over the whole plan rather than one record.
+    for (const record of plan.records.filter(isRelationshipRecord)) {
+      expect(record.predicate === "owns" && record.target_type === "occurrence").toBe(false);
+    }
+  });
+
+  it("canonicalizes a safe alias and absorbs a retired name into attrs", () => {
+    const plan = planFixture();
+    const alias = plan.records
+      .filter(isRelationshipRecord)
+      .find((record) => legacyObjectIdOf(record) === legacyFixtureIds.edgeSafeAlias);
+    const absorbed = plan.records
+      .filter(isRelationshipRecord)
+      .find((record) => legacyObjectIdOf(record) === legacyFixtureIds.edgeAbsorbedRole);
+
+    expect(alias?.predicate).toBe("employed-by");
+    // The collapse is only lossless if the distinction the retired NAME carried
+    // lands somewhere a query can still reach.
+    expect(absorbed?.predicate).toBe("member-of");
+    expect(absorbed?.attrs).toEqual({ role: "board-member" });
+  });
+
+  it("names the predicate refusal rather than reporting a broken payload", () => {
+    const plan = planFixture();
+
+    expect(refusalReason(plan, legacyFixtureIds.edgeRetiredNoSuccessor)).toBe("retired-predicate-without-absorption");
+    expect(refusalReason(plan, legacyFixtureIds.edgeAbsorptionNeedsValidTo)).toBe("absorption-requires-valid-to");
+    expect(refusalReason(plan, legacyFixtureIds.edgeDirectionUnsafe)).toBe("direction-unsafe-alias");
+    expect(refusalReason(plan, legacyFixtureIds.edgeUnknownPredicate)).toBe("unknown-predicate");
+    // `based-in` kept its spelling and lost a direction, so a surviving name is
+    // checked against the domain rule exactly like a rewritten one.
+    expect(refusalReason(plan, legacyFixtureIds.edgeInvertedGeography)).toBe("predicate-domain-violation");
+
+    // Every one of the five used to arrive as a malformed payload, so the
+    // operator could not count the losses by predicate.
+    const byReason = new Map(plan.breakdown.refusals_by_reason.map((entry) => [entry.reason, entry.count]));
+    expect(byReason.get("invalid-legacy-payload")).toBe(1);
+  });
+
+  it("carries no unratified predicate into the plan", () => {
+    const plan = planFixture();
+
+    for (const record of plan.records.filter(isRelationshipRecord)) {
+      expect(PredicateRegistry).toHaveProperty(record.predicate);
+    }
   });
 
   it("flattens an alias chain to the record its final hop became", () => {

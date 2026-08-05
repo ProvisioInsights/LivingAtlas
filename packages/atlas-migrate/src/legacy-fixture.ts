@@ -38,6 +38,21 @@ export const legacyFixtureIds = {
   edgeEndpointTypeMismatch: "la_object_legacy_edge_mismatch",
   edgeInvalidPayload: "la_object_legacy_edge_invalid",
   edgeThroughRedirect: "la_object_legacy_edge_redirect",
+  /**
+   * The legacy PREDICATE vocabulary, one object per way an edge meets the
+   * ratified twenty-two. Every one of these used to be refused as
+   * `invalid-legacy-payload` at the parse, so the whole absorption table was
+   * unreachable from the path that ships and no fixture could tell.
+   */
+  travelSegment: "la_object_legacy_travel_seg",
+  edgeOwnsSegment: "la_object_legacy_edge_owns",
+  edgeSafeAlias: "la_object_legacy_edge_alias",
+  edgeAbsorbedRole: "la_object_legacy_edge_absorb",
+  edgeAbsorptionNeedsValidTo: "la_object_legacy_edge_alum",
+  edgeRetiredNoSuccessor: "la_object_legacy_edge_retired",
+  edgeDirectionUnsafe: "la_object_legacy_edge_unsafe",
+  edgeUnknownPredicate: "la_object_legacy_edge_unknown",
+  edgeInvertedGeography: "la_object_legacy_edge_invert",
   tombstonedUnrecoverable: "la_object_legacy_opaque_lost",
   tombstonedUnavailable: "la_object_legacy_opaque_wait",
   tombstonedQuarantine: "la_object_legacy_quarantine_t",
@@ -210,11 +225,13 @@ export const legacyFixturePayloadResolver: LegacyPayloadResolver = (envelope) =>
 };
 
 /**
- * Thirty-three legacy objects covering: typed entities of every endpoint type,
+ * A synthetic legacy graph covering: typed entities of every endpoint type,
  * typed edges including exact / approximate / unknown world time, a tombstone of
- * each kind, an alias chain, and one instance of every refusal the projector can
- * name. The refusal cases are deliberate — a fixture where everything projects
- * proves nothing about the closure gate.
+ * each kind, an alias chain, the travel retype with the `owns` edge that must be
+ * rewritten alongside it, the legacy predicate vocabulary in each of its shapes,
+ * and one instance of every refusal the projector can name. The refusal cases
+ * are deliberate — a fixture where everything projects proves nothing about the
+ * closure gate, and a reason that stops firing shows up as a missing row.
  */
 export function createLegacyGraphFixture(): GraphObjectEnvelope[] {
   return [
@@ -422,16 +439,148 @@ export function createLegacyGraphFixture(): GraphObjectEnvelope[] {
         valid_from: "2021-03-03"
       })
     ),
+    // Genuinely malformed: no `valid_from` at all, which the legacy edge shape
+    // requires as much as the ratified one does. It used to carry a
+    // direction-unsafe PREDICATE instead, which meant the only test of
+    // `invalid-legacy-payload` was really a test of the predicate check wearing
+    // the wrong reason — and it passed for exactly as long as every predicate
+    // outside the ratified twenty-two was reported as a broken payload.
     plaintextEnvelope(legacyFixtureIds.edgeInvalidPayload, "edge", {
       edge_id: "la_edge_legacy_invalid_1",
       source_object_id: legacyFixtureIds.person,
       source_type: "person",
       target_object_id: legacyFixtureIds.organization0,
       target_type: "organization",
-      predicate: "manages",
-      valid_from: "2020-01-01",
+      predicate: "member-of",
       source: "legacy-fixture"
     }),
+
+    // THE TRAVEL RETYPE AND ITS EDGE (gate G1a). The leg is stored as an `item`
+    // and becomes an `occurrence/segment`; the `owns` edge pointing at it must
+    // become `participant-in` in the same plan, because a person does not own a
+    // journey and the ratified `owns` range exists to make that unwritable.
+    plaintextEnvelope(
+      legacyFixtureIds.travelSegment,
+      "entity",
+      endpointPayload(legacyFixtureIds.travelSegment, "item", "Leg 0", {
+        subtype: "flight",
+        route: "PT0-QR0",
+        date: "2023-08-08"
+      })
+    ),
+    plaintextEnvelope(
+      legacyFixtureIds.edgeOwnsSegment,
+      "edge",
+      edgePayload("la_edge_legacy_owns_1", {
+        source_object_id: legacyFixtureIds.person,
+        source_type: "person",
+        // Says `item`, faithfully, because that is what the legacy node was.
+        target_object_id: legacyFixtureIds.travelSegment,
+        target_type: "item",
+        predicate: "owns",
+        valid_from: "2023-08-08"
+      })
+    ),
+
+    // A safe alias: same relation, same endpoint types, so it canonicalizes.
+    plaintextEnvelope(
+      legacyFixtureIds.edgeSafeAlias,
+      "edge",
+      edgePayload("la_edge_legacy_alias_1", {
+        source_object_id: legacyFixtureIds.person,
+        source_type: "person",
+        target_object_id: legacyFixtureIds.organization1,
+        target_type: "organization",
+        predicate: "works-at",
+        valid_from: "2016-01-01"
+      })
+    ),
+
+    // An absorption that carries the retired name's meaning into attrs.role.
+    plaintextEnvelope(
+      legacyFixtureIds.edgeAbsorbedRole,
+      "edge",
+      edgePayload("la_edge_legacy_absorb_1", {
+        source_object_id: legacyFixtureIds.person,
+        source_type: "person",
+        target_object_id: legacyFixtureIds.organization1,
+        target_type: "organization",
+        predicate: "board-member-of",
+        valid_from: "2018-01-01"
+      })
+    ),
+
+    // The same collapse WITHOUT the time bound that justifies it. `alumnus-of`
+    // becomes `member-of` because the membership ended, so an edge that records
+    // no end has nothing to collapse on and the year is not invented.
+    plaintextEnvelope(
+      legacyFixtureIds.edgeAbsorptionNeedsValidTo,
+      "edge",
+      edgePayload("la_edge_legacy_alum_1", {
+        source_object_id: legacyFixtureIds.person,
+        source_type: "person",
+        target_object_id: legacyFixtureIds.organization1,
+        target_type: "organization",
+        predicate: "alumnus-of",
+        valid_from: "2010-09-01"
+      })
+    ),
+
+    // Retired with a successor that needs an endpoint this edge does not name.
+    plaintextEnvelope(
+      legacyFixtureIds.edgeRetiredNoSuccessor,
+      "edge",
+      edgePayload("la_edge_legacy_retired_1", {
+        source_object_id: legacyFixtureIds.person,
+        source_type: "person",
+        target_object_id: legacyFixtureIds.person,
+        target_type: "person",
+        predicate: "reports-to",
+        valid_from: "2021-01-01"
+      })
+    ),
+
+    plaintextEnvelope(
+      legacyFixtureIds.edgeDirectionUnsafe,
+      "edge",
+      edgePayload("la_edge_legacy_unsafe_1", {
+        source_object_id: legacyFixtureIds.person,
+        source_type: "person",
+        target_object_id: legacyFixtureIds.organization0,
+        target_type: "organization",
+        predicate: "manages",
+        valid_from: "2020-01-01"
+      })
+    ),
+
+    plaintextEnvelope(
+      legacyFixtureIds.edgeUnknownPredicate,
+      "edge",
+      edgePayload("la_edge_legacy_unknown_1", {
+        source_object_id: legacyFixtureIds.person,
+        source_type: "person",
+        target_object_id: legacyFixtureIds.organization0,
+        target_type: "organization",
+        predicate: "frobnicates",
+        valid_from: "2020-01-01"
+      })
+    ),
+
+    // `based-in` kept its name and lost a direction. Written place -> business it
+    // now says what `operated-by` says, so it is refused on the domain rule
+    // rather than quietly rewritten into the predicate it resembles.
+    plaintextEnvelope(
+      legacyFixtureIds.edgeInvertedGeography,
+      "edge",
+      edgePayload("la_edge_legacy_invert_1", {
+        source_object_id: legacyFixtureIds.location,
+        source_type: "location",
+        target_object_id: legacyFixtureIds.organization0,
+        target_type: "organization",
+        predicate: "based-in",
+        valid_from: "unknown"
+      })
+    ),
 
     ciphertextEnvelope(legacyFixtureIds.tombstonedUnrecoverable, "page", { tombstone: true }),
     ciphertextEnvelope(legacyFixtureIds.tombstonedUnavailable, "page", { tombstone: true }),
