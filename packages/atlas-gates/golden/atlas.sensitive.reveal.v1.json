@@ -1,0 +1,40 @@
+{
+  "case": "atlas.sensitive.reveal.v1",
+  "contract_revision": "2026.08.0",
+  "intent": "A refusal that is still a complete contract result: unknown stub id, audit receipt attached.",
+  "response": {
+    "_meta": {
+      "io.modelcontextprotocol/serverInfo": {
+        "name": "living-atlas-consumer",
+        "version": "2026.08.0"
+      }
+    },
+    "content": "<the text block is JSON.stringify(structuredContent)>",
+    "isError": true,
+    "resultType": "complete",
+    "structuredContent": {
+      "audit": {
+        "event_id": "<la_audit:14>",
+        "recorded_at": "2026-08-04T12:00:00.012Z"
+      },
+      "error": {
+        "code": "unknown-redaction",
+        "message": "No withheld record for this credential carries that redaction_id. Stub ids are per-credential; one issued to another credential will not resolve here.",
+        "record_schema": "atlas.error:v1",
+        "retryable": false
+      },
+      "horizon": {
+        "as_of_recorded": "2026-08-04T12:00:00.000Z",
+        "bitemporal_since": "2026-01-01T00:00:00.000Z",
+        "feed_epoch": "e-test",
+        "migration_window_open": false,
+        "record_schema": "atlas.horizon:v1",
+        "recorded_at_fidelity_mixed": false,
+        "seq_watermark": 5,
+        "status": "complete"
+      },
+      "outcome": "refused"
+    }
+  },
+  "tool": "atlas.sensitive.reveal.v1"
+}

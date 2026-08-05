@@ -1,0 +1,87 @@
+{
+  "case": "atlas.assertion.read.v1",
+  "contract_revision": "2026.08.0",
+  "intent": "A direct read by id with lineage requested.",
+  "response": {
+    "_meta": {
+      "io.modelcontextprotocol/serverInfo": {
+        "name": "living-atlas-consumer",
+        "version": "2026.08.0"
+      }
+    },
+    "content": "<the text block is JSON.stringify(structuredContent)>",
+    "resultType": "complete",
+    "structuredContent": {
+      "cache": {
+        "cache_scope": "private",
+        "ttl_ms": 0
+      },
+      "coverage": {
+        "counts_basis": "exact",
+        "evaluated": 1,
+        "matched": 1,
+        "returned": 1,
+        "unknown_or_absent_valid_time": 1,
+        "with_valid_time": 0,
+        "withheld": 0
+      },
+      "horizon": {
+        "as_of_recorded": "2026-08-04T12:00:00.000Z",
+        "bitemporal_since": "2026-01-01T00:00:00.000Z",
+        "feed_epoch": "e-test",
+        "migration_window_open": false,
+        "record_schema": "atlas.horizon:v1",
+        "recorded_at_fidelity_mixed": false,
+        "seq_watermark": 4,
+        "status": "complete"
+      },
+      "lineage": [
+        {
+          "assertion_id": "<la_assertion:1>",
+          "lineage_action": "assert",
+          "superseded_by": null,
+          "supersedes": []
+        }
+      ],
+      "results": [
+        {
+          "assertion_id": "<la_assertion:1>",
+          "claim_digest": "<sha256:2>",
+          "confidence": {
+            "band": "high"
+          },
+          "evidence_links": [
+            {
+              "evidence_id": "ev-0",
+              "stance": "supports"
+            }
+          ],
+          "feed_epoch": "e-test",
+          "kind": "fact",
+          "lineage_action": "assert",
+          "predicate": "worked-at",
+          "provenance": {
+            "client_id": "fixture",
+            "origin": "consumer-proposed",
+            "recorded_at_fidelity": "authoritative"
+          },
+          "record_schema": "atlas.assertion:v1",
+          "recorded_at": "2026-08-04T12:00:00.000Z",
+          "sensitivity": {
+            "rank": 0,
+            "tier": "open",
+            "withheld": false
+          },
+          "seq": 1,
+          "subject_entity_id": "<la_entity:0>",
+          "superseded_at": null,
+          "superseded_by": null,
+          "supersedes": [],
+          "valid_time_fidelity": "absent",
+          "value": "Employer 0"
+        }
+      ]
+    }
+  },
+  "tool": "atlas.assertion.read.v1"
+}

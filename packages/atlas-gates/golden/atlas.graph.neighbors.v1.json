@@ -1,0 +1,137 @@
+{
+  "case": "atlas.graph.neighbors.v1",
+  "contract_revision": "2026.08.0",
+  "intent": "A one-hop traversal, truncated by max_depth, reporting a partial horizon.",
+  "response": {
+    "_meta": {
+      "io.modelcontextprotocol/serverInfo": {
+        "name": "living-atlas-consumer",
+        "version": "2026.08.0"
+      }
+    },
+    "content": "<the text block is JSON.stringify(structuredContent)>",
+    "resultType": "complete",
+    "structuredContent": {
+      "cache": {
+        "cache_scope": "private",
+        "ttl_ms": 0
+      },
+      "coverage": {
+        "counts_basis": "exact",
+        "evaluated": 4,
+        "matched": 1,
+        "returned": 1,
+        "unknown_or_absent_valid_time": 0,
+        "with_valid_time": 0,
+        "withheld": 0
+      },
+      "edges": [
+        {
+          "assertion_id": "<la_assertion:5>",
+          "claim_digest": "<sha256:7>",
+          "confidence": {
+            "band": "high"
+          },
+          "evidence_links": [
+            {
+              "evidence_id": "ev-edge-0-1",
+              "stance": "supports"
+            }
+          ],
+          "feed_epoch": "e-test",
+          "kind": "relationship",
+          "lineage_action": "assert",
+          "predicate": "reports-to",
+          "provenance": {
+            "client_id": "fixture",
+            "origin": "consumer-proposed",
+            "recorded_at_fidelity": "authoritative"
+          },
+          "record_schema": "atlas.assertion:v1",
+          "recorded_at": "2026-08-04T12:00:00.002Z",
+          "sensitivity": {
+            "rank": 0,
+            "tier": "open",
+            "withheld": false
+          },
+          "seq": 3,
+          "subject_entity_id": "<la_entity:0>",
+          "superseded_at": null,
+          "superseded_by": null,
+          "supersedes": [],
+          "target_entity_id": "<la_entity:6>",
+          "valid_time_fidelity": "absent"
+        }
+      ],
+      "horizon": {
+        "as_of_recorded": "2026-08-04T12:00:00.000Z",
+        "bitemporal_since": "2026-01-01T00:00:00.000Z",
+        "feed_epoch": "e-test",
+        "migration_window_open": false,
+        "record_schema": "atlas.horizon:v1",
+        "recorded_at_fidelity_mixed": false,
+        "seq_watermark": 4,
+        "status": "partial"
+      },
+      "nodes": [
+        {
+          "also_known_as": [
+            "alias-0"
+          ],
+          "display_name": "Synthetic Person 0",
+          "entity_id": "<la_entity:0>",
+          "provenance": {
+            "client_id": "fixture",
+            "origin": "consumer-proposed",
+            "recorded_at_fidelity": "authoritative"
+          },
+          "record_schema": "atlas.entity:v1",
+          "registered_at": "2026-08-04T12:00:00.000Z",
+          "sensitivity": {
+            "rank": 0,
+            "tier": "open",
+            "withheld": false
+          },
+          "type": "person",
+          "updated_at": "2026-08-04T12:00:00.000Z"
+        },
+        {
+          "also_known_as": [
+            "alias-1"
+          ],
+          "display_name": "Synthetic Person 1",
+          "entity_id": "<la_entity:6>",
+          "provenance": {
+            "client_id": "fixture",
+            "origin": "consumer-proposed",
+            "recorded_at_fidelity": "authoritative"
+          },
+          "record_schema": "atlas.entity:v1",
+          "registered_at": "2026-08-04T12:00:00.001Z",
+          "sensitivity": {
+            "rank": 0,
+            "tier": "open",
+            "withheld": false
+          },
+          "type": "person",
+          "updated_at": "2026-08-04T12:00:00.001Z"
+        }
+      ],
+      "page": {
+        "cursor": null,
+        "has_more": false,
+        "page_size": 50,
+        "snapshot": "eyJyIjoiMjAyNi0wOC0wNFQxMjowMDowMC4wMDBaIiwidyI6NCwiZSI6ImUtdGVzdCIsIngiOiIyMDI2LTA4LTA0VDEyOjE1OjAwLjAwMFoifQ",
+        "snapshot_expires_at": "2026-08-04T12:15:00.000Z"
+      },
+      "traversal": {
+        "deepest_reached": 1,
+        "direction": "outbound",
+        "max_depth": 1,
+        "origin_entity_id": "<la_entity:0>",
+        "truncated_by": "max_depth"
+      }
+    }
+  },
+  "tool": "atlas.graph.neighbors.v1"
+}

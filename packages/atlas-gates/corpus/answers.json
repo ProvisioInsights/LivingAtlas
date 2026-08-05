@@ -1,0 +1,608 @@
+{
+  "answers": [
+    {
+      "coverage": {
+        "counts_basis": "exact",
+        "evaluated": 9,
+        "matched": 8,
+        "returned": 8,
+        "unknown_or_absent_valid_time": 2,
+        "with_valid_time": 6,
+        "withheld": 1
+      },
+      "matched": [
+        {
+          "claim": "exact-closed-span",
+          "valid_time_fidelity": "exact",
+          "withheld": false
+        },
+        {
+          "claim": "approximate-year-ongoing",
+          "valid_time_fidelity": "approximate",
+          "withheld": false
+        },
+        {
+          "claim": "unknown-start",
+          "valid_time_fidelity": "unknown",
+          "withheld": false
+        },
+        {
+          "claim": "no-world-time",
+          "valid_time_fidelity": "absent",
+          "withheld": false
+        },
+        {
+          "claim": "exact-single-day",
+          "valid_time_fidelity": "exact",
+          "withheld": false
+        },
+        {
+          "claim": "approximate-month",
+          "valid_time_fidelity": "approximate",
+          "withheld": false
+        },
+        {
+          "claim": "belief-v2",
+          "valid_time_fidelity": "exact",
+          "withheld": false
+        },
+        {
+          "claim": "sealed-note",
+          "withheld": true
+        }
+      ],
+      "outcome": "page",
+      "query": {
+        "holds": "With no as-of on either axis, the page is present belief about all world time: the superseded job title is gone, the sealed note occupies a row, and claims with no world time are still here.",
+        "id": "present-all",
+        "subject": "corpus-subject"
+      },
+      "recorded_at_fidelity_mixed": false
+    },
+    {
+      "coverage": {
+        "counts_basis": "exact",
+        "evaluated": 9,
+        "matched": 3,
+        "returned": 3,
+        "unknown_or_absent_valid_time": 0,
+        "with_valid_time": 3,
+        "withheld": 0
+      },
+      "matched": [
+        {
+          "claim": "exact-closed-span",
+          "match_quality": "certain",
+          "valid_time_fidelity": "exact",
+          "withheld": false
+        },
+        {
+          "claim": "approximate-year-ongoing",
+          "match_quality": "possible",
+          "valid_time_fidelity": "approximate",
+          "withheld": false
+        },
+        {
+          "claim": "belief-v2",
+          "match_quality": "certain",
+          "valid_time_fidelity": "exact",
+          "withheld": false
+        }
+      ],
+      "outcome": "page",
+      "query": {
+        "as_of_valid": "2019",
+        "holds": "as_of_valid=2019 matches the exact closed span certainly and the ~2019 span only possibly. The unknown start matches NOTHING — it is the absence of knowledge, not the year 9999 — and a claim carrying no world time at all cannot answer a question about a year.",
+        "id": "valid-2019",
+        "subject": "corpus-subject"
+      },
+      "recorded_at_fidelity_mixed": false
+    },
+    {
+      "coverage": {
+        "counts_basis": "exact",
+        "evaluated": 9,
+        "matched": 1,
+        "returned": 1,
+        "unknown_or_absent_valid_time": 0,
+        "with_valid_time": 1,
+        "withheld": 0
+      },
+      "matched": [
+        {
+          "claim": "approximate-year-ongoing",
+          "match_quality": "possible",
+          "valid_time_fidelity": "approximate",
+          "withheld": false
+        }
+      ],
+      "outcome": "page",
+      "query": {
+        "as_of_valid": "2018",
+        "holds": "as_of_valid=2018 is BELOW the exact span's start and inside the ~2019 widening. It separates the two: a widened bound answers possibly where an exact one answers not at all. Remove the widening and this page empties.",
+        "id": "valid-2018",
+        "subject": "corpus-subject"
+      },
+      "recorded_at_fidelity_mixed": false
+    },
+    {
+      "coverage": {
+        "counts_basis": "exact",
+        "evaluated": 9,
+        "matched": 3,
+        "returned": 3,
+        "unknown_or_absent_valid_time": 0,
+        "with_valid_time": 3,
+        "withheld": 1
+      },
+      "matched": [
+        {
+          "claim": "approximate-year-ongoing",
+          "match_quality": "possible",
+          "valid_time_fidelity": "approximate",
+          "withheld": false
+        },
+        {
+          "claim": "belief-v2",
+          "match_quality": "certain",
+          "valid_time_fidelity": "exact",
+          "withheld": false
+        },
+        {
+          "claim": "sealed-note",
+          "withheld": true
+        }
+      ],
+      "outcome": "page",
+      "query": {
+        "as_of_valid": "2022",
+        "holds": "as_of_valid=2022 is exactly the exact span's valid_to. Half-open [from, to) excludes it. An off-by-one that made intervals closed shows up here and almost nowhere else.",
+        "id": "valid-2022",
+        "subject": "corpus-subject"
+      },
+      "recorded_at_fidelity_mixed": false
+    },
+    {
+      "coverage": {
+        "counts_basis": "exact",
+        "evaluated": 9,
+        "matched": 4,
+        "returned": 4,
+        "unknown_or_absent_valid_time": 0,
+        "with_valid_time": 4,
+        "withheld": 1
+      },
+      "matched": [
+        {
+          "claim": "exact-closed-span",
+          "match_quality": "certain",
+          "valid_time_fidelity": "exact",
+          "withheld": false
+        },
+        {
+          "claim": "approximate-year-ongoing",
+          "match_quality": "possible",
+          "valid_time_fidelity": "approximate",
+          "withheld": false
+        },
+        {
+          "claim": "belief-v2",
+          "match_quality": "certain",
+          "valid_time_fidelity": "exact",
+          "withheld": false
+        },
+        {
+          "claim": "sealed-note",
+          "withheld": true
+        }
+      ],
+      "outcome": "page",
+      "query": {
+        "as_of_valid": "2021-12",
+        "holds": "The month immediately before valid_to is inside the span. The other half of the boundary pair.",
+        "id": "valid-2021-12",
+        "subject": "corpus-subject"
+      },
+      "recorded_at_fidelity_mixed": false
+    },
+    {
+      "coverage": {
+        "counts_basis": "exact",
+        "evaluated": 9,
+        "matched": 3,
+        "returned": 3,
+        "unknown_or_absent_valid_time": 0,
+        "with_valid_time": 3,
+        "withheld": 1
+      },
+      "matched": [
+        {
+          "claim": "approximate-year-ongoing",
+          "match_quality": "possible",
+          "valid_time_fidelity": "approximate",
+          "withheld": false
+        },
+        {
+          "claim": "belief-v2",
+          "match_quality": "certain",
+          "valid_time_fidelity": "exact",
+          "withheld": false
+        },
+        {
+          "claim": "sealed-note",
+          "withheld": true
+        }
+      ],
+      "outcome": "page",
+      "query": {
+        "as_of_valid": "2025",
+        "holds": "An absent valid_to is unbounded above, not 'until today'. The ~2019 claim still answers in 2025; the closed span does not.",
+        "id": "valid-2025-ongoing",
+        "subject": "corpus-subject"
+      },
+      "recorded_at_fidelity_mixed": false
+    },
+    {
+      "coverage": {
+        "counts_basis": "exact",
+        "evaluated": 2,
+        "matched": 2,
+        "returned": 2,
+        "unknown_or_absent_valid_time": 0,
+        "with_valid_time": 2,
+        "withheld": 0
+      },
+      "matched": [
+        {
+          "claim": "exact-single-day",
+          "match_quality": "certain",
+          "valid_time_fidelity": "exact",
+          "withheld": false
+        },
+        {
+          "claim": "approximate-month",
+          "match_quality": "possible",
+          "valid_time_fidelity": "approximate",
+          "withheld": false
+        }
+      ],
+      "outcome": "page",
+      "query": {
+        "as_of_valid": "2020-06-15",
+        "holds": "A single-day exact span contains its own start day, certainly.",
+        "id": "valid-day-inside",
+        "predicate": "attended",
+        "subject": "corpus-subject"
+      },
+      "recorded_at_fidelity_mixed": false
+    },
+    {
+      "coverage": {
+        "counts_basis": "exact",
+        "evaluated": 2,
+        "matched": 1,
+        "returned": 1,
+        "unknown_or_absent_valid_time": 0,
+        "with_valid_time": 1,
+        "withheld": 0
+      },
+      "matched": [
+        {
+          "claim": "approximate-month",
+          "match_quality": "possible",
+          "valid_time_fidelity": "approximate",
+          "withheld": false
+        }
+      ],
+      "outcome": "page",
+      "query": {
+        "as_of_valid": "2020-06-16",
+        "holds": "A single-day span [2020-06-15, 2020-06-16) does NOT contain 2020-06-16. Day-precision half-openness, probed at the one date that can tell.",
+        "id": "valid-day-at-upper-bound",
+        "predicate": "attended",
+        "subject": "corpus-subject"
+      },
+      "recorded_at_fidelity_mixed": false
+    },
+    {
+      "coverage": {
+        "counts_basis": "exact",
+        "evaluated": 2,
+        "matched": 1,
+        "returned": 1,
+        "unknown_or_absent_valid_time": 0,
+        "with_valid_time": 1,
+        "withheld": 0
+      },
+      "matched": [
+        {
+          "claim": "approximate-month",
+          "match_quality": "possible",
+          "valid_time_fidelity": "approximate",
+          "withheld": false
+        }
+      ],
+      "outcome": "page",
+      "query": {
+        "as_of_valid": "2020-05",
+        "holds": "~2020-06 widens by one MONTH — its own precision — so 2020-05 matches possibly. Widening by a year instead, or not at all, changes this row.",
+        "id": "valid-month-widened-lower",
+        "predicate": "attended",
+        "subject": "corpus-subject"
+      },
+      "recorded_at_fidelity_mixed": false
+    },
+    {
+      "coverage": {
+        "counts_basis": "exact",
+        "evaluated": 2,
+        "matched": 0,
+        "returned": 0,
+        "unknown_or_absent_valid_time": 0,
+        "with_valid_time": 0,
+        "withheld": 0
+      },
+      "matched": [],
+      "outcome": "page",
+      "query": {
+        "as_of_valid": "2020-04",
+        "holds": "One month further out is outside the widening. The far side of the same boundary.",
+        "id": "valid-month-outside-widening",
+        "predicate": "attended",
+        "subject": "corpus-subject"
+      },
+      "recorded_at_fidelity_mixed": false
+    },
+    {
+      "coverage": {
+        "counts_basis": "exact",
+        "evaluated": 2,
+        "matched": 1,
+        "returned": 1,
+        "unknown_or_absent_valid_time": 0,
+        "with_valid_time": 1,
+        "withheld": 0
+      },
+      "matched": [
+        {
+          "claim": "belief-v1",
+          "valid_time_fidelity": "exact",
+          "withheld": false
+        }
+      ],
+      "outcome": "page",
+      "query": {
+        "as_of_recorded": "T7",
+        "holds": "As of T7 the correction has not happened: the ORIGINAL job title is what Atlas believed, and the corrected one does not exist yet. This is the whole promise of belief time.",
+        "id": "belief-at-T7",
+        "predicate": "job-title",
+        "subject": "corpus-subject"
+      },
+      "recorded_at_fidelity_mixed": false
+    },
+    {
+      "coverage": {
+        "counts_basis": "exact",
+        "evaluated": 2,
+        "matched": 1,
+        "returned": 1,
+        "unknown_or_absent_valid_time": 0,
+        "with_valid_time": 1,
+        "withheld": 0
+      },
+      "matched": [
+        {
+          "claim": "belief-v2",
+          "valid_time_fidelity": "exact",
+          "withheld": false
+        }
+      ],
+      "outcome": "page",
+      "query": {
+        "as_of_recorded": "T8",
+        "holds": "The correction lands at T8. The superseded record is excluded at the instant it is superseded — superseded_at <= as_of_recorded — not at the instant after.",
+        "id": "belief-at-T8",
+        "predicate": "job-title",
+        "subject": "corpus-subject"
+      },
+      "recorded_at_fidelity_mixed": false
+    },
+    {
+      "coverage": {
+        "counts_basis": "exact",
+        "evaluated": 2,
+        "matched": 1,
+        "returned": 1,
+        "unknown_or_absent_valid_time": 0,
+        "with_valid_time": 1,
+        "withheld": 0
+      },
+      "matched": [
+        {
+          "claim": "belief-v2",
+          "valid_time_fidelity": "exact",
+          "withheld": false
+        }
+      ],
+      "outcome": "page",
+      "query": {
+        "as_of_recorded": "T9",
+        "holds": "Later belief instants agree with the present-tense answer.",
+        "id": "belief-at-T9",
+        "predicate": "job-title",
+        "subject": "corpus-subject"
+      },
+      "recorded_at_fidelity_mixed": false
+    },
+    {
+      "coverage": {},
+      "matched": [],
+      "outcome": "refused",
+      "query": {
+        "as_of_recorded": "below-history-floor",
+        "holds": "A belief-time read below the history floor is REFUSED with a typed code. It is never quietly answered from present state, because a confident wrong answer about what was believed in 2025 is worse than a refusal.",
+        "id": "belief-before-floor",
+        "subject": "corpus-subject"
+      },
+      "refusal_code": "as-of-before-history-floor"
+    },
+    {
+      "coverage": {
+        "counts_basis": "exact",
+        "evaluated": 2,
+        "matched": 1,
+        "returned": 1,
+        "unknown_or_absent_valid_time": 0,
+        "with_valid_time": 1,
+        "withheld": 0
+      },
+      "matched": [
+        {
+          "claim": "belief-v1",
+          "match_quality": "certain",
+          "valid_time_fidelity": "exact",
+          "withheld": false
+        }
+      ],
+      "outcome": "page",
+      "query": {
+        "as_of_recorded": "T7",
+        "as_of_valid": "2019",
+        "holds": "The two axes are independent and compose: what Atlas believed at T7 about the world in 2019. A change that made one axis imply the other collapses this row into one of the two above.",
+        "id": "belief-and-world-together",
+        "predicate": "job-title",
+        "subject": "corpus-subject"
+      },
+      "recorded_at_fidelity_mixed": false
+    },
+    {
+      "coverage": {
+        "counts_basis": "exact",
+        "evaluated": 1,
+        "matched": 1,
+        "returned": 1,
+        "unknown_or_absent_valid_time": 0,
+        "with_valid_time": 1,
+        "withheld": 1
+      },
+      "matched": [
+        {
+          "claim": "sealed-note",
+          "withheld": true
+        }
+      ],
+      "outcome": "page",
+      "query": {
+        "holds": "A record this credential may not read is withheld, not dropped. It occupies its row as a redaction stub so `matched` and `returned` still reconcile — absence is reported, never performed.",
+        "id": "sealed-row-occupies-its-place",
+        "predicate": "medical-note",
+        "subject": "corpus-subject"
+      },
+      "recorded_at_fidelity_mixed": false
+    },
+    {
+      "coverage": {
+        "counts_basis": "exact",
+        "evaluated": 2,
+        "matched": 2,
+        "returned": 2,
+        "unknown_or_absent_valid_time": 0,
+        "with_valid_time": 2,
+        "withheld": 0
+      },
+      "matched": [
+        {
+          "claim": "belief-v1",
+          "valid_time_fidelity": "exact",
+          "withheld": false
+        },
+        {
+          "claim": "belief-v2",
+          "valid_time_fidelity": "exact",
+          "withheld": false
+        }
+      ],
+      "outcome": "page",
+      "query": {
+        "as_of_recorded": "T8",
+        "holds": "include_superseded is a PUBLISHED input, so it must change the answer: at T8 both versions of the title come back, the original alongside the correction that replaced it. The handler ignored this parameter entirely until this corpus asked it a question whose answer depended on it.",
+        "id": "include-superseded-at-T8",
+        "include_superseded": true,
+        "predicate": "job-title",
+        "subject": "corpus-subject"
+      },
+      "recorded_at_fidelity_mixed": false
+    },
+    {
+      "coverage": {
+        "counts_basis": "exact",
+        "evaluated": 2,
+        "matched": 2,
+        "returned": 2,
+        "unknown_or_absent_valid_time": 0,
+        "with_valid_time": 2,
+        "withheld": 0
+      },
+      "matched": [
+        {
+          "claim": "belief-v1",
+          "valid_time_fidelity": "exact",
+          "withheld": false
+        },
+        {
+          "claim": "belief-v2",
+          "valid_time_fidelity": "exact",
+          "withheld": false
+        }
+      ],
+      "outcome": "page",
+      "query": {
+        "holds": "The same request with no belief instant returns both versions too: superseded is a property of a record, not of a past. Without this row, an implementation that honoured include_superseded only on the as-of path would still pass.",
+        "id": "include-superseded-present",
+        "include_superseded": true,
+        "predicate": "job-title",
+        "subject": "corpus-subject"
+      },
+      "recorded_at_fidelity_mixed": false
+    },
+    {
+      "coverage": {
+        "counts_basis": "exact",
+        "evaluated": 9,
+        "matched": 3,
+        "returned": 3,
+        "unknown_or_absent_valid_time": 0,
+        "with_valid_time": 3,
+        "withheld": 1
+      },
+      "matched": [
+        {
+          "claim": "approximate-year-ongoing",
+          "match_quality": "possible",
+          "valid_time_fidelity": "approximate",
+          "withheld": false
+        },
+        {
+          "claim": "belief-v2",
+          "match_quality": "certain",
+          "valid_time_fidelity": "exact",
+          "withheld": false
+        },
+        {
+          "claim": "sealed-note",
+          "withheld": true
+        }
+      ],
+      "outcome": "page",
+      "query": {
+        "as_of_valid": "2100",
+        "holds": "A far-future as-of matches only the unbounded ~2019 claim. The unknown start still matches nothing, at either end of time — which is the exact defect the string \"9999\" caused.",
+        "id": "unknown-never-matches-any-probe",
+        "subject": "corpus-subject"
+      },
+      "recorded_at_fidelity_mixed": false
+    }
+  ],
+  "contract": "These are answers, not fixtures. A difference here means the same question now has a different answer than it had when this file was recorded, which is a BREAKING change to the meaning of the data — regardless of how small the code change was. The remedy is a new contract revision under schema/, not a re-recorded file. Re-record only when the owner has decided the old answers were wrong, and say so in the commit message.",
+  "contract_revision": "2026.08.0"
+}

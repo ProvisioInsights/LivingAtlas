@@ -1,0 +1,195 @@
+{
+  "case": "atlas.changes.read.v1",
+  "contract_revision": "2026.08.0",
+  "intent": "The change feed from the beginning of the epoch, with records inlined.",
+  "response": {
+    "_meta": {
+      "io.modelcontextprotocol/serverInfo": {
+        "name": "living-atlas-consumer",
+        "version": "2026.08.0"
+      }
+    },
+    "content": "<the text block is JSON.stringify(structuredContent)>",
+    "resultType": "complete",
+    "structuredContent": {
+      "cache": {
+        "cache_scope": "private",
+        "ttl_ms": 0
+      },
+      "changes": [
+        {
+          "assertion_id": "<la_assertion:1>",
+          "change_id": "la_change_e-test_1",
+          "change_kind": "assertion-committed",
+          "feed_epoch": "e-test",
+          "record": {
+            "assertion_id": "<la_assertion:1>",
+            "claim_digest": "<sha256:2>",
+            "confidence": {
+              "band": "high"
+            },
+            "evidence_links": [
+              {
+                "evidence_id": "ev-0",
+                "stance": "supports"
+              }
+            ],
+            "feed_epoch": "e-test",
+            "kind": "fact",
+            "lineage_action": "assert",
+            "predicate": "worked-at",
+            "provenance": {
+              "client_id": "fixture",
+              "origin": "consumer-proposed",
+              "recorded_at_fidelity": "authoritative"
+            },
+            "record_schema": "atlas.assertion:v1",
+            "recorded_at": "2026-08-04T12:00:00.000Z",
+            "sensitivity": {
+              "rank": 0,
+              "tier": "open",
+              "withheld": false
+            },
+            "seq": 1,
+            "subject_entity_id": "<la_entity:0>",
+            "superseded_at": null,
+            "superseded_by": null,
+            "supersedes": [],
+            "value": "Employer 0"
+          },
+          "record_schema": "atlas.change:v1",
+          "recorded_at": "2026-08-04T12:00:00.000Z",
+          "seq": 1
+        },
+        {
+          "assertion_id": "<la_assertion:3>",
+          "change_id": "la_change_e-test_2",
+          "change_kind": "assertion-committed",
+          "feed_epoch": "e-test",
+          "record": {
+            "assertion_id": "<la_assertion:3>",
+            "claim_digest": "<sha256:4>",
+            "confidence": {
+              "band": "high"
+            },
+            "evidence_links": [
+              {
+                "evidence_id": "ev-1",
+                "stance": "supports"
+              }
+            ],
+            "feed_epoch": "e-test",
+            "kind": "fact",
+            "lineage_action": "assert",
+            "predicate": "worked-at",
+            "provenance": {
+              "client_id": "fixture",
+              "origin": "consumer-proposed",
+              "recorded_at_fidelity": "authoritative"
+            },
+            "record_schema": "atlas.assertion:v1",
+            "recorded_at": "2026-08-04T12:00:00.001Z",
+            "sensitivity": {
+              "rank": 0,
+              "tier": "open",
+              "withheld": false
+            },
+            "seq": 2,
+            "subject_entity_id": "<la_entity:0>",
+            "superseded_at": null,
+            "superseded_by": null,
+            "supersedes": [],
+            "value": "Employer 1"
+          },
+          "record_schema": "atlas.change:v1",
+          "recorded_at": "2026-08-04T12:00:00.001Z",
+          "seq": 2
+        },
+        {
+          "assertion_id": "<la_assertion:5>",
+          "change_id": "la_change_e-test_3",
+          "change_kind": "assertion-committed",
+          "feed_epoch": "e-test",
+          "record": {
+            "assertion_id": "<la_assertion:5>",
+            "claim_digest": "<sha256:7>",
+            "confidence": {
+              "band": "high"
+            },
+            "evidence_links": [
+              {
+                "evidence_id": "ev-edge-0-1",
+                "stance": "supports"
+              }
+            ],
+            "feed_epoch": "e-test",
+            "kind": "relationship",
+            "lineage_action": "assert",
+            "predicate": "reports-to",
+            "provenance": {
+              "client_id": "fixture",
+              "origin": "consumer-proposed",
+              "recorded_at_fidelity": "authoritative"
+            },
+            "record_schema": "atlas.assertion:v1",
+            "recorded_at": "2026-08-04T12:00:00.002Z",
+            "sensitivity": {
+              "rank": 0,
+              "tier": "open",
+              "withheld": false
+            },
+            "seq": 3,
+            "subject_entity_id": "<la_entity:0>",
+            "superseded_at": null,
+            "superseded_by": null,
+            "supersedes": [],
+            "target_entity_id": "<la_entity:6>"
+          },
+          "record_schema": "atlas.change:v1",
+          "recorded_at": "2026-08-04T12:00:00.002Z",
+          "seq": 3
+        },
+        {
+          "assertion_id": "<la_assertion:9>",
+          "change_id": "la_change_e-test_4",
+          "change_kind": "assertion-committed",
+          "feed_epoch": "e-test",
+          "record": {
+            "disclosure_level": "existence-only",
+            "reason_code": "sensitivity-withheld",
+            "record_schema": "atlas.redaction:v1",
+            "redaction_id": "<la_redaction:8>",
+            "reveal_available": true,
+            "reveal_tool": "atlas.sensitive.reveal.v1",
+            "sensitivity": {
+              "rank": 90,
+              "tier": "sealed",
+              "withheld": true
+            },
+            "seq": 4,
+            "withheld_record_schema": "atlas.withheld:v1"
+          },
+          "record_schema": "atlas.change:v1",
+          "recorded_at": "2026-08-04T12:00:00.003Z",
+          "seq": 4
+        }
+      ],
+      "cursor_before_retention_floor": false,
+      "feed_epoch": "e-test",
+      "has_more": false,
+      "horizon": {
+        "as_of_recorded": "2026-08-04T12:00:00.000Z",
+        "bitemporal_since": "2026-01-01T00:00:00.000Z",
+        "feed_epoch": "e-test",
+        "migration_window_open": false,
+        "record_schema": "atlas.horizon:v1",
+        "recorded_at_fidelity_mixed": false,
+        "seq_watermark": 4,
+        "status": "complete"
+      },
+      "next_cursor_seq": 4,
+      "retention_floor_seq": 0
+    }
+  },
+  "tool": "atlas.changes.read.v1"
+}

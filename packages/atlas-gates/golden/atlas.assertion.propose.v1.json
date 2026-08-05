@@ -1,0 +1,50 @@
+{
+  "case": "atlas.assertion.propose.v1",
+  "contract_revision": "2026.08.0",
+  "intent": "A one-item submission committed under the calling credential, with its receipt.",
+  "response": {
+    "_meta": {
+      "io.modelcontextprotocol/serverInfo": {
+        "name": "living-atlas-consumer",
+        "version": "2026.08.0"
+      }
+    },
+    "content": "<the text block is JSON.stringify(structuredContent)>",
+    "resultType": "complete",
+    "structuredContent": {
+      "committed": 1,
+      "horizon": {
+        "as_of_recorded": "2026-08-04T12:00:00.000Z",
+        "bitemporal_since": "2026-01-01T00:00:00.000Z",
+        "feed_epoch": "e-test",
+        "migration_window_open": false,
+        "record_schema": "atlas.horizon:v1",
+        "recorded_at_fidelity_mixed": false,
+        "seq_watermark": 5,
+        "status": "complete"
+      },
+      "refused": 0,
+      "results": [
+        {
+          "assertion_id": "<la_assertion:11>",
+          "claim_digest": "<sha256:13>",
+          "index": 0,
+          "outcome": "committed",
+          "seq": 5
+        }
+      ],
+      "submission": {
+        "assertion_ids": [
+          "<la_assertion:11>"
+        ],
+        "client_id": "synthetic-consumer",
+        "committed_at": "2026-08-04T12:00:00.004Z",
+        "idempotency_key": "atlas-gates-golden-propose",
+        "request_digest": "<sha256:12>",
+        "state": "committed",
+        "submission_id": "<la_submission:10>"
+      }
+    }
+  },
+  "tool": "atlas.assertion.propose.v1"
+}
