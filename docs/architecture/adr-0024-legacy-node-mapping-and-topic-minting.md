@@ -53,6 +53,17 @@ word become a `has-type` topic on a node with no subtype — a node that satisfi
 every schema check while having lost the field that says what kind of event it
 was.
 
+**Rule A is total over `occurrence`, not over `item`,** and reading it as total
+over both is a defect this ADR originally invited. `occurrence` refuses an
+unnamed word because its subtype is REQUIRED and Rule B would leave the node
+without one. `item` carries no subtype at all, so an unnamed item word means
+nothing more than "this item is not a travel leg" — it stays an item and the word
+becomes a topic, exactly as it would for an organization. Refusing instead read
+"this type has some enumerated retypes" as "this type must be retyped", and
+refused every non-travel item in the corpus: a device, a document, a ticket, each
+taking its `owns` edge down one hop later as `endpoint-not-projected`. An `item`
+with no subtype at all is likewise an unclassified item, not a refusal.
+
 ### 2. Each Rule A row states its own disposition
 
 A retype row does not only say where the node goes; it says what happens to the

@@ -378,6 +378,41 @@ describe("projecting the legacy vocabulary fixture", () => {
     expect(values.has("other")).toBe(false);
   });
 
+  /**
+   * `item` and `occurrence` are both in `EnumeratedRetypeTypes` and they must NOT
+   * behave the same when the table names no rule.
+   *
+   * `occurrence` refuses, because its subtype is required and Rule B would leave
+   * a node that passes every schema check having lost the field that says what
+   * kind of event it was. `item` carries no subtype at all, so a word the table
+   * does not name simply means the item stays an item and the word becomes a
+   * topic. Treating them alike refused every non-travel item — a device, a
+   * document, a ticket — and took each one's `owns` edge down with it one hop
+   * later as `endpoint-not-projected`.
+   */
+  it("keeps a non-travel item and classifies it, rather than refusing it for not retyping", () => {
+    const plan = planFixture();
+    const devices = legacyVocabularyFixtureDistribution.find(
+      (spec) => spec.type === "item" && spec.subtype === "device"
+    );
+    expect(devices).toBeDefined();
+    if (!devices) return;
+
+    const legacyId = legacyVocabularyFixtureObjectId(devices, 1);
+    const outcome = plan.outcomes.find((candidate) => candidate.legacy_object_id === legacyId);
+    const entity = plan.records
+      .filter(isEntityRecord)
+      .find((record) => legacyObjectIdOf(record) === legacyId);
+
+    expect(outcome?.disposition.kind).toBe("projected-as-entity");
+    expect(entity?.entity_type).toBe("item");
+    expect(entity?.entity_subtype).toBeUndefined();
+    // The word is not lost: it becomes the classification the enum used to hold.
+    expect(plan.records.filter(isMintedEntityRecord).map((record) => record.minted_basis.legacy_value)).toContain(
+      "device"
+    );
+  });
+
   it("refuses the unmapped occurrence word by name and projects no entity for it", () => {
     const plan = planFixture();
     const unmappedSpec = legacyVocabularyFixtureDistribution.find((spec) => spec.subtype === "symposium");

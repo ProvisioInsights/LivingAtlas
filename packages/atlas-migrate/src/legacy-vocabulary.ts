@@ -179,9 +179,18 @@ export const RetypeRules: readonly RetypeRule[] = [
 ];
 
 /**
- * Legacy types whose retypes are enumerated. A subtype on one of these that the
- * table does not name is REFUSED, never defaulted: these rows move a node
- * between types, and a wrong move is undetectable once the edges are rewritten.
+ * Legacy types whose retypes are enumerated: the table is consulted FIRST for
+ * these, because a row here moves a node between types and a wrong move is
+ * undetectable once the edges are rewritten.
+ *
+ * What happens when the table names no rule differs by type, and the difference
+ * is not a detail. `occurrence` REFUSES: its subtype is required, so an unnamed
+ * word has nowhere to go, and falling through to Rule B would produce a node
+ * that passes every schema check having lost the field that says what kind of
+ * event it was. `item` falls through to Rule B: it carries no subtype at all, so
+ * an unnamed word means "this item stays an item" and the word becomes a topic
+ * like every other classification. Treating them alike refused every non-travel
+ * item in the corpus and took each one's `owns` edge with it one hop later.
  */
 export const EnumeratedRetypeTypes = ["item", "occurrence"] as const satisfies readonly EndpointType[];
 

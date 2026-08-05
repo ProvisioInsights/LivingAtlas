@@ -218,14 +218,20 @@ function mapEnumeratedType(
         }
       };
     }
-    return {
-      ...base,
-      outcome: {
-        kind: "refused",
-        reason: "unmapped-legacy-subtype",
-        detail: `${legacyType} carries no subtype and no signal this projector maps to one`
-      }
-    };
+    if (legacyType === "occurrence") {
+      return {
+        ...base,
+        outcome: {
+          kind: "refused",
+          reason: "unmapped-legacy-subtype",
+          detail: "occurrence carries no subtype and no signal this projector maps to one"
+        }
+      };
+    }
+    // An `item` with no subtype is an unclassified item, which the ratified
+    // vocabulary allows: `item` carries no subtype at all. Refusing it treated
+    // "this type has some enumerated retypes" as "this type must be retyped".
+    return { ...base, outcome: classifyByHasType(legacyType, undefined) };
   }
 
   const rule = retypeRuleFor(legacyType, legacySubtype);
@@ -255,6 +261,28 @@ function mapEnumeratedType(
         }
       };
     }
+
+    /**
+     * RULE A IS TOTAL OVER OCCURRENCE, NOT OVER `item`, and the difference is the
+     * whole reason both types appear in the same list.
+     *
+     * `occurrence` must refuse: its subtype is a REQUIRED field, so a word the
+     * table does not name has nowhere to go, and letting it fall through to Rule
+     * B would produce a node that passes every schema check having lost the
+     * field that says what kind of event it was.
+     *
+     * `item` has no such field. The table names the item words that RETYPE — the
+     * travel legs that are events rather than possessions — and a word it does
+     * not name simply means "this item stays an item", which is Rule B's answer
+     * for every other type. Refusing instead read "this type has some enumerated
+     * retypes" as "this type must be retyped", and on the measured corpus that
+     * refused every device the owner owns, taking each one's `owns` edge down
+     * with it one hop later as `endpoint-not-projected`.
+     */
+    if (legacyType !== "occurrence") {
+      return { ...base, outcome: classifyByHasType(legacyType, legacySubtype) };
+    }
+
     return {
       ...base,
       outcome: {
