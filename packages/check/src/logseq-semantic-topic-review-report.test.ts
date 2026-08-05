@@ -72,7 +72,6 @@ describe("Logseq semantic topic review report", () => {
           reason_code: "hash-tag-topic-review",
           decision: "promote-topic",
           topic_title: "Synthetic Topic Alpha",
-          subtype: "theme",
           aliases: ["Synthetic Alias"],
           confidence: "high"
         },
@@ -94,7 +93,6 @@ describe("Logseq semantic topic review report", () => {
     expect(report.resolutions.promoted_topic_count).toBe(1);
     expect(report.resolutions.deferred_count).toBe(1);
     expect(report.resolutions.unresolved_group_count).toBe(0);
-    expect(report.resolutions.by_subtype).toEqual({ theme: 1 });
     expect(JSON.stringify(report)).not.toContain("Synthetic Topic Alpha");
     expect(JSON.stringify(report)).not.toContain("Synthetic Alias");
   });

@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:living-atlas:contract:2026.08.1:tool:atlas.submission.read.v1:output",
+  "title": "atlas.submission.read.v1 — result",
+  "description": "Look up a submission by id or by the idempotency key you used. This exists for the case that matters: your connection dropped after you sent a proposal and you do not know whether it committed. Retrying blind is only safe while the key is still within the published idempotency window.",
+  "type": "object",
+  "properties": {
+    "submission": {
+      "$ref": "urn:living-atlas:contract:2026.08.1:common:output#/$defs/submission_receipt"
+    },
+    "results": {
+      "type": "array",
+      "items": {
+        "$ref": "urn:living-atlas:contract:2026.08.1:common:output#/$defs/submission_item_result"
+      }
+    },
+    "idempotency_expires_at": {
+      "anyOf": [
+        {
+          "$ref": "urn:living-atlas:contract:2026.08.1:common:output#/$defs/recorded_at",
+          "description": "When this key stops being deduplicated. After it, an identical retry commits a SECOND copy. null means the receipt has already expired."
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "error": {
+      "$ref": "urn:living-atlas:contract:2026.08.1:record:atlas.error:v1"
+    },
+    "horizon": {
+      "$ref": "urn:living-atlas:contract:2026.08.1:record:atlas.horizon:v1"
+    }
+  },
+  "required": [
+    "horizon"
+  ]
+}

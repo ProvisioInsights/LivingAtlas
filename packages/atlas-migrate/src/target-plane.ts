@@ -5,6 +5,7 @@ import {
   EdgeStatusSchema,
   EndpointSubtypeSchema,
   EndpointTypeSchema,
+  endpointTypeCarriesSubtype,
   IsoTimestampSchema,
   MixedPrecisionDateSchema,
   ObjectIdSchema,
@@ -97,11 +98,31 @@ export const ProjectedEntityRecordSchema = ProjectedRecordBaseSchema.extend({
   record_kind: z.literal("entity"),
   slot: EntitySlotSchema,
   entity_type: EndpointTypeSchema,
-  entity_subtype: EndpointSubtypeSchema,
+  // Present exactly when the type carries one, which today means `occurrence`
+  // alone. Optional-and-unchecked would let a legacy `organization` keep its
+  // retired `company` subtype through the projection and land in the canonical
+  // plane as a classification nothing in the vocabulary defines.
+  entity_subtype: EndpointSubtypeSchema.optional(),
   name: z.string().min(1).max(8_192),
   aliases: z.array(z.string().min(1).max(8_192)),
   description: z.string().min(1).max(8_192).optional()
-}).strict();
+}).strict().superRefine((record, ctx) => {
+  const carries = endpointTypeCarriesSubtype(record.entity_type);
+  if (carries && record.entity_subtype === undefined) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["entity_subtype"],
+      message: `${record.entity_type} carries a subtype and this projection supplies none`
+    });
+  }
+  if (!carries && record.entity_subtype !== undefined) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["entity_subtype"],
+      message: `${record.entity_type} carries no subtype; classify it with a has-type edge to a topic node`
+    });
+  }
+});
 export type ProjectedEntityRecord = z.infer<typeof ProjectedEntityRecordSchema>;
 
 export const ProjectedRelationshipRecordSchema = ProjectedRecordBaseSchema.extend({

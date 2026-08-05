@@ -1,4 +1,4 @@
-import { CONTRACT_TOOL_NAMES } from "@living-atlas/atlas-contract";
+import { CONTRACT_REVISION, CONTRACT_TOOL_NAMES } from "@living-atlas/atlas-contract";
 import { LivingAtlasMcpToolNames } from "@living-atlas/mcp-contract";
 import type { GatedPlane } from "./planes.js";
 import { probeConsumerPlane } from "./probes.js";
@@ -17,7 +17,7 @@ import { probeConsumerPlane } from "./probes.js";
 const NOT_A_TEST = [/\.test\.ts$/];
 
 export const CONSUMER_PLANE: GatedPlane = {
-  id: "consumer-2026.08.0",
+  id: `consumer-${CONTRACT_REVISION}`,
   title: "The published consumer contract and the servers that serve it",
   enforcement: "enforced",
   toolNames: CONTRACT_TOOL_NAMES,

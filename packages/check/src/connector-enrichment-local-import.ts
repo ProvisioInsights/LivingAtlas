@@ -5,8 +5,10 @@ import { pathToFileURL } from "node:url";
 import {
   AuthorityIdSchema,
   EndpointRecordSchema,
+  OccurrenceSubtypeSchema,
   TemporalEdgeSchema,
-  type ObjectType
+  type ObjectType,
+  type OccurrenceSubtype
 } from "@living-atlas/contracts";
 import { FileLocalGraphStore } from "@living-atlas/local-graph-store";
 import { FileLocalKeyringStore, resolveLocalSecret } from "@living-atlas/local-keyring";
@@ -180,18 +182,32 @@ function occurrenceStatus(payload: Record<string, unknown>, recordedAt: string):
   return scheduledEnd && Date.parse(scheduledEnd) < Date.parse(recordedAt) ? "occurred" : "planned";
 }
 
-function defaultSubtype(type: string | undefined): string {
-  switch (type) {
-    case "person":
-      return "individual";
-    case "organization":
-    case "project":
-    case "location":
-    case "occurrence":
-    case "topic":
-      return "other";
+/**
+ * A connector candidate names an occurrence kind in whatever words the connector
+ * uses. Only the four total-coverage values are legal, so the words are mapped
+ * rather than passed through, and an unrecognised one gets `meeting` — the
+ * residual value the vocabulary defines for "people were somewhere at a time",
+ * which is what every calendar and transcript connector produces.
+ */
+function occurrenceSubtypeFor(value: string | undefined): OccurrenceSubtype {
+  const normalized = value?.trim().toLowerCase();
+  const parsed = OccurrenceSubtypeSchema.safeParse(normalized);
+  if (parsed.success) {
+    return parsed.data;
+  }
+  switch (normalized) {
+    case "travel":
+      return "trip";
+    case "hotel-stay":
+    case "hotel_stay":
+      return "stay";
+    case "flight":
+    case "rideshare":
+    case "drive":
+    case "train":
+      return "segment";
     default:
-      return "other";
+      return "meeting";
   }
 }
 
@@ -222,7 +238,7 @@ function endpointRecordForCandidate(input: {
     return EndpointRecordSchema.parse({
       ...base,
       type,
-      subtype: stringField(payload, "occurrence_kind") ?? stringField(payload, "subtype") ?? "other",
+      subtype: occurrenceSubtypeFor(stringField(payload, "occurrence_kind") ?? stringField(payload, "subtype")),
       occurred_on: stringField(payload, "occurred_on") ?? (status === "occurred" ? scheduledStart : undefined),
       occurred_until: stringField(payload, "occurred_until"),
       scheduled_start: scheduledStart,
@@ -232,10 +248,12 @@ function endpointRecordForCandidate(input: {
     });
   }
 
+  // No subtype: the other seven types classify with has-type edges to topic
+  // nodes, so a connector-supplied `subtype` field is not carried onto the
+  // endpoint at all.
   return EndpointRecordSchema.parse({
     ...base,
-    type,
-    subtype: stringField(payload, "subtype") ?? defaultSubtype(type)
+    type
   });
 }
 

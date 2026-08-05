@@ -18,6 +18,7 @@ import {
 import { loadContract, schemaDirectory } from "./manifest.js";
 import { CONTRACT_REVISION } from "./revision.js";
 import { RECORD_SAMPLES } from "./samples.js";
+import { recordUrn } from "./shape.js";
 import { createContractValidator } from "./validator.js";
 import { SEED_ERROR_CODES } from "./vocabulary.js";
 import { packageRoot } from "./write-schemas.js";
@@ -67,8 +68,8 @@ function enumValues(schema: JsonSchema): string[] {
   return values as string[];
 }
 
-const assertionRecord = at(contract.records, "urn:living-atlas:contract:2026.08.0:record:atlas.assertion:v1");
-const entityRecord = at(contract.records, "urn:living-atlas:contract:2026.08.0:record:atlas.entity:v1");
+const assertionRecord = at(contract.records, recordUrn("atlas.assertion:v1"));
+const entityRecord = at(contract.records, recordUrn("atlas.entity:v1"));
 
 describe("published output enums match the model's enums", () => {
   it("carries every member atlas-core defines, `other` included", () => {

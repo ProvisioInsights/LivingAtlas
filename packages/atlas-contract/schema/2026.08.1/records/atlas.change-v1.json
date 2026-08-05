@@ -1,0 +1,121 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:living-atlas:contract:2026.08.1:record:atlas.change:v1",
+  "title": "atlas.change:v1",
+  "type": "object",
+  "description": "One row of the resumable change feed. Supersession is its own change with its own seq, so a mirror converges from the feed alone without re-reading the graph.",
+  "properties": {
+    "record_schema": {
+      "const": "atlas.change:v1"
+    },
+    "change_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Delivery is at-least-once. Deduplicate on this; it is stable across redeliveries of the same change."
+    },
+    "seq": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "feed_epoch": {
+      "type": "string",
+      "minLength": 1
+    },
+    "recorded_at": {
+      "$ref": "urn:living-atlas:contract:2026.08.1:common:output#/$defs/recorded_at"
+    },
+    "change_kind": {
+      "type": "string",
+      "enum": [
+        "assertion-committed",
+        "assertion-superseded",
+        "entity-registered",
+        "entity-renamed",
+        "entity-redirected",
+        "other"
+      ]
+    },
+    "assertion_id": {
+      "$ref": "urn:living-atlas:contract:2026.08.1:common:output#/$defs/assertion_id"
+    },
+    "entity_id": {
+      "$ref": "urn:living-atlas:contract:2026.08.1:common:output#/$defs/entity_id"
+    },
+    "submission_id": {
+      "$ref": "urn:living-atlas:contract:2026.08.1:common:output#/$defs/submission_id"
+    },
+    "record": {
+      "type": "object",
+      "description": "The changed record, when the request asked for it and this credential may read it. A record it may not read arrives as a redaction stub, so the feed's seq sequence stays gapless.",
+      "required": [
+        "record_schema"
+      ],
+      "properties": {
+        "record_schema": {
+          "type": "string",
+          "minLength": 1,
+          "x-atlas-known-values": [
+            "atlas.assertion:v1",
+            "atlas.entity:v1",
+            "atlas.redaction:v1"
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "record_schema"
+            ],
+            "properties": {
+              "record_schema": {
+                "const": "atlas.assertion:v1"
+              }
+            }
+          },
+          "then": {
+            "$ref": "urn:living-atlas:contract:2026.08.1:record:atlas.assertion:v1"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "record_schema"
+            ],
+            "properties": {
+              "record_schema": {
+                "const": "atlas.entity:v1"
+              }
+            }
+          },
+          "then": {
+            "$ref": "urn:living-atlas:contract:2026.08.1:record:atlas.entity:v1"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "record_schema"
+            ],
+            "properties": {
+              "record_schema": {
+                "const": "atlas.redaction:v1"
+              }
+            }
+          },
+          "then": {
+            "$ref": "urn:living-atlas:contract:2026.08.1:record:atlas.redaction:v1"
+          }
+        }
+      ]
+    }
+  },
+  "required": [
+    "record_schema",
+    "change_id",
+    "seq",
+    "feed_epoch",
+    "recorded_at",
+    "change_kind"
+  ]
+}

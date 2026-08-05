@@ -70,7 +70,6 @@ describe("Logseq semantic topic curated draft", () => {
     expect(draft.resolutions.find((resolution) => resolution.target_hash === hashA)).toMatchObject({
       decision: "promote-topic",
       topic_title: "Synthetic Topic Alpha",
-      subtype: "theme",
       confidence: "high"
     });
     expect(draft.resolutions.find((resolution) => resolution.target_hash === hashB)).toMatchObject({
@@ -84,15 +83,13 @@ describe("Logseq semantic topic curated draft", () => {
       packet,
       minOccurrences: 2,
       promoteReasons: new Set(["wikilink-tag-topic-review", "plain-tag-topic-review"]),
-      subtype: "domain",
       generatedAt: "2026-06-24T00:01:00.000Z"
     });
 
     expect(draft.resolutions.filter((resolution) => resolution.decision === "promote-topic")).toHaveLength(2);
     expect(draft.resolutions.find((resolution) => resolution.target_hash === hashC)).toMatchObject({
       decision: "promote-topic",
-      topic_title: "synthetic-plain-tag",
-      subtype: "domain"
+      topic_title: "synthetic-plain-tag"
     });
   });
 
@@ -106,8 +103,7 @@ describe("Logseq semantic topic curated draft", () => {
       draft,
       outputWritten: true,
       minOccurrences: 2,
-      promoteReasons: new Set(["wikilink-tag-topic-review"]),
-      subtype: "theme"
+      promoteReasons: new Set(["wikilink-tag-topic-review"])
     });
 
     expect(report.report_schema).toBe("living-atlas-logseq-topic-review-curated-draft-report:v1");

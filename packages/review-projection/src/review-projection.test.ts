@@ -762,7 +762,6 @@ describe("local review projection", () => {
         schema: "atlas.entity:v1",
         entity_id: entityId,
         type: "person",
-        subtype: "individual",
         name: "Synthetic Scoped Person",
         aliases: [],
         created_at: now,

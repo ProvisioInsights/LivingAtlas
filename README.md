@@ -46,7 +46,7 @@ docs control what graph facts mean.
 - [Access Modes](docs/architecture/access-modes.md) - remote-safe, cloud-unlock session, and local-keyholding security modes.
 - [Identity, Configuration, And Key Control Plane](docs/architecture/identity-configuration-control-plane.md) - user/device/client setup, capability grants, key config, recovery, and admin surfaces.
 - [Event Subsystems](docs/architecture/event-subsystems.md) - sync change log, durable audit ledger, and live activity stream.
-- [Knowledge Contract](docs/contract/atlas-knowledge-contract-2026.08.0.md) - the published consumer tool contract: record schemas, limits, coverage reporting, and the requirements register.
+- [Knowledge Contract](docs/contract/atlas-knowledge-contract-2026.08.1.md) - the published consumer tool contract: record schemas, the graph vocabulary, limits, coverage reporting, and the requirements register. The frozen prior revision is [2026.08.0](docs/contract/atlas-knowledge-contract-2026.08.0.md).
 - [Metadata Leakage Budget](docs/architecture/metadata-leakage-budget.md) - Cloudflare-visible metadata and path/index constraints.
 - [Compaction And Retention](docs/architecture/compaction-and-retention.md) - tombstones, snapshots, long-offline clients, and erasure.
 - [Local MCP Authentication](docs/architecture/local-mcp-authentication.md) - local auth, capabilities, admin mode, and localhost threat model. **Superseded by ADR 0015 and ADR 0017.**

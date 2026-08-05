@@ -40,7 +40,7 @@ export const RETIRED_SUBJECTS: readonly RetiredSubject[] = [
     needle: "docs/mcp-tools.md",
     replacement:
       "The 30-tool catalog is deleted (ADR 0017). The published consumer contract is " +
-      "docs/contract/atlas-knowledge-contract-2026.08.0.md and packages/atlas-contract/schema/."
+      "docs/contract/ and packages/atlas-contract/schema/."
   },
   {
     needle: "docs/architecture/local-mcp-clients.md",

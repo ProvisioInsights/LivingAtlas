@@ -2289,8 +2289,8 @@ describe("Worker sync batch acceptance", () => {
       source_object_id: sourceId,
       source_type: "person",
       target_object_id: targetId,
-      target_type: "project",
-      predicate: "advises",
+      target_type: "organization",
+      predicate: "member-of",
       valid_from: "2026-06",
       status: "active",
       confidence: "high",
@@ -2314,7 +2314,7 @@ describe("Worker sync batch acceptance", () => {
       authority_id: authorityId,
       start_object_id: sourceId,
       direction: "outbound",
-      predicates: ["advisor-to"],
+      predicates: ["knows", "member-of"],
       max_depth: 1
     })).resolves.toMatchObject({
       result: {
@@ -2326,7 +2326,7 @@ describe("Worker sync batch acceptance", () => {
       }
     });
 
-    await expect(mcpCall(17, "timeline", { authority_id: authorityId, from: "2026-06", to: "2026-06-30", predicate: "advises" })).resolves.toMatchObject({
+    await expect(mcpCall(17, "timeline", { authority_id: authorityId, from: "2026-06", to: "2026-06-30", predicate: "member-of" })).resolves.toMatchObject({
       result: {
         structuredContent: {
           ok: true,
@@ -2587,8 +2587,8 @@ describe("Worker sync batch acceptance", () => {
             source_object_id: objectA.object_id,
             source_type: "person",
             target_object_id: objectB.object_id,
-            target_type: "project",
-            predicate: "advises",
+            target_type: "organization",
+            predicate: "member-of",
             valid_from: "2026-06",
             status: "active",
             confidence: "high",

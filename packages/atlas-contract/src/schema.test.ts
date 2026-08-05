@@ -9,6 +9,7 @@ import {
   serialize
 } from "./generate.js";
 import { loadContract, schemaDirectory } from "./manifest.js";
+import { recordUrn } from "./shape.js";
 import { CONTRACT_LIMITS, CONTRACT_REVISION, CONTRACT_TOOL_NAMES, RECORD_SCHEMAS } from "./revision.js";
 import { RECORD_SAMPLES, TOOL_INPUT_SAMPLES } from "./samples.js";
 import { createContractValidator } from "./validator.js";
@@ -157,7 +158,7 @@ describe("asymmetric strictness", () => {
     // provenance.client_id. Reusing the output shape on the input side is how a
     // caller ends up able to supply one.
     expect(() =>
-      assertNoRecordRefs({ properties: { smuggled: { $ref: "urn:living-atlas:contract:2026.08.0:record:atlas.assertion:v1" } } }, "probe")
+      assertNoRecordRefs({ properties: { smuggled: { $ref: recordUrn("atlas.assertion:v1") } } }, "probe")
     ).toThrow(/may not reference a record schema/);
   });
 
@@ -215,7 +216,7 @@ describe("closed enums and open vocabularies", () => {
   it("leaves open vocabularies as strings that name their live registry", () => {
     // A predicate the owner records tomorrow must not fail a consumer's
     // validator today. The registry is served, not frozen into the schema.
-    const assertion = at(contract.records, "urn:living-atlas:contract:2026.08.0:record:atlas.assertion:v1");
+    const assertion = at(contract.records, recordUrn("atlas.assertion:v1"));
     const properties = assertion["properties"] as Record<string, JsonSchema>;
     expect(at(properties, "predicate")["$ref"]).toBe(
       `${contract.manifest.common_schema_ids.output}#/$defs/predicate`

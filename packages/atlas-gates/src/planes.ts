@@ -5,9 +5,9 @@ import type { CollectOptions } from "./sources.js";
  * The surfaces gate 1 and gate 5 examine, and what each one owes.
  *
  * Two planes exist because this repository contains two tool surfaces at once
- * and they are not in the same state. The consumer plane published in
- * `2026.08.0` is ENFORCED: every detector runs and every finding is a build
- * failure. The 30-tool surface it replaces is QUARANTINED: the detectors still
+ * and they are not in the same state. The consumer plane published at
+ * `CONTRACT_REVISION` is ENFORCED: every detector runs and every finding is a
+ * build failure. The 30-tool surface it replaces is QUARANTINED: the detectors still
  * run, but the drift they find is compared against a frozen ledger.
  *
  * A quarantine is not a suppression, and the difference is the entire point:

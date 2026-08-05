@@ -40,7 +40,7 @@ describe("gate 1 — single source", () => {
 
   it("holds the consumer plane to zero findings and the legacy plane to its ledger", async () => {
     const result = await runSingleSourceGate();
-    expect(result.examined["consumer-2026.08.0.findings"]).toBe(0);
+    expect(result.examined[`consumer-${CONTRACT_REVISION}.findings`]).toBe(0);
     // The legacy count is not asserted as a specific number here — the ledger
     // does that, entry by entry, and asserting it twice would mean editing two
     // places when the surface is demolished.
@@ -48,7 +48,7 @@ describe("gate 1 — single source", () => {
   });
 
   it("gives the enforced plane no place to record an exception", () => {
-    const consumer = GATED_PLANES.find((plane) => plane.id === "consumer-2026.08.0");
+    const consumer = GATED_PLANES.find((plane) => plane.id === `consumer-${CONTRACT_REVISION}`);
     expect(consumer?.enforcement).toBe("enforced");
     // Not a lint and not a convention: `EnforcedPlane` has no `quarantine`
     // member, so this cannot be added without changing the type.

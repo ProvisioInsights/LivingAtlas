@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:living-atlas:contract:2026.08.1:tool:atlas.entity.resolve.v1:input",
+  "title": "atlas.entity.resolve.v1 — arguments",
+  "description": "Follow the alias ledger from any identifier — including legacy ids Atlas never minted — to the entity it names today. Every outcome is typed. An id that was split returns its candidates and no primary: nominating one would silently reattribute every historical reference to it.",
+  "type": "object",
+  "properties": {
+    "ids": {
+      "type": "array",
+      "items": {
+        "$ref": "urn:living-atlas:contract:2026.08.1:common:input#/$defs/opaque_reference"
+      },
+      "minItems": 1,
+      "maxItems": 100
+    },
+    "as_of_recorded": {
+      "$ref": "urn:living-atlas:contract:2026.08.1:common:input#/$defs/recorded_at",
+      "description": "BELIEF axis. Below the retained history floor this is refused, never answered from present state."
+    },
+    "as_of_valid": {
+      "$ref": "urn:living-atlas:contract:2026.08.1:common:input#/$defs/world_time_probe",
+      "description": "WORLD axis."
+    }
+  },
+  "required": [
+    "ids"
+  ],
+  "additionalProperties": false
+}

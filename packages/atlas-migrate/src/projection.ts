@@ -153,6 +153,25 @@ function refuse(reason: MigrationRefusalReason, detail: string): SourceDispositi
   return { kind: "refused", reason, detail };
 }
 
+/**
+ * The Logseq importer writes a record WRAPPED: `{kind, source_path_ref, endpoint}`
+ * for a node and `{kind, source_path_ref, edge}` for a typed edge, while the
+ * connector-written `edge/temporal` records are flat. Parsing the payload
+ * directly therefore succeeded for one shape and failed for the other, and every
+ * wrapped record was refused as `invalid-legacy-payload` — a real record turned
+ * away for being one level deeper than the parser expected.
+ *
+ * Unwrap when the key is present, otherwise pass the payload through, so both
+ * generations parse without the caller needing to know which wrote the record.
+ */
+function unwrapLegacyRecord(data: unknown, key: "endpoint" | "edge"): unknown {
+  if (data && typeof data === "object" && !Array.isArray(data)) {
+    const inner = (data as Record<string, unknown>)[key];
+    if (inner && typeof inner === "object") return inner;
+  }
+  return data;
+}
+
 function countBy<T extends string>(values: T[], universe: readonly T[]): Array<{ value: T; count: number }> {
   const counts = new Map<T, number>();
   for (const value of values) {
@@ -220,6 +239,14 @@ export function buildProjectionPlan(
       continue;
     }
 
+    if (category === "derived-index") {
+      draft.disposition = refuse(
+        "derived-index-not-migrated",
+        "derived lookup table; the new plane rebuilds it from the records it indexes"
+      );
+      continue;
+    }
+
     if (category === "other") {
       draft.disposition = refuse(
         "unclassified-source-category",
@@ -244,7 +271,7 @@ export function buildProjectionPlan(
     }
 
     if (category === "entity-record" || category === "tombstoned-entity-record") {
-      const endpoint = EndpointRecordSchema.safeParse(resolution.data);
+      const endpoint = EndpointRecordSchema.safeParse(unwrapLegacyRecord(resolution.data, "endpoint"));
       if (!endpoint.success) {
         draft.disposition = refuse("invalid-legacy-payload", "legacy entity payload did not parse as an endpoint record");
         continue;
@@ -264,7 +291,7 @@ export function buildProjectionPlan(
         provenance,
         slot,
         entity_type: endpoint.data.type,
-        entity_subtype: endpoint.data.subtype,
+        ...(endpoint.data.type === "occurrence" ? { entity_subtype: endpoint.data.subtype } : {}),
         name: endpoint.data.name,
         aliases: [...endpoint.data.aliases],
         ...(endpoint.data.description ? { description: endpoint.data.description } : {})
@@ -437,7 +464,7 @@ function resolveEdges(
     }
 
     const envelope = draft.envelope;
-    const edge = TemporalEdgeSchema.safeParse(draft.data);
+    const edge = TemporalEdgeSchema.safeParse(unwrapLegacyRecord(draft.data, "edge"));
     if (!edge.success) {
       draft.disposition = refuse("invalid-legacy-payload", "legacy edge payload did not parse as a temporal edge");
       continue;
@@ -691,6 +718,7 @@ const LegacySourceCategoryUniverse = [
   "opaque-object",
   "quarantined-object",
   "narrative-object",
+  "derived-index",
   "other"
 ] as const satisfies readonly LegacySourceCategory[];
 
@@ -705,6 +733,7 @@ const MigrationRefusalReasonUniverse = [
   "alias-cycle",
   "dangling-alias-target",
   "unclassified-source-category",
+  "derived-index-not-migrated",
   "other"
 ] as const satisfies readonly MigrationRefusalReason[];
 

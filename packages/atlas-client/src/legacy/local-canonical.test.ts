@@ -18,7 +18,7 @@ function entityDraft() {
     content_hash: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     visible_metadata: { tombstone: false, remote_indexable: false },
     payload: { kind: "plaintext-json" as const, data: {
-      schema: "atlas.entity:v1", entity_id: entityId, type: "organization", subtype: "company",
+      schema: "atlas.entity:v1", entity_id: entityId, type: "organization",
       name: "Synthetic local canonical export", aliases: [], created_at: now, updated_at: now
     } }
   };
@@ -66,7 +66,7 @@ function relationshipDraft() {
     payload: { kind: "plaintext-json" as const, data: {
       schema: "atlas.relationship:v2", assertion_id: "la_object_localclientrelationship0001",
       edge_id: "la_edge_localclientrelationship0001", source_entity_id: "la_object_localclientperson0001",
-      source_type: "person", target_entity_id: entityId, target_type: "organization", predicate: "advises",
+      source_type: "person", target_entity_id: entityId, target_type: "organization", predicate: "member-of",
       valid_from: "2026", status: "active", attrs: { role: "Synthetic advisor" }, recorded_at: now,
       lineage_action: "assert", supersedes: [], evidence_links: [{ evidence_id: "la_object_localclientevidence0001", stance: "supports" }],
       confidence: { band: "high", assessment_kind: "assertion", method: "synthetic", assessed_at: now, evidence_refs: ["la_object_localclientevidence0001"] }

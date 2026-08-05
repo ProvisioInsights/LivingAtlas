@@ -221,13 +221,16 @@ export const temporalEdges: TemporalEdge[] = [
     source_object_id: "la_object_remotesafe0001",
     source_type: "person",
     target_object_id: "la_object_shareable0001",
-    target_type: "project",
-    predicate: "advises",
+    target_type: "organization",
+    // advises collapsed into member-of; the advisory distinction it used to
+    // carry in the predicate name is now attrs.role.
+    predicate: "member-of",
     valid_from: "2024",
     status: "active",
     confidence: "high",
     source: "synthetic-fixture",
     attrs: {
+      role: "advisor",
       scope: "remote-safe test edge"
     }
   },
@@ -251,7 +254,7 @@ export const temporalEdges: TemporalEdge[] = [
     source_object_id: "la_object_remotesafe0001",
     source_type: "organization",
     target_object_id: "la_object_shareable0001",
-    target_type: "project",
+    target_type: "organization",
     predicate: "invests-in",
     valid_from: "2026-06",
     status: "pending",
@@ -272,7 +275,7 @@ export const temporalEvents: TemporalEvent[] = [
     kind: "relationship-formed",
     occurred_on: "2024",
     recorded_at: now,
-    predicate: "advises",
+    predicate: "member-of",
     object_object_id: "la_object_shareable0001",
     source: "synthetic-fixture",
     supersedes: []

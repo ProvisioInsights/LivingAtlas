@@ -25,12 +25,12 @@ describe("Logseq semantic knowledge summary", () => {
       },
       {
         source_path: "/tmp/living-atlas-fixtures/Synthetic Topic.md",
-        markdown: "type:: topic\nsubtype:: theme\naliases:: Synthetic Theme\n\n- body text\n",
+        markdown: "type:: topic\naliases:: Synthetic Theme\n\n- body text\n",
         source_kind: "logseq" as const
       },
       {
         source_path: "/tmp/living-atlas-fixtures/Topic Edge.md",
-        markdown: "## Edges\n\n- [[Synthetic Topic]] (topic) discussed-at [[Synthetic Weekly Meeting]] (occurrence) from 2026-06-21\n",
+        markdown: "## Edges\n\n- [[Synthetic Weekly Meeting]] (occurrence) about [[Synthetic Topic]] (topic) from 2026-06-21\n",
         source_kind: "logseq" as const
       },
       {
@@ -76,7 +76,7 @@ describe("Logseq semantic knowledge summary", () => {
       item: 1
     });
     expect(report.edge_predicate_counts).toEqual({
-      "discussed-at": 1
+      about: 1
     });
     expect(report.quarantine_reason_counts).toEqual({
       "suffix-tag-weak-tie-needs-note": 1

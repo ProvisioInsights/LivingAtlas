@@ -1,12 +1,12 @@
 {
   "case": "atlas.contract.describe.v1",
-  "contract_revision": "2026.08.0",
+  "contract_revision": "2026.08.1",
   "intent": "The published contract as the server reports it: revision, limits, history floor, tool table.",
   "response": {
     "_meta": {
       "io.modelcontextprotocol/serverInfo": {
         "name": "living-atlas-consumer",
-        "version": "2026.08.0"
+        "version": "2026.08.1"
       }
     },
     "content": "<the text block is JSON.stringify(structuredContent)>",
@@ -37,138 +37,138 @@
         "max_traversal_depth": 5,
         "snapshot_ttl_seconds": 900
       },
-      "policy_document": "docs/contract/atlas-knowledge-contract-2026.08.0.md",
+      "policy_document": "docs/contract/atlas-knowledge-contract-2026.08.1.md",
       "protocol_version": "2026-07-28",
       "record_schemas": [
         {
           "name": "atlas.assertion:v1",
-          "schema_id": "urn:living-atlas:contract:2026.08.0:record:atlas.assertion:v1",
+          "schema_id": "urn:living-atlas:contract:2026.08.1:record:atlas.assertion:v1",
           "schema_path": "records/atlas.assertion-v1.json"
         },
         {
           "name": "atlas.entity:v1",
-          "schema_id": "urn:living-atlas:contract:2026.08.0:record:atlas.entity:v1",
+          "schema_id": "urn:living-atlas:contract:2026.08.1:record:atlas.entity:v1",
           "schema_path": "records/atlas.entity-v1.json"
         },
         {
           "name": "atlas.redaction:v1",
-          "schema_id": "urn:living-atlas:contract:2026.08.0:record:atlas.redaction:v1",
+          "schema_id": "urn:living-atlas:contract:2026.08.1:record:atlas.redaction:v1",
           "schema_path": "records/atlas.redaction-v1.json"
         },
         {
           "name": "atlas.error:v1",
-          "schema_id": "urn:living-atlas:contract:2026.08.0:record:atlas.error:v1",
+          "schema_id": "urn:living-atlas:contract:2026.08.1:record:atlas.error:v1",
           "schema_path": "records/atlas.error-v1.json"
         },
         {
           "name": "atlas.horizon:v1",
-          "schema_id": "urn:living-atlas:contract:2026.08.0:record:atlas.horizon:v1",
+          "schema_id": "urn:living-atlas:contract:2026.08.1:record:atlas.horizon:v1",
           "schema_path": "records/atlas.horizon-v1.json"
         },
         {
           "name": "atlas.change:v1",
-          "schema_id": "urn:living-atlas:contract:2026.08.0:record:atlas.change:v1",
+          "schema_id": "urn:living-atlas:contract:2026.08.1:record:atlas.change:v1",
           "schema_path": "records/atlas.change-v1.json"
         }
       ],
-      "revision": "2026.08.0",
+      "revision": "2026.08.1",
       "revisions_served": [
-        "2026.08.0"
+        "2026.08.1"
       ],
       "tools": [
         {
           "deprecation": null,
-          "input_schema_id": "urn:living-atlas:contract:2026.08.0:tool:atlas.contract.describe.v1:input",
+          "input_schema_id": "urn:living-atlas:contract:2026.08.1:tool:atlas.contract.describe.v1:input",
           "name": "atlas.contract.describe.v1",
-          "output_schema_id": "urn:living-atlas:contract:2026.08.0:tool:atlas.contract.describe.v1:output",
+          "output_schema_id": "urn:living-atlas:contract:2026.08.1:tool:atlas.contract.describe.v1:output",
           "requires_capabilities": [],
           "title": "Describe the published contract"
         },
         {
           "deprecation": null,
-          "input_schema_id": "urn:living-atlas:contract:2026.08.0:tool:atlas.scope.describe.v1:input",
+          "input_schema_id": "urn:living-atlas:contract:2026.08.1:tool:atlas.scope.describe.v1:input",
           "name": "atlas.scope.describe.v1",
-          "output_schema_id": "urn:living-atlas:contract:2026.08.0:tool:atlas.scope.describe.v1:output",
+          "output_schema_id": "urn:living-atlas:contract:2026.08.1:tool:atlas.scope.describe.v1:output",
           "requires_capabilities": [],
           "title": "Describe what this credential can reach"
         },
         {
           "deprecation": null,
-          "input_schema_id": "urn:living-atlas:contract:2026.08.0:tool:atlas.entity.resolve.v1:input",
+          "input_schema_id": "urn:living-atlas:contract:2026.08.1:tool:atlas.entity.resolve.v1:input",
           "name": "atlas.entity.resolve.v1",
-          "output_schema_id": "urn:living-atlas:contract:2026.08.0:tool:atlas.entity.resolve.v1:output",
+          "output_schema_id": "urn:living-atlas:contract:2026.08.1:tool:atlas.entity.resolve.v1:output",
           "requires_capabilities": [],
           "title": "Resolve identifiers to current entities"
         },
         {
           "deprecation": null,
-          "input_schema_id": "urn:living-atlas:contract:2026.08.0:tool:atlas.entity.read.v1:input",
+          "input_schema_id": "urn:living-atlas:contract:2026.08.1:tool:atlas.entity.read.v1:input",
           "name": "atlas.entity.read.v1",
-          "output_schema_id": "urn:living-atlas:contract:2026.08.0:tool:atlas.entity.read.v1:output",
+          "output_schema_id": "urn:living-atlas:contract:2026.08.1:tool:atlas.entity.read.v1:output",
           "requires_capabilities": [],
           "title": "Read entities by id"
         },
         {
           "deprecation": null,
-          "input_schema_id": "urn:living-atlas:contract:2026.08.0:tool:atlas.assertion.query.v1:input",
+          "input_schema_id": "urn:living-atlas:contract:2026.08.1:tool:atlas.assertion.query.v1:input",
           "name": "atlas.assertion.query.v1",
-          "output_schema_id": "urn:living-atlas:contract:2026.08.0:tool:atlas.assertion.query.v1:output",
+          "output_schema_id": "urn:living-atlas:contract:2026.08.1:tool:atlas.assertion.query.v1:output",
           "requires_capabilities": [],
           "title": "Query assertions on both time axes"
         },
         {
           "deprecation": null,
-          "input_schema_id": "urn:living-atlas:contract:2026.08.0:tool:atlas.assertion.read.v1:input",
+          "input_schema_id": "urn:living-atlas:contract:2026.08.1:tool:atlas.assertion.read.v1:input",
           "name": "atlas.assertion.read.v1",
-          "output_schema_id": "urn:living-atlas:contract:2026.08.0:tool:atlas.assertion.read.v1:output",
+          "output_schema_id": "urn:living-atlas:contract:2026.08.1:tool:atlas.assertion.read.v1:output",
           "requires_capabilities": [],
           "title": "Read assertions by id"
         },
         {
           "deprecation": null,
-          "input_schema_id": "urn:living-atlas:contract:2026.08.0:tool:atlas.graph.neighbors.v1:input",
+          "input_schema_id": "urn:living-atlas:contract:2026.08.1:tool:atlas.graph.neighbors.v1:input",
           "name": "atlas.graph.neighbors.v1",
-          "output_schema_id": "urn:living-atlas:contract:2026.08.0:tool:atlas.graph.neighbors.v1:output",
+          "output_schema_id": "urn:living-atlas:contract:2026.08.1:tool:atlas.graph.neighbors.v1:output",
           "requires_capabilities": [],
           "title": "Walk relationship assertions from an entity"
         },
         {
           "deprecation": null,
-          "input_schema_id": "urn:living-atlas:contract:2026.08.0:tool:atlas.text.search.v1:input",
+          "input_schema_id": "urn:living-atlas:contract:2026.08.1:tool:atlas.text.search.v1:input",
           "name": "atlas.text.search.v1",
-          "output_schema_id": "urn:living-atlas:contract:2026.08.0:tool:atlas.text.search.v1:output",
+          "output_schema_id": "urn:living-atlas:contract:2026.08.1:tool:atlas.text.search.v1:output",
           "requires_capabilities": [],
           "title": "Search readable text"
         },
         {
           "deprecation": null,
-          "input_schema_id": "urn:living-atlas:contract:2026.08.0:tool:atlas.changes.read.v1:input",
+          "input_schema_id": "urn:living-atlas:contract:2026.08.1:tool:atlas.changes.read.v1:input",
           "name": "atlas.changes.read.v1",
-          "output_schema_id": "urn:living-atlas:contract:2026.08.0:tool:atlas.changes.read.v1:output",
+          "output_schema_id": "urn:living-atlas:contract:2026.08.1:tool:atlas.changes.read.v1:output",
           "requires_capabilities": [],
           "title": "Read the resumable change feed"
         },
         {
           "deprecation": null,
-          "input_schema_id": "urn:living-atlas:contract:2026.08.0:tool:atlas.assertion.propose.v1:input",
+          "input_schema_id": "urn:living-atlas:contract:2026.08.1:tool:atlas.assertion.propose.v1:input",
           "name": "atlas.assertion.propose.v1",
-          "output_schema_id": "urn:living-atlas:contract:2026.08.0:tool:atlas.assertion.propose.v1:output",
+          "output_schema_id": "urn:living-atlas:contract:2026.08.1:tool:atlas.assertion.propose.v1:output",
           "requires_capabilities": [],
           "title": "Propose assertions"
         },
         {
           "deprecation": null,
-          "input_schema_id": "urn:living-atlas:contract:2026.08.0:tool:atlas.submission.read.v1:input",
+          "input_schema_id": "urn:living-atlas:contract:2026.08.1:tool:atlas.submission.read.v1:input",
           "name": "atlas.submission.read.v1",
-          "output_schema_id": "urn:living-atlas:contract:2026.08.0:tool:atlas.submission.read.v1:output",
+          "output_schema_id": "urn:living-atlas:contract:2026.08.1:tool:atlas.submission.read.v1:output",
           "requires_capabilities": [],
           "title": "Read a submission receipt"
         },
         {
           "deprecation": null,
-          "input_schema_id": "urn:living-atlas:contract:2026.08.0:tool:atlas.sensitive.reveal.v1:input",
+          "input_schema_id": "urn:living-atlas:contract:2026.08.1:tool:atlas.sensitive.reveal.v1:input",
           "name": "atlas.sensitive.reveal.v1",
-          "output_schema_id": "urn:living-atlas:contract:2026.08.0:tool:atlas.sensitive.reveal.v1:output",
+          "output_schema_id": "urn:living-atlas:contract:2026.08.1:tool:atlas.sensitive.reveal.v1:output",
           "requires_capabilities": [
             "elicitation"
           ],
