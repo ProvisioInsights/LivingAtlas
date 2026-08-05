@@ -500,8 +500,56 @@ export function buildAtlasServer(options: AtlasServerOptions): AtlasServer {
             : { inputResponses: serverContext.mcpReq.inputResponses })
         };
 
-        const outcome = await handler((args ?? {}) as Record<string, unknown>, context);
-        return finish({ outcome, context, serverContext, toolName, args });
+        /**
+         * A throw is an OUTCOME, and it gets an event like every other one.
+         *
+         * Without this the failure path is the one path that leaves no trace:
+         * `McpServer`'s own `tools/call` try/catch swallows everything but
+         * `UrlElicitationRequired` into a text tool error — verified against
+         * `@modelcontextprotocol/server@2.0.0` — so a handler that threw
+         * returned an error to the caller and wrote nothing to the journal. An
+         * audit reader would see the refused calls and the successful ones and
+         * nothing in between, which reports a tool crashing on crafted input as
+         * silence. That is the same failure mode as the unwritable log this
+         * package was built to fix, reached from the other direction.
+         *
+         * Guarded on the recorder's own counter rather than wrapping only the
+         * handler call, so the invariant is EXACTLY one event per call no matter
+         * where the throw came from: if `finish` already wrote, this writes
+         * nothing and rethrows to the SDK; if nothing wrote, this writes the one
+         * event. A second event here would be the per-call-fanout regression the
+         * counter exists to catch.
+         */
+        const before = audit.writes;
+        try {
+          const outcome = await handler((args ?? {}) as Record<string, unknown>, context);
+          return await finish({ outcome, context, serverContext, toolName, args });
+        } catch (thrown) {
+          if (audit.writes !== before) throw thrown;
+          audit.record({
+            tool: toolName,
+            principal,
+            plane: SERVER_PLANE,
+            protocolVersion: context.protocolVersion,
+            outcome: "error",
+            reasonCode: "handler-failed",
+            counts: {},
+            args
+          });
+          // The event records that this call failed; it deliberately does not
+          // record WHAT failed, and neither does the wire. A thrown message
+          // carries stack frames, file paths and frequently the graph value that
+          // provoked it — the message is the leak, and copying it into the
+          // journal would put it somewhere longer-lived than the response.
+          return refuse(
+            errorRecord({
+              code: "internal-error",
+              message:
+                "This tool failed while serving the request. The failure is recorded in this server's audit log; no detail about it is returned here, because a fault message is a channel for graph content and server internals.",
+              retryable: false
+            })
+          );
+        }
       }
     );
   }

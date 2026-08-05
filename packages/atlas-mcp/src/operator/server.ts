@@ -234,25 +234,61 @@ export function buildOperatorServer(options: OperatorServerOptions): OperatorSer
           source: options.source
         };
 
-        const outcome = await tool.handler((args ?? {}) as Record<string, unknown>, context);
+        /**
+         * A throw is an outcome here too, and on THIS plane the gap was worse: a
+         * failing operational tool is exactly the event an operator is reading
+         * the journal to find, and the SDK's `tools/call` catch would have
+         * turned it into a text error that the journal never saw.
+         *
+         * Same shape as the consumer plane, guarded on the recorder's counter so
+         * the invariant is exactly one event per call regardless of where the
+         * throw came from. See `../server.ts` for the full reasoning.
+         */
+        const before = audit.writes;
+        try {
+          const outcome = await tool.handler((args ?? {}) as Record<string, unknown>, context);
 
-        // One call in, one event out. `OperatorContext` carries no recorder, so
-        // a handler cannot write an event even by mistake — the same structural
-        // rule as the consumer plane, for the same reason.
-        audit.record({
-          tool: tool.name,
-          principal,
-          plane: OPERATOR_PLANE,
-          protocolVersion: context.protocolVersion,
-          outcome: outcome.audit.outcome,
-          ...(outcome.audit.reasonCode === undefined ? {} : { reasonCode: outcome.audit.reasonCode }),
-          counts: outcome.audit.counts,
-          ...(outcome.audit.subjects === undefined ? {} : { subjects: outcome.audit.subjects }),
-          args
-        });
+          // One call in, one event out. `OperatorContext` carries no recorder, so
+          // a handler cannot write an event even by mistake — the same structural
+          // rule as the consumer plane, for the same reason.
+          audit.record({
+            tool: tool.name,
+            principal,
+            plane: OPERATOR_PLANE,
+            protocolVersion: context.protocolVersion,
+            outcome: outcome.audit.outcome,
+            ...(outcome.audit.reasonCode === undefined ? {} : { reasonCode: outcome.audit.reasonCode }),
+            counts: outcome.audit.counts,
+            ...(outcome.audit.subjects === undefined ? {} : { subjects: outcome.audit.subjects }),
+            args
+          });
 
-        if (outcome.kind === "refusal") return refuse(outcome.error);
-        return complete(tool, outcome.structured);
+          if (outcome.kind === "refusal") return refuse(outcome.error);
+          return complete(tool, outcome.structured);
+        } catch (thrown) {
+          if (audit.writes !== before) throw thrown;
+          audit.record({
+            tool: tool.name,
+            principal,
+            plane: OPERATOR_PLANE,
+            protocolVersion: context.protocolVersion,
+            outcome: "error",
+            reasonCode: "handler-failed",
+            counts: {},
+            args
+          });
+          // Recorded that it failed, never what failed — a fault message carries
+          // stack frames and whatever value provoked it, and this plane reads the
+          // control store.
+          return refuse(
+            errorRecord({
+              code: "internal-error",
+              message:
+                "This tool failed while serving the request. The failure is recorded in this server's audit log; no detail about it is returned here, because a fault message is a channel for server internals.",
+              retryable: false
+            })
+          );
+        }
       }
     );
   }

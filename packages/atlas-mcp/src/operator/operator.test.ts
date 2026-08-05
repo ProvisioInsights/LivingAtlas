@@ -351,6 +351,47 @@ describe("the audit read path", () => {
     // never mistaken for an empty log.
     expect((payload["page"] as Record<string, unknown>)["evaluated"]).toBeGreaterThan(1);
   });
+
+  it("records a throwing operational tool as one error event, detail withheld", async () => {
+    // A failing operational tool is precisely the event an operator reads this
+    // journal to find. `McpServer`'s own `tools/call` catch would have turned
+    // the throw into a text tool error the journal never saw, so the plane that
+    // exists to make activity visible would have reported its own faults as
+    // silence.
+    const journal = new MemoryAuditJournal();
+    const source = syntheticOperatorSource({ journal });
+    const directory = bothPlanes();
+    const instance = operatorHarness({
+      source: {
+        ...source,
+        replicationTargets: () => {
+          throw new Error("control store unreadable at replica-one for operator-secret-holder");
+        }
+      } as typeof source,
+      auditJournal: journal,
+      resolvePrincipal: credentialResolver({ directory, plane: "operator" })
+    });
+
+    instance.client.send(callOperator({ id: 1, name: "atlas.ops.replication.status.read.v1", secret: OPERATOR_SECRET }));
+    const response = await instance.client.await(1);
+
+    expect(response.result?.["isError"]).toBe(true);
+    expect(journal.events).toHaveLength(1);
+    const event = journal.events[0];
+    expect(event).toBeDefined();
+    if (!event) return;
+    expect(event.tool).toBe("atlas.ops.replication.status.read.v1");
+    expect(event.outcome).toBe("error");
+    expect(event.reason_code).toBe("handler-failed");
+    expect(event.plane).toBe("operator");
+
+    // The fault named an internal target and a credential holder. Neither the
+    // wire nor the journal may carry it.
+    for (const leak of ["control store unreadable", "operator-secret-holder"]) {
+      expect(JSON.stringify(response)).not.toContain(leak);
+      expect(JSON.stringify(journal.events)).not.toContain(leak);
+    }
+  });
 });
 
 describe("usage reconciliation", () => {

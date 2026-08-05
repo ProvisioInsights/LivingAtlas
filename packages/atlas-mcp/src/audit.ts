@@ -200,8 +200,18 @@ export class AuditRecorder {
       protocol_version: input.protocolVersion
     };
 
-    this.journal.append(event);
+    // Counted BEFORE the append, not after.
+    //
+    // `writes` is what the dispatcher consults to decide whether this call has
+    // already had its event, so it has to mean "handed to the journal" rather
+    // than "the journal returned". Counting after left it stale whenever
+    // `append` threw: the dispatcher then believed nothing had been written and
+    // wrote a second time, so a failing journal was hit twice for one call —
+    // the per-call fanout this class exists to prevent, reached through the
+    // error path. A duplicate audit event is also worse than a missing one,
+    // because a reader cannot tell it from two real calls.
     this.count += 1;
+    this.journal.append(event);
     return event;
   }
 }
