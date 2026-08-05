@@ -20,7 +20,7 @@ import {
   decryptGraphObjectPayload,
   FileLocalKeyringStore
 } from "@living-atlas/local-keyring";
-import { createLocalCanonicalAtlasClient } from "@living-atlas/atlas-client";
+import { createLocalCanonicalAtlasClient } from "@living-atlas/atlas-client/legacy";
 import {
   createLocalMcpContextFromControlState,
   InMemoryLocalMcpAuditSink,

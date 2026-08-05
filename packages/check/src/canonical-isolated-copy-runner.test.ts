@@ -13,7 +13,7 @@ import { createCanonicalMarkdownMigration, createCanonicalMarkdownMigrationExpor
 import { CanonicalResearchResultPayloadSchema, type CanonicalExportRecord } from "@living-atlas/contracts";
 import { FileLocalGraphStore } from "@living-atlas/local-graph-store";
 import { decryptGraphObjectPayload, FileLocalKeyringStore } from "@living-atlas/local-keyring";
-import { createLocalCanonicalAtlasClient } from "@living-atlas/atlas-client";
+import { createLocalCanonicalAtlasClient } from "@living-atlas/atlas-client/legacy";
 
 async function readJson(path: string): Promise<unknown> {
   return JSON.parse(await readFile(path, "utf8"));

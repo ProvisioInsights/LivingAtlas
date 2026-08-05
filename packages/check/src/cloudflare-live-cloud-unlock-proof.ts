@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
 import { pathToFileURL } from "node:url";
-import { createAtlasClient } from "@living-atlas/atlas-client";
+import { createAtlasClient } from "@living-atlas/atlas-client/legacy";
 import {
   SyncBatchSchema,
   type GraphObjectEnvelope,

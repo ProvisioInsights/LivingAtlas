@@ -2,7 +2,7 @@ import { createHash, randomBytes, webcrypto } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { relative } from "node:path";
 import { pathToFileURL } from "node:url";
-import { createAtlasClient } from "@living-atlas/atlas-client";
+import { createAtlasClient } from "@living-atlas/atlas-client/legacy";
 import {
   GraphObjectEnvelopeSchema,
   type GraphObjectEnvelope,
