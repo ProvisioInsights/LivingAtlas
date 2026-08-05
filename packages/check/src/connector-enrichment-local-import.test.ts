@@ -214,4 +214,84 @@ describe("connector enrichment local import", () => {
       await rm(root, { recursive: true, force: true });
     }
   });
+
+  /**
+   * A word the ratified table does not name must be REFUSED, never filed under
+   * the modal value. `meeting` was the default, so an unmapped kind promoted as
+   * a plausible-looking meeting and nothing counted the misclassification — the
+   * exact defect the migration path states its Rule A to prevent, with the two
+   * paths holding opposite answers to one ratified question.
+   */
+  it("quarantines an occurrence whose kind the ratified vocabulary does not name", async () => {
+    const root = await mkdtemp(join(tmpdir(), "living-atlas-connector-import-unmapped-"));
+    try {
+      const packetPath = join(root, "packet.json");
+      const keyringPath = join(root, "keyring.json");
+      const graphDir = join(root, "graph");
+      const packet = fixturePacket() as unknown as {
+        candidates: Array<{ proposed_fact: { local_private_payload: Record<string, unknown> } }>;
+      };
+      const first = packet.candidates[0];
+      if (!first) throw new Error("fixture packet lost its occurrence candidate");
+      first.proposed_fact.local_private_payload.occurrence_kind = "symposium";
+
+      await writeFile(packetPath, JSON.stringify(packet, null, 2));
+      await new FileLocalKeyringStore(keyringPath).write(createDefaultLocalKeyring({
+        authorityId,
+        createdAt: "2026-06-24T00:00:00.000Z"
+      }), "fixture-passphrase");
+
+      const ledger = await importConnectorEnrichmentPacket({
+        packetPath,
+        localGraphDir: graphDir,
+        keyringPath,
+        keyringPassphrase: "fixture-passphrase",
+        authorityId,
+        recordedAt: "2026-06-24T00:00:00.000Z"
+      });
+
+      expect(ledger.import_totals).toMatchObject({
+        promoted_objects: 0,
+        quarantine_objects: 2,
+        // Countable, and counted apart from the low-confidence holds: this one is
+        // waiting on a vocabulary decision, not on evidence.
+        unmapped_occurrence_kind: 1
+      });
+      expect(ledger.object_refs[0]).toMatchObject({ import_status: "quarantined", access_class: "quarantine" });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  /**
+   * The G5 backfill, and the reason the refusal above does not swallow every
+   * calendar event: a candidate that names who was there is a meeting on the
+   * evidence, which is a different act from defaulting a word nobody supplied.
+   */
+  it("backfills meeting from participant evidence when the connector named no kind", async () => {
+    const root = await mkdtemp(join(tmpdir(), "living-atlas-connector-import-backfill-"));
+    try {
+      const packetPath = join(root, "packet.json");
+      const keyringPath = join(root, "keyring.json");
+      const graphDir = join(root, "graph");
+      await writeFile(packetPath, JSON.stringify(fixturePacket(), null, 2));
+      await new FileLocalKeyringStore(keyringPath).write(createDefaultLocalKeyring({
+        authorityId,
+        createdAt: "2026-06-24T00:00:00.000Z"
+      }), "fixture-passphrase");
+
+      const ledger = await importConnectorEnrichmentPacket({
+        packetPath,
+        localGraphDir: graphDir,
+        keyringPath,
+        keyringPassphrase: "fixture-passphrase",
+        authorityId,
+        recordedAt: "2026-06-24T00:00:00.000Z"
+      });
+
+      expect(ledger.import_totals).toMatchObject({ promoted_objects: 1, unmapped_occurrence_kind: 0 });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 });
