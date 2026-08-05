@@ -35,6 +35,12 @@ override.tf.json
 # the repo — belt-and-suspenders so it can never be accidentally tracked)
 tiering-private-ruleset.json
 
+# local planning notes. Working documents, not repository deliverables: they
+# carry absolute local paths and profile layout, and an untracked file at the
+# repo root is one `git add -A` away from a public commit.
+ATLAS-REWRITE-PLAN.md
+*-PLAN.local.md
+
 # graph-derived or private data
 fixtures/private/
 generated/
