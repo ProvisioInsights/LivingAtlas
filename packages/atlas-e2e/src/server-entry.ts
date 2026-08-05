@@ -1,5 +1,5 @@
 #!/usr/bin/env -S npx tsx
-import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
+import { mkdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { CONTRACT_REVISION, loadContract, schemaDirectory } from "@living-atlas/atlas-contract";
@@ -13,11 +13,10 @@ import {
   type RecordedAt
 } from "@living-atlas/atlas-core";
 import {
+  DurableFileAuditJournal,
   InMemoryCredentialDirectory,
   credentialResolver,
   serveAtlasStdio,
-  type AuditEvent,
-  type AuditJournal,
   type CredentialRecord,
   type GraphSource
 } from "@living-atlas/atlas-mcp";
@@ -71,15 +70,23 @@ function argument(name: string): string | undefined {
   return process.argv[index + 1];
 }
 
-/** Append-only, one JSON object per line. One line per tool call, never per record. */
-function fileAuditJournal(path: string): AuditJournal {
-  mkdirSync(dirname(path), { recursive: true });
-  return {
-    append: (event: AuditEvent) => {
-      appendFileSync(path, `${JSON.stringify(event)}\n`, "utf8");
-    }
-  };
-}
+/**
+ * The audit journal is `DurableFileAuditJournal`, not a local `appendFileSync`.
+ *
+ * This harness originally carried its own one-line journal, written before the
+ * durable one existed. Keeping it would have quietly reintroduced the defect
+ * `audit-file.ts` was written to remove: `appendFileSync` returns once the bytes
+ * are in the page cache, so a process shot in the window that follows loses the
+ * event while the disclosure it describes has already gone out the door.
+ *
+ * That matters more here than anywhere else, because `restart.e2e.test.ts`
+ * SIGKILLs this process on purpose. A harness that proves "a crash costs nothing
+ * that was acknowledged" while logging through a non-durable journal proves it
+ * for the graph and quietly disproves it for the audit trail — and it would read
+ * as evidence for a guarantee it does not exercise. Using the shipped journal is
+ * also the point of an end-to-end harness: the wiring under test should be the
+ * wiring that ships.
+ */
 
 /**
  * The credential directory, loaded from a file that holds no secrets.
@@ -227,10 +234,12 @@ const graph: GraphSource = {
 
 const contractPackageRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "atlas-contract");
 
+const auditJournal = new DurableFileAuditJournal(layout.auditLog);
+
 const handle = serveAtlasStdio({
   contract: loadContract(schemaDirectory(contractPackageRoot, CONTRACT_REVISION)),
   graph,
-  auditJournal: fileAuditJournal(layout.auditLog),
+  auditJournal: auditJournal,
   resolvePrincipal: credentialResolver({ directory: loadCredentials(layout.credentials), plane: "consumer" }),
   // stderr, never stdout: stdout is the JSON-RPC wire, and one stray line on it
   // corrupts framing for every message after it.
@@ -249,6 +258,7 @@ for (const signal of ["SIGTERM", "SIGINT"] as const) {
   process.on(signal, () => {
     durableAssertions.close();
     durableIdentity.close();
+    auditJournal.close();
     void handle.close();
     process.exit(0);
   });
