@@ -1,0 +1,13 @@
+{
+  "name": "@living-atlas/atlas-migrate",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@living-atlas/contracts": "workspace:*",
+    "zod": "4.4.3"
+  }
+}
