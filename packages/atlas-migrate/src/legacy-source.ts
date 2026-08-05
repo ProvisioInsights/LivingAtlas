@@ -179,6 +179,14 @@ export const MigrationRefusalReasonValues = [
    * shape hide behind a deliberate omission.
    */
   "derived-index-not-migrated",
+  /**
+   * A retired subtype word that Rule A's closed table does not name. Also
+   * distinct from `unclassified-source-category`: the source category WAS
+   * decided (it is an entity record), and only the vocabulary word inside it is
+   * unaccounted for. Refusing under the generic reason would report the whole
+   * classifier as undecided when one word is.
+   */
+  "unmapped-legacy-subtype",
   "other"
 ] as const;
 export const MigrationRefusalReasonSchema = z.enum(MigrationRefusalReasonValues);
