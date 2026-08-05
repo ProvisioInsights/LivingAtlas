@@ -334,6 +334,43 @@ describe("derived records", () => {
     expect(plan.breakdown.entities_minted_from_attributes).toBeGreaterThan(0);
   });
 
+  /**
+   * THE INVARIANT THE MERGE OF THE PARALLEL LANES NEARLY BROKE.
+   *
+   * Two mechanisms mint topic nodes: the ratified retype table mints
+   * `minted-entity` records, and the derived-node registry mints ordinary
+   * entities carrying derived provenance. Both once read the same `subtype`
+   * attribute, so every retired word produced TWO nodes for one concept — and
+   * neither lane could see it, because each fixture exercised only its own
+   * mechanism. Only a sweep across both mechanisms catches it.
+   *
+   * Scoped to the subtype attribute on purpose. A subtype topic and an
+   * occupation topic that happen to share a word are deliberately two nodes
+   * (ADR 0026, OPEN-14); merging those would be an identity decision on a string.
+   */
+  it("mints one node per subtype value, counting both minting mechanisms at once", () => {
+    const plan = planVenues();
+
+    const fromTable = plan.records
+      .filter(isMintedEntityRecord)
+      .filter((record) => record.minted_basis.kind === "retired-subtype-value")
+      .map((record) => record.minted_basis.legacy_value);
+
+    const fromRegistry = plan.records
+      .filter(isEntityRecord)
+      .flatMap((record) =>
+        isLegacyObjectProvenance(record.provenance) || record.provenance.legacy_attribute !== "subtype"
+          ? []
+          : [record.name]
+      );
+
+    const values = [...fromTable, ...fromRegistry];
+    expect(values.length).toBeGreaterThan(0);
+
+    const duplicated = [...new Set(values.filter((value, index) => values.indexOf(value) !== index))];
+    expect(duplicated).toEqual([]);
+  });
+
   it("gives every relationship either a legacy edge id or a derivation, never both", () => {
     const plan = planVenues();
     const edges = plan.records.filter(isRelationshipRecord);
