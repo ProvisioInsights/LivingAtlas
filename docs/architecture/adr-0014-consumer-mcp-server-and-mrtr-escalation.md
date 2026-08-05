@@ -212,6 +212,50 @@ table that can be lost is a reveal that silently stops working; and a hash rathe
 than the id itself, because an identifier is frequently the sensitive part of a
 withheld record.
 
+### 7. `tools.listChanged` is declared FALSE, on both planes
+
+Resolved 2026-08-04. Both servers passed `capabilities: { tools: {} }` and
+neither ever sent `notifications/tools/list_changed`. That is not the same as
+not advertising it. Measured against `@modelcontextprotocol/server@2.0.0`,
+`McpServer.registerTool` runs
+
+```
+registerCapabilities({ tools: { listChanged: getCapabilities().tools?.listChanged ?? true } })
+```
+
+so an absent bit became an advertised `true`, and `server/discover` answered
+`{"tools":{"listChanged":true}}`. The existing assertion used `toMatchObject`,
+which accepts extra members, so nothing caught it.
+
+The claim had consequences rather than being cosmetic. The SDK activates a
+client's list-changed handler only when the server advertises the bit, and
+`honoredSubset` acknowledges a client's `toolsListChanged` subscription against
+that same bit — the acknowledgement is documented as reflecting "what the server
+can actually deliver". This server was therefore acknowledging a subscription it
+would never satisfy, and a client trusting the acknowledgement would wait for a
+push instead of re-reading `tools/list`.
+
+**Declared false rather than wired**, because there is nothing coherent to send.
+`tools/list` here is a pure function of the credential presented on the REQUEST
+(§ADR 0015), so there is no connection-scoped tool list that could change. A
+stdio pipe may carry several credentials. A notification is addressed to the
+CONNECTION and names no credential, so firing one when some grant was revised
+would (a) disclose to whoever holds the pipe that another principal's grant
+moved, and (b) be exactly the tool set varying "as a side effect of other
+requests on the connection", which the specification forbids in the same
+paragraph that permits varying by the authorization presented.
+
+The operator plane is where a push would be most tempting, since an operator's
+tool set moves when a grant is revised — and most harmful, since the event a
+notification would carry is "somebody's grant was just edited". `tools/list`'s
+cache TTL bounds how long a revision goes unnoticed without telling one
+credential about another, and `atlas.scope.describe.v1` answers for the
+credential that asked.
+
+Tested on both planes: the advertised bit is asserted `false` *exactly* rather
+than with `toMatchObject`, and a sequence that returns two different tool sets
+over one connection is asserted to emit no notification at all.
+
 ## The forks resolved here
 
 **`outcome: "input-required"` needed a reachable path.** The contract publishes

@@ -213,7 +213,40 @@ export function buildAtlasServer(options: AtlasServerOptions): AtlasServer {
   const schemas = contractSchemaProvider(options.contract, validator);
 
   const server = new McpServer(SERVER_INFO, {
-    capabilities: { tools: {} },
+    /**
+     * `listChanged: false`, stated rather than omitted.
+     *
+     * Omitting it does NOT mean "no". Measured against
+     * `@modelcontextprotocol/server@2.0.0`: `registerTool` calls
+     * `registerCapabilities({ tools: { listChanged: getCapabilities().tools?.listChanged ?? true } })`,
+     * so `capabilities: { tools: {} }` was advertised on the wire as
+     * `{"tools":{"listChanged":true}}` — a capability this server has never
+     * sent and cannot sensibly send. An explicit `false` survives the `??`.
+     *
+     * It was a claim with teeth, not a cosmetic one. The SDK activates a
+     * client's list-changed handler only when the server advertises the bit,
+     * and `honoredSubset` acknowledges a client's `toolsListChanged`
+     * subscription against the same bit — the ack is documented as reflecting
+     * "what the server can actually deliver". So the old value made this server
+     * acknowledge a subscription it would never satisfy, and a client that
+     * trusted the ack would wait for a notification instead of re-reading.
+     *
+     * Not wired instead of not advertised, because there is nothing coherent to
+     * send. `tools/list` here is a pure function of the credential presented on
+     * the REQUEST, so there is no connection-scoped tool list that could change:
+     * a stdio pipe may carry several credentials, and the CLI says on stderr
+     * that it attributes everything to one. A notification is addressed to the
+     * CONNECTION and names no credential, so firing one when some grant was
+     * revised would tell whoever holds the pipe that another principal's grant
+     * moved, and would be precisely the tool set varying "as a side effect of
+     * other requests on the connection" that the specification forbids in the
+     * same paragraph that permits varying by authorization.
+     *
+     * A client learns a grant changed by re-reading, which the cache TTL above
+     * already bounds, or from `atlas.scope.describe.v1`, which answers for the
+     * credential that asked.
+     */
+    capabilities: { tools: { listChanged: false } },
     instructions: SERVER_INSTRUCTIONS,
     cacheHints: cacheHints(options.contract),
     // Without this hook the SDK hands the handler the RAW wire string: it

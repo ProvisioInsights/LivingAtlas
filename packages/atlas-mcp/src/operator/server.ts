@@ -124,7 +124,20 @@ export function buildOperatorServer(options: OperatorServerOptions): OperatorSer
   const resolve = (serverContext: ServerContext) => options.resolvePrincipal(presentedCredential(serverContext));
 
   const server = new McpServer(OPERATOR_SERVER_INFO, {
-    capabilities: { tools: {} },
+    /**
+     * `listChanged: false`, for the reason set out in `../server.ts`: the SDK
+     * turns an omitted bit into an advertised `true`, and this plane's listing
+     * is a function of the per-request credential, so there is no
+     * connection-scoped list that could change.
+     *
+     * It matters more here. An operator's tool set moves when a grant is
+     * revised, so this is exactly the plane where a client would want a push —
+     * and exactly the plane where the push would be a disclosure, because the
+     * event a notification would carry is "somebody's grant was just edited".
+     * `OPERATOR_LIST_TTL_MS` is the answer instead: a short TTL bounds how long
+     * a revision goes unnoticed without telling one credential about another.
+     */
+    capabilities: { tools: { listChanged: false } },
     instructions: OPERATOR_SERVER_INSTRUCTIONS,
     cacheHints: {
       "tools/list": { ttlMs: OPERATOR_LIST_TTL_MS, cacheScope: OPERATOR_CACHE_SCOPE },
