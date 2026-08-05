@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { GraphObjectEnvelopeSchema, type GraphObjectEnvelope } from "@living-atlas/contracts";
 import {
   applyProjectionPlan,
   buildProjectionPlan,
@@ -26,6 +27,40 @@ const ids = legacyVenueFixtureIds;
 
 function planVenues(): ProjectionPlan {
   return buildProjectionPlan(createLegacyVenueFixture(), { authority_id: legacyFixtureAuthorityId });
+}
+
+/**
+ * A legacy entity envelope built from invented content, for the cases the shared
+ * fixture must NOT carry: a plan that fails the closure gate cannot also be the
+ * plan every other test asserts passes it.
+ */
+function endpointEnvelope(objectId: string, payload: Record<string, unknown>): GraphObjectEnvelope {
+  return GraphObjectEnvelopeSchema.parse({
+    schema_version: 1,
+    authority_id: legacyFixtureAuthorityId,
+    object_id: objectId,
+    object_type: "entity",
+    version: 1,
+    access_class: "remote-safe",
+    encryption_class: "plaintext",
+    created_at: "2024-03-04T09:00:00.000Z",
+    updated_at: "2025-11-19T17:30:00.000Z",
+    content_hash: `sha256:${"a".repeat(64)}`,
+    visible_metadata: { tombstone: false, remote_indexable: false },
+    payload: {
+      kind: "plaintext-json",
+      data: {
+        object_id: objectId,
+        created_at: "2024-03-04T09:00:00.000Z",
+        updated_at: "2025-11-19T17:30:00.000Z",
+        ...payload
+      }
+    }
+  });
+}
+
+function planWith(...envelopes: GraphObjectEnvelope[]): ProjectionPlan {
+  return buildProjectionPlan(envelopes, { authority_id: legacyFixtureAuthorityId });
 }
 
 function outcomeFor(plan: ProjectionPlan, legacyObjectId: string): SourceOutcome {
@@ -344,9 +379,12 @@ describe("derived records", () => {
    * neither lane could see it, because each fixture exercised only its own
    * mechanism. Only a sweep across both mechanisms catches it.
    *
-   * Scoped to the subtype attribute on purpose. A subtype topic and an
-   * occupation topic that happen to share a word are deliberately two nodes
-   * (ADR 0026, OPEN-14); merging those would be an identity decision on a string.
+   * Scoped to the subtype attribute on purpose: this asserts the property of the
+   * SUBTYPE namespace. Whether a subtype topic and an occupation topic that share
+   * a word may both exist is a different question, answered by the closure gate
+   * below — the migration still refuses to merge them on a string match
+   * (ADR 0026, OPEN-14), and the gate still refuses to certify a plan that
+   * carries two nodes for one word without a human having looked.
    */
   it("mints one node per subtype value, counting both minting mechanisms at once", () => {
     const plan = planVenues();
@@ -405,6 +443,54 @@ describe("derived records", () => {
     for (const record of plan.records.filter((candidate) => !isProjectedFromLegacyObject(candidate))) {
       expect(claimed.has(record.idempotency_key)).toBe(false);
     }
+  });
+
+  /**
+   * THE PERMANENT CONTROL on one slot per word, across every mechanism that can
+   * put a topic in the plane.
+   *
+   * The old guard read `minted_basis.legacy_value` off `minted-entity` records
+   * alone. Two of those with one value share a slot AND an idempotency key, so
+   * `duplicate-idempotency-key` fired first and the duplicate branch was
+   * unreachable in practice — while the three ways a plan can actually produce a
+   * second node for one word all went unseen.
+   */
+  it("refuses to certify a plan where an occupation and a subtype hold one word", () => {
+    const plan = planWith(
+      endpointEnvelope("la_object_legacy_venue_dup1", {
+        type: "organization",
+        name: "Employer E",
+        subtype: "consultant"
+      }),
+      endpointEnvelope("la_object_legacy_venue_dup2", {
+        type: "person",
+        name: "Person 4",
+        // Same word, different namespace. The migration will not merge them on a
+        // string match; the gate will not certify them unexamined either.
+        job_title: "Consultant"
+      })
+    );
+    const gate = evaluateClosureGate(plan);
+
+    expect(gate.ok).toBe(false);
+    const collision = gate.findings.find((item) => item.code === "duplicate-minted-topic");
+    expect(collision?.subjects).toEqual(["consultant"]);
+  });
+
+  it("refuses to certify a plan that mints a topic the corpus already holds", () => {
+    const plan = planWith(
+      endpointEnvelope("la_object_legacy_venue_dup3", {
+        type: "organization",
+        name: "Employer F",
+        subtype: "aviation"
+      }),
+      // A legacy topic node for the same concept. Minting a second is the defect
+      // even though nothing in the plan is malformed: no query rejoins them.
+      endpointEnvelope("la_object_legacy_venue_dup4", { type: "topic", name: "Aviation" })
+    );
+    const gate = evaluateClosureGate(plan);
+
+    expect(gate.findings.map((item) => item.code)).toContain("duplicate-minted-topic");
   });
 
   it("is a pure function of the source, so plans still diff cleanly", () => {

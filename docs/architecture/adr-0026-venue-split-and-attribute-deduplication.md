@@ -178,7 +178,8 @@ attribute-level outcome, and neither value wins.
   are one node.** They are kept apart today — `subtype: "consultant"` and
   `job_title: "consultant"` mint two topics — because merging them would be an
   identity decision made on a string match. A curator may merge them with
-  evidence; the migration will not.
+  evidence; the migration will not. **Amended:** the migration will not merge
+  them, and the closure gate will not certify them either. See below.
 - **OPEN-15: the item/occurrence retype table** (rideshare and flight to
   `segment`, meal and incident to `meeting`) is not implemented here. An
   occurrence carrying a legacy subtype outside the four new values is refused
@@ -208,3 +209,35 @@ namespaces. See ADR 0024's amendment for why. Subtype topics are therefore
 on their derived provenance now assert on `minted_basis` and
 `classified_node_count`, which carry the same two facts: the value, and how many
 legacy nodes asked for it.
+
+## Amended after review: one slot per word, checked across every mechanism
+
+The `duplicate-minted-topic` guard read `minted_basis.legacy_value` off
+`minted-entity` records alone. Two of those holding one value share a slot **and**
+an idempotency key, so `duplicate-idempotency-key` fires first — the duplicate
+branch was unreachable in practice, and the guard could see none of the three ways
+a plan can actually put two nodes on one word:
+
+1. the subtype classifier mints one (`minted-entity`),
+2. the derived-node registry creates one per occupation under the `job_title`
+   namespace (an ordinary `entity` with derived provenance),
+3. the corpus itself may already hold a legacy `topic` node with that name.
+
+The gate now keys on the normalised NAME across every topic-typed record the plan
+creates, whatever produced it. Case 3 is the one nobody had considered: minting
+`aviation` beside a legacy topic node named `Aviation` splits one concept in two,
+and nothing in the plan is malformed, so no other check would ever have said so.
+
+**This fires on the OPEN-14 pair, and that is the decision.** OPEN-14 settled that
+the migration will not MERGE a subtype topic and an occupation topic on a string
+match. It did not settle that a plan holding both should be certified for apply
+unexamined — and `applyProjectionPlan` refuses a failing gate, so certification is
+exactly the question. The operator sees the colliding words named on the dry run,
+which is when curating one of them is still cheap; the remedy is to curate the
+source word, not to widen the gate.
+
+- **OPEN-19. There is no mechanism to accept a collision and proceed.** The gate
+  has no acknowledgement flag, by design — an exemption is a hole the size of
+  whatever it exempts. If the corpus turns out to hold collisions that are
+  genuinely two concepts, the answer is a curation step before apply, and giving
+  that step a record is its own change.

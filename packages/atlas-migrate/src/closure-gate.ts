@@ -258,9 +258,9 @@ function checkNamedCategories(outcomes: SourceOutcome[]): ClosureGateFinding[] {
  *
  * Two failures matter here and they are different. A minted record nobody claims
  * is a node that would land in the plane with no reviewable reason for existing.
- * Two minted nodes for one value is the defect the whole change exists to
- * prevent: the topic set IS the controlled vocabulary, and a duplicate splits
- * one concept into two that no query will ever rejoin.
+ * Two nodes for one word is the defect the whole change exists to prevent: the
+ * topic set IS the controlled vocabulary, and a duplicate splits one concept
+ * into two that no query will ever rejoin.
  */
 function checkMintedRecords(plan: ProjectionPlan): ClosureGateFinding[] {
   const findings: ClosureGateFinding[] = [];
@@ -281,22 +281,60 @@ function checkMintedRecords(plan: ProjectionPlan): ClosureGateFinding[] {
     );
   }
 
-  const seenValues = new Map<string, number>();
-  for (const record of minted) {
-    seenValues.set(record.minted_basis.legacy_value, (seenValues.get(record.minted_basis.legacy_value) ?? 0) + 1);
-  }
-  const duplicated = [...seenValues.entries()].filter(([, count]) => count > 1).map(([value]) => value);
-  if (duplicated.length > 0) {
-    findings.push(
-      finding(
-        "duplicate-minted-topic",
-        "a retired value minted more than one topic node; the controlled vocabulary would hold two nodes for one concept",
-        duplicated
-      )
-    );
-  }
+  findings.push(...checkTopicVocabulary(plan.records));
 
   return findings;
+}
+
+/**
+ * ONE SLOT PER WORD, across every mechanism that can put a topic in the plane.
+ *
+ * Keyed on the normalised NAME rather than on `minted_basis.legacy_value`, and
+ * read off every topic-typed record rather than off the minted ones alone. The
+ * old check could only ever see `minted-entity` records, and two of those with
+ * one value share a slot and an idempotency key — so `duplicate-idempotency-key`
+ * fired first and this branch was unreachable in practice. Meanwhile the plan
+ * had three other ways to produce a topic node: the subtype classifier mints
+ * one, the derived-node registry creates one per occupation under the
+ * `job_title` namespace, and the corpus itself may already hold a legacy topic
+ * node with that name. Any two of the three landing on one word is exactly the
+ * defect, and the guard could see none of them.
+ *
+ * This DOES fire on the pair ADR-0026 OPEN-14 ratified — a subtype topic and an
+ * occupation topic spelled the same — and that is intended. OPEN-14 decided the
+ * migration will not MERGE them on a string match; it did not decide the plan
+ * should be certified for apply while holding them. The operator learns it on
+ * the dry run, with the colliding words named, which is when curating one of
+ * them is still cheap.
+ */
+function checkTopicVocabulary(records: ProjectedRecord[]): ClosureGateFinding[] {
+  const slotsByName = new Map<string, Set<string>>();
+
+  for (const record of records) {
+    if (record.record_kind !== "entity" && record.record_kind !== "minted-entity") {
+      continue;
+    }
+    if (record.entity_type !== "topic") {
+      continue;
+    }
+    const name = record.name.trim().toLowerCase();
+    const slots = slotsByName.get(name) ?? new Set<string>();
+    slots.add(record.slot);
+    slotsByName.set(name, slots);
+  }
+
+  const collided = [...slotsByName.entries()].filter(([, slots]) => slots.size > 1).map(([name]) => name);
+  if (collided.length === 0) {
+    return [];
+  }
+
+  return [
+    finding(
+      "duplicate-minted-topic",
+      "one word holds more than one topic slot; the controlled vocabulary would carry two nodes for one concept",
+      collided
+    )
+  ];
 }
 
 function checkRecordAccounting(outcomes: SourceOutcome[], records: ProjectedRecord[]): ClosureGateFinding[] {
