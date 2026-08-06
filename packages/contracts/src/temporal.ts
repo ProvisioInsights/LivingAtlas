@@ -157,10 +157,10 @@ export const PredicateRegistry = {
   "part-of": {
     category: "structural",
     direction: "directed",
-    domain: ["occurrence"],
-    range: ["occurrence"],
+    domain: ["occurrence", "project"],
+    range: ["occurrence", "project"],
     required: [],
-    note: "Composition between occurrences: a segment is part-of the trip it belongs to. Deliberately occurrence-only — a general-purpose part-of would be asked to mean containment, membership and composition at once."
+    note: "Composition, within one kind: a segment is part-of its trip, a workstream is part-of its initiative. Same-kind only — the validator rejects a cross-kind pair, because a general-purpose part-of would be asked to mean containment, membership and composition at once."
   },
   "contained-in": {
     category: "geography",
@@ -206,9 +206,9 @@ export const PredicateRegistry = {
     category: "occurrence",
     direction: "directed",
     domain: AgentEndpointTypes,
-    range: ["occurrence"],
+    range: ["occurrence", "project"],
     required: [],
-    note: "Who was there. Absorbs the organizer distinction through attrs.role = \"organizer\", which is why hosted is gone: an organizer is a participant with a job."
+    note: "Who was there, and who works on it. Absorbs the organizer distinction through attrs.role = \"organizer\", which is why hosted is gone: an organizer is a participant with a job. Projects are in range because a project is a thing people take part in over time — and because without it nothing in the vocabulary could point at a project at all."
   },
   connects: {
     category: "network",
@@ -286,9 +286,9 @@ export const PredicateRegistry = {
     category: "taxonomy",
     direction: "directed",
     domain: AnyEndpointTypes,
-    range: ["topic"],
+    range: ["topic", "project"],
     required: [],
-    note: `${HAS_TYPE_VS_ABOUT_RULE} Subject matter, the counterpart to has-type; both point at topic nodes and a topic may legitimately be the target of both.`
+    note: `${HAS_TYPE_VS_ABOUT_RULE} Subject matter, the counterpart to has-type; both point at topic nodes and a topic may legitimately be the target of both. Projects are in range because a meeting or a note is routinely ABOUT a piece of work rather than about an idea — that is what the legacy project_refs attribute recorded. A separate relates-to-project predicate was considered and rejected: it would mean exactly this, under a second name.`
   },
   "parent-of": {
     category: "personal",
@@ -417,6 +417,25 @@ export function checkPredicateEndpoints(
       expected_domain: definition.domain,
       expected_range: definition.range,
       message: endpointViolationMessage(predicate, "target", sourceType, targetType)
+    });
+  }
+
+  // `part-of` is composition WITHIN one kind. Its domain and range each list two
+  // types so a trip can hold segments and an initiative can hold workstreams —
+  // but the cross pairs are meaningless, and permitting them is how a
+  // general-purpose part-of starts meaning containment and membership too.
+  // Domain and range alone cannot express "the same one on both sides".
+  if (predicate === "part-of" && sourceType !== targetType && violations.length === 0) {
+    violations.push({
+      code: "predicate-range-violation",
+      predicate,
+      position: "target",
+      actual: targetType,
+      expected_domain: [sourceType],
+      expected_range: [sourceType],
+      message:
+        `part-of is composition within one kind and is written ${sourceType} -> ${sourceType}; ` +
+        `got ${sourceType} -> ${targetType}`
     });
   }
 

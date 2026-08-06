@@ -326,12 +326,24 @@ describe("has-type versus about", () => {
       .replace(/`/g, "");
     expect(published).toContain(HAS_TYPE_VS_ABOUT_RULE);
 
-    // Identical signatures, stated as an assertion rather than as a hope: if a
-    // later change narrows one of them, the convention stops being the only
-    // thing separating them and this test says so.
+    // Same DOMAIN — anything can be classified and anything can have a subject.
     expect([...PredicateRegistry["has-type"].domain]).toEqual([...PredicateRegistry.about.domain]);
-    expect([...PredicateRegistry["has-type"].range]).toEqual([...PredicateRegistry.about.range]);
+
+    // Deliberately DIFFERENT range, and this replaces an earlier assertion that
+    // they were identical.
+    //
+    // `has-type` says what the subject IS, so its target is always a concept: a
+    // node's project-ness is its endpoint type, and "is-a <one specific
+    // project>" is not a statement anyone can mean. `about` says what the
+    // subject CONCERNS, and a meeting routinely concerns a piece of work rather
+    // than an idea — which is what the legacy project_refs attribute recorded.
+    //
+    // The signatures were identical when the convention was the only thing
+    // separating the two. Now the range separates them too, which is strictly
+    // more enforcement, not less.
     expect([...PredicateRegistry["has-type"].range]).toEqual(["topic"]);
+    expect([...PredicateRegistry.about.range]).toEqual(["topic", "project"]);
+    expect([...PredicateRegistry.about.range]).toContain("topic");
 
     // Both must accept the same subject, since a topic may legitimately be the
     // target of both.
