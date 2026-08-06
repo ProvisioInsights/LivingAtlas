@@ -1,0 +1,320 @@
+{
+  "contract_revision": "2026.08.2",
+  "protocol_version": "2026-07-28",
+  "plane": "consumer",
+  "policy_document": "docs/contract/atlas-knowledge-contract-2026.08.2.md",
+  "generated_by": "packages/atlas-contract/src/generate.ts",
+  "limits": {
+    "max_page_size": 200,
+    "default_page_size": 50,
+    "max_batch_items": 100,
+    "max_batch_bytes": 1048576,
+    "max_traversal_depth": 5,
+    "max_ids_per_request": 100,
+    "snapshot_ttl_seconds": 900,
+    "idempotency_ttl_days": 30,
+    "change_feed_floor_days": 400,
+    "deprecation_window_days": 400
+  },
+  "history": {
+    "prior_versions_retained_before_cutover": 0,
+    "belief_time_meaningful_since_cutover_only": true
+  },
+  "common_schemas": {
+    "input": "common.input.json",
+    "output": "common.output.json"
+  },
+  "common_schema_ids": {
+    "input": "urn:living-atlas:contract:2026.08.2:common:input",
+    "output": "urn:living-atlas:contract:2026.08.2:common:output"
+  },
+  "record_schemas": [
+    {
+      "name": "atlas.assertion:v1",
+      "schema": "records/atlas.assertion-v1.json",
+      "schema_id": "urn:living-atlas:contract:2026.08.2:record:atlas.assertion:v1"
+    },
+    {
+      "name": "atlas.entity:v1",
+      "schema": "records/atlas.entity-v1.json",
+      "schema_id": "urn:living-atlas:contract:2026.08.2:record:atlas.entity:v1"
+    },
+    {
+      "name": "atlas.redaction:v1",
+      "schema": "records/atlas.redaction-v1.json",
+      "schema_id": "urn:living-atlas:contract:2026.08.2:record:atlas.redaction:v1"
+    },
+    {
+      "name": "atlas.error:v1",
+      "schema": "records/atlas.error-v1.json",
+      "schema_id": "urn:living-atlas:contract:2026.08.2:record:atlas.error:v1"
+    },
+    {
+      "name": "atlas.horizon:v1",
+      "schema": "records/atlas.horizon-v1.json",
+      "schema_id": "urn:living-atlas:contract:2026.08.2:record:atlas.horizon:v1"
+    },
+    {
+      "name": "atlas.change:v1",
+      "schema": "records/atlas.change-v1.json",
+      "schema_id": "urn:living-atlas:contract:2026.08.2:record:atlas.change:v1"
+    }
+  ],
+  "tools": [
+    {
+      "name": "atlas.contract.describe.v1",
+      "title": "Describe the published contract",
+      "description": "Return the running contract: revision, protocol revision, record schemas, tool list, live vocabularies, transport-invariant limits, machine-readable deprecations, and the history block. Call this first. Validate against the vocabularies it returns, not against a copy captured when your client shipped.",
+      "input_schema": "tools/atlas.contract.describe.v1.input.json",
+      "output_schema": "tools/atlas.contract.describe.v1.output.json",
+      "input_schema_id": "urn:living-atlas:contract:2026.08.2:tool:atlas.contract.describe.v1:input",
+      "output_schema_id": "urn:living-atlas:contract:2026.08.2:tool:atlas.contract.describe.v1:output",
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "cache": {
+        "ttl_ms": 300000,
+        "cache_scope": "private"
+      },
+      "requires_capabilities": [],
+      "deprecation": null
+    },
+    {
+      "name": "atlas.scope.describe.v1",
+      "title": "Describe what this credential can reach",
+      "description": "Report the calling credential's own client_id and the capability grant behind it: the tools it may call, the sensitivity tiers it may read, the predicates and tiers it may write, the limits that apply to it, whether its coverage counts are exact, and whose assertions it may supersede. Ask here rather than inferring scope from a refusal — and never from which transport you connected over. Two deployments differ by grant, not by wire.",
+      "input_schema": "tools/atlas.scope.describe.v1.input.json",
+      "output_schema": "tools/atlas.scope.describe.v1.output.json",
+      "input_schema_id": "urn:living-atlas:contract:2026.08.2:tool:atlas.scope.describe.v1:input",
+      "output_schema_id": "urn:living-atlas:contract:2026.08.2:tool:atlas.scope.describe.v1:output",
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "cache": {
+        "ttl_ms": 60000,
+        "cache_scope": "private"
+      },
+      "requires_capabilities": [],
+      "deprecation": null
+    },
+    {
+      "name": "atlas.entity.resolve.v1",
+      "title": "Resolve identifiers to current entities",
+      "description": "Follow the alias ledger from any identifier — including legacy ids Atlas never minted — to the entity it names today. Every outcome is typed. An id that was split returns its candidates and no primary: nominating one would silently reattribute every historical reference to it.",
+      "input_schema": "tools/atlas.entity.resolve.v1.input.json",
+      "output_schema": "tools/atlas.entity.resolve.v1.output.json",
+      "input_schema_id": "urn:living-atlas:contract:2026.08.2:tool:atlas.entity.resolve.v1:input",
+      "output_schema_id": "urn:living-atlas:contract:2026.08.2:tool:atlas.entity.resolve.v1:output",
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "cache": {
+        "ttl_ms": 0,
+        "cache_scope": "private"
+      },
+      "requires_capabilities": [],
+      "deprecation": null
+    },
+    {
+      "name": "atlas.entity.read.v1",
+      "title": "Read entities by id",
+      "description": "Read registered entities. An id that redirects is NOT followed here — that is atlas.entity.resolve.v1's job, and conflating the two is how a consumer stops noticing that the thing it asked about was merged away.",
+      "input_schema": "tools/atlas.entity.read.v1.input.json",
+      "output_schema": "tools/atlas.entity.read.v1.output.json",
+      "input_schema_id": "urn:living-atlas:contract:2026.08.2:tool:atlas.entity.read.v1:input",
+      "output_schema_id": "urn:living-atlas:contract:2026.08.2:tool:atlas.entity.read.v1:output",
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "cache": {
+        "ttl_ms": 0,
+        "cache_scope": "private"
+      },
+      "requires_capabilities": [],
+      "deprecation": null
+    },
+    {
+      "name": "atlas.assertion.query.v1",
+      "title": "Query assertions on both time axes",
+      "description": "The bitemporal read. as_of_recorded selects what Atlas believed at an instant; as_of_valid selects what was true over a span of world time; the axes are independent. Set full_scan to bootstrap a mirror — the last page hands off to the change feed at an exact seq with no gap.",
+      "input_schema": "tools/atlas.assertion.query.v1.input.json",
+      "output_schema": "tools/atlas.assertion.query.v1.output.json",
+      "input_schema_id": "urn:living-atlas:contract:2026.08.2:tool:atlas.assertion.query.v1:input",
+      "output_schema_id": "urn:living-atlas:contract:2026.08.2:tool:atlas.assertion.query.v1:output",
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "cache": {
+        "ttl_ms": 0,
+        "cache_scope": "private"
+      },
+      "requires_capabilities": [],
+      "deprecation": null
+    },
+    {
+      "name": "atlas.assertion.read.v1",
+      "title": "Read assertions by id",
+      "description": "Read specific assertions whether or not they are still believed, optionally with their lineage. An id compaction reclaimed returns a typed atlas.error:v1 carrying the reclamation note — never a bare not-found, because a dangling reference and a typo must not look the same.",
+      "input_schema": "tools/atlas.assertion.read.v1.input.json",
+      "output_schema": "tools/atlas.assertion.read.v1.output.json",
+      "input_schema_id": "urn:living-atlas:contract:2026.08.2:tool:atlas.assertion.read.v1:input",
+      "output_schema_id": "urn:living-atlas:contract:2026.08.2:tool:atlas.assertion.read.v1:output",
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "cache": {
+        "ttl_ms": 0,
+        "cache_scope": "private"
+      },
+      "requires_capabilities": [],
+      "deprecation": null
+    },
+    {
+      "name": "atlas.graph.neighbors.v1",
+      "title": "Walk relationship assertions from an entity",
+      "description": "Traverse relationship assertions outward from one entity, bounded by depth and pinned to both time axes. Nodes and edges are returned as self-describing records; anything this credential may not read arrives as a redaction stub so the shape of what was skipped is still visible.",
+      "input_schema": "tools/atlas.graph.neighbors.v1.input.json",
+      "output_schema": "tools/atlas.graph.neighbors.v1.output.json",
+      "input_schema_id": "urn:living-atlas:contract:2026.08.2:tool:atlas.graph.neighbors.v1:input",
+      "output_schema_id": "urn:living-atlas:contract:2026.08.2:tool:atlas.graph.neighbors.v1:output",
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "cache": {
+        "ttl_ms": 0,
+        "cache_scope": "private"
+      },
+      "requires_capabilities": [],
+      "deprecation": null
+    },
+    {
+      "name": "atlas.text.search.v1",
+      "title": "Search readable text",
+      "description": "Rank entities and assertions by a deterministic text scorer. The answer states what was searchable: encrypted content is not scanned, and the count of what could not be searched is reported rather than silently excluded.",
+      "input_schema": "tools/atlas.text.search.v1.input.json",
+      "output_schema": "tools/atlas.text.search.v1.output.json",
+      "input_schema_id": "urn:living-atlas:contract:2026.08.2:tool:atlas.text.search.v1:input",
+      "output_schema_id": "urn:living-atlas:contract:2026.08.2:tool:atlas.text.search.v1:output",
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "cache": {
+        "ttl_ms": 0,
+        "cache_scope": "private"
+      },
+      "requires_capabilities": [],
+      "deprecation": null
+    },
+    {
+      "name": "atlas.changes.read.v1",
+      "title": "Read the resumable change feed",
+      "description": "Read changes after a cursor in total seq order within a feed_epoch. Delivery is at-least-once; deduplicate on change_id. A cursor below the retention floor is a typed refusal naming the re-scan entry point, never a silent empty page.",
+      "input_schema": "tools/atlas.changes.read.v1.input.json",
+      "output_schema": "tools/atlas.changes.read.v1.output.json",
+      "input_schema_id": "urn:living-atlas:contract:2026.08.2:tool:atlas.changes.read.v1:input",
+      "output_schema_id": "urn:living-atlas:contract:2026.08.2:tool:atlas.changes.read.v1:output",
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "cache": {
+        "ttl_ms": 0,
+        "cache_scope": "private"
+      },
+      "requires_capabilities": [],
+      "deprecation": null
+    },
+    {
+      "name": "atlas.assertion.propose.v1",
+      "title": "Propose assertions",
+      "description": "Commit one or more assertions under a single idempotency key. The submission is all-or-nothing: one submission is one durable commit group. A retry with the same (client_id, idempotency_key) returns the ORIGINAL receipt with the ORIGINAL ids; the same key with a different payload is a typed conflict, never a silent accept of either version.",
+      "input_schema": "tools/atlas.assertion.propose.v1.input.json",
+      "output_schema": "tools/atlas.assertion.propose.v1.output.json",
+      "input_schema_id": "urn:living-atlas:contract:2026.08.2:tool:atlas.assertion.propose.v1:input",
+      "output_schema_id": "urn:living-atlas:contract:2026.08.2:tool:atlas.assertion.propose.v1:output",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "cache": {
+        "ttl_ms": 0,
+        "cache_scope": "private"
+      },
+      "requires_capabilities": [],
+      "deprecation": null
+    },
+    {
+      "name": "atlas.submission.read.v1",
+      "title": "Read a submission receipt",
+      "description": "Look up a submission by id or by the idempotency key you used. This exists for the case that matters: your connection dropped after you sent a proposal and you do not know whether it committed. Retrying blind is only safe while the key is still within the published idempotency window.",
+      "input_schema": "tools/atlas.submission.read.v1.input.json",
+      "output_schema": "tools/atlas.submission.read.v1.output.json",
+      "input_schema_id": "urn:living-atlas:contract:2026.08.2:tool:atlas.submission.read.v1:input",
+      "output_schema_id": "urn:living-atlas:contract:2026.08.2:tool:atlas.submission.read.v1:output",
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "cache": {
+        "ttl_ms": 0,
+        "cache_scope": "private"
+      },
+      "requires_capabilities": [],
+      "deprecation": null
+    },
+    {
+      "name": "atlas.sensitive.reveal.v1",
+      "title": "Request disclosure of a withheld record",
+      "description": "Ask for the record behind an atlas.redaction:v1 stub. This is not a read: it always produces a durable audit event, and it may return input_required so the owner can decide in their own client. Requires the elicitation capability; without it the refusal names the capability rather than issuing a request nobody can answer.",
+      "input_schema": "tools/atlas.sensitive.reveal.v1.input.json",
+      "output_schema": "tools/atlas.sensitive.reveal.v1.output.json",
+      "input_schema_id": "urn:living-atlas:contract:2026.08.2:tool:atlas.sensitive.reveal.v1:input",
+      "output_schema_id": "urn:living-atlas:contract:2026.08.2:tool:atlas.sensitive.reveal.v1:output",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false
+      },
+      "cache": {
+        "ttl_ms": 0,
+        "cache_scope": "private"
+      },
+      "requires_capabilities": [
+        "elicitation"
+      ],
+      "deprecation": null
+    }
+  ],
+  "deprecations": []
+}

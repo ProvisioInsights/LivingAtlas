@@ -1,12 +1,12 @@
 {
   "case": "atlas.changes.read.v1",
-  "contract_revision": "2026.08.1",
+  "contract_revision": "2026.08.2",
   "intent": "The change feed from the beginning of the epoch, with records inlined.",
   "response": {
     "_meta": {
       "io.modelcontextprotocol/serverInfo": {
         "name": "living-atlas-consumer",
-        "version": "2026.08.1"
+        "version": "2026.08.2"
       }
     },
     "content": "<the text block is JSON.stringify(structuredContent)>",

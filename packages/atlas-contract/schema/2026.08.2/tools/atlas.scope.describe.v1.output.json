@@ -1,0 +1,173 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:living-atlas:contract:2026.08.2:tool:atlas.scope.describe.v1:output",
+  "title": "atlas.scope.describe.v1 — result",
+  "description": "Report the calling credential's own client_id and the capability grant behind it: the tools it may call, the sensitivity tiers it may read, the predicates and tiers it may write, the limits that apply to it, whether its coverage counts are exact, and whose assertions it may supersede. Ask here rather than inferring scope from a refusal — and never from which transport you connected over. Two deployments differ by grant, not by wire.",
+  "type": "object",
+  "properties": {
+    "client_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Resolved from the authenticated credential. Three credentials over one transport are three client_ids; one credential over two transports is one."
+    },
+    "credential_class": {
+      "type": "string",
+      "enum": [
+        "consumer",
+        "owner",
+        "other"
+      ]
+    },
+    "plane": {
+      "type": "string",
+      "enum": [
+        "consumer",
+        "operator",
+        "other"
+      ]
+    },
+    "grant_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Names the capability grant this answer describes, so an audit event and a scope description can be tied together without either naming the credential."
+    },
+    "tools_available": {
+      "type": "array",
+      "description": "Exactly what tools/list returns for this credential. A tool absent here is refused by name, not silently ignored.",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "minItems": 1
+    },
+    "sensitivity_reachable": {
+      "type": "array",
+      "description": "Tiers whose content this credential may read, BY NAME. A named set rather than a threshold: a tier introduced later is unreachable until someone grants it, where a threshold would admit it for having been ranked low.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "tier": {
+            "type": "string",
+            "minLength": 1
+          },
+          "rank": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "tier",
+          "rank"
+        ]
+      },
+      "minItems": 1
+    },
+    "sensitivity_ceiling": {
+      "type": "object",
+      "description": "The highest-ranked member of sensitivity_reachable. A report of that set, not the rule: reachability is membership. It sizes how much a redaction stub discloses about itself.",
+      "properties": {
+        "tier": {
+          "type": "string",
+          "minLength": 1
+        },
+        "rank": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "tier",
+        "rank"
+      ]
+    },
+    "predicates_writable": {
+      "type": "array",
+      "description": "Predicates this credential may assert about. Empty is a read-only credential, and is not the same as the tool being absent.",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "write_tiers_permitted": {
+      "type": "array",
+      "description": "Sensitivity tiers this credential may commit AT. Reading a tier and writing at it are separate grants.",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "limits": {
+      "type": "object",
+      "description": "The limits that apply to THIS credential: the contract's published caps, narrowed by the grant. A grant can only ever narrow them, so these are never above what atlas.contract.describe.v1 publishes.",
+      "properties": {
+        "max_page_size": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "max_ids_per_request": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "max_batch_items": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "required": [
+        "max_page_size",
+        "max_ids_per_request",
+        "max_batch_items"
+      ]
+    },
+    "coverage_counts_basis": {
+      "type": "string",
+      "enum": [
+        "exact",
+        "bucketed",
+        "other"
+      ]
+    },
+    "supersession_scope": {
+      "type": "string",
+      "description": "own-client-id: this credential may only supersede assertions it authored. A consumer that can retract another consumer's belief can rewrite attribution, and attribution is the only thing making provenance meaningful.",
+      "enum": [
+        "own-client-id",
+        "any",
+        "other"
+      ]
+    },
+    "reveal_available": {
+      "type": "boolean"
+    },
+    "declared_client_capabilities": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "horizon": {
+      "$ref": "urn:living-atlas:contract:2026.08.2:record:atlas.horizon:v1"
+    },
+    "cache": {
+      "$ref": "urn:living-atlas:contract:2026.08.2:common:output#/$defs/cache"
+    }
+  },
+  "required": [
+    "client_id",
+    "credential_class",
+    "plane",
+    "grant_id",
+    "tools_available",
+    "sensitivity_reachable",
+    "sensitivity_ceiling",
+    "predicates_writable",
+    "write_tiers_permitted",
+    "limits",
+    "coverage_counts_basis",
+    "supersession_scope",
+    "reveal_available",
+    "horizon",
+    "cache"
+  ]
+}

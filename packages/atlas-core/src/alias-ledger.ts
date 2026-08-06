@@ -110,6 +110,23 @@ export const AliasRowSchema = z.discriminatedUnion("disposition", [
     disposition: z.literal("ambiguous-split"),
     candidate_ids: z.array(EntityIdSchema).min(2)
   }).strict(),
+  /**
+   * The id became an ASSERTION rather than an entity.
+   *
+   * A legacy store that recorded edges as objects gave those objects ids, and
+   * every one of them has to keep resolving. They did not become entities — an
+   * edge is a claim, not a thing — so `mapped` cannot hold them, and all three
+   * terminal dispositions would say the id was not carried forward when it was.
+   *
+   * `resolve()` therefore REFUSES this row and names what the id became.
+   * Refusing is correct for an entity resolver: the id is not an entity, and
+   * answering with one would be a category error dressed as helpfulness. What
+   * would be wrong is refusing without saying where the content went.
+   */
+  AliasRowCore.extend({
+    disposition: z.literal("mapped-assertion"),
+    new_assertion_id: AssertionIdSchema
+  }).strict(),
   AliasRowCore.extend({ disposition: z.literal("never-migrated") }).strict(),
   AliasRowCore.extend({ disposition: z.literal("content-unrecoverable") }).strict(),
   AliasRowCore.extend({ disposition: z.literal("redacted-in-place") }).strict(),

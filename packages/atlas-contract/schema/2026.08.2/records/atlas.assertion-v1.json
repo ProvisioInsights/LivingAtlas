@@ -1,0 +1,135 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:living-atlas:contract:2026.08.2:record:atlas.assertion:v1",
+  "title": "atlas.assertion:v1",
+  "type": "object",
+  "description": "One statement, one learning event, never edited in place. The only mutation Atlas ever makes to a committed assertion is stamping superseded_at/superseded_by once — write-once, never back to null. Corrections and retractions are NEW assertions pointing at what they supersede.",
+  "properties": {
+    "record_schema": {
+      "const": "atlas.assertion:v1"
+    },
+    "assertion_id": {
+      "$ref": "urn:living-atlas:contract:2026.08.2:common:output#/$defs/assertion_id"
+    },
+    "seq": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Per-assertion, monotone, gapless within a feed_epoch. Deliberately not the prior `generation`, which stamped one value across every event in a transaction — so a cursor could not resume mid-submission when 1,000 changes shared one number."
+    },
+    "feed_epoch": {
+      "type": "string",
+      "minLength": 1
+    },
+    "kind": {
+      "type": "string",
+      "enum": [
+        "fact",
+        "relationship",
+        "observation",
+        "other"
+      ]
+    },
+    "lineage_action": {
+      "type": "string",
+      "enum": [
+        "assert",
+        "correct",
+        "retract",
+        "invalidate",
+        "reinstate",
+        "other"
+      ]
+    },
+    "subject_entity_id": {
+      "$ref": "urn:living-atlas:contract:2026.08.2:common:output#/$defs/entity_id"
+    },
+    "predicate": {
+      "$ref": "urn:living-atlas:contract:2026.08.2:common:output#/$defs/predicate"
+    },
+    "value": {},
+    "target_entity_id": {
+      "$ref": "urn:living-atlas:contract:2026.08.2:common:output#/$defs/entity_id"
+    },
+    "valid_from": {
+      "$ref": "urn:living-atlas:contract:2026.08.2:common:output#/$defs/world_time_point"
+    },
+    "valid_to": {
+      "$ref": "urn:living-atlas:contract:2026.08.2:common:output#/$defs/world_time_point"
+    },
+    "recorded_at": {
+      "$ref": "urn:living-atlas:contract:2026.08.2:common:output#/$defs/recorded_at",
+      "description": "Assigned by Atlas at commit. Never accepted from a caller."
+    },
+    "superseded_at": {
+      "anyOf": [
+        {
+          "$ref": "urn:living-atlas:contract:2026.08.2:common:output#/$defs/recorded_at"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "superseded_by": {
+      "anyOf": [
+        {
+          "$ref": "urn:living-atlas:contract:2026.08.2:common:output#/$defs/assertion_id"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "supersedes": {
+      "type": "array",
+      "items": {
+        "$ref": "urn:living-atlas:contract:2026.08.2:common:output#/$defs/assertion_id"
+      }
+    },
+    "claim_digest": {
+      "$ref": "urn:living-atlas:contract:2026.08.2:common:output#/$defs/claim_digest"
+    },
+    "provenance": {
+      "$ref": "urn:living-atlas:contract:2026.08.2:common:output#/$defs/provenance"
+    },
+    "confidence": {
+      "$ref": "urn:living-atlas:contract:2026.08.2:common:output#/$defs/confidence"
+    },
+    "evidence_links": {
+      "type": "array",
+      "items": {
+        "$ref": "urn:living-atlas:contract:2026.08.2:common:output#/$defs/evidence_link"
+      }
+    },
+    "sensitivity": {
+      "$ref": "urn:living-atlas:contract:2026.08.2:common:output#/$defs/sensitivity"
+    },
+    "valid_time_fidelity": {
+      "$ref": "urn:living-atlas:contract:2026.08.2:common:output#/$defs/valid_time_fidelity",
+      "description": "Read context, not part of the stored record: present in query results, absent from a feed row."
+    },
+    "match_quality": {
+      "$ref": "urn:living-atlas:contract:2026.08.2:common:output#/$defs/match_quality",
+      "description": "Read context. Present only when the request supplied as_of_valid."
+    }
+  },
+  "required": [
+    "record_schema",
+    "assertion_id",
+    "seq",
+    "feed_epoch",
+    "kind",
+    "lineage_action",
+    "subject_entity_id",
+    "predicate",
+    "recorded_at",
+    "superseded_at",
+    "superseded_by",
+    "supersedes",
+    "claim_digest",
+    "provenance",
+    "confidence",
+    "evidence_links",
+    "sensitivity"
+  ]
+}

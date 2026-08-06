@@ -243,6 +243,13 @@ export const ERROR_CODES: readonly ErrorCodeEntry[] = [
     summary: "The id was never migrated forward. The disposition says why."
   },
   {
+    code: "carried-as-assertion",
+    origin: "identity",
+    retryable: false,
+    summary:
+      "The id resolves, and what it names is an assertion rather than an entity. Read it from the assertion log; the refusal carries its id."
+  },
+  {
     code: "redirect-chain-too-long",
     origin: "identity",
     retryable: false,

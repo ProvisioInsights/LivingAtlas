@@ -1,12 +1,12 @@
 {
   "case": "atlas.scope.describe.v1",
-  "contract_revision": "2026.08.1",
+  "contract_revision": "2026.08.2",
   "intent": "The calling credential's grant, published so a consumer never has to infer it from a transport.",
   "response": {
     "_meta": {
       "io.modelcontextprotocol/serverInfo": {
         "name": "living-atlas-consumer",
-        "version": "2026.08.1"
+        "version": "2026.08.2"
       }
     },
     "content": "<the text block is JSON.stringify(structuredContent)>",

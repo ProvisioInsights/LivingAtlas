@@ -1,12 +1,12 @@
 {
   "case": "atlas.entity.read.v1",
-  "contract_revision": "2026.08.1",
+  "contract_revision": "2026.08.2",
   "intent": "A whole entity record with its provenance and sensitivity block.",
   "response": {
     "_meta": {
       "io.modelcontextprotocol/serverInfo": {
         "name": "living-atlas-consumer",
-        "version": "2026.08.1"
+        "version": "2026.08.2"
       }
     },
     "content": "<the text block is JSON.stringify(structuredContent)>",

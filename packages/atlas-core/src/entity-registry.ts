@@ -239,6 +239,24 @@ export type ResolutionRefusal =
       disposition: TerminalDisposition;
       reason: string;
       message: string;
+    }
+  /**
+   * The id resolves, and what it resolves to is not an entity.
+   *
+   * A refusal rather than a hit, because this function answers "which entity is
+   * this?" and the honest answer is "none — it is this assertion". Returning the
+   * assertion's subject would be a category error: a legacy edge id would start
+   * resolving to one of its endpoints, and every reference to the edge would
+   * silently become a reference to a thing it merely mentioned.
+   */
+  | {
+      ok: false;
+      code: "carried-as-assertion";
+      id: string;
+      redirect_chain: string[];
+      new_assertion_id: AssertionId;
+      reason: string;
+      message: string;
     };
 
 export type Resolution = ResolvedEntity | ResolutionRefusal;
@@ -605,6 +623,20 @@ export class EntityRegistry {
         };
       }
 
+      if (row && row.disposition === "mapped-assertion") {
+        return {
+          ok: false,
+          code: "carried-as-assertion",
+          id,
+          redirect_chain: chain,
+          new_assertion_id: row.new_assertion_id,
+          reason: row.reason,
+          message:
+            `${current} was carried across as assertion ${row.new_assertion_id}, which is not an ` +
+            `entity: ${row.reason}. Read it from the assertion log rather than the entity registry.`
+        };
+      }
+
       if (row && isTerminalDisposition(row.disposition)) {
         return {
           ok: false,
@@ -864,6 +896,120 @@ export class EntityRegistry {
   }
 
   /**
+   * Record that a legacy id became an ASSERTION rather than an entity.
+   *
+   * The old store gave edges their own object ids, and those ids have to keep
+   * resolving after the edge becomes an assertion. `merge()` cannot express it —
+   * `mapped` takes an `EntityId` — and the terminal dispositions would all claim
+   * the id was not carried forward, which is the opposite of what happened.
+   *
+   * Always mechanical, like every other row in this family: no human judged
+   * anything, so `resolution_assertion_id` stays null. The assertion this names
+   * is the migrated record, not evidence for a decision.
+   */
+  recordMigrationAssertionMapping(input: {
+    old_id: string;
+    new_assertion_id: AssertionId;
+    reason: string;
+    client_id: string;
+    origin?: Provenance["origin"];
+    recorded_at_fidelity?: Provenance["recorded_at_fidelity"];
+  }):
+    | { ok: true; row: AliasRow }
+    | { ok: false; code: "alias-already-redirected"; id: string; existing_row: AliasRow; message: string } {
+    const existingRow = this.rowsByOldId.get(input.old_id);
+    if (existingRow) return this.alreadyRedirected(input.old_id, existingRow);
+    const row = this.appendRow(
+      {
+        old_id: input.old_id,
+        reason: input.reason,
+        basis: "mechanical-migration",
+        client_id: input.client_id,
+        origin: input.origin ?? "pre-contract-import",
+        recorded_at_fidelity: input.recorded_at_fidelity ?? "import-artifact",
+        resolution_assertion_id: null
+      },
+      { disposition: "mapped-assertion", new_assertion_id: input.new_assertion_id }
+    );
+    return { ok: true, row };
+  }
+
+  /**
+   * Record that a legacy id became SEVERAL entities that already exist.
+   *
+   * The sibling of `recordMigrationDisposition`, for the outcome that is not
+   * terminal: one legacy row meant two things, both of them were carried across,
+   * and every reference to the original is a reference to one of them without
+   * saying which. Nominating a primary would silently attribute every historical
+   * mention to whichever half won — the failure ADR 0007 names — so the row
+   * refuses BY NAME and lists the candidates.
+   *
+   * Distinct from `split()`, which MINTS the halves as part of the decision. A
+   * mechanical migration has already minted them through its own record pass, so
+   * `split()` would mint a second pair and leave the first unreferenced. This
+   * takes the ids that exist and writes only the row.
+   *
+   * Always mechanical: there is no human judgement here and therefore no
+   * evidence to attach, so `resolution_assertion_id` stays null. An owner
+   * deciding an entity is really two things is `split()`, with evidence.
+   */
+  recordAmbiguousSplit(input: {
+    old_id: string;
+    candidate_ids: EntityId[];
+    reason: string;
+    client_id: string;
+    origin?: Provenance["origin"];
+    recorded_at_fidelity?: Provenance["recorded_at_fidelity"];
+  }):
+    | { ok: true; row: AliasRow }
+    | { ok: false; code: "alias-already-redirected"; id: string; existing_row: AliasRow; message: string }
+    | { ok: false; code: "split-needs-two-candidates"; id: string; message: string }
+    | { ok: false; code: "split-candidate-unresolvable"; id: string; missing_id: string; message: string } {
+    if (input.candidate_ids.length < 2) {
+      return {
+        ok: false,
+        code: "split-needs-two-candidates",
+        id: input.old_id,
+        message: "A split names at least two entities; anything less is a redirect."
+      };
+    }
+
+    const existingRow = this.rowsByOldId.get(input.old_id);
+    if (existingRow) return this.alreadyRedirected(input.old_id, existingRow);
+
+    // Every candidate has to exist. A split with one reachable candidate is
+    // worse than a plain redirect: it tells a caller the id is ambiguous and
+    // then hands them a list they cannot fully resolve.
+    for (const candidateId of input.candidate_ids) {
+      if (!this.entities.has(candidateId)) {
+        return {
+          ok: false,
+          code: "split-candidate-unresolvable",
+          id: input.old_id,
+          missing_id: candidateId,
+          message:
+            `${candidateId} is not an entity this registry holds, so the row would name a ` +
+            "candidate that resolves to nothing. Register the candidates before recording the split."
+        };
+      }
+    }
+
+    const row = this.appendRow(
+      {
+        old_id: input.old_id,
+        reason: input.reason,
+        basis: "mechanical-migration",
+        client_id: input.client_id,
+        origin: input.origin ?? "pre-contract-import",
+        recorded_at_fidelity: input.recorded_at_fidelity ?? "import-artifact",
+        resolution_assertion_id: null
+      },
+      { disposition: "ambiguous-split", candidate_ids: input.candidate_ids }
+    );
+    return { ok: true, row };
+  }
+
+  /**
    * Find the entity a source observation already belongs to, or mint one.
    *
    * This is the half of the fix that the id-minting rule alone does not give
@@ -1035,6 +1181,7 @@ export class EntityRegistry {
     },
     disposition:
       | { disposition: "mapped"; new_id: EntityId }
+      | { disposition: "mapped-assertion"; new_assertion_id: AssertionId }
       | { disposition: "ambiguous-split"; candidate_ids: EntityId[] }
       | { disposition: TerminalDisposition }
   ): AliasRow {

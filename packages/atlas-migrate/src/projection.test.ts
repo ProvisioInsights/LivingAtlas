@@ -400,6 +400,45 @@ describe("legacy projection", () => {
     }
   });
 
+  /**
+   * An absence record is not something an id can redirect TO — there is no
+   * entity and no assertion to resolve to — so the outcome carries the
+   * disposition and the reason instead.
+   *
+   * This is the shape the durable ledger already models as
+   * `content-unrecoverable` and `redacted-in-place`. When the absence record
+   * claimed the alias target, the sink wrote the terminal row and the alias pass
+   * then tried to write a redirect for the same legacy id, which the ledger
+   * refuses: two writers competing for one row. The id still resolves, which is
+   * the whole point — "this existed and here is why you cannot read it" is a
+   * different answer from "no such thing".
+   */
+  it("gives an absence outcome a stated no-target rather than a redirect to itself", () => {
+    const plan = planFixture();
+
+    for (const [legacyObjectId, disposition] of [
+      [legacyFixtureIds.tombstonedUnrecoverable, "unrecoverable-ciphertext"],
+      [legacyFixtureIds.liveQuarantine, "redaction-stub"]
+    ] as const) {
+      const outcome = outcomeFor(plan, legacyObjectId);
+      expect(outcome.disposition.kind).toBe(disposition);
+      expect(outcome.alias_target.kind).toBe("no-target");
+      if (outcome.alias_target.kind !== "no-target") throw new Error("expected a no-target row");
+      expect(outcome.alias_target.disposition).toBe(disposition);
+      expect(outcome.alias_target.detail.length).toBeGreaterThan(0);
+    }
+
+    // The absence RECORD still exists and is still claimed by its outcome; only
+    // the alias row stopped pointing at it.
+    const absence = plan.records.find(
+      (record) => record.record_kind === "absence" && legacyObjectIdOf(record) === legacyFixtureIds.tombstonedUnrecoverable
+    );
+    expect(absence).toBeDefined();
+    expect(outcomeFor(plan, legacyFixtureIds.tombstonedUnrecoverable).record_keys).toContain(
+      absence?.idempotency_key
+    );
+  });
+
   it("is a pure function of the source, so plans diff cleanly", () => {
     expect(JSON.stringify(planFixture())).toBe(JSON.stringify(planFixture()));
     expect(planFixture().plan_digest).toBe(planFixture().plan_digest);
