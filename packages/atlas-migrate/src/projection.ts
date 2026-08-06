@@ -821,9 +821,24 @@ function compareOutcomes(left: SourceOutcome, right: SourceOutcome): number {
 }
 
 /**
- * An absence record still gets an identity in the new plane, so an old link to a
- * deleted or withheld object resolves to "this existed and did not come across,
- * for this reason" instead of a bare miss.
+ * An absence record reports that an object existed and did not come across.
+ *
+ * IT DELIBERATELY CLAIMS NO ALIAS TARGET. `draft.primary` is what makes a
+ * legacy id redirect to a record, and an absence record is not something an id
+ * can redirect TO: there is no entity, no assertion, nothing to resolve to. The
+ * outcome therefore falls through to `no-target`, carrying the disposition and
+ * the reason — which is the answer the durable ledger already models as
+ * `content-unrecoverable` and `redacted-in-place`.
+ *
+ * Setting `primary` here made the id redirect at the record, and the two write
+ * paths then competed for one ledger row: the sink wrote the terminal
+ * disposition and the alias pass tried to write a redirect to the same legacy
+ * id, which the ledger refuses. One writer, one row.
+ *
+ * The id still resolves — that is the whole point, and it is why this is a
+ * `no-target` row rather than no row at all. "This existed and here is why you
+ * cannot read it" is a different answer from "no such thing", and on this corpus
+ * it is the answer for the large majority of source objects.
  */
 function pushAbsenceRecord(
   draft: Draft,
@@ -847,7 +862,6 @@ function pushAbsenceRecord(
     absence_kind: absenceKind,
     detail: detail.slice(0, 512)
   });
-  draft.primary = { record_key: key, record_kind: "absence" };
 }
 
 function applyNonProjectableDisposition(

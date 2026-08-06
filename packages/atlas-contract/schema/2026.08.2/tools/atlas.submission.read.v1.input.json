@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:living-atlas:contract:2026.08.2:tool:atlas.submission.read.v1:input",
+  "title": "atlas.submission.read.v1 — arguments",
+  "description": "Supply exactly one. Supplying neither, or both, is invalid-argument — guessing which the caller meant is how a client silently reads the wrong submission.",
+  "type": "object",
+  "properties": {
+    "submission_id": {
+      "$ref": "urn:living-atlas:contract:2026.08.2:common:input#/$defs/submission_id"
+    },
+    "idempotency_key": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "description": "Scoped to your own client_id. You cannot read another credential's receipts."
+    }
+  },
+  "additionalProperties": false
+}

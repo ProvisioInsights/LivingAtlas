@@ -938,7 +938,8 @@ export const CATALOG_TOOLS: readonly CatalogTool[] = [
                 "not-carried-forward",
                 "redirect-cycle",
                 "redirect-chain-too-long",
-                "redirect-dangling"
+                "redirect-dangling",
+                "carried-as-assertion"
               ]),
               entity: taggedUnion(["atlas.entity:v1", "atlas.redaction:v1"]),
               redirect_chain: arr(ref("opaque_reference"), {}, "Every id visited, oldest first."),
@@ -948,7 +949,7 @@ export const CATALOG_TOOLS: readonly CatalogTool[] = [
                 description: "Why the id the CALLER holds stopped being current — the first hop only. A single string cannot honestly summarise a multi-hop history, so it does not try."
               }),
               candidate_ids: arr(ref("entity_id"), {}, "Present on ambiguous-split. Atlas names them and does not choose."),
-              disposition: enumOf(["mapped", "ambiguous-split", "never-migrated", "content-unrecoverable", "redacted-in-place"]),
+              disposition: enumOf(["mapped", "mapped-assertion", "ambiguous-split", "never-migrated", "content-unrecoverable", "redacted-in-place"]),
               error: record("atlas.error:v1")
             },
             ["requested_id", "outcome", "redirect_chain"]
