@@ -5,8 +5,10 @@ import { pathToFileURL } from "node:url";
 import {
   AuthorityIdSchema,
   EndpointRecordSchema,
+  OccurrenceSubtypeSchema,
   TemporalEdgeSchema,
-  type ObjectType
+  type ObjectType,
+  type OccurrenceSubtype
 } from "@living-atlas/contracts";
 import { FileLocalGraphStore } from "@living-atlas/local-graph-store";
 import { FileLocalKeyringStore, resolveLocalSecret } from "@living-atlas/local-keyring";
@@ -40,6 +42,29 @@ export type ConnectorEnrichmentImportLedger = {
     promoted_objects: number;
     quarantine_objects: number;
     failed_objects: number;
+    /**
+     * Candidates the connector asked to promote that were held back because the
+     * ratified vocabulary names no subtype for their occurrence kind.
+     *
+     * Counted separately from `quarantine_objects` because the two mean
+     * different things to whoever reads the ledger: a low-confidence candidate is
+     * waiting on evidence, while this one is waiting on a vocabulary decision. A
+     * number that starts climbing means a connector began emitting a word nobody
+     * has mapped — which used to arrive as a pile of plausible `meeting` nodes.
+     */
+    unmapped_occurrence_kind: number;
+    /**
+     * Promoted candidates that carried a classification the endpoint record
+     * cannot hold.
+     *
+     * ADR 0023 says the word "is not lost, it moves to a has-type edge". On the
+     * one-time migration it does; on this path it does not, because no import
+     * path mints the topic node the edge would need (OPEN-20). Counting it is
+     * what makes the gap a number rather than a silence: the candidate still
+     * promotes, and the operator can see how much classification the ongoing
+     * import is currently unable to carry.
+     */
+    dropped_classification: number;
   };
   by_connector: Record<string, number>;
   by_fact_kind: Record<string, number>;
@@ -144,10 +169,18 @@ function objectTypeForCandidate(candidate: EnrichmentCandidate): ObjectType {
   }
 }
 
+/**
+ * A candidate promotes only when the connector asked for it, the confidence is
+ * high, AND the vocabulary can name what it is. The third condition is the one
+ * added here: an occurrence whose kind the ratified table does not name is
+ * quarantined, which is the review path this pipeline already has, rather than
+ * promoted under the modal subtype.
+ */
 function importStatusForCandidate(candidate: EnrichmentCandidate): ImportCandidateStatus {
-  return candidate.decision === "promote" && candidate.proposed_fact.confidence === "high"
-    ? "promoted"
-    : "quarantined";
+  if (candidate.decision !== "promote" || candidate.proposed_fact.confidence !== "high") {
+    return "quarantined";
+  }
+  return hasUnmappedOccurrenceKind(candidate) ? "quarantined" : "promoted";
 }
 
 function objectIdForCandidate(authorityId: string, candidate: EnrichmentCandidate, status: ImportCandidateStatus): string {
@@ -180,19 +213,104 @@ function occurrenceStatus(payload: Record<string, unknown>, recordedAt: string):
   return scheduledEnd && Date.parse(scheduledEnd) < Date.parse(recordedAt) ? "occurred" : "planned";
 }
 
-function defaultSubtype(type: string | undefined): string {
-  switch (type) {
-    case "person":
-      return "individual";
-    case "organization":
-    case "project":
-    case "location":
-    case "occurrence":
-    case "topic":
-      return "other";
-    default:
-      return "other";
+/**
+ * A connector candidate names an occurrence kind in whatever words the connector
+ * uses. Only the four total-coverage values are legal, so the words are mapped
+ * rather than passed through — and a word the table does not name is REFUSED.
+ *
+ * It used to fall through to `meeting`. `meeting` is the modal occurrence value,
+ * so defaulting to it looks like a successful mapping while quietly filing an
+ * unknown word under the most common word — which is the same defect as `other`,
+ * wearing a better name. The migration path states exactly that rule
+ * (`legacy-vocabulary.ts`, Rule A) and refuses; two code paths cannot hold
+ * opposite answers to one ratified question, and the strict one is the one the
+ * ADR wrote down.
+ */
+function occurrenceSubtypeFor(value: string | undefined): OccurrenceSubtype | undefined {
+  const normalized = value?.trim().toLowerCase();
+  if (normalized === undefined) {
+    return undefined;
   }
+  const parsed = OccurrenceSubtypeSchema.safeParse(normalized);
+  if (parsed.success) {
+    return parsed.data;
+  }
+  switch (normalized) {
+    case "travel":
+      return "trip";
+    case "hotel-stay":
+    case "hotel_stay":
+      return "stay";
+    case "flight":
+    case "rideshare":
+    case "drive":
+    case "train":
+      return "segment";
+    default:
+      return undefined;
+  }
+}
+
+const ParticipantEvidenceKeys = ["participant", "participants", "attendee", "attendees"] as const;
+
+/**
+ * THE G5 BACKFILL, and the only reason an occurrence with no kind can promote.
+ *
+ * A candidate that names who was there is a meeting, by the same rule the
+ * migration applies to a legacy occurrence carrying `participant_refs` and no
+ * subtype. That is a backfill FROM EVIDENCE, not a default: it fires only where
+ * the connector recorded nothing to override, and it never outranks a word the
+ * connector did supply. A calendar event with attendees and no kind is the whole
+ * population it exists for.
+ */
+function hasParticipantEvidence(payload: Record<string, unknown>): boolean {
+  return ParticipantEvidenceKeys.some((key) => {
+    const value = payload[key];
+    return (
+      (typeof value === "string" && value.trim().length > 0) ||
+      (Array.isArray(value) && value.some((entry) => typeof entry === "string" && entry.trim().length > 0))
+    );
+  });
+}
+
+/**
+ * The subtype a promoted occurrence would carry, or `undefined` when the
+ * vocabulary has no answer. Returning the absence rather than a value is what
+ * lets the caller quarantine the candidate instead of promoting a guess.
+ */
+function resolvedOccurrenceSubtype(candidate: EnrichmentCandidate): OccurrenceSubtype | undefined {
+  const payload = payloadRecord(candidate);
+  const named = occurrenceSubtypeFor(
+    stringField(payload, "occurrence_kind") ?? stringField(payload, "subtype")
+  );
+  if (named !== undefined) {
+    return named;
+  }
+  const supplied = stringField(payload, "occurrence_kind") ?? stringField(payload, "subtype");
+  return supplied === undefined && hasParticipantEvidence(payload) ? "meeting" : undefined;
+}
+
+/**
+ * Whether this candidate is an occurrence whose kind the vocabulary cannot name.
+ * Counted in the ledger so a connector that starts emitting an unmapped word
+ * shows up as a number rather than as a pile of plausible meetings.
+ */
+function hasUnmappedOccurrenceKind(candidate: EnrichmentCandidate): boolean {
+  return candidate.proposed_fact.endpoint_type === "occurrence" && resolvedOccurrenceSubtype(candidate) === undefined;
+}
+
+/**
+ * A classification on one of the seven types that no longer carries one. The
+ * endpoint record cannot hold it and this path cannot yet emit the `has-type`
+ * edge that would (OPEN-20), so it is counted rather than dropped in silence.
+ */
+function hasDroppedClassification(candidate: EnrichmentCandidate): boolean {
+  const type = candidate.proposed_fact.endpoint_type;
+  if (type === undefined || type === "occurrence") {
+    return false;
+  }
+  const payload = payloadRecord(candidate);
+  return stringField(payload, "subtype") !== undefined || stringField(payload, "classification") !== undefined;
 }
 
 function endpointRecordForCandidate(input: {
@@ -219,10 +337,18 @@ function endpointRecordForCandidate(input: {
   if (type === "occurrence") {
     const status = occurrenceStatus(payload, input.recordedAt);
     const scheduledStart = stringField(payload, "scheduled_start");
+    const subtype = resolvedOccurrenceSubtype(input.candidate);
+    if (subtype === undefined) {
+      // Unreachable while `importStatusForCandidate` guards the promoted path,
+      // and a throw rather than a default so it stays unreachable: a second
+      // caller that forgot the guard must fail loudly instead of silently
+      // reintroducing the modal-subtype default this refusal replaced.
+      throw new Error("connector occurrence candidate has no subtype the ratified vocabulary names");
+    }
     return EndpointRecordSchema.parse({
       ...base,
       type,
-      subtype: stringField(payload, "occurrence_kind") ?? stringField(payload, "subtype") ?? "other",
+      subtype,
       occurred_on: stringField(payload, "occurred_on") ?? (status === "occurred" ? scheduledStart : undefined),
       occurred_until: stringField(payload, "occurred_until"),
       scheduled_start: scheduledStart,
@@ -232,10 +358,14 @@ function endpointRecordForCandidate(input: {
     });
   }
 
+  // No subtype: the other seven types classify with has-type edges to topic
+  // nodes, so a connector-supplied `subtype` field is not carried onto the
+  // endpoint at all — and, until this path can mint the topic node the edge
+  // needs, not carried anywhere else either. `dropped_classification` counts it
+  // so the gap is a number rather than a silence.
   return EndpointRecordSchema.parse({
     ...base,
-    type,
-    subtype: stringField(payload, "subtype") ?? defaultSubtype(type)
+    type
   });
 }
 
@@ -423,9 +553,17 @@ export async function importConnectorEnrichmentPacket(input: {
   let failedObjects = 0;
   let promotedObjects = 0;
   let quarantineObjects = 0;
+  let unmappedOccurrenceKind = 0;
+  let droppedClassification = 0;
 
   for (const candidate of packet.candidates) {
     const status = importStatusForCandidate(candidate);
+    if (candidate.decision === "promote" && candidate.proposed_fact.confidence === "high" && hasUnmappedOccurrenceKind(candidate)) {
+      unmappedOccurrenceKind += 1;
+    }
+    if (status === "promoted" && hasDroppedClassification(candidate)) {
+      droppedClassification += 1;
+    }
     const existing = store.readObject(objectIdForCandidate(authorityId, candidate, status));
     const object = objectForCandidate({
       authorityId,
@@ -509,7 +647,9 @@ export async function importConnectorEnrichmentPacket(input: {
       already_existing_objects: alreadyExistingObjects,
       promoted_objects: promotedObjects,
       quarantine_objects: quarantineObjects,
-      failed_objects: failedObjects
+      failed_objects: failedObjects,
+      unmapped_occurrence_kind: unmappedOccurrenceKind,
+      dropped_classification: droppedClassification
     },
     by_connector: report.by_connector,
     by_fact_kind: report.by_fact_kind,

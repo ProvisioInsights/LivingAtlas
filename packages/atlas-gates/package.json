@@ -1,0 +1,23 @@
+{
+  "name": "@living-atlas/atlas-gates",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "bin": {
+    "living-atlas-gates": "./src/cli.ts"
+  },
+  "dependencies": {
+    "@living-atlas/atlas-contract": "workspace:*",
+    "@living-atlas/atlas-core": "workspace:*",
+    "@living-atlas/atlas-mcp": "workspace:*",
+    "@living-atlas/graph-service": "workspace:*",
+    "@living-atlas/local-mcp": "workspace:*",
+    "@living-atlas/mcp-contract": "workspace:*"
+  },
+  "scripts": {
+    "test": "vitest run src"
+  }
+}

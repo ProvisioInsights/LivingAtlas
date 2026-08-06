@@ -1,0 +1,87 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:living-atlas:contract:2026.08.1:record:atlas.redaction:v1",
+  "title": "atlas.redaction:v1",
+  "type": "object",
+  "description": "A withheld record still occupies its row. The consumer learns THAT something is here and unreachable, so page counts reconcile and a filtered graph is never mistaken for a complete one.",
+  "properties": {
+    "record_schema": {
+      "const": "atlas.redaction:v1"
+    },
+    "redaction_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Stable for this record and this credential, so atlas.sensitive.reveal.v1 has something to name."
+    },
+    "withheld_record_schema": {
+      "type": "string",
+      "minLength": 1,
+      "description": "What KIND of record is behind the stub. Knowing the shape is not knowing the content."
+    },
+    "disclosure_level": {
+      "type": "string",
+      "description": "How much this stub itself discloses. existence-only: something is here. shape: plus its record kind. metadata: plus non-identifying facets.",
+      "enum": [
+        "existence-only",
+        "shape",
+        "metadata",
+        "other"
+      ]
+    },
+    "sensitivity": {
+      "$ref": "urn:living-atlas:contract:2026.08.1:common:output#/$defs/sensitivity"
+    },
+    "reason_code": {
+      "type": "string",
+      "minLength": 1,
+      "x-atlas-vocabulary": "error_code",
+      "x-atlas-known-values": [
+        "as-of-before-history-floor",
+        "idempotency-key-conflict",
+        "history-floor-cannot-regress",
+        "cursor-before-retention-floor",
+        "snapshot-expired",
+        "assertion-reclaimed",
+        "unknown-id",
+        "ambiguous-split",
+        "redirect-cycle",
+        "redirect-chain-too-long",
+        "redirect-dangling",
+        "not-carried-forward",
+        "identity-ambiguous",
+        "capability-required",
+        "unsupported-protocol-version",
+        "invalid-argument",
+        "sensitivity-withheld",
+        "supersession-not-permitted",
+        "reveal-declined",
+        "batch-limit-exceeded",
+        "revision-not-served",
+        "lineage-target-unknown"
+      ],
+      "x-atlas-registry-tool": "atlas.contract.describe.v1"
+    },
+    "reveal_available": {
+      "type": "boolean",
+      "description": "Whether atlas.sensitive.reveal.v1 could unlock this for this credential at all."
+    },
+    "reveal_tool": {
+      "type": "string",
+      "minLength": 1
+    },
+    "seq": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Present when the withheld record has a feed position."
+    }
+  },
+  "required": [
+    "record_schema",
+    "redaction_id",
+    "withheld_record_schema",
+    "disclosure_level",
+    "sensitivity",
+    "reason_code",
+    "reveal_available"
+  ]
+}

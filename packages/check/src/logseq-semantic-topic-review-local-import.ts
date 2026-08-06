@@ -63,7 +63,6 @@ export type TopicReviewLocalImportLedger = {
   };
   by_reason_code: Record<string, number>;
   by_decision: Record<string, number>;
-  by_subtype: Record<string, number>;
   graph_status: {
     generation: number;
     object_count: number;
@@ -176,8 +175,7 @@ function collectNeedles(value: unknown, output = new Set<string>()): Set<string>
         "source_mode",
         "reason_code",
         "decision",
-        "confidence",
-        "subtype"
+        "confidence"
       ].includes(key)) {
         continue;
       }
@@ -219,7 +217,6 @@ function objectForResolution(input: {
         endpoint: EndpointRecordSchema.parse({
           object_id: objectId,
           type: "topic",
-          subtype: input.resolution.subtype,
           name: input.resolution.topic_title,
           aliases: input.resolution.aliases,
           access_class: "local-private",
@@ -329,7 +326,6 @@ export async function importTopicReviewResolutions(input: {
   const objectRefs: TopicReviewLocalImportLedger["object_refs"] = [];
   const byReasonCode: Record<string, number> = {};
   const byDecision: Record<string, number> = {};
-  const bySubtype: Record<string, number> = {};
   let createdObjects = 0;
   let updatedExistingObjects = 0;
   let alreadyExistingObjects = 0;
@@ -353,9 +349,6 @@ export async function importTopicReviewResolutions(input: {
 
     increment(byReasonCode, resolution.reason_code);
     increment(byDecision, resolution.decision);
-    if (resolution.decision === "promote-topic") {
-      increment(bySubtype, resolution.subtype);
-    }
 
     const existingId = topicObjectId(authorityId, resolution.reason_code, resolution.target_hash, resolution.decision);
     const existing = store.readObject(existingId);
@@ -452,7 +445,6 @@ export async function importTopicReviewResolutions(input: {
     },
     by_reason_code: sortedRecord(byReasonCode),
     by_decision: sortedRecord(byDecision),
-    by_subtype: sortedRecord(bySubtype),
     graph_status: {
       generation: graphStatus.generation,
       object_count: graphStatus.object_count,

@@ -4,7 +4,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createLocalCanonicalAtlasClient } from "@living-atlas/atlas-client";
+import { createLocalCanonicalAtlasClient } from "@living-atlas/atlas-client/legacy";
 import { createCanonicalMarkdownMigration, createCanonicalMarkdownMigrationExport } from "@living-atlas/importer";
 import { loadCanonicalParityInputsFromObjects, projectCanonicalParity } from "@living-atlas/graph-service";
 import { createDefaultLocalKeyring, decryptGraphObjectPayload } from "@living-atlas/local-keyring";

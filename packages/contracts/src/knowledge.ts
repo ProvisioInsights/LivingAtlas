@@ -9,16 +9,9 @@ import {
 import {
   EdgeStatusSchema,
   EndpointTypeSchema,
-  ItemSubtypeSchema,
-  LocationSubtypeSchema,
   MixedPrecisionDateSchema,
   OccurrenceSubtypeSchema,
-  OfferingSubtypeSchema,
-  OrganizationSubtypeSchema,
-  PersonSubtypeSchema,
   PredicateSchema,
-  ProjectSubtypeSchema,
-  TopicSubtypeSchema,
   TemporalEdgeSchema
 } from "./temporal";
 
@@ -40,15 +33,24 @@ const CanonicalEntityBaseSchema = z.object({
   updated_at: IsoTimestampSchema
 }).strict();
 
+/**
+ * Only `occurrence` carries a subtype, and it carries a required one.
+ *
+ * The other seven variants have no `subtype` key and the base schema is strict,
+ * so a canonical entity that still sends one is refused. That is deliberate: the
+ * canonical plane is what a consumer replays in 2031, and an entity payload that
+ * quietly accepted `subtype: "company"` would publish a classification the
+ * vocabulary no longer defines and no `has-type` edge backs.
+ */
 export const CanonicalEntityPayloadSchema = z.discriminatedUnion("type", [
-  CanonicalEntityBaseSchema.extend({ type: z.literal("person"), subtype: PersonSubtypeSchema }),
-  CanonicalEntityBaseSchema.extend({ type: z.literal("organization"), subtype: OrganizationSubtypeSchema }),
-  CanonicalEntityBaseSchema.extend({ type: z.literal("project"), subtype: ProjectSubtypeSchema }),
-  CanonicalEntityBaseSchema.extend({ type: z.literal("location"), subtype: LocationSubtypeSchema }),
+  CanonicalEntityBaseSchema.extend({ type: z.literal("person") }),
+  CanonicalEntityBaseSchema.extend({ type: z.literal("organization") }),
+  CanonicalEntityBaseSchema.extend({ type: z.literal("project") }),
+  CanonicalEntityBaseSchema.extend({ type: z.literal("location") }),
   CanonicalEntityBaseSchema.extend({ type: z.literal("occurrence"), subtype: OccurrenceSubtypeSchema }),
-  CanonicalEntityBaseSchema.extend({ type: z.literal("topic"), subtype: TopicSubtypeSchema }),
-  CanonicalEntityBaseSchema.extend({ type: z.literal("offering"), subtype: OfferingSubtypeSchema }),
-  CanonicalEntityBaseSchema.extend({ type: z.literal("item"), subtype: ItemSubtypeSchema })
+  CanonicalEntityBaseSchema.extend({ type: z.literal("topic") }),
+  CanonicalEntityBaseSchema.extend({ type: z.literal("offering") }),
+  CanonicalEntityBaseSchema.extend({ type: z.literal("item") })
 ]);
 export type CanonicalEntityPayload = z.infer<typeof CanonicalEntityPayloadSchema>;
 

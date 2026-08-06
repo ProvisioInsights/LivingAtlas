@@ -560,7 +560,7 @@ function recommendationRationale(
 function normalizedMutationKind(payload: CanonicalPayload): string {
   switch (payload.schema) {
     case "atlas.entity:v1":
-      return `entity:${payload.type}:${payload.subtype ?? "unspecified"}`;
+      return payload.type === "occurrence" ? `entity:occurrence:${payload.subtype}` : `entity:${payload.type}`;
     case "atlas.fact:v1":
       return `fact:${payload.predicate}:${payload.value.kind}`;
     case "atlas.observation:v1":

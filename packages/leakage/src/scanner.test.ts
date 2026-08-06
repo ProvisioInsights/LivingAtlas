@@ -86,6 +86,27 @@ describe("repo safety scanner", () => {
     }
   });
 
+  it("flags a raw NUL byte in a source file, because git then serves it as an unreviewable binary blob", () => {
+    const root = join(tmpdir(), `living-atlas-nul-guard-${process.pid}`);
+    rmSync(root, { force: true, recursive: true });
+    mkdirSync(join(root, "src"), { recursive: true });
+    // The literal byte and the escape compile to the same string, so only one of
+    // these two files is a finding — the difference is entirely whether a
+    // reviewer can read the diff that introduces it.
+    writeFileSync(join(root, "src", "binary.ts"), `const key = \`a${"\u0000"}b\`;\n`);
+    writeFileSync(join(root, "src", "text.ts"), String.raw`const key = \`a\u0000b\`;` + "\n");
+    // Not source: a fixture may legitimately hold any byte at all.
+    writeFileSync(join(root, "src", "fixture.bin"), `payload${"\u0000"}payload`);
+
+    try {
+      const result = scanRepoSafety(root);
+      const flagged = result.findings.filter((finding) => finding.rule === "source-nul-byte");
+      expect(flagged.map((finding) => finding.path)).toEqual(["src/binary.ts"]);
+    } finally {
+      rmSync(root, { force: true, recursive: true });
+    }
+  });
+
   it("flags ambiguous schema names outside contract guard files", () => {
     const root = join(tmpdir(), `living-atlas-schema-guard-${process.pid}`);
     rmSync(root, { force: true, recursive: true });
@@ -104,6 +125,80 @@ describe("repo safety scanner", () => {
         "ambiguous-capital-status-attr",
         "ambiguous-edge-recurrence-attr"
       ]));
+    } finally {
+      rmSync(root, { force: true, recursive: true });
+    }
+  });
+
+  /**
+   * The repository is public and the graph is not. The proposal file was ignored
+   * for precisely this reason and the same counts were then committed anyway, in
+   * source comments and ADRs, one design argument at a time — so the guard has to
+   * be mechanical rather than a habit.
+   *
+   * Both halves are asserted, and the second half is the one that decides whether
+   * the rule can live in the tree at all: a lint that also flags contract limits,
+   * test counts and version numbers gets switched off within a week.
+   *
+   * The census strings are BUILT rather than written, because a positive control
+   * that spells out the forbidden text either fails on itself or has to be
+   * exempted — and an exemption is a hole the size of whatever it exempts. The
+   * interpolation breaks the pattern in the source and restores it at runtime,
+   * which is exactly the string the scanner is handed.
+   */
+  it("flags a census of the owner's graph and not a number about the software", () => {
+    const root = join(tmpdir(), `living-atlas-census-guard-${process.pid}`);
+    rmSync(root, { force: true, recursive: true });
+    mkdirSync(join(root, "docs"), { recursive: true });
+    writeFileSync(join(root, "docs", "census.md"), `A per-type breakdown: ${370} of ${470} nodes.\n`);
+    writeFileSync(join(root, "docs", "gate.md"), `Gate G${6} measured ${65} of these and found none.\n`);
+    writeFileSync(
+      join(root, "docs", "safe.md"),
+      [
+        "Deduplication lasts `idempotency_ttl_days` (30).",
+        "A snapshot lives `snapshot_ttl_seconds` (900).",
+        "Measured — that mutant survived the whole 1536-test suite.",
+        "Revision 2026.08.1 carries 12 tools and 25 predicates."
+      ].join("\n")
+    );
+
+    try {
+      const result = scanRepoSafety(root);
+      const census = result.findings.filter((finding) => finding.rule.startsWith("corpus-census"));
+
+      expect(census.map((finding) => finding.path).sort()).toEqual(["docs/census.md", "docs/gate.md"]);
+      expect(census.map((finding) => finding.rule).sort()).toEqual([
+        "corpus-census-measurement",
+        "corpus-census-ratio"
+      ]);
+    } finally {
+      rmSync(root, { force: true, recursive: true });
+    }
+  });
+
+  /**
+   * A content rule asks "would this text be published?", so a file git will
+   * never stage cannot fail it. The working notes at the repo root are the case
+   * the exemption exists for: they hold the census, which is exactly why they
+   * are ignored, and a scan that failed on them would make the rule protecting
+   * the repository unusable inside it.
+   *
+   * The file-EXISTENCE rules still apply, because an ignore entry is one edit
+   * away from not covering the file it names.
+   */
+  it("skips content rules for a file .gitignore names outright, but not file rules", () => {
+    const root = join(tmpdir(), `living-atlas-ignored-notes-${process.pid}`);
+    rmSync(root, { force: true, recursive: true });
+    mkdirSync(root, { recursive: true });
+    writeFileSync(join(root, ".gitignore"), "NOTES.local.md\n.env\nnode_modules/\n");
+    writeFileSync(join(root, "NOTES.local.md"), `Working note: ${370} of ${470} nodes were other.\n`);
+    writeFileSync(join(root, ".env"), "TOKEN=abc\n");
+
+    try {
+      const result = scanRepoSafety(root);
+
+      expect(result.findings.filter((finding) => finding.path === "NOTES.local.md")).toEqual([]);
+      expect(result.findings.map((finding) => finding.rule)).toContain("dotenv");
     } finally {
       rmSync(root, { force: true, recursive: true });
     }

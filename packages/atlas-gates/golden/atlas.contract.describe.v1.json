@@ -1,0 +1,433 @@
+{
+  "case": "atlas.contract.describe.v1",
+  "contract_revision": "2026.08.1",
+  "intent": "The published contract as the server reports it: revision, limits, history floor, tool table.",
+  "response": {
+    "_meta": {
+      "io.modelcontextprotocol/serverInfo": {
+        "name": "living-atlas-consumer",
+        "version": "2026.08.1"
+      }
+    },
+    "content": "<the text block is JSON.stringify(structuredContent)>",
+    "resultType": "complete",
+    "structuredContent": {
+      "cache": {
+        "cache_scope": "private",
+        "ttl_ms": 300000
+      },
+      "deprecations": [],
+      "history": {
+        "belief_time_meaningful_since_cutover_only": true,
+        "bitemporal_since": "2026-01-01T00:00:00.000Z",
+        "change_feed_floor_days": 400,
+        "feed_epoch": "e-test",
+        "prior_versions_retained_before_cutover": 0,
+        "retention_floor_seq": 0
+      },
+      "limits": {
+        "change_feed_floor_days": 400,
+        "default_page_size": 50,
+        "deprecation_window_days": 400,
+        "idempotency_ttl_days": 30,
+        "max_batch_bytes": 1048576,
+        "max_batch_items": 100,
+        "max_ids_per_request": 100,
+        "max_page_size": 200,
+        "max_traversal_depth": 5,
+        "snapshot_ttl_seconds": 900
+      },
+      "policy_document": "docs/contract/atlas-knowledge-contract-2026.08.1.md",
+      "protocol_version": "2026-07-28",
+      "record_schemas": [
+        {
+          "name": "atlas.assertion:v1",
+          "schema_id": "urn:living-atlas:contract:2026.08.1:record:atlas.assertion:v1",
+          "schema_path": "records/atlas.assertion-v1.json"
+        },
+        {
+          "name": "atlas.entity:v1",
+          "schema_id": "urn:living-atlas:contract:2026.08.1:record:atlas.entity:v1",
+          "schema_path": "records/atlas.entity-v1.json"
+        },
+        {
+          "name": "atlas.redaction:v1",
+          "schema_id": "urn:living-atlas:contract:2026.08.1:record:atlas.redaction:v1",
+          "schema_path": "records/atlas.redaction-v1.json"
+        },
+        {
+          "name": "atlas.error:v1",
+          "schema_id": "urn:living-atlas:contract:2026.08.1:record:atlas.error:v1",
+          "schema_path": "records/atlas.error-v1.json"
+        },
+        {
+          "name": "atlas.horizon:v1",
+          "schema_id": "urn:living-atlas:contract:2026.08.1:record:atlas.horizon:v1",
+          "schema_path": "records/atlas.horizon-v1.json"
+        },
+        {
+          "name": "atlas.change:v1",
+          "schema_id": "urn:living-atlas:contract:2026.08.1:record:atlas.change:v1",
+          "schema_path": "records/atlas.change-v1.json"
+        }
+      ],
+      "revision": "2026.08.1",
+      "revisions_served": [
+        "2026.08.1"
+      ],
+      "tools": [
+        {
+          "deprecation": null,
+          "input_schema_id": "urn:living-atlas:contract:2026.08.1:tool:atlas.contract.describe.v1:input",
+          "name": "atlas.contract.describe.v1",
+          "output_schema_id": "urn:living-atlas:contract:2026.08.1:tool:atlas.contract.describe.v1:output",
+          "requires_capabilities": [],
+          "title": "Describe the published contract"
+        },
+        {
+          "deprecation": null,
+          "input_schema_id": "urn:living-atlas:contract:2026.08.1:tool:atlas.scope.describe.v1:input",
+          "name": "atlas.scope.describe.v1",
+          "output_schema_id": "urn:living-atlas:contract:2026.08.1:tool:atlas.scope.describe.v1:output",
+          "requires_capabilities": [],
+          "title": "Describe what this credential can reach"
+        },
+        {
+          "deprecation": null,
+          "input_schema_id": "urn:living-atlas:contract:2026.08.1:tool:atlas.entity.resolve.v1:input",
+          "name": "atlas.entity.resolve.v1",
+          "output_schema_id": "urn:living-atlas:contract:2026.08.1:tool:atlas.entity.resolve.v1:output",
+          "requires_capabilities": [],
+          "title": "Resolve identifiers to current entities"
+        },
+        {
+          "deprecation": null,
+          "input_schema_id": "urn:living-atlas:contract:2026.08.1:tool:atlas.entity.read.v1:input",
+          "name": "atlas.entity.read.v1",
+          "output_schema_id": "urn:living-atlas:contract:2026.08.1:tool:atlas.entity.read.v1:output",
+          "requires_capabilities": [],
+          "title": "Read entities by id"
+        },
+        {
+          "deprecation": null,
+          "input_schema_id": "urn:living-atlas:contract:2026.08.1:tool:atlas.assertion.query.v1:input",
+          "name": "atlas.assertion.query.v1",
+          "output_schema_id": "urn:living-atlas:contract:2026.08.1:tool:atlas.assertion.query.v1:output",
+          "requires_capabilities": [],
+          "title": "Query assertions on both time axes"
+        },
+        {
+          "deprecation": null,
+          "input_schema_id": "urn:living-atlas:contract:2026.08.1:tool:atlas.assertion.read.v1:input",
+          "name": "atlas.assertion.read.v1",
+          "output_schema_id": "urn:living-atlas:contract:2026.08.1:tool:atlas.assertion.read.v1:output",
+          "requires_capabilities": [],
+          "title": "Read assertions by id"
+        },
+        {
+          "deprecation": null,
+          "input_schema_id": "urn:living-atlas:contract:2026.08.1:tool:atlas.graph.neighbors.v1:input",
+          "name": "atlas.graph.neighbors.v1",
+          "output_schema_id": "urn:living-atlas:contract:2026.08.1:tool:atlas.graph.neighbors.v1:output",
+          "requires_capabilities": [],
+          "title": "Walk relationship assertions from an entity"
+        },
+        {
+          "deprecation": null,
+          "input_schema_id": "urn:living-atlas:contract:2026.08.1:tool:atlas.text.search.v1:input",
+          "name": "atlas.text.search.v1",
+          "output_schema_id": "urn:living-atlas:contract:2026.08.1:tool:atlas.text.search.v1:output",
+          "requires_capabilities": [],
+          "title": "Search readable text"
+        },
+        {
+          "deprecation": null,
+          "input_schema_id": "urn:living-atlas:contract:2026.08.1:tool:atlas.changes.read.v1:input",
+          "name": "atlas.changes.read.v1",
+          "output_schema_id": "urn:living-atlas:contract:2026.08.1:tool:atlas.changes.read.v1:output",
+          "requires_capabilities": [],
+          "title": "Read the resumable change feed"
+        },
+        {
+          "deprecation": null,
+          "input_schema_id": "urn:living-atlas:contract:2026.08.1:tool:atlas.assertion.propose.v1:input",
+          "name": "atlas.assertion.propose.v1",
+          "output_schema_id": "urn:living-atlas:contract:2026.08.1:tool:atlas.assertion.propose.v1:output",
+          "requires_capabilities": [],
+          "title": "Propose assertions"
+        },
+        {
+          "deprecation": null,
+          "input_schema_id": "urn:living-atlas:contract:2026.08.1:tool:atlas.submission.read.v1:input",
+          "name": "atlas.submission.read.v1",
+          "output_schema_id": "urn:living-atlas:contract:2026.08.1:tool:atlas.submission.read.v1:output",
+          "requires_capabilities": [],
+          "title": "Read a submission receipt"
+        },
+        {
+          "deprecation": null,
+          "input_schema_id": "urn:living-atlas:contract:2026.08.1:tool:atlas.sensitive.reveal.v1:input",
+          "name": "atlas.sensitive.reveal.v1",
+          "output_schema_id": "urn:living-atlas:contract:2026.08.1:tool:atlas.sensitive.reveal.v1:output",
+          "requires_capabilities": [
+            "elicitation"
+          ],
+          "title": "Request disclosure of a withheld record"
+        }
+      ],
+      "vocabularies": {
+        "entity_subtype": [],
+        "error_code": [
+          {
+            "code": "as-of-before-history-floor",
+            "origin": "store",
+            "retryable": false,
+            "summary": "The belief instant asked for is below the retained history floor. Refused rather than answered from present state."
+          },
+          {
+            "code": "assertion-reclaimed",
+            "origin": "store",
+            "retryable": false,
+            "summary": "Compaction reclaimed this assertion. It existed; its content is no longer retained. Never a bare not-found."
+          },
+          {
+            "code": "capability-required",
+            "jsonrpc_code": -32021,
+            "origin": "protocol",
+            "retryable": false,
+            "summary": "The operation needs a client capability this request did not declare, so no request that could answer it may be issued."
+          },
+          {
+            "code": "credential-plane-mismatch",
+            "origin": "policy",
+            "retryable": false,
+            "summary": "The presented credential is granted a different plane from the one this server serves. Written into the audit event; the caller is told only that the credential was not recognised."
+          },
+          {
+            "code": "credential-required",
+            "origin": "policy",
+            "retryable": false,
+            "summary": "No credential was presented on the request. Identity is per-request input on this revision, so a call without one has no client_id to attribute anything to."
+          },
+          {
+            "code": "credential-unknown",
+            "origin": "policy",
+            "retryable": false,
+            "summary": "The presented credential resolves to no grant in the directory. Written into the audit event; the caller is told only that the credential was not recognised."
+          },
+          {
+            "code": "credential-unrecognised",
+            "origin": "policy",
+            "retryable": false,
+            "summary": "The presented credential was refused. Deliberately one code for every cause: distinguishing them would tell a prober that a secret is real but issued for another plane."
+          },
+          {
+            "code": "cursor-before-retention-floor",
+            "origin": "store",
+            "retryable": false,
+            "summary": "The change-feed cursor predates retained history, so the page is missing changes that once existed."
+          },
+          {
+            "code": "cursor-invalid",
+            "origin": "contract",
+            "retryable": false,
+            "summary": "The paging cursor is not one this server issued."
+          },
+          {
+            "code": "feed-epoch-mismatch",
+            "origin": "store",
+            "retryable": false,
+            "summary": "The named feed epoch is not the running one. Every cursor from a prior epoch is invalid."
+          },
+          {
+            "code": "handler-failed",
+            "origin": "store",
+            "retryable": false,
+            "summary": "Audit-only reason code: a tool threw while serving the call. The event records THAT the call failed and never what failed, because a fault message carries stack frames and whatever graph value provoked it. The caller receives internal-error."
+          },
+          {
+            "code": "idempotency-key-conflict",
+            "origin": "store",
+            "retryable": false,
+            "summary": "This (client_id, idempotency_key) already committed a DIFFERENT payload. Neither version is silently accepted."
+          },
+          {
+            "code": "internal-error",
+            "origin": "store",
+            "retryable": false,
+            "summary": "A tool failed while serving this request. Deliberately uninformative: the failure is recorded in the server's audit log under handler-failed, and returning the fault detail would make an error message a channel for graph content and server internals."
+          },
+          {
+            "code": "invalid-argument",
+            "jsonrpc_code": -32602,
+            "origin": "protocol",
+            "retryable": false,
+            "summary": "The arguments do not satisfy the published input schema or a cross-field rule it cannot express."
+          },
+          {
+            "code": "invalid-request-state",
+            "jsonrpc_code": -32602,
+            "origin": "protocol",
+            "retryable": false,
+            "summary": "The echoed request_state failed integrity, expiry or principal-binding verification."
+          },
+          {
+            "code": "output-contract-violation",
+            "origin": "contract",
+            "retryable": false,
+            "summary": "The result this server built failed its own published output schema and was refused rather than returned."
+          },
+          {
+            "code": "reveal-declined",
+            "origin": "policy",
+            "retryable": true,
+            "summary": "The owner did not approve the disclosure. Asking again is a second ask, not a repeat of the first."
+          },
+          {
+            "code": "owner-decision-missing",
+            "origin": "policy",
+            "retryable": true,
+            "summary": "The retry carried no answer for the owner-decision request, so nothing was disclosed."
+          },
+          {
+            "code": "predicate-not-writable",
+            "origin": "policy",
+            "retryable": false,
+            "summary": "This credential's grant does not name that predicate as writable. Write reach is granted per predicate, so a credential that may read a subject need not be able to assert about it."
+          },
+          {
+            "code": "request-state-object-mismatch",
+            "origin": "policy",
+            "retryable": false,
+            "summary": "The request_state verified, and names a different record from the one this call is about."
+          },
+          {
+            "code": "reveal-not-available",
+            "origin": "policy",
+            "retryable": false,
+            "summary": "This credential can never unlock withheld records. A property of the credential, not of the record."
+          },
+          {
+            "code": "sensitivity-withheld",
+            "origin": "policy",
+            "retryable": true,
+            "summary": "The record exists and this credential may not read it — either the record is marked withheld or its tier is outside the grant. Returned as a redaction stub, never dropped."
+          },
+          {
+            "code": "snapshot-expired",
+            "origin": "store",
+            "retryable": false,
+            "summary": "The paging snapshot pin expired. Restart the read; resuming against newer state skips and repeats rows."
+          },
+          {
+            "code": "snapshot-invalid",
+            "origin": "contract",
+            "retryable": false,
+            "summary": "A cursor was echoed without the snapshot token page 1 returned, or with one this server did not mint."
+          },
+          {
+            "code": "supersession-not-permitted",
+            "origin": "policy",
+            "retryable": false,
+            "summary": "This credential may supersede only assertions it authored. Attribution is what makes provenance mean anything."
+          },
+          {
+            "code": "tool-not-permitted",
+            "origin": "policy",
+            "retryable": false,
+            "summary": "This credential's grant does not permit that tool. The same tool is absent from this credential's tools/list, so the refusal and the listing agree rather than contradicting each other."
+          },
+          {
+            "code": "revision-not-served",
+            "origin": "contract",
+            "retryable": false,
+            "summary": "This server does not serve the contract revision the call named. Refused rather than silently substituted."
+          },
+          {
+            "code": "unknown-id",
+            "origin": "identity",
+            "retryable": false,
+            "summary": "No record was ever minted under this identifier."
+          },
+          {
+            "code": "unknown-redaction",
+            "origin": "policy",
+            "retryable": false,
+            "summary": "No withheld record for this credential carries that redaction_id. Stub ids are per-credential."
+          },
+          {
+            "code": "unknown-submission",
+            "origin": "store",
+            "retryable": false,
+            "summary": "No such submission under this credential, or the idempotency window has closed."
+          },
+          {
+            "code": "write-tier-not-permitted",
+            "origin": "policy",
+            "retryable": false,
+            "summary": "This credential's grant does not permit commits at that sensitivity tier. Reading a tier and writing at it are separate grants, so a broad reader cannot seal new content."
+          },
+          {
+            "code": "ambiguous-split",
+            "origin": "identity",
+            "retryable": false,
+            "summary": "The id was split. Its candidates are named and no primary is nominated: choosing one would reattribute every historical reference to it."
+          },
+          {
+            "code": "not-carried-forward",
+            "origin": "identity",
+            "retryable": false,
+            "summary": "The id was never migrated forward. The disposition says why."
+          },
+          {
+            "code": "redirect-chain-too-long",
+            "origin": "identity",
+            "retryable": false,
+            "summary": "The alias chain exceeded the depth cap, which fires even if cycle detection is itself wrong."
+          },
+          {
+            "code": "redirect-cycle",
+            "origin": "identity",
+            "retryable": false,
+            "summary": "The alias ledger holds a cycle for this id. Refused rather than followed."
+          },
+          {
+            "code": "redirect-dangling",
+            "origin": "identity",
+            "retryable": false,
+            "summary": "The alias chain ends at an id no entity is registered under."
+          }
+        ],
+        "predicate": [
+          {
+            "cardinality": "multi-valued",
+            "predicate": "worked-at",
+            "relational": false
+          },
+          {
+            "cardinality": "multi-valued",
+            "predicate": "medical-note",
+            "relational": false
+          },
+          {
+            "cardinality": "functional",
+            "functional_key": [
+              "subject_entity_id"
+            ],
+            "predicate": "date-of-birth",
+            "relational": false
+          },
+          {
+            "cardinality": "functional",
+            "functional_key": [
+              "subject_entity_id"
+            ],
+            "predicate": "reports-to",
+            "relational": true
+          }
+        ]
+      }
+    }
+  },
+  "tool": "atlas.contract.describe.v1"
+}

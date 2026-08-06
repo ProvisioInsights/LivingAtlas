@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { FileLocalGraphStore } from "@living-atlas/local-graph-store";
+import { LocalGraphMigrationSource } from "@living-atlas/local-graph-store";
 import { resolveLocalSecret } from "@living-atlas/local-keyring";
 import {
   LocalWormStore,
@@ -250,9 +250,13 @@ function formatBackupId(serial: number): string {
 /**
  * Materializes the sealed replayed graph state without decrypting or compacting
  * the source replica. A raw snapshot file alone can be behind its journal.
+ *
+ * Opened as a MIGRATION SOURCE, so "without compacting" is enforced by the
+ * handle rather than asserted by this comment: a backup that could truncate the
+ * journal of the replica it is backing up is the one thing a backup must not be.
  */
 async function materializeSealedSnapshot(graphDir: string): Promise<{ bytes: Buffer; generation: number }> {
-  const store = await FileLocalGraphStore.open({ directory: graphDir });
+  const store = await LocalGraphMigrationSource.open({ directory: graphDir });
   const source = JSON.parse(await readFile(join(graphDir, "snapshot.json"), "utf8")) as {
     plaintext_persistence: "redacted" | "encrypted" | "allowed";
   };

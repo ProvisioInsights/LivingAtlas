@@ -1,0 +1,84 @@
+{
+  "case": "atlas.scope.describe.v1",
+  "contract_revision": "2026.08.1",
+  "intent": "The calling credential's grant, published so a consumer never has to infer it from a transport.",
+  "response": {
+    "_meta": {
+      "io.modelcontextprotocol/serverInfo": {
+        "name": "living-atlas-consumer",
+        "version": "2026.08.1"
+      }
+    },
+    "content": "<the text block is JSON.stringify(structuredContent)>",
+    "resultType": "complete",
+    "structuredContent": {
+      "cache": {
+        "cache_scope": "private",
+        "ttl_ms": 60000
+      },
+      "client_id": "synthetic-consumer",
+      "coverage_counts_basis": "exact",
+      "credential_class": "consumer",
+      "declared_client_capabilities": [
+        "elicitation"
+      ],
+      "grant_id": "grant-synthetic-consumer",
+      "horizon": {
+        "as_of_recorded": "2026-08-04T12:00:00.000Z",
+        "bitemporal_since": "2026-01-01T00:00:00.000Z",
+        "feed_epoch": "e-test",
+        "migration_window_open": false,
+        "record_schema": "atlas.horizon:v1",
+        "recorded_at_fidelity_mixed": false,
+        "seq_watermark": 4,
+        "status": "complete"
+      },
+      "limits": {
+        "max_batch_items": 100,
+        "max_ids_per_request": 100,
+        "max_page_size": 200
+      },
+      "plane": "consumer",
+      "predicates_writable": [
+        "worked-at",
+        "medical-note",
+        "date-of-birth",
+        "reports-to"
+      ],
+      "reveal_available": true,
+      "sensitivity_ceiling": {
+        "rank": 10,
+        "tier": "local-private"
+      },
+      "sensitivity_reachable": [
+        {
+          "rank": 0,
+          "tier": "open"
+        },
+        {
+          "rank": 10,
+          "tier": "local-private"
+        }
+      ],
+      "supersession_scope": "own-client-id",
+      "tools_available": [
+        "atlas.contract.describe.v1",
+        "atlas.scope.describe.v1",
+        "atlas.entity.resolve.v1",
+        "atlas.entity.read.v1",
+        "atlas.assertion.query.v1",
+        "atlas.assertion.read.v1",
+        "atlas.graph.neighbors.v1",
+        "atlas.text.search.v1",
+        "atlas.changes.read.v1",
+        "atlas.assertion.propose.v1",
+        "atlas.submission.read.v1",
+        "atlas.sensitive.reveal.v1"
+      ],
+      "write_tiers_permitted": [
+        "local-private"
+      ]
+    }
+  },
+  "tool": "atlas.scope.describe.v1"
+}

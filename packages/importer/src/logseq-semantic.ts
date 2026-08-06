@@ -12,6 +12,7 @@ import {
   type AccessClass,
   type EndpointRecord,
   type EndpointType,
+  type OccurrenceSubtype,
   type GraphObjectEnvelope,
   type ObjectType,
   type TemporalEdge
@@ -302,7 +303,7 @@ type TypedEndpointParseResult =
   | { kind: "promoted"; endpoint: EndpointRecord };
 
 type EndpointTypeCanonicalization =
-  | { ok: true; type: EndpointType; subtype?: string; source: "canonical" | "safe-alias" }
+  | { ok: true; type: EndpointType; subtype?: OccurrenceSubtype; source: "canonical" | "safe-alias" }
   | { ok: false; reason: "unknown-endpoint-type" };
 
 type ParsedLogseqFile = {
@@ -685,11 +686,87 @@ function parseEndpointWithSubtypeFallback(
   return { kind: "not-typed-endpoint" };
 }
 
+/**
+ * Logseq `type::` values that mean an occurrence, mapped onto the four
+ * total-coverage subtypes.
+ *
+ * The words on the left are what the source actually contains; the words on the
+ * right are the only four the vocabulary has. `meeting` is the residual bucket
+ * on purpose — meal, event, social and incident are all "people were somewhere
+ * at a time", and the texture they used to carry in the subtype slot belongs on
+ * a has-type edge to a topic node, where it can be multi-valued.
+ *
+ * Deliberately absent: milestone, life-event, observation, transaction. They
+ * were declared and never used, they have no successor among the four, and
+ * guessing one for them would be the silent misclassification that deleting
+ * `other` was meant to stop. A page typed with one of them is refused and lands
+ * in review, which is the honest outcome.
+ */
+const OccurrenceTypeAliases: Record<string, OccurrenceSubtype> = {
+  occurrence: "meeting",
+  meeting: "meeting",
+  meal: "meeting",
+  event: "meeting",
+  social: "meeting",
+  incident: "meeting",
+  appointment: "meeting",
+  "work-session": "meeting",
+  work_session: "meeting",
+  trip: "trip",
+  travel: "trip",
+  stay: "stay",
+  "hotel-stay": "stay",
+  hotel_stay: "stay",
+  segment: "segment",
+  rideshare: "segment",
+  flight: "segment",
+  "car-service": "segment",
+  car_service: "segment",
+  drive: "segment",
+  train: "segment"
+};
+
+/** Only occurrence still has a subtype vocabulary to canonicalize into. */
+export function canonicalizeOccurrenceSubtype(value: string | undefined): OccurrenceSubtype | undefined {
+  const normalized = value?.trim().toLowerCase();
+  return normalized === undefined ? undefined : OccurrenceTypeAliases[normalized];
+}
+
+/**
+ * Type aliases that are a SPELLING of the type and carry nothing else.
+ *
+ * The distinction matters because every other safe alias names a KIND the type
+ * does not say: `type:: saas` resolves to `offering` and the word `saas` is
+ * gone, while `type:: org` resolves to `organization` and nothing is gone
+ * because "org" and "organization" are one word twice. `company` is deliberately
+ * NOT here — it is a legal form, one of the values ADR 0023 names as having
+ * drifted into the subtype slot, so it is a classification like the rest.
+ *
+ * Kept as the small exception list rather than as a second copy of the alias
+ * table: the rule is "a safe alias carries a classification unless it is one of
+ * these four", so a new alias defaults to being counted rather than to being
+ * silently dropped.
+ */
+const TypeSpellingAliases = new Set<string>(["org", "orgs", "organisation", "place"]);
+
+/**
+ * Seven of the eight types no longer take a subtype, so every alias that used to
+ * carry one — `saas`, `device`, `hotel-room-type` and the rest — now resolves to
+ * the TYPE alone. What the page is beyond its type is a has-type edge, decided
+ * with the topic node in hand rather than by a switch statement reading one
+ * property.
+ */
 function canonicalizeEndpointType(value: string | undefined): EndpointTypeCanonicalization {
   const normalized = value?.trim().toLowerCase();
   const canonical = EndpointTypeSchema.safeParse(normalized);
+  const occurrenceSubtype = canonicalizeOccurrenceSubtype(normalized);
   if (canonical.success) {
-    return { ok: true, type: canonical.data, source: "canonical" };
+    return canonical.data === "occurrence" && occurrenceSubtype
+      ? { ok: true, type: "occurrence", subtype: occurrenceSubtype, source: "canonical" }
+      : { ok: true, type: canonical.data, source: "canonical" };
+  }
+  if (occurrenceSubtype) {
+    return { ok: true, type: "occurrence", subtype: occurrenceSubtype, source: "safe-alias" };
   }
   switch (normalized) {
     case "org":
@@ -699,60 +776,30 @@ function canonicalizeEndpointType(value: string | undefined): EndpointTypeCanoni
       return { ok: true, type: "organization", source: "safe-alias" };
     case "place":
       return { ok: true, type: "location", source: "safe-alias" };
-    case "event":
-      return { ok: true, type: "occurrence", source: "safe-alias" };
-    case "meeting":
-      return { ok: true, type: "occurrence", subtype: "meeting", source: "safe-alias" };
-    case "appointment":
-      return { ok: true, type: "occurrence", subtype: "appointment", source: "safe-alias" };
-    case "social":
-      return { ok: true, type: "occurrence", subtype: "social", source: "safe-alias" };
-    case "work-session":
-      return { ok: true, type: "occurrence", subtype: "work-session", source: "safe-alias" };
-    case "travel":
-      return { ok: true, type: "occurrence", subtype: "travel", source: "safe-alias" };
-    case "milestone":
-      return { ok: true, type: "occurrence", subtype: "milestone", source: "safe-alias" };
-    case "life-event":
-      return { ok: true, type: "occurrence", subtype: "life-event", source: "safe-alias" };
-    case "observation":
-      return { ok: true, type: "occurrence", subtype: "observation", source: "safe-alias" };
-    case "transaction":
-      return { ok: true, type: "occurrence", subtype: "transaction", source: "safe-alias" };
     case "product":
-      return { ok: true, type: "offering", subtype: "product", source: "safe-alias" };
     case "software-product":
     case "software_product":
     case "software":
     case "saas":
-      return { ok: true, type: "offering", subtype: "software-product", source: "safe-alias" };
     case "hardware-product":
     case "hardware_product":
-      return { ok: true, type: "offering", subtype: "hardware-product", source: "safe-alias" };
     case "service":
     case "services":
-      return { ok: true, type: "offering", subtype: "service", source: "safe-alias" };
     case "subscription":
-      return { ok: true, type: "offering", subtype: "subscription", source: "safe-alias" };
     case "membership":
-      return { ok: true, type: "offering", subtype: "membership", source: "safe-alias" };
     case "hotel-room-type":
     case "hotel_room_type":
     case "suite":
-      return { ok: true, type: "offering", subtype: "hotel-room-type", source: "safe-alias" };
     case "travel-class":
     case "travel_class":
     case "fare-class":
     case "fare_class":
-      return { ok: true, type: "offering", subtype: normalized.replace(/_/g, "-") as "travel-class" | "fare-class", source: "safe-alias" };
     case "ticket-class":
     case "ticket_class":
-      return { ok: true, type: "offering", subtype: "ticket-class", source: "safe-alias" };
     case "podcast":
     case "media":
-      return { ok: true, type: "offering", subtype: "media", source: "safe-alias" };
     case "offering-package":
-      return { ok: true, type: "offering", subtype: "package", source: "safe-alias" };
+      return { ok: true, type: "offering", source: "safe-alias" };
     case "device":
     case "document":
     case "ticket":
@@ -764,16 +811,58 @@ function canonicalizeEndpointType(value: string | undefined): EndpointTypeCanoni
     case "seat":
     case "room":
     case "deliverable":
-      return { ok: true, type: "item", subtype: normalized as "device" | "document" | "ticket" | "reservation" | "receipt" | "file" | "photo" | "vehicle" | "seat" | "room" | "deliverable", source: "safe-alias" };
     case "physical-item":
     case "physical_item":
-      return { ok: true, type: "item", subtype: "physical-item", source: "safe-alias" };
     case "created-work":
     case "created_work":
-      return { ok: true, type: "item", subtype: "created-work", source: "safe-alias" };
+      return { ok: true, type: "item", source: "safe-alias" };
     default:
       return { ok: false, reason: "unknown-endpoint-type" };
   }
+}
+
+/**
+ * The classification words this page carried that the endpoint record cannot.
+ *
+ * ADR 0023 said the word "is not lost, it moves to a has-type edge". On the
+ * one-time migration it does. On ONGOING import it does not: no import path
+ * emits a `has-type` edge, so `type:: saas` and `subtype:: threat-actor` were
+ * simply dropped — no edge, no attribute, no row, nothing to count. Until the
+ * importer can mint the topic node (OPEN-20), the honest move is to make the
+ * loss countable: one quarantined review row per dropped word, which is the same
+ * mechanism the suffix-tag and non-wikilink-property reviews already use.
+ *
+ * Two sources, and both are unambiguous. A `subtype::` on a type that no longer
+ * carries one is a classification by definition. A `type::` that resolved
+ * through a safe alias named a kind, unless it was one of the four spellings.
+ */
+function droppedClassificationWords(
+  parsed: ParsedLogseqFile,
+  canonicalization: EndpointTypeCanonicalization
+): string[] {
+  if (!canonicalization.ok) {
+    return [];
+  }
+  const words: string[] = [];
+
+  const typeWord = propertyValue(parsed.page_properties, "type")?.trim().toLowerCase();
+  if (
+    canonicalization.source === "safe-alias" &&
+    canonicalization.type !== "occurrence" &&
+    typeWord !== undefined &&
+    !TypeSpellingAliases.has(typeWord)
+  ) {
+    words.push(typeWord);
+  }
+
+  const subtypeWord = propertyValue(parsed.page_properties, "subtype")?.trim().toLowerCase();
+  // An occurrence's subtype survives as a real enum value, so emitting a row for
+  // it too would ask a reviewer to re-home a fact the record already carries.
+  if (canonicalization.type !== "occurrence" && subtypeWord !== undefined && subtypeWord.length > 0) {
+    words.push(subtypeWord);
+  }
+
+  return [...new Set(words)];
 }
 
 function parseTypedPageEndpoint(parsed: ParsedLogseqFile, options: {
@@ -799,7 +888,12 @@ function parseTypedPageEndpoint(parsed: ParsedLogseqFile, options: {
     created_at: options.createdAt,
     updated_at: options.createdAt
   };
-  const subtype = propertyValue(parsed.page_properties, "subtype")?.toLowerCase() ?? type.subtype;
+  // A `subtype::` property on anything but an occurrence names a vocabulary that
+  // no longer exists, so it is not carried onto the endpoint at all rather than
+  // carried and silently dropped by the fallback below.
+  const subtype = type.type === "occurrence"
+    ? canonicalizeOccurrenceSubtype(propertyValue(parsed.page_properties, "subtype")) ?? type.subtype
+    : undefined;
   const objectIdOptions = {
     authorityId: options.authorityId,
     pathRedactionSecret: options.pathRedactionSecret
@@ -1584,7 +1678,10 @@ function propertyEdgesForEndpoint(parsed: ParsedLogseqFile, options: {
         const edge = typedPropertyEdge({ ...reverseCommon, sourceObjectId, sourceType: "person", targetType: "organization", predicate: "employed-by", status: "ended" });
         addEdge(edge);
       } else if (tagged.suffix === "education") {
-        const edge = typedPropertyEdge({ ...reverseCommon, sourceObjectId, sourceType: "person", targetType: "organization", predicate: "alumnus-of" });
+        // alumnus-of collapsed into member-of. The distinction it carried in its
+        // NAME moves to attrs.role, so the edge still says which kind of member
+        // this is instead of losing it to a generic affiliation.
+        const edge = typedPropertyEdge({ ...reverseCommon, sourceObjectId, sourceType: "person", targetType: "organization", predicate: "member-of", attrs: { ...reverseCommon.attrs, role: "alumnus" } });
         addEdge(edge);
       } else if (tagged.suffix === "cohort") {
         const edge = typedPropertyEdge({ ...reverseCommon, sourceObjectId, sourceType: "person", targetType: "organization", predicate: "member-of" });
@@ -1593,7 +1690,7 @@ function propertyEdgesForEndpoint(parsed: ParsedLogseqFile, options: {
         const edge = typedPropertyEdge({ ...reverseCommon, sourceObjectId, sourceType: "organization", targetType: "organization", predicate: "customer-of" });
         addEdge(edge);
       } else if (tagged.suffix === "advisory-past") {
-        const edge = typedPropertyEdge({ ...reverseCommon, sourceObjectId, sourceType: "person", targetType: "organization", predicate: "advises", status: "ended" });
+        const edge = typedPropertyEdge({ ...reverseCommon, sourceObjectId, sourceType: "person", targetType: "organization", predicate: "member-of", status: "ended", attrs: { ...reverseCommon.attrs, role: "advisor" } });
         addEdge(edge);
       }
     }
@@ -1608,18 +1705,13 @@ function propertyEdgesForEndpoint(parsed: ParsedLogseqFile, options: {
       reasonCode: "non-wikilink-location-review"
     });
     addEdge(target ? typedCurrentPagePropertyEdge({ ...common, targetTitle: target.title, targetType: "location", predicate: "occurred-at", propertyKey: target.key, attrs: propertyTargetAttrs(target) }) : undefined);
-  } else if (options.endpoint.type === "topic") {
-    const target = firstPropertyEdgeTarget({
-      properties: parsed.page_properties,
-      keys: ["parent-topic", "part-of-topic"],
-      targetType: "topic",
-      endpointTitleIndex: options.endpointTitleIndex,
-      reviewResolutionIndex: options.reviewResolutionIndex,
-      pathRedactionSecret: options.pathRedactionSecret,
-      reasonCode: "non-wikilink-topic-review"
-    });
-    addEdge(target ? typedCurrentPagePropertyEdge({ ...common, targetTitle: target.title, targetType: "topic", predicate: "part-of-topic", propertyKey: target.key, attrs: propertyTargetAttrs(target) }) : undefined);
   }
+  // A topic's parent USED to become a part-of-topic edge. That predicate is
+  // retired and nothing replaced it: `part-of` is occurrence-only, and topic
+  // hierarchy is the topic endpoint's own parent_topic_ref, which the endpoint
+  // projection already carries. Emitting a has-type or about edge here instead
+  // would be worse than emitting nothing — a broader/narrower link is neither
+  // what the topic IS nor what it is CONCERNED WITH.
 
   return [...edgesById.values()];
 }
@@ -1931,6 +2023,37 @@ function draftObjectsForFile(parsed: ParsedLogseqFile, options: {
             pathRedactionSecret: options.pathRedactionSecret,
             reasonCode: candidate.reason,
             value: candidate.value
+          })
+        }
+      }));
+    }
+    for (const word of droppedClassificationWords(parsed, canonicalizeEndpointType(propertyValue(parsed.page_properties, "type")))) {
+      // Countable, not carried. The row says a classification existed and this
+      // import had nowhere to put it; it does NOT assert an edge, because the
+      // topic node it would point at is not minted on this path (OPEN-20).
+      drafts.push(plannedObject({
+        authorityId: options.authorityId,
+        sourcePathRef: parsed.source_path_ref,
+        semanticKind: "edge-candidate",
+        objectType: "edge",
+        localRef: `dropped-classification-review:${shortHash(word, 24)}`,
+        accessClass: "quarantine",
+        decision: "quarantined",
+        reasonCode: "dropped-classification-review",
+        plaintextPayload: {
+          kind: "logseq-edge-candidate",
+          source_path_ref: parsed.source_path_ref,
+          source_text: `type/subtype:: ${word}`,
+          predicate_text: "has-type",
+          canonical_predicate: undefined,
+          canonicalization: "dropped-classification-review",
+          source_value_hash: sha256(`dropped-classification:${word}`),
+          property_key: "subtype",
+          ...reviewDeferralAttrs({
+            reviewDeferralIndex: options.reviewDeferralIndex,
+            pathRedactionSecret: options.pathRedactionSecret,
+            reasonCode: "dropped-classification-review",
+            value: word
           })
         }
       }));
@@ -2469,7 +2592,13 @@ export function createLogseqSemanticKnowledgeSummary(
     const endpoint = EndpointRecordSchema.safeParse((payload as { endpoint?: unknown }).endpoint);
     if (endpoint.success) {
       endpointTypeCounts[endpoint.data.type] += 1;
-      increment(endpointSubtypeCounts, `${endpoint.data.type}:${endpoint.data.subtype}`);
+      // Seven of the eight types have no subtype to count. Reporting them as
+      // `person:undefined` would put a bucket in the summary that stands for
+      // "there is nothing here", which reads as a gap rather than as the design.
+      increment(
+        endpointSubtypeCounts,
+        endpoint.data.type === "occurrence" ? `occurrence:${endpoint.data.subtype}` : endpoint.data.type
+      );
       if (endpoint.data.aliases.length > 0) {
         endpointsWithAliases += 1;
       }

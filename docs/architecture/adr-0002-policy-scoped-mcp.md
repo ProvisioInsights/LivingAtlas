@@ -1,7 +1,18 @@
 # ADR 0002: Policy-Scoped MCP Surfaces
 
-Status: Accepted for V1 planning  
-Date: 2026-06-21
+Status: **Superseded by [ADR 0015](adr-0015-operator-plane-and-capability-grants.md) and [ADR 0017](adr-0017-retiring-the-legacy-local-surface.md)** (was: Accepted for V1 planning)  
+Date: 2026-06-21  
+Superseded: 2026-08-04
+
+> The six named authority profiles below were the model the retired 30-tool
+> surface enforced. ADR 0015 replaces the profile with a per-request capability
+> **grant**: a named set of reachable sensitivity tiers, permitted tools,
+> writable predicates and write tiers, rather than a role whose meaning is
+> spread across the code that reads its name. ADR 0017 records the removal of
+> the surface that enforced the profiles.
+>
+> The body below is left as written. It is the record of what was decided, not a
+> description of what the code does.
 
 ## Context
 

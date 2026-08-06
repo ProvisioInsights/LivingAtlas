@@ -1,0 +1,87 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:living-atlas:contract:2026.08.0:record:atlas.error:v1",
+  "title": "atlas.error:v1",
+  "type": "object",
+  "description": "A typed refusal. Atlas refuses rather than guessing: a confident wrong answer is worse than an admission that the question cannot be answered.",
+  "properties": {
+    "record_schema": {
+      "const": "atlas.error:v1"
+    },
+    "code": {
+      "type": "string",
+      "description": "OPEN vocabulary. A consumer MUST tolerate a code it has never seen: the alternative is a consumer that breaks when Atlas becomes more honest.",
+      "minLength": 1,
+      "x-atlas-vocabulary": "error_code",
+      "x-atlas-known-values": [
+        "as-of-before-history-floor",
+        "idempotency-key-conflict",
+        "history-floor-cannot-regress",
+        "cursor-before-retention-floor",
+        "snapshot-expired",
+        "assertion-reclaimed",
+        "unknown-id",
+        "ambiguous-split",
+        "redirect-cycle",
+        "redirect-chain-too-long",
+        "redirect-dangling",
+        "not-carried-forward",
+        "identity-ambiguous",
+        "capability-required",
+        "unsupported-protocol-version",
+        "invalid-argument",
+        "sensitivity-withheld",
+        "supersession-not-permitted",
+        "reveal-declined",
+        "batch-limit-exceeded",
+        "revision-not-served",
+        "lineage-target-unknown"
+      ],
+      "x-atlas-registry-tool": "atlas.contract.describe.v1"
+    },
+    "message": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Human-readable. Never parse it; branch on `code`."
+    },
+    "retryable": {
+      "type": "boolean",
+      "description": "Whether the identical request could succeed later with nothing changed by the caller."
+    },
+    "jsonrpc_code": {
+      "type": "integer",
+      "description": "Present when the refusal also maps to a JSON-RPC error — e.g. -32021 for an undeclared capability, -32022 for an unsupported protocol revision, -32602 for arguments that failed the published input schema."
+    },
+    "required_capabilities": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "remedy": {
+      "type": "object",
+      "description": "Names the next call rather than describing it. A cursor below the retention floor names the re-scan entry point; an expired snapshot names the tool that restarts the read.",
+      "properties": {
+        "tool": {
+          "type": "string",
+          "minLength": 1
+        },
+        "arguments_hint": {},
+        "note": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "details": {
+      "description": "Code-specific. Its shape is part of the code's definition, published by atlas.contract.describe.v1."
+    }
+  },
+  "required": [
+    "record_schema",
+    "code",
+    "message",
+    "retryable"
+  ]
+}

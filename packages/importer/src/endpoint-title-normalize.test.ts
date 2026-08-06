@@ -66,16 +66,16 @@ describe("inferAffiliationPredicate", () => {
     }
   });
 
-  it("maps board hints to board-member-of", () => {
+  it("maps board hints to member-of carrying the board role", () => {
     for (const hint of ["board", "board chair", "board Treasurer", "former Board President 2020-2024"]) {
-      expect(inferAffiliationPredicate(hint)).toEqual({ predicate: "board-member-of", confidence: "high" });
+      expect(inferAffiliationPredicate(hint)).toEqual({ predicate: "member-of", role: "board-member", confidence: "high" });
     }
   });
 
   it("maps advisor and founder hints correctly", () => {
-    expect(inferAffiliationPredicate("Venture Advisor")).toEqual({ predicate: "advises", confidence: "high" });
+    expect(inferAffiliationPredicate("Venture Advisor")).toEqual({ predicate: "member-of", role: "advisor", confidence: "high" });
     expect(inferAffiliationPredicate("Co-Founder")).toEqual({ predicate: "founder-of", confidence: "high" });
-    expect(inferAffiliationPredicate("founding board director")).toEqual({ predicate: "board-member-of", confidence: "high" });
+    expect(inferAffiliationPredicate("founding board director")).toEqual({ predicate: "member-of", role: "board-member", confidence: "high" });
   });
 
   it("returns needs-review for ambiguous or missing hints (never guesses wrong)", () => {

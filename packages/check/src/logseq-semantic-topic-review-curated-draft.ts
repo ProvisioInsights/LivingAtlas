@@ -1,7 +1,6 @@
 import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { TopicSubtypeSchema } from "@living-atlas/contracts";
 import { z } from "zod";
 import {
   SemanticTopicReviewPacketSchema
@@ -27,7 +26,6 @@ export type TopicReviewCuratedDraftReport = {
   policy: {
     min_occurrences: number;
     promote_reasons: string[];
-    subtype: z.infer<typeof TopicSubtypeSchema>;
   };
   packet: {
     covered_file_count: number;
@@ -119,11 +117,9 @@ export function buildTopicReviewCuratedDraft(input: {
   generatedAt?: string;
   minOccurrences?: number;
   promoteReasons?: Set<z.infer<typeof TopicPromotionReasonSchema>>;
-  subtype?: z.infer<typeof TopicSubtypeSchema>;
 }): TopicReviewResolutionMap {
   const minOccurrences = input.minOccurrences ?? 2;
   const promoteReasons = input.promoteReasons ?? new Set<z.infer<typeof TopicPromotionReasonSchema>>(["wikilink-tag-topic-review"]);
-  const subtype = input.subtype ?? "theme";
 
   return TopicReviewResolutionMapSchema.parse({
     resolution_schema: "living-atlas-logseq-topic-review-resolution-map:v1",
@@ -146,7 +142,6 @@ export function buildTopicReviewCuratedDraft(input: {
         reason_code: group.reason_code,
         decision: "promote-topic",
         topic_title: cleanTopicTitle(group.target_value),
-        subtype,
         aliases: [],
         confidence: "high" as const
       };
@@ -160,7 +155,6 @@ export function buildTopicReviewCuratedDraftReport(input: {
   outputWritten: boolean;
   minOccurrences: number;
   promoteReasons: Set<z.infer<typeof TopicPromotionReasonSchema>>;
-  subtype: z.infer<typeof TopicSubtypeSchema>;
 }): TopicReviewCuratedDraftReport {
   const byReasonCode: Record<string, number> = {};
   const promotedByReasonCode: Record<string, number> = {};
@@ -195,8 +189,7 @@ export function buildTopicReviewCuratedDraftReport(input: {
     output_written: input.outputWritten,
     policy: {
       min_occurrences: input.minOccurrences,
-      promote_reasons: [...input.promoteReasons].sort(),
-      subtype: input.subtype
+      promote_reasons: [...input.promoteReasons].sort()
     },
     packet: {
       covered_file_count: input.packet.covered_file_count,
@@ -233,12 +226,10 @@ async function main(): Promise<void> {
   const packet = SemanticTopicReviewPacketSchema.parse(JSON.parse(await readFile(requireEnv("LIVING_ATLAS_LOGSEQ_TOPIC_REVIEW_PACKET_PATH"), "utf8")));
   const minOccurrences = parseInteger(envValue("LIVING_ATLAS_LOGSEQ_TOPIC_REVIEW_CURATED_MIN_OCCURRENCES"), 2, 1, 1_000_000);
   const promoteReasons = parsePromoteReasons(envValue("LIVING_ATLAS_LOGSEQ_TOPIC_REVIEW_CURATED_PROMOTE_REASONS"));
-  const subtype = TopicSubtypeSchema.parse(envValue("LIVING_ATLAS_LOGSEQ_TOPIC_REVIEW_CURATED_SUBTYPE") ?? "theme");
   const draft = buildTopicReviewCuratedDraft({
     packet,
     minOccurrences,
-    promoteReasons,
-    subtype
+    promoteReasons
   });
   await writeJsonPrivate(outputPath, draft);
   console.log(JSON.stringify(buildTopicReviewCuratedDraftReport({
@@ -246,8 +237,7 @@ async function main(): Promise<void> {
     draft,
     outputWritten: true,
     minOccurrences,
-    promoteReasons,
-    subtype
+    promoteReasons
   }), null, 2));
 }
 

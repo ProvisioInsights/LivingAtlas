@@ -164,7 +164,6 @@ function canonicalResolutionDrafts(reviewVersion: number) {
     schema: "atlas.entity:v1",
     entity_id: entityId,
     type: "organization",
-    subtype: "company",
     name: "Synthetic Resolution Company",
     aliases: [],
     created_at: now,
@@ -465,7 +464,6 @@ function researchRelationshipResolutionDrafts(options: {
         schema: "atlas.entity:v1",
         entity_id: sourceEntityId,
         type: "person",
-        subtype: "individual",
         name: "Synthetic Research Person",
         aliases: [],
         created_at: now,
@@ -482,7 +480,7 @@ function researchRelationshipResolutionDrafts(options: {
     source_type: "person",
     target_entity_id: base.entity.object_id,
     target_type: "organization",
-    predicate: "advises",
+    predicate: "member-of",
     valid_from: "2026",
     status: "active",
     attrs: {},
@@ -626,8 +624,8 @@ function temporalEdgeObject(objectId: string): GraphObjectEnvelope {
         source_object_id: "la_object_sourceendpoint0001",
         source_type: "person",
         target_object_id: "la_object_targetendpoint0001",
-        target_type: "project",
-        predicate: "advises",
+        target_type: "organization",
+        predicate: "member-of",
         valid_from: "2026-06",
         status: "active",
         confidence: "high",
@@ -5778,8 +5776,8 @@ describe("local fixture graph tools", () => {
       source_object_id: "la_object_remotesafe0001",
       source_type: "person",
       target_object_id: "la_object_shareable0001",
-      target_type: "project",
-      predicate: "advises",
+      target_type: "organization",
+      predicate: "member-of",
       valid_from: "2026-06",
       status: "active",
       confidence: "high",
@@ -5825,7 +5823,9 @@ describe("local fixture graph tools", () => {
       authority_id: fixtureAuthorityId,
       start_object_id: "la_object_remotesafe0001",
       direction: "outbound",
-      predicates: ["advisor-to"]
+      // A safe alias, exercised on purpose: the traversal must canonicalize it
+      // to member-of rather than matching the stored predicate literally.
+      predicates: ["knows", "member-of"]
     })).resolves.toEqual({
       ok: true,
       result: expect.objectContaining({
@@ -5841,7 +5841,7 @@ describe("local fixture graph tools", () => {
       authority_id: fixtureAuthorityId,
       from: "2026-06",
       to: "2026-06-30",
-      predicate: "advises"
+      predicate: "member-of"
     })).resolves.toEqual({
       ok: true,
       result: expect.objectContaining({
@@ -6387,7 +6387,7 @@ describe("local fixture graph tools", () => {
       }));
       await expect(localTimelineQuery(context, {
         authorization: `Bearer ${token}`,
-        predicate: "advises"
+        predicate: "member-of"
       })).resolves.toEqual(expect.objectContaining({
         ok: true,
         result: expect.objectContaining({ results: expect.arrayContaining([expect.objectContaining({ field: "edge.valid_from" })]) })

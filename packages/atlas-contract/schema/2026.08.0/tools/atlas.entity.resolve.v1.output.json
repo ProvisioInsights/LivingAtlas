@@ -1,0 +1,135 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:living-atlas:contract:2026.08.0:tool:atlas.entity.resolve.v1:output",
+  "title": "atlas.entity.resolve.v1 — result",
+  "description": "Follow the alias ledger from any identifier — including legacy ids Atlas never minted — to the entity it names today. Every outcome is typed. An id that was split returns its candidates and no primary: nominating one would silently reattribute every historical reference to it.",
+  "type": "object",
+  "properties": {
+    "resolutions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "requested_id": {
+            "$ref": "urn:living-atlas:contract:2026.08.0:common:output#/$defs/opaque_reference"
+          },
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "resolved",
+              "unknown-id",
+              "ambiguous-split",
+              "not-carried-forward",
+              "redirect-cycle",
+              "redirect-chain-too-long",
+              "redirect-dangling",
+              "other"
+            ]
+          },
+          "entity": {
+            "type": "object",
+            "required": [
+              "record_schema"
+            ],
+            "properties": {
+              "record_schema": {
+                "type": "string",
+                "minLength": 1,
+                "x-atlas-known-values": [
+                  "atlas.entity:v1",
+                  "atlas.redaction:v1"
+                ]
+              }
+            },
+            "allOf": [
+              {
+                "if": {
+                  "required": [
+                    "record_schema"
+                  ],
+                  "properties": {
+                    "record_schema": {
+                      "const": "atlas.entity:v1"
+                    }
+                  }
+                },
+                "then": {
+                  "$ref": "urn:living-atlas:contract:2026.08.0:record:atlas.entity:v1"
+                }
+              },
+              {
+                "if": {
+                  "required": [
+                    "record_schema"
+                  ],
+                  "properties": {
+                    "record_schema": {
+                      "const": "atlas.redaction:v1"
+                    }
+                  }
+                },
+                "then": {
+                  "$ref": "urn:living-atlas:contract:2026.08.0:record:atlas.redaction:v1"
+                }
+              }
+            ]
+          },
+          "redirect_chain": {
+            "type": "array",
+            "description": "Every id visited, oldest first.",
+            "items": {
+              "$ref": "urn:living-atlas:contract:2026.08.0:common:output#/$defs/opaque_reference"
+            }
+          },
+          "redirect_reason": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Why the id the CALLER holds stopped being current — the first hop only. A single string cannot honestly summarise a multi-hop history, so it does not try."
+          },
+          "candidate_ids": {
+            "type": "array",
+            "description": "Present on ambiguous-split. Atlas names them and does not choose.",
+            "items": {
+              "$ref": "urn:living-atlas:contract:2026.08.0:common:output#/$defs/entity_id"
+            }
+          },
+          "disposition": {
+            "type": "string",
+            "enum": [
+              "mapped",
+              "ambiguous-split",
+              "never-migrated",
+              "content-unrecoverable",
+              "redacted-in-place",
+              "other"
+            ]
+          },
+          "error": {
+            "$ref": "urn:living-atlas:contract:2026.08.0:record:atlas.error:v1"
+          }
+        },
+        "required": [
+          "requested_id",
+          "outcome",
+          "redirect_chain"
+        ]
+      },
+      "minItems": 1
+    },
+    "coverage": {
+      "$ref": "urn:living-atlas:contract:2026.08.0:common:output#/$defs/coverage"
+    },
+    "horizon": {
+      "$ref": "urn:living-atlas:contract:2026.08.0:record:atlas.horizon:v1"
+    },
+    "cache": {
+      "$ref": "urn:living-atlas:contract:2026.08.0:common:output#/$defs/cache"
+    }
+  },
+  "required": [
+    "resolutions",
+    "coverage",
+    "horizon",
+    "cache"
+  ]
+}

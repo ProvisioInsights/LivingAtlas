@@ -14,7 +14,9 @@ export function canonicalEntityPayloadFromEndpoint(endpoint: EndpointRecord): Ca
     schema: "atlas.entity:v1",
     entity_id: endpoint.object_id,
     type: endpoint.type,
-    subtype: endpoint.subtype,
+    // Only `occurrence` carries one now; the other seven classify with has-type
+    // edges, and sending a key the strict payload does not define is refused.
+    ...(endpoint.type === "occurrence" ? { subtype: endpoint.subtype } : {}),
     name: endpoint.name,
     aliases: endpoint.aliases,
     ...(endpoint.description ? { description: endpoint.description } : {}),

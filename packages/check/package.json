@@ -7,10 +7,11 @@
     "living-atlas-check": "./src/cli.ts"
   },
   "dependencies": {
-    "@living-atlas/contracts": "workspace:*",
     "@living-atlas/atlas-client": "workspace:*",
+    "@living-atlas/atlas-migrate": "workspace:*",
     "@living-atlas/backup": "workspace:*",
     "@living-atlas/cloudflare-worker": "workspace:*",
+    "@living-atlas/contracts": "workspace:*",
     "@living-atlas/fixtures": "workspace:*",
     "@living-atlas/graph-service": "workspace:*",
     "@living-atlas/importer": "workspace:*",
@@ -19,7 +20,6 @@
     "@living-atlas/local-graph-store": "workspace:*",
     "@living-atlas/local-keyring": "workspace:*",
     "@living-atlas/local-mcp": "workspace:*",
-    "@living-atlas/local-review-site": "workspace:*",
     "@living-atlas/policy": "workspace:*",
     "@living-atlas/review-projection": "workspace:*",
     "@living-atlas/sync-agent": "workspace:*",

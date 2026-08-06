@@ -9,115 +9,78 @@ export const EndpointTypeValues = ["person", "organization", "project", "locatio
 export const EndpointTypeSchema = z.enum(EndpointTypeValues);
 export type EndpointType = z.infer<typeof EndpointTypeSchema>;
 
-export const PersonSubtypeSchema = z.enum(["individual", "role-account"]);
-export const OrganizationSubtypeSchema = z.enum([
-  "company",
-  "nonprofit",
-  "government",
-  "education",
-  "fund",
-  "community",
-  "team",
-  "cohort",
-  "family-office",
-  "other"
-]);
-export const ProjectSubtypeSchema = z.enum([
-  "initiative",
-  "deal",
-  "research",
-  "campaign",
-  "engagement",
-  "case",
-  "other"
-]);
-export const OfferingSubtypeSchema = z.enum([
-  "product",
-  "software-product",
-  "hardware-product",
-  "service",
-  "subscription",
-  "membership",
-  "hotel-room-type",
-  "travel-class",
-  "fare-class",
-  "ticket-class",
-  "menu-item",
-  "media",
-  "experience",
-  "package",
-  "other"
-]);
-export const ItemSubtypeSchema = z.enum([
-  "device",
-  "document",
-  "ticket",
-  "reservation",
-  "receipt",
-  "file",
-  "photo",
-  "physical-item",
-  "vehicle",
-  "seat",
-  "room",
-  "deliverable",
-  "created-work",
-  "other"
-]);
-export const LocationSubtypeSchema = z.enum([
-  "country",
-  "region",
-  "city",
-  "venue",
-  "address",
-  "site",
-  "other"
-]);
-export const OccurrenceSubtypeSchema = z.enum([
-  "meeting",
-  "appointment",
-  "social",
-  "work-session",
-  "travel",
-  "milestone",
-  "life-event",
-  "observation",
-  "transaction",
-  "other"
-]);
-export const TopicSubtypeSchema = z.enum([
-  "domain",
-  "theme",
-  "skill",
-  "interest",
-  "risk",
-  "question",
-  "other"
-]);
+/**
+ * `agent` is not a ninth endpoint type. It is the two types that can ACT, named
+ * once so two domain rules meaning the same thing cannot drift into meaning
+ * different things — the defect this prevents is `member-of` accepting
+ * `["person", "organization"]` while `connects` accepts `["person"]` because
+ * somebody edited one row of the table and not the other.
+ */
+export const AgentEndpointTypes = ["person", "organization"] as const satisfies readonly EndpointType[];
 
-export const EndpointSubtypeSchema = z.union([
-  PersonSubtypeSchema,
-  OrganizationSubtypeSchema,
-  ProjectSubtypeSchema,
-  LocationSubtypeSchema,
-  OccurrenceSubtypeSchema,
-  TopicSubtypeSchema,
-  OfferingSubtypeSchema,
-  ItemSubtypeSchema
-]);
+/** Every endpoint type, for the two predicates whose domain genuinely is anything. */
+export const AnyEndpointTypes = EndpointTypeValues;
+
+/**
+ * THE ONE SURVIVING SUBTYPE ENUM, and the rule that killed the other seven.
+ *
+ * A subtype enum earns its slot only when BOTH hold: (a) the value changes which
+ * attributes and edges the node carries, and (b) the enum can be made TOTAL —
+ * every node of that type receives a real value, with no residual `other`.
+ * `organization` failed both: its MODAL value was `other`, and a single slot
+ * cannot hold legal form and line of business at the same time. An enum whose
+ * modal value is `other` does not classify: it produces plausible-looking wrong
+ * answers, which is worse than no answer.
+ *
+ * These four cover the occurrence corpus with no residue: `segment` (one leg),
+ * `trip` (the container its legs join via `part-of`), `stay`, and `meeting`.
+ * Everything the retired values used to say — meal, conference, incident,
+ * hotel-stay, appointment — is now a `has-type` edge to a `topic` node, where it
+ * is multi-valued, bitemporal, and identity-checked instead of being one string.
+ *
+ * `segment` is the only new subtype word in the whole vocabulary.
+ */
+export const OccurrenceSubtypeValues = ["segment", "trip", "stay", "meeting"] as const;
+export const OccurrenceSubtypeSchema = z.enum(OccurrenceSubtypeValues);
+export type OccurrenceSubtype = z.infer<typeof OccurrenceSubtypeSchema>;
+
+/**
+ * The subtype vocabulary as a whole, which is now exactly the occurrence one.
+ *
+ * Kept under its own name because callers ask "is this a legal subtype for any
+ * endpoint?", and that question outlives the fact that today only one type
+ * answers it. A caller that inlined the occurrence enum here would silently stop
+ * being right the moment a second type earned a subtype.
+ */
+export const EndpointSubtypeSchema = OccurrenceSubtypeSchema;
 export type EndpointSubtype = z.infer<typeof EndpointSubtypeSchema>;
+
+/**
+ * The endpoint types that carry a subtype at all. Everything else classifies
+ * through `has-type`, so asking one of them for a subtype is a bug, not a gap.
+ */
+export const SubtypedEndpointTypes = ["occurrence"] as const satisfies readonly EndpointType[];
+
+export function endpointTypeCarriesSubtype(type: EndpointType): boolean {
+  return (SubtypedEndpointTypes as readonly EndpointType[]).includes(type);
+}
 
 export const EdgeStatusSchema = z.enum(["active", "pending", "ended", "dormant"]);
 export const ConfidenceSchema = z.enum(["high", "medium", "low"]);
+
+/**
+ * `governance` and `advisory` are gone with the predicates that used them.
+ * A category no predicate can be filed under is a value nothing produces and
+ * everything must still handle — which is how a switch statement acquires a
+ * branch nobody has ever executed.
+ */
 export const EdgeCategorySchema = z.enum([
   "employment",
-  "governance",
-  "advisory",
+  "affiliation",
   "capital",
   "structural",
   "customer",
   "network",
-  "affiliation",
   "geography",
   "occurrence",
   "taxonomy",
@@ -125,79 +88,469 @@ export const EdgeCategorySchema = z.enum([
   "creation",
   "personal"
 ]);
+export type EdgeCategory = z.infer<typeof EdgeCategorySchema>;
 
+/**
+ * THE DISAMBIGUATION RULE, stated once and published verbatim.
+ *
+ * `has-type` and `about` have the identical signature — `any -> topic` — so no
+ * shape check can tell them apart, and pretending otherwise by inventing a
+ * structural difference would be a lie the schema tells to look rigorous. The
+ * separation is semantic and it is a CONVENTION, enforced by review and by this
+ * sentence appearing in the published contract rather than by validation.
+ *
+ * A topic node may legitimately be the target of both: "cybersecurity" is what a
+ * project is *about* and what a consultancy *is*. That is one concept used in
+ * two relations, which is exactly SKOS — one `skos:Concept`, many relations
+ * pointing at it — not two words for one thing.
+ */
+export const HAS_TYPE_VS_ABOUT_RULE =
+  "has-type says what the subject IS. about says what the subject is CONCERNED WITH.";
+
+type PredicateDefinition = {
+  category: EdgeCategory;
+  direction: "directed" | "symmetric";
+  /** Endpoint types accepted as `source_type`. Enforced, not documented. */
+  domain: readonly EndpointType[];
+  /** Endpoint types accepted as `target_type`. Enforced, not documented. */
+  range: readonly EndpointType[];
+  /** Attr keys the edge must carry. `valid_from` is on the spine and skipped there. */
+  required: readonly string[];
+  /** Why the predicate exists and what it must not be confused with. */
+  note: string;
+};
+
+/**
+ * THE PREDICATE VOCABULARY.
+ *
+ * Every row carries a DOMAIN RULE, and the rule is enforced by
+ * `checkPredicateEndpoints` on every edge that is parsed — not written down in a
+ * comment beside a permissive schema. A predicate whose domain rule is a comment
+ * is not a rule: the measured failure was `based-in` accepting both
+ * `person -> location` and `location -> organization`, so "where is this
+ * organization based" and "who runs this place" were the same edge and no
+ * consumer could tell which it had.
+ *
+ * The set shrank because eight predicates said the same thing as a survivor plus
+ * an attribute, and an attribute is the honest place for a distinction that does
+ * not change the shape of the relation. `board-member-of` and `advises` and
+ * `alumnus-of` are all `member-of` with a different `role`; keeping them as
+ * separate predicates meant three query paths for one question.
+ */
 export const PredicateRegistry = {
-  "employed-by": { category: "employment", direction: "directed", domain: ["person"], range: ["organization"], required: ["valid_from"] },
-  "reports-to": { category: "employment", direction: "directed", domain: ["person"], range: ["person"], required: ["valid_from"] },
-  "founder-of": { category: "employment", direction: "directed", domain: ["person"], range: ["organization", "project", "offering"], required: ["valid_from"] },
-  "board-member-of": { category: "governance", direction: "directed", domain: ["person"], range: ["organization"], required: ["valid_from"] },
-  advises: { category: "advisory", direction: "directed", domain: ["person"], range: ["organization", "project", "offering"], required: ["valid_from"] },
-  "invests-in": { category: "capital", direction: "directed", domain: ["person", "organization"], range: ["organization", "project", "offering"], required: ["amount", "investment_status"] },
-  "customer-of": { category: "customer", direction: "directed", domain: ["organization"], range: ["organization"], required: [] },
-  engaged: { category: "customer", direction: "directed", domain: ["person"], range: ["organization"], required: ["valid_from"] },
-  "acquired-by": { category: "structural", direction: "directed", domain: ["organization"], range: ["organization"], required: ["valid_from"] },
-  "merged-with": { category: "structural", direction: "symmetric", domain: ["organization"], range: ["organization"], required: ["valid_from"] },
-  "introduced-by": { category: "network", direction: "directed", domain: ["person"], range: ["person"], required: [] },
-  "intro-path-to": { category: "network", direction: "directed", domain: ["person"], range: ["organization", "person"], required: ["via"] },
-  connects: { category: "network", direction: "symmetric", domain: ["person"], range: ["person"], required: ["note"] },
-  "member-of": { category: "affiliation", direction: "directed", domain: ["person"], range: ["organization"], required: [] },
-  "alumnus-of": { category: "affiliation", direction: "directed", domain: ["person"], range: ["organization"], required: [] },
-  "based-in": { category: "geography", direction: "directed", domain: ["person", "organization"], range: ["location"], required: [] },
-  "participant-in": { category: "occurrence", direction: "directed", domain: ["person", "organization"], range: ["occurrence"], required: [] },
-  "occurred-at": { category: "occurrence", direction: "directed", domain: ["occurrence"], range: ["location"], required: [] },
-  hosted: { category: "occurrence", direction: "directed", domain: ["person", "organization"], range: ["occurrence"], required: [] },
-  "discussed-at": { category: "occurrence", direction: "directed", domain: ["organization", "project", "offering", "item", "topic"], range: ["occurrence"], required: [] },
-  about: { category: "taxonomy", direction: "directed", domain: ["person", "organization", "project", "offering", "item", "occurrence"], range: ["topic"], required: [] },
-  "offered-by": { category: "commerce", direction: "directed", domain: ["offering"], range: ["organization"], required: [] },
-  "instance-of": { category: "commerce", direction: "directed", domain: ["item"], range: ["offering"], required: [] },
-  "purchased-from": { category: "commerce", direction: "directed", domain: ["person", "organization"], range: ["organization"], required: [] },
-  purchased: { category: "commerce", direction: "directed", domain: ["person", "organization"], range: ["offering", "item"], required: [] },
-  owns: { category: "commerce", direction: "directed", domain: ["person", "organization"], range: ["item"], required: [] },
-  created: { category: "creation", direction: "directed", domain: ["person", "organization"], range: ["item", "offering"], required: [] },
-  "created-for": { category: "creation", direction: "directed", domain: ["item", "offering"], range: ["person", "organization", "project", "offering"], required: [] },
-  "related-topic": { category: "taxonomy", direction: "symmetric", domain: ["topic"], range: ["topic"], required: [] },
-  "part-of-topic": { category: "taxonomy", direction: "directed", domain: ["topic"], range: ["topic"], required: [] },
-  "spouse-of": { category: "personal", direction: "symmetric", domain: ["person"], range: ["person"], required: [] },
-  "partner-of": { category: "personal", direction: "symmetric", domain: ["person"], range: ["person"], required: [] },
-  "parent-of": { category: "personal", direction: "directed", domain: ["person"], range: ["person"], required: [] },
-  "sibling-of": { category: "personal", direction: "symmetric", domain: ["person"], range: ["person"], required: [] },
-  "related-to": { category: "personal", direction: "symmetric", domain: ["person"], range: ["person"], required: ["relation"] },
-  "estranged-from": { category: "personal", direction: "symmetric", domain: ["person"], range: ["person"], required: [] },
-  "mentor-of": { category: "personal", direction: "directed", domain: ["person"], range: ["person"], required: [] }
-} as const;
+  "employed-by": {
+    category: "employment",
+    direction: "directed",
+    domain: ["person"],
+    range: ["organization"],
+    required: ["valid_from"],
+    note: "Employment. attrs.role carries the job title, which used to be an attribute of the person and belongs to the relationship: a title without an employer is not a fact about anybody."
+  },
+  "member-of": {
+    category: "affiliation",
+    direction: "directed",
+    domain: AgentEndpointTypes,
+    range: ["organization"],
+    required: [],
+    note: "Non-employment affiliation. Absorbs board-member-of, advises and alumnus-of through attrs.role, following W3C ORG's Membership+role rather than one predicate per kind of member."
+  },
+  "part-of": {
+    category: "structural",
+    direction: "directed",
+    domain: ["occurrence", "project"],
+    range: ["occurrence", "project"],
+    required: [],
+    note: "Composition, within one kind: a segment is part-of its trip, a workstream is part-of its initiative. Same-kind only — the validator rejects a cross-kind pair, because a general-purpose part-of would be asked to mean containment, membership and composition at once."
+  },
+  "contained-in": {
+    category: "geography",
+    direction: "directed",
+    domain: ["location"],
+    range: ["location"],
+    required: [],
+    note: "Spatial containment: the granularity ladder city -> state -> country, carried by edges instead of by a subtype enum that could only hold one rung."
+  },
+  "has-type": {
+    category: "taxonomy",
+    direction: "directed",
+    domain: AnyEndpointTypes,
+    range: ["topic"],
+    required: [],
+    note: `${HAS_TYPE_VS_ABOUT_RULE} Classification is a multi-valued, bitemporal edge to an identity-checked topic node, replacing the seven retired subtype enums.`
+  },
+  "operated-by": {
+    category: "structural",
+    direction: "directed",
+    domain: ["location"],
+    range: ["organization"],
+    required: [],
+    note: "The place-to-business link, correctly directed. A restaurant is a location AND an organization joined by this edge; without it the inverse kept arriving as based-in and inverted the geography vocabulary."
+  },
+  "based-in": {
+    category: "geography",
+    direction: "directed",
+    domain: AgentEndpointTypes,
+    range: ["location"],
+    required: [],
+    note: "Where an agent is based. NEVER location -> organization: that is operated-by, and accepting both directions here is what made the two indistinguishable."
+  },
+  "occurred-at": {
+    category: "occurrence",
+    direction: "directed",
+    domain: ["occurrence"],
+    range: ["location"],
+    required: [],
+    note: "Where something happened. Domain-restricted to occurrence so it cannot drift into standing for an agent's location."
+  },
+  "participant-in": {
+    category: "occurrence",
+    direction: "directed",
+    domain: AgentEndpointTypes,
+    range: ["occurrence", "project"],
+    required: [],
+    note: "Who was there, and who works on it. Absorbs the organizer distinction through attrs.role = \"organizer\", which is why hosted is gone: an organizer is a participant with a job. Projects are in range because a project is a thing people take part in over time — and because without it nothing in the vocabulary could point at a project at all."
+  },
+  connects: {
+    category: "network",
+    direction: "symmetric",
+    domain: AgentEndpointTypes,
+    range: AgentEndpointTypes,
+    required: [],
+    note: "The single generic agent-to-agent association. Absorbs related-to, mentor-of and partner-of; attrs.relation names which, and attrs.note carries the free text the older edges held."
+  },
+  owns: {
+    category: "commerce",
+    direction: "directed",
+    domain: AgentEndpointTypes,
+    range: ["item", "offering", "organization"],
+    required: [],
+    note: "Ownership as a STATE. Never an occurrence: a person does not own a taxi ride, they participated in one, and the range excludes occurrence so that edge cannot be written."
+  },
+  "offered-by": {
+    category: "commerce",
+    direction: "directed",
+    domain: ["offering", "occurrence"],
+    range: ["organization"],
+    required: [],
+    note: "Who operates or provides the thing. A flight segment is offered-by the airline that flew it; the booking channel is sold-by."
+  },
+  "sold-by": {
+    category: "commerce",
+    direction: "directed",
+    domain: ["item", "offering", "occurrence"],
+    range: ["organization"],
+    required: [],
+    note: "The counterparty of a sale. Renamed from purchased-from, whose source was the BUYER; the endpoints changed, so the old name is retired rather than aliased."
+  },
+  purchased: {
+    category: "commerce",
+    direction: "directed",
+    domain: ["person"],
+    range: ["item", "offering", "occurrence"],
+    required: [],
+    note: "The ACT of buying, distinct from owns (the resulting state) and sold-by (the counterparty). Three facts about one transaction that a single predicate kept conflating."
+  },
+  "customer-of": {
+    category: "customer",
+    direction: "directed",
+    domain: AgentEndpointTypes,
+    range: ["organization"],
+    required: [],
+    note: "A standing commercial relationship, as opposed to one purchase."
+  },
+  "founder-of": {
+    category: "employment",
+    direction: "directed",
+    domain: ["person"],
+    range: ["organization"],
+    required: ["valid_from"],
+    note: "Founding. Range narrowed to organization: a project or an offering is created, not founded, and created already says so."
+  },
+  "acquired-by": {
+    category: "structural",
+    direction: "directed",
+    domain: ["organization"],
+    range: ["organization"],
+    required: ["valid_from"],
+    note: "Which organization absorbed which. Replaces merged-with, which named neither survivor and so could not be queried in either direction."
+  },
+  "invests-in": {
+    category: "capital",
+    direction: "directed",
+    domain: AgentEndpointTypes,
+    range: ["organization"],
+    required: ["amount", "investment_status"],
+    note: "Capital deployed into an organization. attrs.investment_status rather than attrs.status, because the edge spine already owns status."
+  },
+  about: {
+    category: "taxonomy",
+    direction: "directed",
+    domain: AnyEndpointTypes,
+    range: ["topic", "project"],
+    required: [],
+    note: `${HAS_TYPE_VS_ABOUT_RULE} Subject matter, the counterpart to has-type; both point at topic nodes and a topic may legitimately be the target of both. Projects are in range because a meeting or a note is routinely ABOUT a piece of work rather than about an idea — that is what the legacy project_refs attribute recorded. A separate relates-to-project predicate was considered and rejected: it would mean exactly this, under a second name.`
+  },
+  "parent-of": {
+    category: "personal",
+    direction: "directed",
+    domain: ["person"],
+    range: ["person"],
+    required: [],
+    note: "Parenthood, directed parent -> child."
+  },
+  "spouse-of": {
+    category: "personal",
+    direction: "symmetric",
+    domain: ["person"],
+    range: ["person"],
+    required: [],
+    note: "Marriage. Absorbs engaged as an edge with status \"pending\": an engagement is a marriage that is not valid yet, which the bitemporal spine already expresses."
+  },
+  "sibling-of": {
+    category: "personal",
+    direction: "symmetric",
+    domain: ["person"],
+    range: ["person"],
+    required: [],
+    note: "Siblinghood."
+  },
+  "estranged-from": {
+    category: "personal",
+    direction: "symmetric",
+    domain: ["person"],
+    range: ["person"],
+    required: [],
+    note: "An explicitly broken relationship, kept because its absence is not the same claim as its negation."
+  },
+  "introduced-by": {
+    category: "network",
+    direction: "directed",
+    domain: ["person"],
+    range: ["person"],
+    required: [],
+    note: "Who introduced whom. intro-path-to is retired: a path nobody has walked is a plan, not an edge."
+  },
+  created: {
+    category: "creation",
+    direction: "directed",
+    domain: AgentEndpointTypes,
+    range: ["item", "offering"],
+    required: [],
+    note: "Authorship. Absorbs created-for through attrs.created_for, which names the beneficiary as an object id rather than as a second edge with reversed endpoints."
+  }
+} as const satisfies Record<string, PredicateDefinition>;
 
 export type Predicate = keyof typeof PredicateRegistry;
 export const PredicateSchema = z.enum(Object.keys(PredicateRegistry) as [Predicate, ...Predicate[]]);
 
+// ---------------------------------------------------------------------------
+// domain rules, enforced
+// ---------------------------------------------------------------------------
+
+export type PredicateEndpointViolation = {
+  code: "predicate-domain-violation" | "predicate-range-violation";
+  predicate: Predicate;
+  /** Which end of the edge broke the rule, so a caller can point at a field. */
+  position: "source" | "target";
+  actual: EndpointType;
+  /** Both sides are reported on every violation: a wrong-direction edge is diagnosed by the PAIR, not by either half. */
+  expected_domain: readonly EndpointType[];
+  expected_range: readonly EndpointType[];
+  message: string;
+};
+
+export type PredicateEndpointCheck =
+  | { ok: true }
+  | { ok: false; violations: readonly [PredicateEndpointViolation, ...PredicateEndpointViolation[]] };
+
+function endpointViolationMessage(
+  predicate: Predicate,
+  position: "source" | "target",
+  sourceType: EndpointType,
+  targetType: EndpointType
+): string {
+  const definition = PredicateRegistry[predicate];
+  return (
+    `${predicate} accepts ${position === "source" ? "source" : "target"} endpoints ` +
+    `[${(position === "source" ? definition.domain : definition.range).join(", ")}] ` +
+    `and is written ${definition.domain.join("|")} -> ${definition.range.join("|")}; ` +
+    `got ${sourceType} -> ${targetType}`
+  );
+}
+
+/**
+ * The domain rule as CODE.
+ *
+ * Returns every violation rather than the first, because the case this exists
+ * for — an edge written backwards — breaks both ends at once, and reporting only
+ * the source sends the reader off to fix the half that is arguably right. A
+ * `based-in` written `location -> organization` gets told the domain wants
+ * person|organization AND the range wants location, which together say "you
+ * wrote operated-by".
+ */
+export function checkPredicateEndpoints(
+  predicate: Predicate,
+  sourceType: EndpointType,
+  targetType: EndpointType
+): PredicateEndpointCheck {
+  const definition = PredicateRegistry[predicate];
+  const violations: PredicateEndpointViolation[] = [];
+
+  if (!(definition.domain as readonly EndpointType[]).includes(sourceType)) {
+    violations.push({
+      code: "predicate-domain-violation",
+      predicate,
+      position: "source",
+      actual: sourceType,
+      expected_domain: definition.domain,
+      expected_range: definition.range,
+      message: endpointViolationMessage(predicate, "source", sourceType, targetType)
+    });
+  }
+
+  if (!(definition.range as readonly EndpointType[]).includes(targetType)) {
+    violations.push({
+      code: "predicate-range-violation",
+      predicate,
+      position: "target",
+      actual: targetType,
+      expected_domain: definition.domain,
+      expected_range: definition.range,
+      message: endpointViolationMessage(predicate, "target", sourceType, targetType)
+    });
+  }
+
+  // `part-of` is composition WITHIN one kind. Its domain and range each list two
+  // types so a trip can hold segments and an initiative can hold workstreams —
+  // but the cross pairs are meaningless, and permitting them is how a
+  // general-purpose part-of starts meaning containment and membership too.
+  // Domain and range alone cannot express "the same one on both sides".
+  if (predicate === "part-of" && sourceType !== targetType && violations.length === 0) {
+    violations.push({
+      code: "predicate-range-violation",
+      predicate,
+      position: "target",
+      actual: targetType,
+      expected_domain: [sourceType],
+      expected_range: [sourceType],
+      message:
+        `part-of is composition within one kind and is written ${sourceType} -> ${sourceType}; ` +
+        `got ${sourceType} -> ${targetType}`
+    });
+  }
+
+  const [first, ...rest] = violations;
+  return first === undefined ? { ok: true } : { ok: false, violations: [first, ...rest] };
+}
+
+/** The typed refusal, for callers that throw rather than collect zod issues. */
+export class PredicateEndpointError extends Error {
+  readonly code = "predicate-endpoint-violation";
+  readonly predicate: Predicate;
+  readonly violations: readonly PredicateEndpointViolation[];
+
+  constructor(violations: readonly [PredicateEndpointViolation, ...PredicateEndpointViolation[]]) {
+    super(violations.map((violation) => violation.message).join("; "));
+    this.name = "PredicateEndpointError";
+    this.predicate = violations[0].predicate;
+    this.violations = violations;
+  }
+}
+
+export function assertPredicateEndpoints(
+  predicate: Predicate,
+  sourceType: EndpointType,
+  targetType: EndpointType
+): void {
+  const outcome = checkPredicateEndpoints(predicate, sourceType, targetType);
+  if (!outcome.ok) {
+    throw new PredicateEndpointError(outcome.violations);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// canonicalization
+// ---------------------------------------------------------------------------
+
+/**
+ * Aliases that mean the SAME relation between the SAME endpoint types. Nothing
+ * else belongs here: an alias that also has to move an endpoint or add an attr
+ * is a migration, and pretending it is a spelling produces silently wrong edges.
+ */
 const SafeAliasMap: Record<string, Predicate> = {
   "works-at": "employed-by",
   "works-for": "employed-by",
   "employee-of": "employed-by",
-  "advisor-to": "advises",
-  advisor: "advises",
   "investor-in": "invests-in",
   backs: "invests-in",
   "client-of": "customer-of",
-  "sold-by": "offered-by",
   "provided-by": "offered-by",
-  "model-of": "instance-of",
-  "bought-from": "purchased-from",
   "purchased-item": "purchased",
   made: "created",
   "made-by": "created",
-  "made-for": "created-for",
   "co-founded": "founder-of",
   "married-to": "spouse-of",
-  "sits-on-board-of": "board-member-of",
   knows: "connects",
-  "connected-to": "connects"
+  "connected-to": "connects",
+  "classified-as": "has-type",
+  "part-of-trip": "part-of",
+  "located-within": "contained-in"
 };
 
-const DirectionUnsafeAliases = new Set(["manages", "acquired", "bought", "led-by", "board-includes", "employs", "portfolio-company-of", "funded-by"]);
+const DirectionUnsafeAliases = new Set([
+  "manages",
+  "acquired",
+  "bought",
+  "led-by",
+  "board-includes",
+  "employs",
+  "portfolio-company-of",
+  "funded-by",
+  "operator-of",
+  "sells",
+  "sold-to",
+  "contains"
+]);
+
+/**
+ * Predicates this contract used to accept, and what replaced each one.
+ *
+ * Refusing a retired name as `unknown-predicate` would tell a caller the word
+ * never existed, which is false and leaves them nowhere to go. Naming the
+ * successor AND the attribute that carries the distinction the collapse would
+ * otherwise lose is the difference between a refusal and a dead end — and it is
+ * why none of these is a safe alias: every one of them needs an attr set or an
+ * endpoint moved, which an alias cannot do.
+ */
+export const RetiredPredicates: Record<string, string> = {
+  "reports-to": "employed-by on the same person, with attrs.role naming the reporting line.",
+  "board-member-of": 'member-of with attrs.role = "board-member".',
+  advises: 'member-of with attrs.role = "advisor".',
+  "advisor-to": 'member-of with attrs.role = "advisor".',
+  advisor: 'member-of with attrs.role = "advisor".',
+  "sits-on-board-of": 'member-of with attrs.role = "board-member".',
+  "alumnus-of": 'member-of with attrs.role = "alumnus" and valid_to set to when the person left.',
+  engaged: 'spouse-of with status "pending": an engagement is a marriage that is not valid yet.',
+  "merged-with": "acquired-by, which names which organization survived. merged-with named neither.",
+  "intro-path-to": "introduced-by, once the introduction has actually happened. A path nobody walked is a plan.",
+  hosted: 'participant-in with attrs.role = "organizer".',
+  "discussed-at": "about for the subject matter, plus participant-in for whoever was there.",
+  "instance-of": "has-type pointing at a topic node, or offered-by when the target is the organization that provides it.",
+  "model-of": "has-type pointing at a topic node.",
+  "purchased-from": "sold-by, whose SOURCE is the thing sold rather than the buyer. The endpoints move; this is not a rename.",
+  "bought-from": "sold-by, whose SOURCE is the thing sold rather than the buyer. The endpoints move; this is not a rename.",
+  "created-for": "created with attrs.created_for naming the beneficiary object id.",
+  "made-for": "created with attrs.created_for naming the beneficiary object id.",
+  "related-topic": "about between the two subjects, or has-type when one of them classifies the other.",
+  "part-of-topic": "the parent_topic_ref attribute on the topic endpoint. part-of is occurrence-only.",
+  "partner-of": 'connects with attrs.relation = "partner".',
+  "mentor-of": 'connects with attrs.relation = "mentor".',
+  "related-to": "connects, with attrs.relation carrying whatever related-to's relation attr said."
+};
 
 export type PredicateCanonicalization =
   | { ok: true; predicate: Predicate; source: "canonical" | "safe-alias" }
-  | { ok: false; reason: "unknown-predicate" | "direction-unsafe-alias"; suggestion?: string };
+  | { ok: false; reason: "unknown-predicate" | "direction-unsafe-alias" | "retired-predicate"; suggestion?: string };
 
 export function canonicalizePredicate(input: string): PredicateCanonicalization {
   if (input in PredicateRegistry) {
@@ -207,6 +560,14 @@ export function canonicalizePredicate(input: string): PredicateCanonicalization 
   const safeAlias = SafeAliasMap[input];
   if (safeAlias) {
     return { ok: true, predicate: safeAlias, source: "safe-alias" };
+  }
+
+  // Checked BEFORE the direction-unsafe set and before the unknown fallback: a
+  // caller holding a retired name is holding real history, and "we do not know
+  // that word" is the one answer that is certainly wrong.
+  const replacement = RetiredPredicates[input];
+  if (replacement) {
+    return { ok: false, reason: "retired-predicate", suggestion: `${input} was retired. Use ${replacement}` };
   }
 
   if (DirectionUnsafeAliases.has(input)) {
@@ -389,16 +750,20 @@ const EndpointBaseSchema = z
   })
   .strict();
 
+// Seven of the eight endpoint schemas carry NO `subtype` key at all, and the
+// base schema is strict, so a payload that still sends one is refused rather
+// than silently dropped. That refusal is the point: a caller shipping
+// `subtype: "company"` believes it has classified something, and the only way to
+// tell it otherwise is to fail.
+
 export const PersonEndpointSchema = EndpointBaseSchema.extend({
   type: z.literal("person"),
-  subtype: PersonSubtypeSchema.default("individual"),
   primary_location_ref: ObjectIdSchema.optional(),
   notes_ref: ObjectIdSchema.optional()
 });
 
 export const OrganizationEndpointSchema = EndpointBaseSchema.extend({
   type: z.literal("organization"),
-  subtype: OrganizationSubtypeSchema.default("other"),
   founded_year: MixedPrecisionDateSchema.optional(),
   homepage_ref: z.string().min(1).optional(),
   primary_location_ref: ObjectIdSchema.optional()
@@ -406,7 +771,6 @@ export const OrganizationEndpointSchema = EndpointBaseSchema.extend({
 
 export const ProjectEndpointSchema = EndpointBaseSchema.extend({
   type: z.literal("project"),
-  subtype: ProjectSubtypeSchema.default("other"),
   status: z.string().min(1).optional(),
   start_date: MixedPrecisionDateSchema.optional(),
   end_date: MixedPrecisionDateSchema.optional(),
@@ -415,7 +779,6 @@ export const ProjectEndpointSchema = EndpointBaseSchema.extend({
 
 export const LocationEndpointSchema = EndpointBaseSchema.extend({
   type: z.literal("location"),
-  subtype: LocationSubtypeSchema.default("other"),
   parent_location_ref: ObjectIdSchema.optional(),
   geo: z
     .object({
@@ -432,7 +795,11 @@ export const OccurrenceStatusSchema = z.enum(["planned", "occurred", "canceled",
 
 export const OccurrenceEndpointSchema = EndpointBaseSchema.extend({
   type: z.literal("occurrence"),
-  subtype: OccurrenceSubtypeSchema.default("other"),
+  // Required, with no default. The four values are total over the corpus, but a
+  // default would file every occurrence whose author did not choose under a word
+  // nobody chose — which is exactly the silent misclassification that `other`
+  // used to perform and that deleting `other` was meant to stop.
+  subtype: OccurrenceSubtypeSchema,
   occurred_on: WorldTimeSchema.optional(),
   occurred_until: WorldTimeSchema.optional(),
   scheduled_start: IsoTimestampSchema.optional(),
@@ -497,7 +864,6 @@ export const OccurrenceEndpointSchema = EndpointBaseSchema.extend({
 
 export const TopicEndpointSchema = EndpointBaseSchema.extend({
   type: z.literal("topic"),
-  subtype: TopicSubtypeSchema.default("other"),
   parent_topic_ref: ObjectIdSchema.optional(),
   controlled: z.literal(true).default(true),
   tags: z.array(z.string().min(1)).default([])
@@ -505,7 +871,6 @@ export const TopicEndpointSchema = EndpointBaseSchema.extend({
 
 export const OfferingEndpointSchema = EndpointBaseSchema.extend({
   type: z.literal("offering"),
-  subtype: OfferingSubtypeSchema.default("other"),
   provider_ref: ObjectIdSchema.optional(),
   homepage_ref: z.string().min(1).optional(),
   status: z.string().min(1).optional()
@@ -513,7 +878,6 @@ export const OfferingEndpointSchema = EndpointBaseSchema.extend({
 
 export const ItemEndpointSchema = EndpointBaseSchema.extend({
   type: z.literal("item"),
-  subtype: ItemSubtypeSchema.default("other"),
   offering_ref: ObjectIdSchema.optional(),
   owner_ref: ObjectIdSchema.optional(),
   location_ref: ObjectIdSchema.optional(),
@@ -564,7 +928,15 @@ const TemporalEdgeAttrSchemas: Record<string, z.ZodType<unknown>> = {
   schedule: IcalendarRecurrenceSchema,
   amount: z.union([NonEmptyStringSchema, z.number().finite()]),
   investment_status: NonEmptyStringSchema,
+  // The carrier for every distinction a collapsed predicate used to make in its
+  // NAME: board-member-of, advises, alumnus-of and hosted are all a survivor
+  // plus a role. Untyped on purpose — the set of roles is the graph's to grow,
+  // and freezing it here would recreate the enum the collapse just removed.
   role: NonEmptyStringSchema,
+  // created absorbed created-for, whose target was the beneficiary. Object ids
+  // rather than free text, so the beneficiary stays an identity-checked node and
+  // the collapse loses no referential integrity.
+  created_for: z.union([ObjectIdSchema, z.array(ObjectIdSchema).min(1)]),
   via: z.union([NonEmptyStringSchema, z.array(NonEmptyStringSchema).min(1)]),
   relation: NonEmptyStringSchema,
   note: NonEmptyStringSchema,
@@ -592,20 +964,19 @@ export const TemporalEdgeSchema = z
   })
   .superRefine((edge, ctx) => {
     const registry = PredicateRegistry[edge.predicate];
-    if (!(registry.domain as readonly string[]).includes(edge.source_type)) {
-      ctx.addIssue({
-        code: "custom",
-        path: ["source_type"],
-        message: `${edge.predicate} does not accept ${edge.source_type} as a source endpoint`
-      });
-    }
 
-    if (!(registry.range as readonly string[]).includes(edge.target_type)) {
-      ctx.addIssue({
-        code: "custom",
-        path: ["target_type"],
-        message: `${edge.predicate} does not accept ${edge.target_type} as a target endpoint`
-      });
+    // One implementation of the domain rule, shared with the throwing entry
+    // point. Two copies of a direction check is how a store ends up accepting an
+    // edge its own validator would refuse.
+    const endpoints = checkPredicateEndpoints(edge.predicate, edge.source_type, edge.target_type);
+    if (!endpoints.ok) {
+      for (const violation of endpoints.violations) {
+        ctx.addIssue({
+          code: "custom",
+          path: [violation.position === "source" ? "source_type" : "target_type"],
+          message: violation.message
+        });
+      }
     }
 
     for (const required of registry.required) {

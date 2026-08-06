@@ -35,6 +35,19 @@ override.tf.json
 # the repo — belt-and-suspenders so it can never be accidentally tracked)
 tiering-private-ruleset.json
 
+# local planning notes. Working documents, not repository deliverables: they
+# carry absolute local paths and profile layout, and an untracked file at the
+# repo root is one `git add -A` away from a public commit.
+ATLAS-REWRITE-PLAN.md
+*-PLAN.local.md
+
+# Same hazard, different content: the vocabulary proposal records the owner's
+# per-type node census and the nine gate measurements taken against the live
+# graph. Those counts ARE a description of a private corpus, and this repository
+# is public. The decisions it settled belong in the contract doc and the ADRs,
+# which say what the rule is without saying how much of anything there is.
+ATLAS-VOCABULARY-PROPOSAL.md
+
 # graph-derived or private data
 fixtures/private/
 generated/

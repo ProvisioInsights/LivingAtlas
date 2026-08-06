@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:living-atlas:contract:2026.08.0:tool:atlas.graph.neighbors.v1:input",
+  "title": "atlas.graph.neighbors.v1 — arguments",
+  "description": "Traverse relationship assertions outward from one entity, bounded by depth and pinned to both time axes. Nodes and edges are returned as self-describing records; anything this credential may not read arrives as a redaction stub so the shape of what was skipped is still visible.",
+  "type": "object",
+  "properties": {
+    "entity_id": {
+      "$ref": "urn:living-atlas:contract:2026.08.0:common:input#/$defs/entity_id"
+    },
+    "direction": {
+      "type": "string",
+      "enum": [
+        "outbound",
+        "inbound",
+        "both"
+      ]
+    },
+    "predicates": {
+      "type": "array",
+      "items": {
+        "$ref": "urn:living-atlas:contract:2026.08.0:common:input#/$defs/predicate"
+      },
+      "maxItems": 100
+    },
+    "max_depth": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 5,
+      "default": 1
+    },
+    "as_of_recorded": {
+      "$ref": "urn:living-atlas:contract:2026.08.0:common:input#/$defs/recorded_at",
+      "description": "BELIEF axis. Below the retained history floor this is refused, never answered from present state."
+    },
+    "as_of_valid": {
+      "$ref": "urn:living-atlas:contract:2026.08.0:common:input#/$defs/world_time_probe",
+      "description": "WORLD axis."
+    },
+    "page_size": {
+      "$ref": "urn:living-atlas:contract:2026.08.0:common:input#/$defs/page_size"
+    },
+    "cursor": {
+      "$ref": "urn:living-atlas:contract:2026.08.0:common:input#/$defs/page_cursor"
+    },
+    "snapshot": {
+      "$ref": "urn:living-atlas:contract:2026.08.0:common:input#/$defs/snapshot_token"
+    }
+  },
+  "required": [
+    "entity_id"
+  ],
+  "additionalProperties": false
+}

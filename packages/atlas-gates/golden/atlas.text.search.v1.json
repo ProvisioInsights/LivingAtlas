@@ -1,0 +1,81 @@
+{
+  "case": "atlas.text.search.v1",
+  "contract_revision": "2026.08.1",
+  "intent": "Deterministic text scoring over the fixture's display names.",
+  "response": {
+    "_meta": {
+      "io.modelcontextprotocol/serverInfo": {
+        "name": "living-atlas-consumer",
+        "version": "2026.08.1"
+      }
+    },
+    "content": "<the text block is JSON.stringify(structuredContent)>",
+    "resultType": "complete",
+    "structuredContent": {
+      "cache": {
+        "cache_scope": "private",
+        "ttl_ms": 0
+      },
+      "coverage": {
+        "counts_basis": "exact",
+        "evaluated": 3,
+        "matched": 1,
+        "returned": 1,
+        "unknown_or_absent_valid_time": 0,
+        "with_valid_time": 0,
+        "withheld": 0
+      },
+      "horizon": {
+        "as_of_recorded": "2026-08-04T12:00:00.000Z",
+        "bitemporal_since": "2026-01-01T00:00:00.000Z",
+        "feed_epoch": "e-test",
+        "migration_window_open": false,
+        "record_schema": "atlas.horizon:v1",
+        "recorded_at_fidelity_mixed": false,
+        "seq_watermark": 4,
+        "status": "complete"
+      },
+      "page": {
+        "cursor": null,
+        "has_more": false,
+        "page_size": 50,
+        "snapshot": "eyJyIjoiMjAyNi0wOC0wNFQxMjowMDowMC4wMDBaIiwidyI6NCwiZSI6ImUtdGVzdCIsIngiOiIyMDI2LTA4LTA0VDEyOjE1OjAwLjAwMFoifQ",
+        "snapshot_expires_at": "2026-08-04T12:15:00.000Z"
+      },
+      "results": [
+        {
+          "match_basis": "display-name",
+          "record": {
+            "also_known_as": [
+              "alias-1"
+            ],
+            "display_name": "Synthetic Person 1",
+            "entity_id": "<la_entity:6>",
+            "provenance": {
+              "client_id": "fixture",
+              "origin": "consumer-proposed",
+              "recorded_at_fidelity": "authoritative"
+            },
+            "record_schema": "atlas.entity:v1",
+            "registered_at": "2026-08-04T12:00:00.001Z",
+            "sensitivity": {
+              "rank": 0,
+              "tier": "open",
+              "withheld": false
+            },
+            "type": "person",
+            "updated_at": "2026-08-04T12:00:00.001Z"
+          },
+          "score": 1
+        }
+      ],
+      "search_scope": {
+        "counts_basis": "exact",
+        "encrypted_unsearchable": 0,
+        "plaintext_candidates": 3,
+        "scorer": "deterministic-text"
+      }
+    }
+  },
+  "tool": "atlas.text.search.v1"
+}

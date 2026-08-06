@@ -1271,3 +1271,201 @@ export class FileLocalGraphStore {
     };
   }
 }
+
+// ---------------------------------------------------------------------------
+// The migration source: a handle that cannot destroy what it is reading
+// ---------------------------------------------------------------------------
+
+/**
+ * Thrown by every mutating member of `LocalGraphMigrationSource`.
+ *
+ * A distinct error type rather than a bare `Error` so a caller can tell "this
+ * handle refuses to write" apart from "this write failed", and so a test can
+ * assert the refusal by type instead of by message text.
+ */
+export class LocalGraphStoreReadOnlyError extends Error {
+  readonly code = "local-graph-store-read-only" as const;
+
+  constructor(operation: string) {
+    super(
+      `${operation} is not available on a local graph migration source. ` +
+        "This handle exists to read a replica whose contents have not been migrated yet; " +
+        "the migration is the only thing entitled to move that data, and it moves it by reading."
+    );
+    this.name = "LocalGraphStoreReadOnlyError";
+  }
+}
+
+/**
+ * The read surface both handles share.
+ *
+ * A caller that only reads should ask for this rather than for
+ * `FileLocalGraphStore`, so that pointing it at a migration source is a
+ * type-level fact instead of a promise in a comment.
+ */
+export type LocalGraphReadHandle = {
+  status(): LocalGraphStoreStatus;
+  materializedSnapshot(): LocalGraphSnapshot;
+  listObjects(options?: { include_tombstones?: boolean }): GraphObjectEnvelope[];
+  readObject(objectId: ObjectId): GraphObjectEnvelope | undefined;
+};
+
+export type OpenLocalGraphMigrationSourceOptions = {
+  directory: string;
+  authorityId?: AuthorityId;
+  plaintextPersistence?: LocalGraphPlaintextPersistenceMode;
+  now?: () => string;
+};
+
+/**
+ * A read-only handle onto an un-migrated local graph replica.
+ *
+ * WHY THIS EXISTS AS A SEPARATE TYPE RATHER THAN A FLAG.
+ *
+ * `FileLocalGraphStore` has two behaviours that destroy history, and both are
+ * reachable from any handle that can write:
+ *
+ *  - `compact()` writes the collapsed snapshot and then truncates
+ *    `journal.jsonl` to empty. Everything the journal held that the snapshot
+ *    does not — every intermediate version of every object — is gone.
+ *  - every mutation replaces the object's envelope in the materialized map, so
+ *    the snapshot only ever carries the latest version. Compaction then makes
+ *    that the only thing on disk.
+ *
+ * Neither is a bug in a live store: a replica is a replica, and the sync ledger
+ * is elsewhere. Both are fatal for a replica that is a MIGRATION SOURCE, because
+ * a migration source is the last copy of what it holds until the migration
+ * lands, and the migration is blocked on offline media.
+ *
+ * So the property that has to hold is not "the class has no mutators" — a dozen
+ * live callers still write to local replicas that are not migration sources —
+ * it is "the handle pointed at the un-migrated replica cannot write." That is
+ * enforced twice over:
+ *
+ *  - this class carries private fields, so TypeScript will not let it stand in
+ *    where a `FileLocalGraphStore` is expected. The honest mistake does not
+ *    compile;
+ *  - every mutating member exists and throws. A cast, a `Record<string,
+ *    unknown>` round-trip, or a dynamic dispatch — the dishonest mistake —
+ *    fails loudly at the call instead of silently doing nothing.
+ *
+ * It also never creates the directory it is pointed at. `FileLocalGraphStore.open`
+ * mkdir's, which means a typo'd path yields an empty store that reads as "the
+ * replica is empty" rather than "the replica is not there".
+ */
+export class LocalGraphMigrationSource {
+  private constructor(
+    private readonly sourcePaths: LocalGraphStorePaths,
+    private readonly sourceState: LocalGraphState,
+    private readonly sourcePlaintextPersistence: LocalGraphPlaintextPersistenceMode
+  ) {}
+
+  static async open(options: OpenLocalGraphMigrationSourceOptions): Promise<LocalGraphMigrationSource> {
+    const plaintextPersistence = options.plaintextPersistence ?? "redact";
+    const now = options.now ?? (() => new Date().toISOString());
+    const paths = pathsForDirectory(options.directory);
+    // No mkdir. An absent replica is an error, never an empty one: reporting a
+    // directory that does not exist as a store with zero objects is how a
+    // migration "completes" against nothing.
+    if (!(await directoryExists(paths.directory))) {
+      throw new Error(`Local graph migration source directory does not exist: ${paths.directory}`);
+    }
+    const state = await loadState(paths, options.authorityId, plaintextPersistence, now);
+    return new LocalGraphMigrationSource(paths, state, plaintextPersistence);
+  }
+
+  get directory(): string {
+    return this.sourcePaths.directory;
+  }
+
+  status(): LocalGraphStoreStatus {
+    return statusFromState(this.sourceState, this.sourcePlaintextPersistence);
+  }
+
+  /**
+   * The complete replayed state in the snapshot schema — snapshot plus every
+   * journal entry the snapshot does not already contain — WITHOUT compacting
+   * the journal or writing anything to the replica. This is what a migration
+   * reads; `compact()` was never the way to get it.
+   */
+  materializedSnapshot(): LocalGraphSnapshot {
+    return snapshotFromState(this.sourceState, this.sourcePlaintextPersistence);
+  }
+
+  listObjects(options: { include_tombstones?: boolean } = {}): GraphObjectEnvelope[] {
+    const includeTombstones = options.include_tombstones ?? false;
+    return Array.from(this.sourceState.objects.values())
+      .filter((object) => includeTombstones || !object.visible_metadata.tombstone)
+      .map(cloneGraphObject);
+  }
+
+  readObject(objectId: ObjectId): GraphObjectEnvelope | undefined {
+    const object = this.sourceState.objects.get(ObjectIdSchema.parse(objectId));
+    return object ? cloneGraphObject(object) : undefined;
+  }
+
+  operationRecordForIdempotency(idempotencyKey: string): LocalGraphOperationRecord | undefined {
+    const parsedKey = z.string().min(1).parse(idempotencyKey);
+    const record = this.sourceState.operationRecords.find((candidate) => candidate.idempotency_key === parsedKey);
+    return record ? cloneOperationRecord(record) : undefined;
+  }
+
+  migrationHistory(): SealedMigrationRecord[] {
+    return this.sourceState.migrationRecords.map((record) => SealedMigrationRecordSchema.parse(structuredClone(record)));
+  }
+
+  /** Every journal entry on disk, in sequence, for a forensic read of the history compaction would erase. */
+  async journalEntries(): Promise<LocalGraphJournalEntry[]> {
+    return readJournal(this.sourcePaths);
+  }
+
+  // Every mutating member of FileLocalGraphStore, present and refusing. See the
+  // class comment: the type stops the honest mistake, these stop the other one.
+  createObject(): Promise<never> {
+    return Promise.reject(new LocalGraphStoreReadOnlyError("createObject"));
+  }
+
+  updateObject(): Promise<never> {
+    return Promise.reject(new LocalGraphStoreReadOnlyError("updateObject"));
+  }
+
+  tombstoneObject(): Promise<never> {
+    return Promise.reject(new LocalGraphStoreReadOnlyError("tombstoneObject"));
+  }
+
+  commitTransaction(): Promise<never> {
+    return Promise.reject(new LocalGraphStoreReadOnlyError("commitTransaction"));
+  }
+
+  initializeFromObjects(): Promise<never> {
+    return Promise.reject(new LocalGraphStoreReadOnlyError("initializeFromObjects"));
+  }
+
+  openMigrationWindow(): Promise<never> {
+    return Promise.reject(new LocalGraphStoreReadOnlyError("openMigrationWindow"));
+  }
+
+  sealMigrationWindow(): Promise<never> {
+    return Promise.reject(new LocalGraphStoreReadOnlyError("sealMigrationWindow"));
+  }
+
+  /**
+   * The named defect, refused by name. `FileLocalGraphStore.compact()` writes
+   * the collapsed snapshot and then truncates the journal to empty; run once
+   * against the un-migrated replica it removes every version the snapshot does
+   * not carry, and there is no second copy.
+   */
+  compact(): Promise<never> {
+    return Promise.reject(new LocalGraphStoreReadOnlyError("compact"));
+  }
+}
+
+async function directoryExists(directory: string): Promise<boolean> {
+  try {
+    const handle = await open(directory, "r");
+    await handle.close();
+    return true;
+  } catch {
+    return false;
+  }
+}

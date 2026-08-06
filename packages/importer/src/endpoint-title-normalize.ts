@@ -95,7 +95,14 @@ export function normalizeEntityTitle(raw: string): NormalizedTitle {
 }
 
 export type AffiliationPredicateGuess = {
-  predicate?: "employed-by" | "board-member-of" | "advises" | "founder-of" | "member-of";
+  predicate?: "employed-by" | "founder-of" | "member-of";
+  /**
+   * The distinction board-member-of, advises and alumnus-of used to carry in
+   * their NAMES. They are all member-of now, so dropping the hint would collapse
+   * three answerable questions into one unanswerable one; the role is where the
+   * vocabulary puts it.
+   */
+  role?: string;
   confidence: "high" | "needs-review";
 };
 
@@ -109,9 +116,9 @@ export function inferAffiliationPredicate(roleHint: string | undefined): Affilia
   const hint = roleHint?.trim();
   if (!hint) return { confidence: "needs-review" };
   // Board takes priority over generic titles ("former Board President" is board, not employment).
-  if (BOARD.test(hint) || /founding\s+board/i.test(hint)) return { predicate: "board-member-of", confidence: "high" };
+  if (BOARD.test(hint) || /founding\s+board/i.test(hint)) return { predicate: "member-of", role: "board-member", confidence: "high" };
   if (FOUNDER.test(hint)) return { predicate: "founder-of", confidence: "high" };
-  if (ADVISOR.test(hint)) return { predicate: "advises", confidence: "high" };
+  if (ADVISOR.test(hint)) return { predicate: "member-of", role: "advisor", confidence: "high" };
   if (EMPLOYMENT.test(hint)) return { predicate: "employed-by", confidence: "high" };
   if (MEMBER.test(hint)) return { predicate: "member-of", confidence: "high" };
   return { confidence: "needs-review" };

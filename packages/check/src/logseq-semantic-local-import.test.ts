@@ -37,7 +37,7 @@ describe("Logseq semantic local import", () => {
           {
             source_path: "pages/Synthetic Relationship.md",
             source_kind: "logseq",
-            markdown: "## Edges\n\n- [[Synthetic Person]] (person) advises [[Synthetic Project]] (project) from 2026-06\n"
+            markdown: "## Edges\n\n- [[Synthetic Person]] (person) member-of [[Synthetic Guild]] (organization) from 2026-06\n"
           }
         ],
         sourceRootRef: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -85,9 +85,9 @@ describe("Logseq semantic local import", () => {
       }
       const parsedEdge = TemporalEdgeSchema.parse((decrypted.data as { edge?: unknown }).edge);
       expect(parsedEdge).toEqual(expect.objectContaining({
-        predicate: "advises",
+        predicate: "member-of",
         source_type: "person",
-        target_type: "project"
+        target_type: "organization"
       }));
 
       const files = await readStoreFiles(graphDir);

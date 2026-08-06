@@ -1,0 +1,84 @@
+{
+  "case": "atlas.entity.resolve.v1",
+  "contract_revision": "2026.08.1",
+  "intent": "One resolvable id and one that was never minted, so both outcomes are recorded side by side.",
+  "response": {
+    "_meta": {
+      "io.modelcontextprotocol/serverInfo": {
+        "name": "living-atlas-consumer",
+        "version": "2026.08.1"
+      }
+    },
+    "content": "<the text block is JSON.stringify(structuredContent)>",
+    "resultType": "complete",
+    "structuredContent": {
+      "cache": {
+        "cache_scope": "private",
+        "ttl_ms": 0
+      },
+      "coverage": {
+        "counts_basis": "exact",
+        "evaluated": 2,
+        "matched": 1,
+        "returned": 2,
+        "unknown_or_absent_valid_time": 0,
+        "with_valid_time": 0,
+        "withheld": 0
+      },
+      "horizon": {
+        "as_of_recorded": "2026-08-04T12:00:00.000Z",
+        "bitemporal_since": "2026-01-01T00:00:00.000Z",
+        "feed_epoch": "e-test",
+        "migration_window_open": false,
+        "record_schema": "atlas.horizon:v1",
+        "recorded_at_fidelity_mixed": false,
+        "seq_watermark": 4,
+        "status": "complete"
+      },
+      "resolutions": [
+        {
+          "entity": {
+            "also_known_as": [
+              "alias-0"
+            ],
+            "display_name": "Synthetic Person 0",
+            "entity_id": "<la_entity:0>",
+            "provenance": {
+              "client_id": "fixture",
+              "origin": "consumer-proposed",
+              "recorded_at_fidelity": "authoritative"
+            },
+            "record_schema": "atlas.entity:v1",
+            "registered_at": "2026-08-04T12:00:00.000Z",
+            "sensitivity": {
+              "rank": 0,
+              "tier": "open",
+              "withheld": false
+            },
+            "type": "person",
+            "updated_at": "2026-08-04T12:00:00.000Z"
+          },
+          "outcome": "resolved",
+          "redirect_chain": [
+            "<la_entity:0>"
+          ],
+          "requested_id": "<la_entity:0>"
+        },
+        {
+          "error": {
+            "code": "unknown-id",
+            "message": "never-minted-by-atlas was never minted by Atlas and has no ledger row.",
+            "record_schema": "atlas.error:v1",
+            "retryable": false
+          },
+          "outcome": "unknown-id",
+          "redirect_chain": [
+            "never-minted-by-atlas"
+          ],
+          "requested_id": "never-minted-by-atlas"
+        }
+      ]
+    }
+  },
+  "tool": "atlas.entity.resolve.v1"
+}

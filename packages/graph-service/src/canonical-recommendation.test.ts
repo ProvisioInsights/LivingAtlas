@@ -45,7 +45,7 @@ function relationship(): CanonicalRelationshipPayload {
     source_type: "person",
     target_entity_id: "la_object_researchorganization0001",
     target_type: "organization",
-    predicate: "advises",
+    predicate: "member-of",
     valid_from: "2026",
     status: "active",
     attrs: { role: "Synthetic advisor" },

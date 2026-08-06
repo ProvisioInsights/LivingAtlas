@@ -63,7 +63,6 @@ function fixtureResolutionMap(groupedPacket: ReturnType<typeof fixtureGroupedPac
             endpoint: {
               object_id: "la_object_offeringfixture0001",
               type: "offering",
-              subtype: "service",
               name: "Synthetic Offering Alpha",
               aliases: ["Synthetic Offering Alias"],
               access_class: "local-private",

@@ -1,0 +1,47 @@
+{
+  "case": "atlas.submission.read.v1",
+  "contract_revision": "2026.08.1",
+  "intent": "The same receipt read back by idempotency key, with the deduplication window's expiry.",
+  "response": {
+    "_meta": {
+      "io.modelcontextprotocol/serverInfo": {
+        "name": "living-atlas-consumer",
+        "version": "2026.08.1"
+      }
+    },
+    "content": "<the text block is JSON.stringify(structuredContent)>",
+    "resultType": "complete",
+    "structuredContent": {
+      "horizon": {
+        "as_of_recorded": "2026-08-04T12:00:00.000Z",
+        "bitemporal_since": "2026-01-01T00:00:00.000Z",
+        "feed_epoch": "e-test",
+        "migration_window_open": false,
+        "record_schema": "atlas.horizon:v1",
+        "recorded_at_fidelity_mixed": false,
+        "seq_watermark": 5,
+        "status": "complete"
+      },
+      "idempotency_expires_at": "2026-09-03T12:00:00.004Z",
+      "results": [
+        {
+          "assertion_id": "<la_assertion:11>",
+          "index": 0,
+          "outcome": "committed"
+        }
+      ],
+      "submission": {
+        "assertion_ids": [
+          "<la_assertion:11>"
+        ],
+        "client_id": "synthetic-consumer",
+        "committed_at": "2026-08-04T12:00:00.004Z",
+        "idempotency_key": "atlas-gates-golden-propose",
+        "request_digest": "<sha256:12>",
+        "state": "committed",
+        "submission_id": "<la_submission:10>"
+      }
+    }
+  },
+  "tool": "atlas.submission.read.v1"
+}

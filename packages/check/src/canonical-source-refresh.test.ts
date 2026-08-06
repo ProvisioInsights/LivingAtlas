@@ -53,7 +53,16 @@ async function makeSharedCopies() {
 }
 
 afterEach(async () => {
-  await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
+  // `git fetch` leaves a detached `gc --auto` behind, which keeps writing into
+  // the scratch repo's `.git` after the refresh has returned. Cleanup then races
+  // it and fails with ENOTEMPTY on a directory it had already emptied. The
+  // retries are what `fs.rm` provides for precisely this case; nothing about the
+  // assertions above depends on them.
+  await Promise.all(
+    roots
+      .splice(0)
+      .map((root) => rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }))
+  );
 });
 
 describe("canonical source refresh", () => {

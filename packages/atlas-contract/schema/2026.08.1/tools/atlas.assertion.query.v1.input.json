@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:living-atlas:contract:2026.08.1:tool:atlas.assertion.query.v1:input",
+  "title": "atlas.assertion.query.v1 — arguments",
+  "description": "The bitemporal read. as_of_recorded selects what Atlas believed at an instant; as_of_valid selects what was true over a span of world time; the axes are independent. Set full_scan to bootstrap a mirror — the last page hands off to the change feed at an exact seq with no gap.",
+  "type": "object",
+  "properties": {
+    "subject_entity_id": {
+      "$ref": "urn:living-atlas:contract:2026.08.1:common:input#/$defs/entity_id"
+    },
+    "target_entity_id": {
+      "$ref": "urn:living-atlas:contract:2026.08.1:common:input#/$defs/entity_id"
+    },
+    "predicate": {
+      "$ref": "urn:living-atlas:contract:2026.08.1:common:input#/$defs/predicate"
+    },
+    "kind": {
+      "type": "string",
+      "enum": [
+        "fact",
+        "relationship",
+        "observation"
+      ]
+    },
+    "as_of_recorded": {
+      "$ref": "urn:living-atlas:contract:2026.08.1:common:input#/$defs/recorded_at",
+      "description": "BELIEF axis. Below the retained history floor this is refused, never answered from present state."
+    },
+    "as_of_valid": {
+      "$ref": "urn:living-atlas:contract:2026.08.1:common:input#/$defs/world_time_probe",
+      "description": "WORLD axis."
+    },
+    "include_superseded": {
+      "type": "boolean",
+      "default": false,
+      "description": "Include records already superseded at as_of_recorded. Lineage archaeology, not a present-tense read."
+    },
+    "full_scan": {
+      "type": "boolean",
+      "default": false,
+      "description": "Bootstrap mode: every assertion this credential may read, paged and snapshot-pinned. Legal with no filters at all — that is the point. The final page carries page.feed_handoff."
+    },
+    "page_size": {
+      "$ref": "urn:living-atlas:contract:2026.08.1:common:input#/$defs/page_size"
+    },
+    "cursor": {
+      "$ref": "urn:living-atlas:contract:2026.08.1:common:input#/$defs/page_cursor"
+    },
+    "snapshot": {
+      "$ref": "urn:living-atlas:contract:2026.08.1:common:input#/$defs/snapshot_token"
+    }
+  },
+  "additionalProperties": false
+}

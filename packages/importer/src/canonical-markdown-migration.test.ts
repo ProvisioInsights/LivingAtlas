@@ -296,10 +296,10 @@ describe("canonical markdown migration", () => {
         source_path: "pages/Synthetic Omitted Edges.md",
         markdown: [
           "## Edges",
-          "- [[Synthetic Person]] (person) advises [[Synthetic Missing]] (project) from 2025",
+          "- [[Synthetic Person]] (person) member-of [[Synthetic Missing]] (organization) from 2025",
           "- [[Synthetic Person]] (organization) customer-of [[Synthetic Organization]] (organization) from 2025",
-          "- [[Synthetic Collision]] (person) advises [[Synthetic Project]] (project) from 2025",
-          "- [[Synthetic Person]] (alien) advises [[Synthetic Project]] (project) from 2025"
+          "- [[Synthetic Collision]] (person) member-of [[Synthetic Organization]] (organization) from 2025",
+          "- [[Synthetic Person]] (alien) member-of [[Synthetic Organization]] (organization) from 2025"
         ].join("\n"),
         source_kind: "logseq"
       }
@@ -418,8 +418,8 @@ describe("canonical markdown migration", () => {
           "- Narrative collaboration with [[Synthetic Project]].",
           "",
           "## Edges",
-          "- [[Synthetic Person]] (person) advises [[Synthetic Project]] (project) from 2025",
-          "- [[Synthetic Person]] (person) advises [[Synthetic Missing Project]] (project) from 2025"
+          "- [[Synthetic Person]] (person) member-of [[Synthetic Advisory Board]] (organization) from 2025",
+          "- [[Synthetic Person]] (person) member-of [[Synthetic Missing Board]] (organization) from 2025"
         ].join("\n"),
         source_kind: "logseq"
       },
@@ -431,6 +431,11 @@ describe("canonical markdown migration", () => {
       {
         source_path: "pages/Synthetic Project.md",
         markdown: "type:: project",
+        source_kind: "logseq"
+      },
+      {
+        source_path: "pages/Synthetic Advisory Board.md",
+        markdown: "type:: organization",
         source_kind: "logseq"
       }
     ], {
@@ -447,15 +452,15 @@ describe("canonical markdown migration", () => {
       .map((payload) => [payload.evidence_id, payload]));
     const relationships = migration.payloads.filter((payload) => payload.schema === "atlas.relationship:v2");
 
-    expect(relationships.map((payload) => payload.predicate).sort()).toEqual(["advises", "employed-by"]);
+    expect(relationships.map((payload) => payload.predicate).sort()).toEqual(["employed-by", "member-of"]);
     expect(relationships.every((payload) => entities.get(payload.source_entity_id)?.type === payload.source_type
       && entities.get(payload.target_entity_id)?.type === payload.target_type)).toBe(true);
     expect(relationships.every((payload) => payload.evidence_links.length > 0
       && payload.evidence_links.every((link) => evidenceById.get(link.evidence_id)?.extraction_method === "canonical-source-unit-v1"))).toBe(true);
     expect(relationships.find((payload) => payload.predicate === "employed-by")?.evidence_links
       .map((link) => evidenceById.get(link.evidence_id)?.excerpt).join("")).toBe("org:: [[Synthetic Employer]]");
-    expect(relationships.find((payload) => payload.predicate === "advises")?.evidence_links
-      .map((link) => evidenceById.get(link.evidence_id)?.excerpt).join("")).toContain("Synthetic Project");
+    expect(relationships.find((payload) => payload.predicate === "member-of")?.evidence_links
+      .map((link) => evidenceById.get(link.evidence_id)?.excerpt).join("")).toContain("Synthetic Advisory Board");
   });
 
   it("keeps typed projections additive in owner review while parity names only complete observations", () => {
@@ -516,10 +521,10 @@ describe("canonical markdown migration", () => {
   it("routes an explicit typed-relationship source to unresolved owner review", () => {
     const migration = createCanonicalMarkdownMigration([
       { source_path: "pages/Synthetic Advisor.md", markdown: "type:: person", source_kind: "logseq" },
-      { source_path: "pages/Synthetic Initiative.md", markdown: "type:: project", source_kind: "logseq" },
+      { source_path: "pages/Synthetic Initiative.md", markdown: "type:: organization", source_kind: "logseq" },
       {
         source_path: "notes/Synthetic Explicit Links.md",
-        markdown: "## Edges\n- [[Synthetic Advisor]] (person) advises [[Synthetic Initiative]] (project) from 2025",
+        markdown: "## Edges\n- [[Synthetic Advisor]] (person) member-of [[Synthetic Initiative]] (organization) from 2025",
         source_kind: "generic-markdown"
       }
     ], {
@@ -585,7 +590,7 @@ describe("canonical markdown migration", () => {
       source_kind: "logseq"
     }], { authority_id: "la_authority_fixture0001", created_at: "2026-07-10T12:00:00.000Z", path_redaction_secret: "synthetic-migration-path-secret" });
     expect(migration.payloads.filter((payload) => payload.schema === "atlas.entity:v1")).toEqual([
-      expect.objectContaining({ type: "topic", subtype: "theme" })
+      expect.objectContaining({ type: "topic" })
     ]);
   });
 });

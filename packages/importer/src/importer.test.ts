@@ -301,7 +301,7 @@ describe("markdown importer planning", () => {
   it("promotes explicit typed Logseq edge lines into encrypted temporal edge objects", async () => {
     const file = {
       source_path: "/tmp/living-atlas-fixtures/Typed Edge.md",
-      markdown: "## Edges\n\n- [[Avery North]] (person) advises [[Project Glass Lantern]] (project) from 2026-06\n",
+      markdown: "## Edges\n\n- [[Avery North]] (person) member-of [[Guild Glass Lantern]] (organization) from 2026-06\n",
       source_kind: "logseq" as const
     };
 
@@ -346,7 +346,7 @@ describe("markdown importer planning", () => {
   it("builds local-only plaintext semantic drafts for keyring-backed local persistence", () => {
     const file = {
       source_path: "/tmp/living-atlas-fixtures/Typed Edge.md",
-      markdown: "## Edges\n\n- [[Avery North]] (person) advises [[Project Glass Lantern]] (project) from 2026-06\n",
+      markdown: "## Edges\n\n- [[Avery North]] (person) member-of [[Guild Glass Lantern]] (organization) from 2026-06\n",
       source_kind: "logseq" as const
     };
 
@@ -373,15 +373,15 @@ describe("markdown importer planning", () => {
         })
       })
     }));
-    expect((edgeObject?.payload.data.edge as { predicate?: string } | undefined)?.predicate).toBe("advises");
+    expect((edgeObject?.payload.data.edge as { predicate?: string } | undefined)?.predicate).toBe("member-of");
     expect(JSON.stringify(built.ledger)).not.toContain("Avery North");
-    expect(JSON.stringify(built.ledger)).not.toContain("Project Glass Lantern");
+    expect(JSON.stringify(built.ledger)).not.toContain("Guild Glass Lantern");
   });
 
   it("promotes explicit typed Logseq pages into encrypted endpoint objects", async () => {
     const file = {
       source_path: "/tmp/living-atlas-fixtures/Synthetic Topic.md",
-      markdown: "type:: topic\nsubtype:: theme\naliases:: Synthetic Theme, [[Synthetic Alias]]\nparent-topic:: [[Synthetic Parent Topic]]\ntags:: #alpha, beta\n\n- body text\n",
+      markdown: "type:: topic\naliases:: Synthetic Theme, [[Synthetic Alias]]\nparent-topic:: [[Synthetic Parent Topic]]\ntags:: #alpha, beta\n\n- body text\n",
       source_kind: "logseq" as const
     };
     const plaintextPayloads: string[] = [];
@@ -407,7 +407,6 @@ describe("markdown importer planning", () => {
     expect(encrypted.ledger.decisions["typed-endpoint-promoted"]).toBe(1);
     expect(endpointPayload.endpoint).toMatchObject({
       type: "topic",
-      subtype: "theme",
       aliases: ["Synthetic Theme", "Synthetic Alias"],
       tags: ["alpha", "beta"]
     });
@@ -437,10 +436,10 @@ describe("markdown importer planning", () => {
   it("exposes typed semantics without returning legacy envelopes", () => {
     const typed = extractLogseqTypedSemantics([{
       source_path: "/tmp/living-atlas-fixtures/Canonical Topic.md",
-      markdown: "type:: topic\nsubtype:: theme\n\n- canonical-first extraction\n",
+      markdown: "type:: topic\n\n- canonical-first extraction\n",
       source_kind: "logseq"
     }], { authority_id: fixtureAuthorityId, created_at: "2026-06-22T12:00:00.000Z", path_redaction_secret: "fixture-path-redaction-secret-0001" });
-    expect(typed).toEqual({ endpoints: [expect.objectContaining({ endpoint: expect.objectContaining({ type: "topic", subtype: "theme" }), source_path_ref: expect.any(String) })], edges: [] });
+    expect(typed).toEqual({ endpoints: [expect.objectContaining({ endpoint: expect.objectContaining({ type: "topic" }), source_path_ref: expect.any(String) })], edges: [] });
     expect(JSON.stringify(typed)).not.toContain("logseq-endpoint");
     expect(JSON.stringify(typed)).not.toContain("object_type");
   });
@@ -449,7 +448,7 @@ describe("markdown importer planning", () => {
     const files = [
       {
         source_path: "/tmp/living-atlas-fixtures/Synthetic Product.md",
-        markdown: "type:: offering\nsubtype:: software-product\nprovider:: [[Synthetic Vendor]]\nwebsite:: https://example.invalid/product\nstatus:: active\n\n- body text\n",
+        markdown: "type:: offering\nprovider:: [[Synthetic Vendor]]\nwebsite:: https://example.invalid/product\nstatus:: active\n\n- body text\n",
         source_kind: "logseq" as const
       },
       {
@@ -494,13 +493,11 @@ describe("markdown importer planning", () => {
     expect(endpointPayloads.map((payload) => payload.endpoint)).toEqual(expect.arrayContaining([
       expect.objectContaining({
         type: "offering",
-        subtype: "software-product",
         status: "active",
         provider_ref: expect.stringMatching(/^la_object_[a-f0-9]{24}$/)
       }),
       expect.objectContaining({
         type: "item",
-        subtype: "device",
         status: "owned",
         acquired_on: "2026-06",
         offering_ref: expect.stringMatching(/^la_object_[a-f0-9]{24}$/),
@@ -714,10 +711,14 @@ describe("markdown importer planning", () => {
       .filter((payload) => payload.kind === "logseq-temporal-edge");
 
     expect(encrypted.ledger.decisions["typed-endpoint-promoted"]).toBe(4);
-    expect(encrypted.ledger.decisions["property-edge-promoted"]).toBe(15);
+    // One fewer than before the vocabulary change, and the missing one is named:
+    // the topic parent used to become a part-of-topic edge, and that predicate is
+    // retired with no successor — topic hierarchy is parent_topic_ref on the
+    // endpoint, which the endpoint payload below still carries.
+    expect(encrypted.ledger.decisions["property-edge-promoted"]).toBe(14);
     expect(encrypted.ledger.decisions["suffix-tag-weak-tie-needs-note"]).toBe(1);
-    expect(encrypted.ledger.totals.edge_candidates).toBe(16);
-    expect(encrypted.ledger.totals.valid_edge_candidates).toBe(15);
+    expect(encrypted.ledger.totals.edge_candidates).toBe(15);
+    expect(encrypted.ledger.totals.valid_edge_candidates).toBe(14);
     expect(encrypted.ledger.totals.quarantined_edge_candidates).toBe(1);
     expect(encrypted.ledger.totals.quarantine_objects).toBe(1);
     expect(edgePayloads.map((payload) => payload.edge)).toEqual(expect.arrayContaining([
@@ -728,12 +729,12 @@ describe("markdown importer planning", () => {
       expect.objectContaining({ predicate: "estranged-from", source_type: "person", target_type: "person" }),
       expect.objectContaining({ predicate: "acquired-by", source_type: "organization", target_type: "organization" }),
       expect.objectContaining({ predicate: "customer-of", source_type: "organization", target_type: "organization" }),
-      expect.objectContaining({ predicate: "alumnus-of", source_type: "person", target_type: "organization" }),
+      expect.objectContaining({ predicate: "member-of", source_type: "person", target_type: "organization", attrs: expect.objectContaining({ role: "alumnus" }) }),
       expect.objectContaining({ predicate: "member-of", source_type: "person", target_type: "organization" }),
-      expect.objectContaining({ predicate: "advises", source_type: "person", target_type: "organization", status: "ended" }),
-      expect.objectContaining({ predicate: "occurred-at", source_type: "occurrence", target_type: "location" }),
-      expect.objectContaining({ predicate: "part-of-topic", source_type: "topic", target_type: "topic" })
+      expect.objectContaining({ predicate: "member-of", source_type: "person", target_type: "organization", status: "ended", attrs: expect.objectContaining({ role: "advisor" }) }),
+      expect.objectContaining({ predicate: "occurred-at", source_type: "occurrence", target_type: "location" })
     ]));
+    expect(edgePayloads.some((payload) => payload.edge?.predicate === "part-of-topic")).toBe(false);
     expect(edgePayloads.every((payload) => typeof payload.edge?.attrs?.source_value_hash === "string")).toBe(true);
     expect(edgePayloads.some((payload) => payload.edge?.predicate === "employed-by" && payload.edge.attrs?.property_key === "org")).toBe(true);
     expect(JSON.stringify(encrypted.ledger)).not.toContain("Synthetic City");
@@ -1276,7 +1277,7 @@ describe("markdown importer planning", () => {
   it("promotes explicit topic typed edge lines into encrypted temporal edge objects", async () => {
     const file = {
       source_path: "/tmp/living-atlas-fixtures/Topic Edge.md",
-      markdown: "## Edges\n\n- [[Synthetic Market Theme]] (topic) discussed-at [[Synthetic Planning Meeting]] (occurrence) from 2026-06-21\n",
+      markdown: "## Edges\n\n- [[Synthetic Planning Meeting]] (occurrence) about [[Synthetic Market Theme]] (topic) from 2026-06-21\n",
       source_kind: "logseq" as const
     };
 

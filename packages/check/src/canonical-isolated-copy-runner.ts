@@ -20,14 +20,14 @@ import {
   decryptGraphObjectPayload,
   FileLocalKeyringStore
 } from "@living-atlas/local-keyring";
-import { createLocalCanonicalAtlasClient } from "@living-atlas/atlas-client";
+import { createLocalCanonicalAtlasClient } from "@living-atlas/atlas-client/legacy";
 import {
   createLocalMcpContextFromControlState,
   InMemoryLocalMcpAuditSink,
   InMemoryLocalMcpMutationOutboxSink
 } from "@living-atlas/local-mcp";
 import { projectLocalReviewQueue } from "@living-atlas/review-projection";
-import { applyExactPreservation, planExactPreservation } from "@living-atlas/local-review-site/review-auto-apply";
+import { applyExactPreservation, planExactPreservation } from "./review-auto-apply";
 import {
   assertSemanticSourceDiscoveryComplete,
   discoverImportableSemanticSourceFiles,

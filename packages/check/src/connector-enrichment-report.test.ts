@@ -53,7 +53,7 @@ const basePacket = {
       },
       proposed_fact: {
         kind: "edge",
-        predicate: "discussed-at",
+        predicate: "about",
         confidence: "medium"
       },
       decision: "defer",
@@ -93,7 +93,7 @@ describe("connector enrichment report", () => {
         medium: 1
       });
       expect(report.by_endpoint_type).toEqual({ person: 1 });
-      expect(report.by_predicate).toEqual({ "discussed-at": 1 });
+      expect(report.by_predicate).toEqual({ about: 1 });
       expect(report.by_evidence_kind).toEqual({
         snippet: 1,
         transcript: 1
