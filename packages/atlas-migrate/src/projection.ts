@@ -23,7 +23,8 @@ import {
 import {
   TRAVEL_DESTINATION_ATTRIBUTE,
   TRAVEL_ORIGIN_ATTRIBUTE,
-  TRAVEL_ROUTE_ATTRIBUTE
+  TRAVEL_ROUTE_ATTRIBUTE,
+  normalizeTopicValue
 } from "./legacy-vocabulary.js";
 import {
   LegacyRedirectPayloadSchema,
@@ -60,6 +61,7 @@ import {
   ProjectorVersion,
   canonicalDigest,
   entitySlotForLegacyObject,
+  TopicSchemeValues,
   isLegacyObjectProvenance,
   isRelationshipRecord,
   legacyObjectIdOf,
@@ -74,7 +76,8 @@ import {
   type ProjectedEntityRecord,
   type ProjectedRecord,
   type ProjectedRecordKind,
-  type ProjectedRelationshipRecord
+  type ProjectedRelationshipRecord,
+  type TopicScheme
 } from "./target-plane.js";
 
 /**
@@ -154,6 +157,21 @@ export type ProjectionBreakdown = {
    */
   entities_minted_from_attributes: number;
   relationships_derived_from_attributes: number;
+  /**
+   * How many topic nodes each concept scheme contributes.
+   *
+   * This replaced a count of topics REUSED from the corpus. That number could
+   * only ever be zero once identity became scheme-scoped — nothing resolves
+   * across a scheme, so no classification can land on a corpus topic — and a row
+   * that structurally prints zero is a row people stop reading.
+   *
+   * The scheme census is the live equivalent: it is where an operator sees the
+   * three vocabularies as three populations rather than as one flat namespace,
+   * and a scheme that appears or vanishes between dry runs is visible before any
+   * finding fires. Recomputed by the closure gate from the records like every
+   * other row, so it is a number the plan cannot assert without having produced it.
+   */
+  topic_nodes_by_scheme: Array<{ scheme: TopicScheme; count: number }>;
   legacy_ids_split: number;
   hand_review_by_reason: Array<{ reason: HandReviewReason; count: number }>;
   /**
@@ -221,6 +239,13 @@ export type BuildProjectionPlanOptions = {
 };
 
 const MaxAliasChainDepth = 16;
+
+/**
+ * The scheme a `topic` node projected from the corpus belongs to. Named here
+ * rather than written inline so the one place that assigns it is greppable
+ * beside the two other producers.
+ */
+const CorpusTopicScheme = "subject-matter" as const satisfies TopicScheme;
 
 function provenanceFor(envelope: GraphObjectEnvelope): LegacyProvenance {
   return {
@@ -640,6 +665,11 @@ export function buildProjectionPlan(
           slot,
           entity_type: entityType,
           ...(entityType === "occurrence" && subtype ? { entity_subtype: subtype } : {}),
+          // A `topic` node the corpus itself holds is the owner's own
+          // vocabulary — what `about` edges point at — and the migration says
+          // only that. Filing it under the kinds vocabulary would claim the
+          // owner meant it as a classification, which no legacy field records.
+          ...(entityType === "topic" ? { topic_scheme: CorpusTopicScheme } : {}),
           // Name, aliases and description go to BOTH halves of a split. That is
           // not duplication: a venue genuinely has one name that belongs to the
           // place and to the business alike, and it is precisely why a bare id
@@ -1112,23 +1142,89 @@ function retractTombstonedDrafts(drafts: Draft[], authorityId: string): void {
 }
 
 /**
- * Turns the retired subtype values the entity pass collected into ONE topic node
- * each, plus a `has-type` edge from every node that carried the value.
+ * THE PLAN'S TOPIC NAMESPACE: one slot per (SCHEME, canonical word), and the
+ * only place a classification topic slot is issued.
  *
- * Minting once per VALUE rather than once per carrier is the entire change. The
- * topic nodes are the controlled vocabulary: if nine organizations that each
- * said `airline` minted nine `airline` nodes, the plane would hold nine
- * unrelated concepts with one spelling, "which of these are airlines" would
- * answer with a ninth of the truth, and merging them afterwards would be an
- * identity decision nobody has evidence for. The slot is derived from the value,
- * so a second run of the projection resolves to the same node instead of minting
- * a tenth.
+ * This is a CONSTRAINT rather than a check, and the difference is the point. A
+ * "does a node for this word already exist?" test at the mint site has to be
+ * remembered by whoever writes the next mint site, and the last one that was not
+ * remembered put two nodes for one concept into a real plan. A Map cannot hold
+ * two entries for one key, so the second request for a key returns the first
+ * request's slot and there is no branch to forget.
+ *
+ * THE KEY CARRIES THE SCHEME, and that is what makes both answers possible at
+ * once. Within `entity-kind`, nine organizations that each said `airline`
+ * resolve to one node — nine nodes would leave nine unrelated concepts sharing a
+ * spelling, and "which of these are airlines" would answer with a ninth of the
+ * truth. Across schemes, an occupation and an entity kind spelled the same
+ * resolve to two nodes, because a person who IS an investor and a firm that IS
+ * an investment firm are two concepts, and one node would force one word onto
+ * both. Keying on the word alone can only give one of those answers.
+ *
+ * Nothing resolves ACROSS a scheme, including onto a topic the corpus already
+ * holds. That is deliberate and it is the same rule: the corpus's own topic is a
+ * `subject-matter` concept, and landing a `has-type` classification on it would
+ * assert that the owner's subject and this retired subtype word are one thing —
+ * an identity decision on a string match, made by a migration. The closure gate
+ * reports the pair as a cross-scheme homonym instead, which is a curator's
+ * decision with a record behind it.
+ */
+class PlanTopicVocabulary {
+  private readonly slotsByKey = new Map<string, EntitySlot>();
+
+  constructor(private readonly authorityId: string) {}
+
+  /**
+   * The slot a value resolves to within its scheme, minting one only when the
+   * key is unclaimed. `minted` says whether the caller owes the plan a
+   * `minted-entity` record — the caller cannot get that wrong in the duplicating
+   * direction, because a claimed key never reports `minted` twice.
+   */
+  resolve(scheme: TopicScheme, value: string): { slot: EntitySlot; minted: boolean } {
+    // Scheme and word joined by a newline, which neither can contain: the
+    // canonical key collapses whitespace runs to single spaces, and the scheme
+    // is a closed enum of kebab-case words. A separator either half could hold
+    // would let `(a, b-c)` and `(a-b, c)` become one map key.
+    const word = normalizeTopicValue(value);
+    const key = `${scheme}\n${word}`;
+    const existing = this.slotsByKey.get(key);
+    if (existing !== undefined) {
+      return { slot: existing, minted: false };
+    }
+    const slot = mintedTopicSlot(this.authorityId, scheme, word);
+    this.slotsByKey.set(key, slot);
+    return { slot, minted: true };
+  }
+}
+
+/**
+ * The scheme a minted classification topic belongs to. `has-type` says what the
+ * subject IS, so the vocabulary its targets form is the kinds of thing — not the
+ * subjects the corpus writes about, and not the occupations people hold.
+ */
+const ClassificationTopicScheme = "entity-kind" as const satisfies TopicScheme;
+
+/**
+ * Resolves the retired subtype values the entity pass collected to ONE topic
+ * node each WITHIN THE ENTITY-KIND SCHEME, plus a `has-type` edge from every
+ * node that carried the value.
+ *
+ * Resolving once per VALUE rather than once per carrier is what makes the topic
+ * set a controlled vocabulary rather than a bag of spellings, and the slot is
+ * derived from the value, so a second run resolves to the same node instead of
+ * minting another.
+ *
+ * REUSE CHANGES WHICH NODE THE EDGE POINTS AT, NEVER WHETHER THERE IS ONE. Every
+ * carrier still gets its classification edge, with the same idempotency key it
+ * had before — that key names the carrier and the value, not the target.
  *
  * Runs AFTER edge resolution so the `has-type` edges cannot be mistaken for
  * legacy edges by anything that walks the drafts, and so a node whose entity
  * record was refused contributes no classification.
  */
 function mintClassificationTopics(drafts: Draft[], authorityId: string): ProjectedRecord[] {
+  const vocabulary = new PlanTopicVocabulary(authorityId);
+
   const carriers = new Map<string, Draft[]>();
 
   for (const draft of drafts) {
@@ -1146,23 +1242,26 @@ function mintClassificationTopics(drafts: Draft[], authorityId: string): Project
 
   for (const topic of [...carriers.keys()].sort()) {
     const bucket = carriers.get(topic) ?? [];
-    const slot = mintedTopicSlot(authorityId, topic);
+    const { slot, minted: needsRecord } = vocabulary.resolve(ClassificationTopicScheme, topic);
     const basis = { kind: "retired-subtype-value" as const, legacy_value: topic };
 
-    minted.push({
-      record_kind: "minted-entity",
-      idempotency_key: mintedTopicIdempotencyKey(authorityId, topic),
-      origin: MigrationOrigin,
-      recorded_at_fidelity: MigrationRecordedAtFidelity,
-      minted_basis: basis,
-      slot,
-      entity_type: "topic",
-      // The legacy word verbatim. A prettier label would be a curator's choice,
-      // and a migration that renames the vocabulary it carries makes the old
-      // corpus unsearchable by the words it was written with.
-      name: topic,
-      classified_node_count: bucket.length
-    });
+    if (needsRecord) {
+      minted.push({
+        record_kind: "minted-entity",
+        idempotency_key: mintedTopicIdempotencyKey(authorityId, ClassificationTopicScheme, topic),
+        origin: MigrationOrigin,
+        recorded_at_fidelity: MigrationRecordedAtFidelity,
+        minted_basis: basis,
+        slot,
+        entity_type: "topic",
+        topic_scheme: ClassificationTopicScheme,
+        // The legacy word verbatim. A prettier label would be a curator's choice,
+        // and a migration that renames the vocabulary it carries makes the old
+        // corpus unsearchable by the words it was written with.
+        name: topic,
+        classified_node_count: bucket.length
+      });
+    }
 
     for (const draft of bucket) {
       // EVERY entity the draft produced, not just the primary. A split venue is
@@ -1745,6 +1844,10 @@ export function recomputeProjectionBreakdown(
     relationships_derived_from_attributes: records.filter(
       (record) => record.record_kind === "relationship" && record.derivation !== undefined
     ).length,
+    topic_nodes_by_scheme: countBy(topicSchemesOf(records), TopicSchemeValues).map(({ value, count }) => ({
+      scheme: value,
+      count
+    })),
     legacy_ids_split: outcomes.filter((outcome) => outcome.alias_target.kind === "ambiguous-split").length,
     hand_review_by_reason: countBy(
       handReview.map((item) => item.reason),
@@ -1754,6 +1857,28 @@ export function recomputeProjectionBreakdown(
       ({ value, count }) => ({ coverage: value, count })
     )
   };
+}
+
+/**
+ * The scheme of every topic node in the plan, one entry per node.
+ *
+ * Read off the records rather than recomputed from the mechanism that made
+ * them: the scheme is what the plane will carry, so a census that derived it
+ * independently could agree with the mechanism while disagreeing with the field
+ * an apply actually commits.
+ */
+function topicSchemesOf(records: ProjectedRecord[]): TopicScheme[] {
+  const schemes: TopicScheme[] = [];
+  for (const record of records) {
+    if (record.record_kind !== "entity" && record.record_kind !== "minted-entity") {
+      continue;
+    }
+    if (record.entity_type !== "topic" || record.topic_scheme === undefined) {
+      continue;
+    }
+    schemes.push(record.topic_scheme);
+  }
+  return schemes;
 }
 
 /**

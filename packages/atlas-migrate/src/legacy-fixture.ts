@@ -812,6 +812,228 @@ export function createLegacyVenueFixture(): GraphObjectEnvelope[] {
   ];
 }
 
+export const legacyTopicIdentityFixtureIds = {
+  corpusTopic: "la_object_legacy_topic_reuse",
+  carrierOfCorpusWord: "la_object_legacy_topic_byname",
+  carrierOfCorpusWordAgain: "la_object_legacy_topic_byname2",
+  carrierUnmatched: "la_object_legacy_topic_fresh",
+  duplicateTopicA: "la_object_legacy_topic_dupa",
+  duplicateTopicB: "la_object_legacy_topic_dupb",
+  carrierOfDuplicated: "la_object_legacy_topic_dupc",
+  occupationCarrier: "la_object_legacy_topic_occup",
+  subtypeCarrierOfOccupation: "la_object_legacy_topic_occos",
+  occupationCarrierOtherCase: "la_object_legacy_topic_occup2"
+} as const;
+
+/**
+ * THE SHAPE THE IMPORTER ACTUALLY WRITES, and the reason these builders exist
+ * instead of the flat `object_type: "entity"` envelope the older fixtures use.
+ *
+ * A typed endpoint reaches the migration as `object_type: "page"` under the
+ * schema namespace `import/logseq-semantic/typed-endpoint`, with the record
+ * WRAPPED as `{kind, source_path_ref, endpoint}` — see
+ * `packages/importer/src/logseq-semantic.ts`. A fixture that builds a flat
+ * `entity` envelope exercises the same projector branch but not the same
+ * construction path, so it cannot fail for the reasons a real corpus fails:
+ * a regression in the unwrap, in the namespace table, or in the endpoint schema
+ * would leave every such fixture green while the real run refused every node.
+ *
+ * ONE AXIS IS DELIBERATELY NOT FAITHFUL: the real objects are `local-private`
+ * and client-encrypted, and the envelope schema forbids a plaintext payload on
+ * those, so these carry `remote-safe` plaintext. The decrypt path is a property
+ * of the payload RESOLVER rather than of the record, and it is covered by
+ * `createLegacyGraphFixture`, which projects a decryptable ciphertext entity
+ * through the same branch.
+ */
+function importedEndpointEnvelope(
+  objectId: string,
+  endpoint: Record<string, unknown>,
+  options: EnvelopeOptions = {}
+): GraphObjectEnvelope {
+  return plaintextEnvelope(
+    objectId,
+    "page",
+    { kind: "logseq-endpoint", source_path_ref: `ref_${objectId}`, endpoint },
+    { ...options, schema_namespace: "import/logseq-semantic/typed-endpoint" }
+  );
+}
+
+/**
+ * The endpoint record the importer writes, which is an `EndpointRecord` and
+ * therefore carries the four fields beyond the obvious ones. They are here
+ * because the strict contract schema is tried FIRST: an endpoint that satisfies
+ * it takes the canonical lane, and one that does not takes the legacy mapper —
+ * two different lanes, and a fixture that only ever produced one of them would
+ * leave the other untested.
+ */
+function importedEndpoint(
+  objectId: string,
+  type: string,
+  name: string,
+  extra: Record<string, unknown> = {}
+): Record<string, unknown> {
+  return {
+    object_id: objectId,
+    type,
+    name,
+    aliases: [],
+    access_class: "remote-safe",
+    source_ref: `ref_${objectId}`,
+    confidence: "high",
+    created_at: fixtureCreatedAt,
+    updated_at: fixtureUpdatedAt,
+    ...extra
+  };
+}
+
+/**
+ * A curated topic node as the TOPIC-REVIEW PROMOTION path writes it: a third
+ * namespace, a different wrapper `kind`, and the two extra endpoint fields that
+ * path sets. This is the most plausible way a `topic` node exists in a real
+ * corpus at all, so a fixture that only built topics the typed-endpoint way
+ * would not be testing the path the owner's topics arrive on.
+ */
+function promotedTopicEnvelope(objectId: string, name: string, aliases: string[] = []): GraphObjectEnvelope {
+  return plaintextEnvelope(
+    objectId,
+    "page",
+    {
+      kind: "logseq-topic-review-promotion",
+      target_hash: `hash_${objectId}`,
+      reason_code: "fixture-promoted",
+      decision: "promote",
+      endpoint: {
+        ...importedEndpoint(objectId, "topic", name, { aliases }),
+        controlled: true,
+        tags: []
+      }
+    },
+    { schema_namespace: "import/logseq-topic-review/promoted" }
+  );
+}
+
+/**
+ * The word the corpus topic and its carriers share. Invented, like every value
+ * in this file: the real collision that motivated the change was a private topic
+ * name, and a fixture is not a place to record one.
+ */
+const FixtureSharedTopicName = "Topic 3";
+const FixtureSharedTopicAlias = "Topic Three";
+const FixtureDuplicatedTopicName = "Topic 4";
+/** Held by a person as a job title AND by an organization as a retired subtype. */
+const FixtureOccupationName = "Topic 8";
+
+/**
+ * THE THREE OUTCOMES OF THE TOPIC CHECK, in one fixture, because they are three
+ * different situations and a fixture carrying one cannot tell the paths apart.
+ *
+ * REUSE WITHIN A SCHEME. Two carriers name one retired subtype word in two
+ * spellings — case, a trailing space and a doubled internal space between them —
+ * and both must reach ONE `entity-kind` node. Nine organizations that each said
+ * `airline` reaching nine nodes is the failure this property exists to stop.
+ *
+ * A HOMONYM ACROSS SCHEMES. The corpus holds a `subject-matter` topic whose name
+ * is that same word. It is NOT reused: a `has-type` classification landing on the
+ * owner's subject would assert the two are one concept on the strength of a
+ * string. Two nodes, two schemes, reported and tolerated.
+ *
+ * A DUPLICATE INSIDE ONE SCHEME. Two `subject-matter` topics the corpus itself
+ * holds under one name. The migration did not cause it and cannot fix it: both
+ * come across, both ids stay resolvable, and the merge is a curation step inside
+ * Atlas. A carrier of that same word is present too, so the word spans both a
+ * duplicate AND a homonym — which proves the two findings are computed
+ * independently rather than one swallowing the other.
+ *
+ * A further carrier names a word nothing else holds, so a test that minting was
+ * not simply disabled has a control to read.
+ */
+export function createTopicIdentityFixture(): GraphObjectEnvelope[] {
+  const ids = legacyTopicIdentityFixtureIds;
+  return [
+    promotedTopicEnvelope(ids.corpusTopic, FixtureSharedTopicName, [FixtureSharedTopicAlias]),
+    // Case, a trailing space and a doubled internal space — every operation the
+    // canonical key performs, in one value, so a key that stopped doing any one
+    // of them stops matching the spelling below.
+    importedEndpointEnvelope(
+      ids.carrierOfCorpusWord,
+      importedEndpoint(ids.carrierOfCorpusWord, "organization", "Employer G", { subtype: " topic  3 " })
+    ),
+    importedEndpointEnvelope(
+      ids.carrierOfCorpusWordAgain,
+      importedEndpoint(ids.carrierOfCorpusWordAgain, "organization", "Employer H", { subtype: "TOPIC 3" })
+    ),
+    importedEndpointEnvelope(
+      ids.carrierUnmatched,
+      importedEndpoint(ids.carrierUnmatched, "organization", "Employer I", { subtype: "topic 5" })
+    ),
+
+    // The duplicated pair arrives on the TYPED-ENDPOINT path rather than the
+    // promotion path, so the fixture covers a corpus topic from each of the two
+    // namespaces a topic can reach the migration through.
+    importedEndpointEnvelope(
+      ids.duplicateTopicA,
+      importedEndpoint(ids.duplicateTopicA, "topic", FixtureDuplicatedTopicName)
+    ),
+    importedEndpointEnvelope(
+      ids.duplicateTopicB,
+      importedEndpoint(ids.duplicateTopicB, "topic", FixtureDuplicatedTopicName)
+    ),
+    importedEndpointEnvelope(
+      ids.carrierOfDuplicated,
+      importedEndpoint(ids.carrierOfDuplicated, "organization", "Employer J", {
+        subtype: FixtureDuplicatedTopicName
+      })
+    )
+  ];
+}
+
+/**
+ * THE COLLISION THE REAL CORPUS ACTUALLY PRODUCED, which no fixture here held.
+ *
+ * A person's `job_title` mints an occupation topic through the derived-node
+ * registry; an organization's retired `subtype` mints a classification topic
+ * through the ratified table. One word, two nodes, and BOTH created by this
+ * migration — so no amount of resolving against the corpus removes it, because
+ * the corpus holds neither.
+ *
+ * It is a separate builder from `createTopicIdentityFixture` because a plan
+ * carrying it cannot certify, and the reuse fixture must stay one that does.
+ *
+ * The third node is the same occupation word in another case: the derived
+ * registry keys on the raw value, so two spellings of one job title used to
+ * mint two occupation topics — a duplicate inside a single namespace, with no
+ * question of merging anything across one.
+ */
+export function createOccupationCollisionFixture(): GraphObjectEnvelope[] {
+  const ids = legacyTopicIdentityFixtureIds;
+  return [
+    importedEndpointEnvelope(
+      ids.occupationCarrier,
+      importedEndpoint(ids.occupationCarrier, "person", "Person 5", { job_title: FixtureOccupationName })
+    ),
+    importedEndpointEnvelope(
+      ids.occupationCarrierOtherCase,
+      importedEndpoint(ids.occupationCarrierOtherCase, "person", "Person 6", {
+        job_title: FixtureOccupationName.toLowerCase()
+      })
+    ),
+    importedEndpointEnvelope(
+      ids.subtypeCarrierOfOccupation,
+      importedEndpoint(ids.subtypeCarrierOfOccupation, "organization", "Employer L", {
+        subtype: FixtureOccupationName
+      })
+    )
+  ];
+}
+
+export const legacyTopicIdentityFixtureWords = {
+  shared: FixtureSharedTopicName,
+  sharedAlias: FixtureSharedTopicAlias,
+  duplicated: FixtureDuplicatedTopicName,
+  occupation: FixtureOccupationName,
+  unmatched: "topic 5"
+} as const;
+
 /**
  * Seeded negative control for the closure gate: an object_type this projector
  * never declared a mapping for. It must FAIL the gate rather than pass through

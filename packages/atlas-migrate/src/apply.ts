@@ -9,6 +9,7 @@ import {
   isMintedEntityRecord,
   legacyObjectIdOf,
   provenanceGroupKey,
+  slotMintedBy,
   type EntitySlot,
   type MigrationIdempotencyKey,
   type ProjectedProvenance,
@@ -351,8 +352,15 @@ export async function applyProjectionPlan(input: ApplyProjectionPlanInput): Prom
     const existing = await sink.receiptFor(record.idempotency_key);
     if (existing) {
       objectIdByRecordKey.set(record.idempotency_key, existing.object_id);
-      if (isEntityRecord(record)) {
-        entityIdBySlot.set(record.slot, existing.object_id);
+      // EVERY record that puts a slot into the plane, replayed exactly as the
+      // commit branch below registers it. Asking `isEntityRecord` alone missed
+      // `minted-entity`, so a resume that replayed an already-committed topic
+      // node left its slot unknown and threw on the first `has-type` edge
+      // pointing at it — a partial apply that could never be finished, reachable
+      // only when the failure fell between a topic node and its edges.
+      const replayedSlot = slotMintedBy(record);
+      if (replayedSlot !== undefined) {
+        entityIdBySlot.set(replayedSlot, existing.object_id);
       }
       // The counter advances on a REPLAY too, and that is not bookkeeping —
       // it is the per-assertion seq invariant. A run that died part-way (sink

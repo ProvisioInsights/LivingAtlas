@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { EndpointType } from "@living-atlas/contracts";
 import type { DerivedNodeOrigin } from "./legacy-endpoint.js";
+import { normalizeTopicValue } from "./legacy-vocabulary.js";
 import {
   MigrationOrigin,
   MigrationRecordedAtFidelity,
@@ -8,7 +9,8 @@ import {
   derivedIdempotencyKey,
   type EntitySlot,
   type MigrationIdempotencyKey,
-  type ProjectedEntityRecord
+  type ProjectedEntityRecord,
+  type TopicScheme
 } from "./target-plane.js";
 
 /**
@@ -55,10 +57,41 @@ export type DerivedNodeHandle = {
  * come first — and it is deliberately NOT part of the idempotency key, so a later
  * batch that grows the population replays the node instead of committing a second.
  */
+/**
+ * The value a derived node is keyed and named by.
+ *
+ * A TOPIC is a vocabulary word, so it takes the same canonical key every other
+ * topic in the plan takes: `job_title: "Investor"` and `job_title: "investor"`
+ * are one occupation, and keying them raw minted two nodes for it — a duplicate
+ * inside a single namespace, which no cross-namespace policy question excuses
+ * and which fails the closure gate like any other duplicate this migration
+ * creates.
+ *
+ * An ORGANIZATION name is deliberately left alone. A counterparty's name is an
+ * IDENTITY, not a word from a controlled vocabulary, and case-folding two
+ * companies together would be exactly the identity decision on a string match
+ * that the counterparty namespace refuses to make — the same rule that stops it
+ * matching a minted organization onto a same-named legacy one.
+ */
+function derivedNodeValue(request: DerivedNodeRequest): string {
+  return request.entity_type === "topic" ? normalizeTopicValue(request.value) : request.value;
+}
+
+/**
+ * The concept scheme a DERIVED topic belongs to, read off the attribute
+ * namespace that produced it. Only `job_title` mints topics here today; anything
+ * else that starts to is a scheme nobody has named, and it lands in `other`
+ * where the closure gate refuses to certify it rather than quietly joining an
+ * existing vocabulary and colliding with its labels.
+ */
+export function topicSchemeForDerivedAttribute(attribute: string): TopicScheme {
+  return attribute === DerivedAttributeNamespaces.jobTitle ? "occupation" : "other";
+}
+
 export class DerivedNodeRegistry {
   private readonly entries = new Map<
     string,
-    { request: DerivedNodeRequest; handle: DerivedNodeHandle; count: number }
+    { request: DerivedNodeRequest; value: string; handle: DerivedNodeHandle; count: number }
   >();
 
   constructor(private readonly authorityId: string) {}
@@ -68,23 +101,24 @@ export class DerivedNodeRegistry {
    * object that names the value, so the count ends up being the population.
    */
   register(request: DerivedNodeRequest): DerivedNodeHandle {
-    const key = `${request.attribute}\n${request.value}`;
+    const value = derivedNodeValue(request);
+    const key = `${request.attribute}\n${value}`;
     const existing = this.entries.get(key);
     if (existing) {
       existing.count += 1;
       return existing.handle;
     }
     const handle: DerivedNodeHandle = {
-      slot: derivedEntitySlot(this.authorityId, request.attribute, request.value),
+      slot: derivedEntitySlot(this.authorityId, request.attribute, value),
       idempotency_key: derivedIdempotencyKey({
         authority_id: this.authorityId,
         attribute: request.attribute,
-        value: request.value,
+        value,
         record_kind: "entity"
       }),
       entity_type: request.entity_type
     };
-    this.entries.set(key, { request, handle, count: 1 });
+    this.entries.set(key, { request, value, handle, count: 1 });
     return handle;
   }
 
@@ -95,7 +129,7 @@ export class DerivedNodeRegistry {
    */
   records(): ProjectedEntityRecord[] {
     return [...this.entries.values()]
-      .map(({ request, handle, count }) => ({
+      .map(({ request, value, handle, count }) => ({
         record_kind: "entity" as const,
         idempotency_key: handle.idempotency_key,
         origin: MigrationOrigin,
@@ -103,12 +137,18 @@ export class DerivedNodeRegistry {
         provenance: {
           derived_from: request.origin,
           legacy_attribute: request.attribute,
-          legacy_value: request.value,
+          // The value the node was keyed by, so provenance and identity cannot
+          // disagree: a record naming one spelling while its slot was derived
+          // from another sends an auditor looking for a node that is not there.
+          legacy_value: value,
           source_object_count: count
         },
         slot: handle.slot,
         entity_type: request.entity_type,
-        name: request.value,
+        ...(request.entity_type === "topic"
+          ? { topic_scheme: topicSchemeForDerivedAttribute(request.attribute) }
+          : {}),
+        name: value,
         aliases: [],
         attrs: {}
       }))

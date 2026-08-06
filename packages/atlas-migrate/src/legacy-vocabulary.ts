@@ -235,13 +235,42 @@ export function typeHasEnumeratedRetypes(legacyType: string): boolean {
 }
 
 /**
- * Topic values are the controlled vocabulary, so two spellings of one word must
- * not become two nodes. Normalisation is deliberately conservative: case and
- * surrounding whitespace only. Collapsing `car-rental` and `car rental` would
- * be a judgement about synonymy that belongs to a curator, not to a migration.
+ * THE CANONICAL KEY for a topic value, and the ONE rule every mechanism that can
+ * put a topic in the plane has to agree on.
+ *
+ * Three mechanisms read it: the mapper normalises the retired word here, the
+ * projector resolves a classification against the topics the plan already holds
+ * here, and the closure gate detects a collision here. Two of those computing
+ * "the same word" differently is worse than either being wrong alone — the
+ * projector would reuse a node the gate does not consider a match, or mint one
+ * the gate then reports, and neither answer would be reviewable.
+ *
+ * Three operations and no fourth:
+ *
+ *   - TRIM. `airline ` is a typing artifact, not a second concept.
+ *   - COLLAPSE INTERNAL WHITESPACE. Same argument, one column further in: a
+ *     double space between two words is invisible in every editor the corpus
+ *     was written in.
+ *   - CASE FOLD, with `toLowerCase` and never `toLocaleLowerCase`. The
+ *     locale-aware form maps `I` differently under a Turkish locale, so the key
+ *     — and therefore which nodes are one node — would depend on the machine
+ *     the migration happened to run on.
+ *
+ * WHAT IT DELIBERATELY DOES NOT DO, and why the line is here. It does not fold
+ * punctuation or separators, so `car-rental` and `car rental` stay two values.
+ * It does not stem or fold plurals, so `airline` and `airlines` stay two
+ * values. It applies no Unicode compatibility folding.
+ *
+ * The asymmetry is the whole argument: under-normalising leaves two nodes AND a
+ * gate finding somebody can act on, while over-normalising leaves one node and
+ * silence. Once two words share a key there is one slot, nothing collides, and
+ * no report can tell the owner that a distinction was thrown away. Every rule
+ * above is one an editor could have introduced without a human meaning it;
+ * anything beyond them is a judgement about synonymy, which belongs to a curator
+ * with evidence and not to a migration reading a string.
  */
 export function normalizeTopicValue(value: string): string {
-  return value.trim().toLowerCase();
+  return value.trim().replace(/\s+/gu, " ").toLowerCase();
 }
 
 /**

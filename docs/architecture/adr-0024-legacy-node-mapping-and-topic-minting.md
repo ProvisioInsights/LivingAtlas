@@ -243,3 +243,98 @@ disjoint and incomplete, and a `none` count that fell to zero would mean a leg
 had been given an origin nobody recorded. The plan report prints both aggregates
 above the per-object rows, because a queue of hundreds of rows is not a number
 anybody checks.
+
+## Superseded in part by ADR 0026's scheme resolution
+
+The amendment below introduced resolve-before-mint against topics the corpus
+already holds. ADR 0026 later resolved OPEN-14 by giving every topic a CONCEPT
+SCHEME and making identity `(scheme, canonical word)`, and that retires the
+cross-scheme half of this amendment: a classification resolves only within
+`entity-kind`, never onto a `subject-matter` topic the corpus holds. What
+survives unchanged is everything that operates inside one scheme — the canonical
+key and its stated exclusions, one node per value, the constraint-not-a-check
+argument, and the rule that reuse changes which node an edge points at and never
+whether the carrier is classified. Read this section for those; read ADR 0026 for
+why the cross-scheme case is a homonym rather than a duplicate.
+
+## Amended after the first real-data dry run: resolve before minting
+
+Section 3 said "one topic node per VALUE" and meant it only within the set of
+nodes this migration mints. It never asked whether the corpus already held a
+node for the word. The first dry run against the real graph produced a topic
+node minted for a retired subtype value sitting beside a legacy `topic` node
+that differed from it only in case — one concept, two nodes, and the plan was
+otherwise perfectly well formed.
+
+**A classification now RESOLVES before it mints.** `mintClassificationTopics`
+claims every topic node the plan already carries, and a retired subtype value
+that resolves to one of them gets a `has-type` edge pointing at that node instead
+of a second node beside it.
+
+Four properties, and each of them is a thing that was wrong before:
+
+1. **A canonical key, not the raw word.** `normalizeTopicValue` trims, collapses
+   internal whitespace and case-folds, and is the single function the mapper, the
+   projector and the closure gate all key on. Two of them computing "the same
+   word" differently would let the projector reuse a node the gate does not
+   consider a match, or mint one the gate then reports — an answer nobody could
+   review. The rule stops there on purpose: it does not fold punctuation, does
+   not stem, does not fold plurals. Under-normalising leaves two nodes and a gate
+   finding somebody can act on; over-normalising leaves one node and silence,
+   because once two words share a key nothing collides and no report can say a
+   distinction was thrown away.
+2. **Alias-aware, and ranked.** A legacy topic that carries the word as an ALIAS
+   is the same concept under a second label, and matching the display name alone
+   mints a duplicate just as surely as no matching at all. Names and aliases both
+   claim the word, at different strengths: a node NAMED the word outranks a node
+   that merely lists it, because a name is what a node is and an alias is a label
+   it also answers to. Between two claims of equal strength the smaller slot
+   wins — an arbitrary rule, deliberately, but one that is a function of the
+   records and not of the order they were read in. A snapshot re-serialised in a
+   different order must not move a classification onto the other node and produce
+   a plan that no longer diffs against the one the owner reviewed.
+3. **A constraint, not a check.** The topic namespace is a map from canonical key
+   to slot, and it is the only place a classification topic slot is issued. A
+   check at the mint site has to be remembered by whoever writes the next mint
+   site — that is precisely how the duplicate arrived — while a map cannot hold
+   two entries for one key. The mint-site behaviour is a consequence of the
+   constraint rather than a rule beside it.
+4. **Reuse changes WHICH node the edge points at, never WHETHER there is one.**
+   Every carrier still gets its classification edge under the same idempotency
+   key, because that key names the carrier and the value, not the target. A
+   reused topic costs the plan one `minted-entity` record and nothing else.
+
+`breakdown.classification_topics_reused` counts the corpus topics that were
+resolved onto. Reuse is otherwise invisible on a dry run — a plan that reused
+correctly and a plan whose corpus held no matching topic both carry no duplicate
+and no finding — and a regression back to minting would show up here as a fall
+to zero before it showed up as a gate failure. The closure gate recomputes it
+from the records like every other row, so it is not a number the plan can assert
+without having produced it.
+
+**Derived occupation topics are deliberately outside the namespace.** The
+`job_title` namespace mints its own topics, and ADR 0026 OPEN-14 settled that the
+migration will not merge an occupation topic with a subtype topic on a string
+match. Claiming them here would make the migration take that identity decision
+silently. The closure gate still refuses to certify a plan holding both, which is
+the separate question of whether such a plan may be applied unexamined.
+
+**The fixtures build corpus topics the way the importer does.** A topic reaches
+the migration as `object_type: "page"` under `import/logseq-semantic/typed-endpoint`
+or `import/logseq-topic-review/promoted`, with the record wrapped as
+`{kind, source_path_ref, endpoint}`. The first fixture for this change built a flat
+`object_type: "entity"` envelope instead: it exercised the same projector branch,
+so it went green, but it could not have failed for the reasons a real corpus fails
+— a regression in the unwrap, in the namespace table or in the endpoint schema
+would have left it passing while the real run refused every node. The fixtures now
+go through both real wrappers, and reuse is proven on that path rather than on a
+shape only the tests produce.
+
+**A retracted corpus topic still claims its word.** A tombstoned legacy topic
+node is projected as a record plus a retraction, and it is treated as the
+corpus's node for the word like any other. The alternative — skipping it and
+minting a parallel node — is the defect this amendment exists to remove, and it
+would additionally fail the gate. The consequence is that a classification can
+land on a node the same plan retracts. That is a data-quality question for the
+owner about a deleted topic, not a licence for the migration to create a second
+one; it is recorded here rather than left for somebody to rediscover.

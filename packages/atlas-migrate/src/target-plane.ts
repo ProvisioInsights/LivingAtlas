@@ -147,12 +147,75 @@ export function worldTimeFidelity(value: string | undefined): WorldTimeFidelity 
   return value.startsWith("~") ? "approximate" : "exact";
 }
 
+/**
+ * THE CONCEPT SCHEME A TOPIC NODE BELONGS TO.
+ *
+ * ADR 0023 says the topic node set IS Atlas's concept scheme, citing SKOS — but
+ * SKOS is not one flat scheme. `skos:ConceptScheme` exists precisely so two
+ * concepts can carry the same label without being duplicates: label uniqueness
+ * is scoped PER SCHEME, never globally. Three schemes were being flattened into
+ * one namespace here, and the label clash that follows from flattening them was
+ * then read as a defect.
+ *
+ * A person IS an investor and a firm IS an investment firm. One word, two
+ * concepts, two subjects of two different kinds of statement. Merging them would
+ * force one word onto two things; keeping them apart with no way to say WHY they
+ * differ leaves a duplicate nobody can distinguish from a real one. The scheme is
+ * what says why.
+ *
+ * DERIVED FROM THE PRODUCING MECHANISM, never hand-authored. Each value below is
+ * a function of which code path created the node, so the scheme cannot drift from
+ * the vocabulary it names:
+ *
+ *   - `subject-matter` — a `topic` node the CORPUS holds. What `about` edges
+ *     point at, and the owner's own vocabulary.
+ *   - `occupation` — derived from a person's `job_title`.
+ *   - `entity-kind` — minted from a retired subtype value. What `has-type`
+ *     points at.
+ *
+ * CLOSED, with the reserved `other` this codebase gives every closed enum — and
+ * the closure gate refuses to certify a topic that carries it. A fourth
+ * mechanism that starts producing topics lands in `other` and fails, which is
+ * the point: the alternative is an open string, where a new mechanism silently
+ * invents a scheme and its labels stop colliding with anything. A vocabulary
+ * whose schemes can be coined at the call site is not a controlled vocabulary.
+ */
+export const TopicSchemeValues = ["subject-matter", "occupation", "entity-kind", "other"] as const;
+export const TopicSchemeSchema = z.enum(TopicSchemeValues);
+export type TopicScheme = z.infer<typeof TopicSchemeSchema>;
+
 const ProjectedRecordBaseSchema = z.object({
   idempotency_key: MigrationIdempotencyKeySchema,
   origin: z.literal(MigrationOrigin),
   recorded_at_fidelity: z.literal(MigrationRecordedAtFidelity),
   provenance: ProjectedProvenanceSchema
 });
+
+/**
+ * One rule, applied to both record kinds that can carry a topic. Written once
+ * because the two schemas are edited by different lanes and a rule stated twice
+ * is a rule that ends up stated differently.
+ */
+function addTopicSchemeIssues(
+  record: { entity_type: string; topic_scheme?: TopicScheme },
+  ctx: z.RefinementCtx
+): void {
+  const isTopic = record.entity_type === "topic";
+  if (isTopic && record.topic_scheme === undefined) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["topic_scheme"],
+      message: "a topic node must name the concept scheme it belongs to; label uniqueness is scoped per scheme"
+    });
+  }
+  if (!isTopic && record.topic_scheme !== undefined) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["topic_scheme"],
+      message: `${record.entity_type} is not a topic and belongs to no concept scheme`
+    });
+  }
+}
 
 export const ProjectedEntityRecordSchema = ProjectedRecordBaseSchema.extend({
   record_kind: z.literal("entity"),
@@ -163,6 +226,13 @@ export const ProjectedEntityRecordSchema = ProjectedRecordBaseSchema.extend({
   // retired `company` subtype through the projection and land in the canonical
   // plane as a classification nothing in the vocabulary defines.
   entity_subtype: EndpointSubtypeSchema.optional(),
+  /**
+   * Present exactly when the record IS a topic, checked below for the same
+   * reason `entity_subtype` is: a scheme on a non-topic would name a vocabulary
+   * that has no members of that type, and a topic without one is a concept in no
+   * scheme — which is the flat namespace this field exists to end.
+   */
+  topic_scheme: TopicSchemeSchema.optional(),
   name: z.string().min(1).max(8_192),
   aliases: z.array(z.string().min(1).max(8_192)),
   description: z.string().min(1).max(8_192).optional(),
@@ -191,6 +261,7 @@ export const ProjectedEntityRecordSchema = ProjectedRecordBaseSchema.extend({
       message: `${record.entity_type} carries no subtype; classify it with a has-type edge to a topic node`
     });
   }
+  addTopicSchemeIssues(record, ctx);
 });
 export type ProjectedEntityRecord = z.infer<typeof ProjectedEntityRecordSchema>;
 
@@ -310,10 +381,14 @@ export const ProjectedMintedEntityRecordSchema = MintedRecordBaseSchema.extend({
   // table also mints organizations for venues, and a literal here would have to
   // be widened by whoever lands that -- at which point the widening is invisible.
   entity_type: EndpointTypeSchema,
+  /** Present exactly when this is a topic — see `TopicSchemeValues`. */
+  topic_scheme: TopicSchemeSchema.optional(),
   name: z.string().min(1).max(8_192),
   /** How many legacy nodes asked for this one node. Counted, never enumerated. */
   classified_node_count: z.number().int().positive()
-}).strict();
+})
+  .strict()
+  .superRefine(addTopicSchemeIssues);
 export type ProjectedMintedEntityRecord = z.infer<typeof ProjectedMintedEntityRecordSchema>;
 
 /**
@@ -481,24 +556,42 @@ export function derivedIdempotencyKey(input: {
 }
 
 /**
- * The slot a minted topic occupies, keyed by the VALUE rather than by any
- * legacy object.
+ * The slot a minted topic occupies, keyed by the SCHEME and the value rather
+ * than by any legacy object.
  *
  * This is what makes minting idempotent, and it is the one place a content-
- * derived key is correct: the topic node's whole identity IS the word. Two runs
- * over the same corpus, and nine organizations inside one run, all resolve to
- * this slot -- which is the difference between one controlled vocabulary and
- * nine unrelated nodes that happen to share a spelling.
+ * derived key is correct: a topic node's whole identity IS its word within its
+ * vocabulary. Two runs over the same corpus, and nine organizations inside one
+ * run, all resolve to this slot -- which is the difference between one
+ * controlled vocabulary and nine unrelated nodes that happen to share a
+ * spelling.
+ *
+ * THE SCHEME IS PART OF THE SEED, not a discriminator the caller folds into the
+ * value. Label uniqueness is scoped per scheme, so an occupation and an entity
+ * kind spelled the same are two concepts and must land on two slots; a key that
+ * saw only the word would give them one, and the difference would be invisible
+ * at the call site. Schemes are a closed kebab-case enum, so the `:` separator
+ * cannot be ambiguous even for a value that contains one.
  *
  * The `minted-topic` discriminator is in the seed so a minted slot can never
  * collide with the slot of a legacy object whose id happened to be the value.
  */
-export function mintedTopicSlot(authorityId: string, topicValue: string): EntitySlot {
-  return `slot_entity_${hex(`${ProjectorVersion}:${authorityId}:minted-topic:${topicValue}`, 24)}`;
+export function mintedTopicSlot(authorityId: string, scheme: TopicScheme, topicValue: string): EntitySlot {
+  return `slot_entity_${hex(`${ProjectorVersion}:${authorityId}:minted-topic:${scheme}:${topicValue}`, 24)}`;
 }
 
-export function mintedTopicIdempotencyKey(authorityId: string, topicValue: string): MigrationIdempotencyKey {
-  return `la_idem_${hex([ProjectorVersion, authorityId, "minted-topic", topicValue].join("\n"), 32)}`;
+/**
+ * Scheme-scoped for the same reason the slot is, and it matters more here: two
+ * schemes minting one word with one idempotency key would have the second
+ * commit replay the first, so one of the two concepts would silently never
+ * reach the plane.
+ */
+export function mintedTopicIdempotencyKey(
+  authorityId: string,
+  scheme: TopicScheme,
+  topicValue: string
+): MigrationIdempotencyKey {
+  return `la_idem_${hex([ProjectorVersion, authorityId, "minted-topic", scheme, topicValue].join("\n"), 32)}`;
 }
 
 /**
