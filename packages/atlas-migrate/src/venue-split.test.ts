@@ -455,7 +455,7 @@ describe("derived records", () => {
    * unreachable in practice — while the three ways a plan can actually produce a
    * second node for one word all went unseen.
    */
-  it("refuses to certify a plan where an occupation and a subtype hold one word", () => {
+  it("reports an occupation and an entity kind holding one word, and still certifies", () => {
     const plan = planWith(
       endpointEnvelope("la_object_legacy_venue_dup1", {
         type: "organization",
@@ -472,25 +472,67 @@ describe("derived records", () => {
     );
     const gate = evaluateClosureGate(plan);
 
-    expect(gate.ok).toBe(false);
-    const collision = gate.findings.find((item) => item.code === "duplicate-minted-topic");
-    expect(collision?.subjects).toEqual(["consultant"]);
+    // ADR 0026 OPEN-14, resolved. A person IS a consultant and a firm IS a
+    // consultancy: one word, two concept schemes, two concepts. The migration
+    // does not merge them and the gate does not refuse them — it reports the
+    // homonym so a curator can still decide they are one thing.
+    expect(gate.ok).toBe(true);
+    const collision = gate.findings.find((item) => item.code === "cross-scheme-topic-homonym");
+    expect(collision?.severity).toBe("tolerated");
+    expect(gate.findings.map((item) => item.code)).not.toContain("duplicate-minted-topic");
+    // Two slots, and the WORD itself must never appear: the plan report is
+    // contractually ids-types-and-counts, and a topic name is graph content.
+    // The first real-data run leaked a private topic name through this finding.
+    expect(collision?.subjects).toHaveLength(2);
+    expect(collision?.subjects).not.toContain("consultant");
+    for (const subject of collision?.subjects ?? []) {
+      expect(subject).not.toMatch(/consultant/i);
+    }
   });
 
-  it("refuses to certify a plan that mints a topic the corpus already holds", () => {
+  /**
+   * This case has been through both answers, and the scheme is why it settled.
+   * It first asserted the gate REFUSED such a plan; then that the classification
+   * RESOLVED onto the corpus node. Both were wrong for the same reason: the two
+   * nodes are in different concept schemes. The corpus's topic is what `about`
+   * edges point at; the minted one is what `has-type` points at. Landing the
+   * classification on the owner's subject would assert they are one concept on a
+   * string match — the move ADR 0026 OPEN-14 rejects — so there are two nodes,
+   * and the gate reports a homonym instead of a duplicate.
+   *
+   * The gate's refusal of a duplicate INSIDE one scheme is unchanged and still
+   * under test in `topic-identity.test.ts`.
+   */
+  it("keeps a corpus subject and a minted entity kind apart under one word", () => {
     const plan = planWith(
       endpointEnvelope("la_object_legacy_venue_dup3", {
         type: "organization",
         name: "Employer F",
         subtype: "aviation"
       }),
-      // A legacy topic node for the same concept. Minting a second is the defect
-      // even though nothing in the plan is malformed: no query rejoins them.
+      // A legacy topic node for the same concept. Minting a second beside it is
+      // the defect, even though nothing in the plan would be malformed: no query
+      // afterwards rejoins the two.
       endpointEnvelope("la_object_legacy_venue_dup4", { type: "topic", name: "Aviation" })
     );
     const gate = evaluateClosureGate(plan);
+    const corpusTopic = plan.records
+      .filter(isEntityRecord)
+      .find((record) => record.entity_type === "topic");
+    const classification = plan.records.filter(isMintedRelationshipRecord);
 
-    expect(gate.findings.map((item) => item.code)).toContain("duplicate-minted-topic");
+    // The corpus topic is `subject-matter` and the classification is an
+    // `entity-kind`, so they are two concepts under one word rather than a
+    // duplicate: reported as a homonym, tolerated, and the plan still certifies.
+    expect(gate.ok).toBe(true);
+    expect(gate.findings.map((item) => item.code)).toEqual(["cross-scheme-topic-homonym"]);
+    expect(plan.records.filter(isMintedEntityRecord)).toHaveLength(1);
+    expect(classification).toHaveLength(1);
+    expect(classification[0]?.target_slot).not.toBe(corpusTopic?.slot);
+    expect(plan.breakdown.topic_nodes_by_scheme).toEqual([
+      { scheme: "subject-matter", count: 1 },
+      { scheme: "entity-kind", count: 1 }
+    ]);
   });
 
   it("is a pure function of the source, so plans still diff cleanly", () => {

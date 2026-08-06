@@ -340,7 +340,11 @@ describe("projecting the legacy vocabulary fixture", () => {
   it("points every has-type edge at the one node minted for its value", () => {
     const plan = planFixture();
     const classifications = plan.records.filter(isMintedRelationshipRecord);
-    const airlineSlot = mintedTopicSlot(legacyVocabularyFixtureAuthorityId, "airline");
+    // The slot is scoped by SCHEME as well as by word: a classification minted
+    // from a retired subtype belongs to the entity-kind vocabulary, and an
+    // occupation spelled the same would be a different concept in a different
+    // scheme with a different slot.
+    const airlineSlot = mintedTopicSlot(legacyVocabularyFixtureAuthorityId, "entity-kind", "airline");
     const airlineEdges = classifications.filter((record) => record.target_slot === airlineSlot);
 
     expect(airlineEdges).toHaveLength(legacyVocabularyFixtureCount((spec) => spec.subtype === "airline"));
@@ -554,9 +558,12 @@ describe("projecting the legacy vocabulary fixture", () => {
 
     expect(gate.ok).toBe(false);
     expect(gate.findings.map((item) => item.code)).toContain("duplicate-minted-topic");
-    expect(gate.findings.find((item) => item.code === "duplicate-minted-topic")?.subjects).toEqual([
-      original.minted_basis.legacy_value
-    ]);
+    const collision = gate.findings.find((item) => item.code === "duplicate-minted-topic");
+    // Slots, never the word. See the note on checkTopicVocabulary: reporting the
+    // colliding word is what put a private topic name into a report whose own
+    // contract forbids content.
+    expect(collision?.subjects).toHaveLength(2);
+    expect(collision?.subjects).not.toContain(original.minted_basis.legacy_value);
   });
 
   it("fails the closure gate on a minted record the plan does not claim", () => {

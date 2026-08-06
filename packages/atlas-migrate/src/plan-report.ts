@@ -85,6 +85,20 @@ export function renderProjectionPlanReport(plan: ProjectionPlan, gate?: ClosureG
   );
 
   /**
+   * The three vocabularies as three populations. Label uniqueness is scoped per
+   * scheme, so an operator reading a homonym finding needs to know which schemes
+   * exist and how big each is; one flat topic count cannot answer that, and a
+   * scheme that appears or vanishes between dry runs shows up here before any
+   * finding fires.
+   */
+  lines.push(
+    ...section(
+      "topic-schemes",
+      breakdown.topic_nodes_by_scheme.map((entry) => `  ${pad(entry.scheme)}${entry.count}`)
+    )
+  );
+
+  /**
    * The two aggregates a reviewer reads FIRST, before the per-object rows.
    *
    * `attributes-without-a-contract-slot` is where the frozen-revision gap shows
@@ -145,7 +159,10 @@ export function renderProjectionPlanReport(plan: ProjectionPlan, gate?: ClosureG
   if (gate) {
     lines.push("", "closure-gate", `  ${pad("verdict")}${gate.ok ? "pass" : "FAIL"}`);
     for (const item of gate.findings) {
-      lines.push(`  ${pad(item.code)}${item.subject_count}`);
+      // The severity travels with every finding, so a `pass` verdict printed
+      // above a list of findings reads as what it is rather than as a
+      // contradiction the reader has to resolve by knowing the codes.
+      lines.push(`  ${pad(`${item.code} [${item.severity}]`)}${item.subject_count}`);
       lines.push(`    ${item.detail}`);
       for (const subject of item.subjects) {
         lines.push(`      ${subject}`);

@@ -93,7 +93,9 @@ async function main(): Promise<void> {
   // (or CI) cannot mistake "the projector refused to certify" for success.
   process.stderr.write(`\ngate ok: ${gate.ok}  findings: ${gate.findings.length}\n`);
   for (const finding of gate.findings) {
-    process.stderr.write(`  ${finding.code}: ${finding.subject_count}\n`);
+    // Severity first: a tolerated finding is still printed on every run, and the
+    // operator has to be able to tell at a glance which ones held the gate open.
+    process.stderr.write(`  [${finding.severity}] ${finding.code}: ${finding.subject_count}\n`);
   }
   if (!gate.ok) process.exitCode = 1;
 }

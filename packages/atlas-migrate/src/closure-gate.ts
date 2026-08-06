@@ -5,16 +5,19 @@ import {
   type ProjectionPlan,
   type SourceOutcome
 } from "./projection.js";
+import { normalizeTopicValue } from "./legacy-vocabulary.js";
 import {
   ProjectedRecordSchema,
   isEntityRecord,
+  isLegacyObjectProvenance,
   isMintedEntityRecord,
   isMintedRelationshipRecord,
   isProjectedFromLegacyObject,
   isRelationshipRecord,
   isRetractionRecord,
   slotMintedBy,
-  type ProjectedRecord
+  type ProjectedRecord,
+  type TopicScheme
 } from "./target-plane.js";
 
 /**
@@ -36,14 +39,71 @@ export const ClosureGateFindingCodeValues = [
   "record-not-accounted",
   "minted-record-not-accounted",
   "duplicate-minted-topic",
+  "duplicate-source-topic",
+  "cross-scheme-topic-homonym",
+  "unnamed-topic-scheme",
   "alias-row-missing",
   "alias-target-missing-record",
   "other"
 ] as const;
 export type ClosureGateFindingCode = (typeof ClosureGateFindingCodeValues)[number];
 
+/**
+ * Whether a finding stops the plan certifying.
+ *
+ * `tolerated` exists for exactly one shape of problem: a condition the migration
+ * FOUND rather than caused, that the owner has decided to carry across as it
+ * stands. It is still counted, still named and still printed on every run — the
+ * owner must not be able to stop learning about it — but refusing to certify
+ * would block the migration forever on a state the source is already in, and no
+ * amount of re-running the projector changes a fact about the corpus.
+ *
+ * It is NOT an acknowledgement flag or a suppression list. A code is tolerated
+ * or it is not; there is no per-subject exemption, because an exemption is a
+ * hole the size of whatever it exempts (ADR 0026, OPEN-19).
+ */
+export const ClosureGateSeverityValues = ["failure", "tolerated"] as const;
+export type ClosureGateSeverity = (typeof ClosureGateSeverityValues)[number];
+
+/**
+ * The severity of each code, declared once and read by `finding`.
+ *
+ * A `Record` over the code union rather than a lookup with a default: a new code
+ * fails to compile until somebody decides whether it blocks a migration, which
+ * is the decision most likely to be made by accident. And because the severity
+ * is derived from the code, one code can never be filed at two severities —
+ * which is what makes "read the code, not the prose" a true statement.
+ */
+export const ClosureGateFindingSeverity: Record<ClosureGateFindingCode, ClosureGateSeverity> = {
+  "closure-arithmetic-mismatch": "failure",
+  "breakdown-mismatch": "failure",
+  "plan-digest-mismatch": "failure",
+  "invalid-record-shape": "failure",
+  "unclassified-source-category": "failure",
+  "unnamed-refusal-reason": "failure",
+  "unnamed-source-disposition": "failure",
+  "dangling-projected-endpoint": "failure",
+  "retraction-target-missing": "failure",
+  "duplicate-idempotency-key": "failure",
+  "record-not-accounted": "failure",
+  "minted-record-not-accounted": "failure",
+  "duplicate-minted-topic": "failure",
+  // The two tolerated codes. See `checkTopicVocabulary` for the argument.
+  "duplicate-source-topic": "tolerated",
+  "cross-scheme-topic-homonym": "tolerated",
+  // A topic in no named scheme is the enum escape hatch, and it fails like every
+  // other one: it means a mechanism started producing topics that nobody has
+  // decided a vocabulary for, and its labels collide with nothing until somebody
+  // does.
+  "unnamed-topic-scheme": "failure",
+  "alias-row-missing": "failure",
+  "alias-target-missing-record": "failure",
+  other: "failure"
+};
+
 export type ClosureGateFinding = {
   code: ClosureGateFindingCode;
+  severity: ClosureGateSeverity;
   detail: string;
   /** Legacy ids or record keys, truncated for report size but counted in full. */
   subjects: string[];
@@ -65,6 +125,7 @@ const MaxReportedSubjects = 20;
 function finding(code: ClosureGateFindingCode, detail: string, subjects: string[]): ClosureGateFinding {
   return {
     code,
+    severity: ClosureGateFindingSeverity[code],
     detail,
     subjects: subjects.slice(0, MaxReportedSubjects).sort(),
     subject_count: subjects.length
@@ -100,12 +161,21 @@ export function evaluateClosureGate(plan: ProjectionPlan, options: ClosureGateOp
   findings.push(...checkNamedCategories(plan.outcomes));
   findings.push(...checkRecordAccounting(plan.outcomes, plan.records));
   findings.push(...checkMintedRecords(plan));
+  // A check in its own right rather than a branch of the minted-record
+  // accounting it used to hang off: one of its two findings is about records the
+  // migration never minted, and a check that can report on the corpus alone does
+  // not belong inside a function named for what the plan mints.
+  findings.push(...checkTopicVocabulary(plan.records));
   findings.push(...checkEndpointsResolve(plan.records));
   findings.push(...checkAliasRows(plan.outcomes, plan.records));
 
   return {
     gate_schema: ClosureGateSchemaName,
-    ok: findings.length === 0,
+    // Certification turns on the FAILURES, never on the finding count. A
+    // tolerated finding that suppressed `ok` would be a hard failure wearing a
+    // softer word, and a caller reading `findings.length` instead of this flag
+    // would reintroduce exactly that.
+    ok: !findings.some((item) => item.severity === "failure"),
     plan_digest: plan.plan_digest,
     breakdown,
     findings
@@ -254,13 +324,13 @@ function checkNamedCategories(outcomes: SourceOutcome[]): ClosureGateFinding[] {
 
 /**
  * Minted records are owned by the PLAN, so they are checked against the plan's
- * own claim list rather than against the outcomes.
+ * own claim list rather than against the outcomes. A minted record nobody claims
+ * is a node that would land in the plane with no reviewable reason for existing,
+ * and a claim naming no record is a list that has stopped describing the plan.
  *
- * Two failures matter here and they are different. A minted record nobody claims
- * is a node that would land in the plane with no reviewable reason for existing.
- * Two nodes for one word is the defect the whole change exists to prevent: the
- * topic set IS the controlled vocabulary, and a duplicate splits one concept
- * into two that no query will ever rejoin.
+ * Whether the plan holds two nodes for one word is a different question, asked
+ * by `checkTopicVocabulary` over every topic-typed record whatever produced it —
+ * including the ones nothing minted.
  */
 function checkMintedRecords(plan: ProjectionPlan): ClosureGateFinding[] {
   const findings: ClosureGateFinding[] = [];
@@ -281,60 +351,245 @@ function checkMintedRecords(plan: ProjectionPlan): ClosureGateFinding[] {
     );
   }
 
-  findings.push(...checkTopicVocabulary(plan.records));
-
   return findings;
 }
 
 /**
- * ONE SLOT PER WORD, across every mechanism that can put a topic in the plane.
+ * ONE SLOT PER (SCHEME, WORD) — and THREE ANSWERS, because two topic nodes
+ * sharing a word are three different situations and only one of them is a bug.
  *
- * Keyed on the normalised NAME rather than on `minted_basis.legacy_value`, and
+ * Keyed on the canonical NAME rather than on `minted_basis.legacy_value`, and
  * read off every topic-typed record rather than off the minted ones alone. The
  * old check could only ever see `minted-entity` records, and two of those with
  * one value share a slot and an idempotency key — so `duplicate-idempotency-key`
  * fired first and this branch was unreachable in practice. Meanwhile the plan
- * had three other ways to produce a topic node: the subtype classifier mints
- * one, the derived-node registry creates one per occupation under the
- * `job_title` namespace, and the corpus itself may already hold a legacy topic
- * node with that name. Any two of the three landing on one word is exactly the
- * defect, and the guard could see none of them.
+ * had three other ways to produce a topic node, which are now three declared
+ * SCHEMES: the corpus's own topics, the occupations derived from `job_title`,
+ * and the entity kinds minted from retired subtype values.
  *
- * This DOES fire on the pair ADR-0026 OPEN-14 ratified — a subtype topic and an
- * occupation topic spelled the same — and that is intended. OPEN-14 decided the
- * migration will not MERGE them on a string match; it did not decide the plan
- * should be certified for apply while holding them. The operator learns it on
- * the dry run, with the colliding words named, which is when curating one of
- * them is still cheap.
+ * The key comes from `normalizeTopicValue`, the same function the projector
+ * resolves a classification with. Two spellings of "the same word" computed
+ * differently in the two places is the failure that produces a plan the
+ * projector considers clean and the gate considers broken, or worse the reverse.
+ *
+ * It keys on the display NAME only, and that is a stated gap rather than an
+ * oversight: two nodes where one's ALIAS equals the other's name both answer to
+ * the word and are not reported here. Two concepts sharing one alias is ordinary
+ * and legitimate — an alias is a label, not an identity — so a finding on it
+ * would fire on healthy corpora and teach the operator to ignore the code.
+ *
+ * SAME SCHEME, ONE OF THEM MINTED — `duplicate-minted-topic`, a FAILURE.
+ * Two nodes inside one vocabulary, at least one made by this migration. Label
+ * uniqueness within a scheme is the property that makes the scheme controlled,
+ * so this is a defect however it arrived, and it is unchanged by the scheme
+ * split: nine organizations saying `airline` must still reach one node.
+ *
+ * SAME SCHEME, BOTH FROM THE CORPUS — `duplicate-source-topic`, TOLERATED.
+ * The corpus itself already holds two nodes for one word. The migration is
+ * faithfully carrying a data-quality problem that predates it, and the owner has
+ * decided that is the right thing to do: both nodes come across, both legacy ids
+ * stay resolvable through the alias ledger, and the two are merged later inside
+ * Atlas through the entity-merge path, where the decision has evidence and a
+ * record. Failing here would block the migration forever on a condition no
+ * re-run can change, and dropping or merging one of them would be the migration
+ * silently making an identity decision.
+ *
+ * DIFFERENT SCHEMES — `cross-scheme-topic-homonym`, TOLERATED.
+ * Not a duplicate at all. A person IS an investor and a firm IS an investment
+ * firm: one word, two concepts, in two vocabularies, and SKOS scopes label
+ * uniqueness per scheme precisely so this is expressible. Merging them would
+ * force one word onto two things — which is why ADR 0026 OPEN-14 is resolved by
+ * separating the schemes rather than by merging the labels.
+ *
+ * It is still REPORTED, because two schemes reaching for one word may genuinely
+ * be one concept a curator wants to unify later, and an unreported homonym is
+ * one nobody can choose about. Reported is not the same as wrong.
+ *
+ * Three separate CODES, not one code with a note in the detail, so no reader has
+ * to parse prose to tell a defect from a legitimate homonym — and so a
+ * regression that starts minting duplicates inside a scheme cannot hide inside
+ * a tolerated bucket: it arrives under a code whose severity is `failure`, and
+ * no plan carrying it certifies.
+ *
+ * ⚠ SUBJECTS ARE SLOTS, NEVER THE WORD ITSELF.
+ *
+ * An earlier version reported the colliding words, reasoning that naming them
+ * helps the operator curate. It does — and it also put personal graph content
+ * into an artifact whose own contract is "ids, types and counts only". The first
+ * real-data run proved the cost: one of the two colliding words was a private
+ * topic name, and it landed in the report file, on the terminal, and in
+ * anything the operator might have pasted the report into.
+ *
+ * Slots are opaque and resolve to the word locally, so the operator loses
+ * nothing they cannot recover on the machine that already holds the graph, and
+ * the report stays shareable. A finding that has to leak content to be useful is
+ * a finding that needs a different subject, not an exemption. This applies to
+ * the tolerated finding exactly as hard as to the failing one: a duplicate the
+ * owner has accepted is still a private topic name.
  */
+/**
+ * WHICH MECHANISM PUT THIS TOPIC IN THE PLAN — a code constant, never content.
+ *
+ * The plan has three ways to produce a topic node and the remedy differs for
+ * each, so a finding that reports only slots leaves the operator unable to tell
+ * a reuse failure from a cross-namespace collision. That is not hypothetical: a
+ * dry run reported two colliding slots, the pair was read as "the migration
+ * minted a node beside one the corpus already held", and the real pair was an
+ * occupation topic beside a subtype topic — neither from the corpus, and no
+ * amount of resolving against it would have removed either. A round of work went
+ * into looking for a bug that was not there.
+ *
+ * A namespace name and a record kind are facts about the software. Printing them
+ * stays inside the ids-types-and-counts contract that keeps subjects as slots.
+ */
+function topicMechanism(record: ProjectedRecord): string {
+  if (record.record_kind === "minted-entity") {
+    return "minted-from-subtype";
+  }
+  if (record.record_kind !== "entity") {
+    return "other";
+  }
+  return isLegacyObjectProvenance(record.provenance)
+    ? CorpusTopicMechanism
+    : `derived-from-${record.provenance.legacy_attribute}`;
+}
+
+/**
+ * `alwaysReport` names mechanisms that are printed even at zero. A count that is
+ * absent reads as "not measured"; `projected-from-corpus=0` reads as "reuse had
+ * nothing to resolve onto", which is the sentence that was got wrong once.
+ */
+function mechanismBreakdown(mechanisms: string[], alwaysReport: string[] = []): string {
+  const counts = new Map<string, number>(alwaysReport.map((mechanism) => [mechanism, 0]));
+  for (const mechanism of mechanisms) {
+    counts.set(mechanism, (counts.get(mechanism) ?? 0) + 1);
+  }
+  return [...counts.entries()]
+    .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+    .map(([mechanism, count]) => `${mechanism}=${count}`)
+    .join(" ");
+}
+
+const CorpusTopicMechanism = "projected-from-corpus";
+
+/** One topic node, as the vocabulary check sees it. */
+type TopicNode = { slot: string; scheme: TopicScheme; mechanism: string };
+
+/** `by scheme: … | by mechanism: …`, the two counts every topic finding carries. */
+function topicBreakdown(nodes: TopicNode[], alwaysReport: string[] = []): string {
+  return (
+    `By scheme: ${mechanismBreakdown(nodes.map((node) => node.scheme))}` +
+    ` | by mechanism: ${mechanismBreakdown(nodes.map((node) => node.mechanism), alwaysReport)}`
+  );
+}
+
 function checkTopicVocabulary(records: ProjectedRecord[]): ClosureGateFinding[] {
-  const slotsByName = new Map<string, Set<string>>();
+  /** canonical word -> the topic nodes that answer to it, whatever their scheme. */
+  const nodesByWord = new Map<string, TopicNode[]>();
+  const unnamedScheme: string[] = [];
 
   for (const record of records) {
     if (record.record_kind !== "entity" && record.record_kind !== "minted-entity") {
       continue;
     }
-    if (record.entity_type !== "topic") {
+    if (record.entity_type !== "topic" || record.topic_scheme === undefined) {
+      // A topic with no scheme at all fails its own record schema, so it is
+      // already reported as `invalid-record-shape`; counting it here too would
+      // report one defect twice under two codes.
       continue;
     }
-    const name = record.name.trim().toLowerCase();
-    const slots = slotsByName.get(name) ?? new Set<string>();
-    slots.add(record.slot);
-    slotsByName.set(name, slots);
+    if (record.topic_scheme === "other") {
+      unnamedScheme.push(record.slot);
+    }
+    const word = normalizeTopicValue(record.name);
+    const nodes = nodesByWord.get(word) ?? [];
+    // Keyed by slot so one node counted twice — the same record reached through
+    // two lists — cannot look like a collision.
+    if (!nodes.some((node) => node.slot === record.slot)) {
+      nodes.push({ slot: record.slot, scheme: record.topic_scheme, mechanism: topicMechanism(record) });
+    }
+    nodesByWord.set(word, nodes);
   }
 
-  const collided = [...slotsByName.entries()].filter(([, slots]) => slots.size > 1).map(([name]) => name);
-  if (collided.length === 0) {
-    return [];
+  const minted: TopicNode[] = [];
+  const source: TopicNode[] = [];
+  const homonyms: TopicNode[] = [];
+
+  for (const nodes of nodesByWord.values()) {
+    const bySchemeEntries = new Map<TopicScheme, TopicNode[]>();
+    for (const node of nodes) {
+      bySchemeEntries.set(node.scheme, [...(bySchemeEntries.get(node.scheme) ?? []), node]);
+    }
+
+    // WITHIN a scheme: label uniqueness is the property that makes the scheme
+    // controlled, so two nodes here are a duplicate whoever made them.
+    for (const sameScheme of bySchemeEntries.values()) {
+      if (sameScheme.length < 2) {
+        continue;
+      }
+      // One migration-created node among them is enough: the duplicate exists
+      // because this run created a node, whatever the other slot came from.
+      const bucket = sameScheme.some((node) => node.mechanism !== CorpusTopicMechanism) ? minted : source;
+      bucket.push(...sameScheme);
+    }
+
+    // ACROSS schemes: not a duplicate. Reported so a curator can decide, never
+    // failed, because the schemes are what say the two are different concepts.
+    if (bySchemeEntries.size > 1) {
+      homonyms.push(...nodes);
+    }
   }
 
-  return [
-    finding(
-      "duplicate-minted-topic",
-      "one word holds more than one topic slot; the controlled vocabulary would carry two nodes for one concept",
-      collided
-    )
-  ];
+  const findings: ClosureGateFinding[] = [];
+  if (minted.length > 0) {
+    findings.push(
+      finding(
+        "duplicate-minted-topic",
+        "this migration created a second topic node inside one concept scheme for a word that scheme " +
+          "already holds; label uniqueness within a scheme is what makes it controlled, and no query " +
+          "rejoins the two. Subjects are the colliding slots — resolve them to their words locally. " +
+          topicBreakdown(minted, [CorpusTopicMechanism]),
+        minted.map((node) => node.slot)
+      )
+    );
+  }
+  if (source.length > 0) {
+    findings.push(
+      finding(
+        "duplicate-source-topic",
+        "topic nodes the corpus itself holds share a word inside one scheme; the migration is reporting " +
+          "a duplicate that predates it. Carried across as they stand, every id stays resolvable " +
+          "through the alias ledger, and merging them is a curation step inside Atlas. Subjects are " +
+          `the colliding slots — resolve them to their words locally. ${topicBreakdown(source)}`,
+        source.map((node) => node.slot)
+      )
+    );
+  }
+  if (homonyms.length > 0) {
+    findings.push(
+      finding(
+        "cross-scheme-topic-homonym",
+        "one word names concepts in more than one scheme — an occupation and an entity kind, say, " +
+          "which are two things a person and a firm can each be. Not a duplicate and not a defect: " +
+          "label uniqueness is scoped per scheme. Reported because two schemes reaching for one word " +
+          "may still be one concept a curator wants to unify, and that is a decision with evidence " +
+          `rather than a string match. Subjects are the slots — resolve them locally. ${topicBreakdown(homonyms)}`,
+        homonyms.map((node) => node.slot)
+      )
+    );
+  }
+  if (unnamedScheme.length > 0) {
+    findings.push(
+      finding(
+        "unnamed-topic-scheme",
+        "a topic node carries the scheme escape hatch instead of a declared concept scheme; some " +
+          "mechanism is producing topics for a vocabulary nobody has named, and its labels collide " +
+          "with nothing until somebody does",
+        unnamedScheme
+      )
+    );
+  }
+  return findings;
 }
 
 function checkRecordAccounting(outcomes: SourceOutcome[], records: ProjectedRecord[]): ClosureGateFinding[] {
