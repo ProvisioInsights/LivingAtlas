@@ -87,11 +87,12 @@ describe("carrying outline blocks across without modelling them", () => {
   it("carries every measured key verbatim", () => {
     const plan = planFor();
 
+    // blockWithoutProperties is deliberately absent: the measured shape always
+    // carries the key, so that block refuses — see the refusal test below.
     for (const legacyObjectId of [
       legacyBlockFixtureIds.block,
       legacyBlockFixtureIds.blockAtOrigin,
       legacyBlockFixtureIds.blockEmptyText,
-      legacyBlockFixtureIds.blockWithoutProperties,
       legacyBlockFixtureIds.blockTombstoned
     ]) {
       expect(blockFor(plan, legacyObjectId).block).toEqual(sourcePayloadFor(legacyObjectId));
@@ -121,18 +122,30 @@ describe("carrying outline blocks across without modelling them", () => {
   });
 
   /**
-   * Absent in, absent out. The record IS the payload rather than a normalisation
-   * of it, so a block that carried no properties must not gain an empty map —
-   * the later modelling pass has to be able to tell "no properties" from "the
-   * importer wrote an empty map", and a synthesised default destroys that.
+   * The measurement says `properties` is ALWAYS present — an array, empty on
+   * nearly every block — so a block missing the key is a shape the measurement
+   * never saw, and it refuses by name like any other unmeasured shape.
+   *
+   * This replaces an "absent in, absent out" test written before the first real
+   * rehearsal. That rehearsal refused every block in the corpus because the
+   * schema had been written from a prose description ("key:: value pairs")
+   * instead of a measurement: the describer meant the concept, the schema heard
+   * an object, and the real field is an array of {key, value} pairs. The empty
+   * array is still carried AS an empty array — the record is the payload, and
+   * an importer that always writes the key is telling us the field exists.
    */
-  it("does not invent a properties map for a block that carried none", () => {
+  it("refuses a block missing the properties key, and carries an empty array verbatim", () => {
     const plan = planFor();
 
-    expect(Object.keys(blockFor(plan, legacyBlockFixtureIds.blockWithoutProperties).block)).not.toContain(
-      "properties"
+    const missing = plan.outcomes.find(
+      (outcome) => outcome.legacy_object_id === legacyBlockFixtureIds.blockWithoutProperties
     );
-    expect(blockFor(plan, legacyBlockFixtureIds.blockAtOrigin).block.properties).toEqual({});
+    expect(missing?.disposition.kind).toBe("refused");
+    if (missing?.disposition.kind === "refused") {
+      expect(missing.disposition.reason).toBe("unmeasured-block-shape");
+    }
+
+    expect(blockFor(plan, legacyBlockFixtureIds.blockAtOrigin).block.properties).toEqual([]);
   });
 
   it("keeps the block traceable to the legacy object and the namespace it was measured against", () => {

@@ -1061,7 +1061,11 @@ export const legacyBlockFixtureIds = {
   blockAtOrigin: "la_object_legacy_lsblock_1",
   /** An empty bullet. A node of the outline whose text happens to be "". */
   blockEmptyText: "la_object_legacy_lsblock_2",
-  /** No `properties` key at all, which is the ordinary case in an outline. */
+  /**
+   * No `properties` key at all. MEASURED as a shape that never occurs — every
+   * real block carries the key, empty array or not — so this refuses as
+   * `unmeasured-block-shape` rather than being carried.
+   */
   blockWithoutProperties: "la_object_legacy_lsblock_3",
   /** Deleted: carried AND retracted, exactly like a deleted node. */
   blockTombstoned: "la_object_legacy_lsblock_4",
@@ -1100,7 +1104,7 @@ function blockPayload(fields: {
   index: number;
   depth: number;
   text: string;
-  properties?: Record<string, unknown>;
+  properties?: Array<{ key: string; value: string }>;
 }): Record<string, unknown> {
   return {
     kind: "block",
@@ -1138,7 +1142,7 @@ export function createLogseqBlockFixture(): GraphObjectEnvelope[] {
         index: 3,
         depth: 2,
         text: legacyBlockFixtureText.nested,
-        properties: { "synthetic-key": "synthetic-value", "synthetic-count": 2 }
+        properties: [{ key: "synthetic-key", value: "synthetic-value" }]
       }),
       blockNamespace
     ),
@@ -1151,7 +1155,7 @@ export function createLogseqBlockFixture(): GraphObjectEnvelope[] {
         index: 0,
         depth: 0,
         text: legacyBlockFixtureText.origin,
-        properties: {}
+        properties: []
       }),
       blockNamespace
     ),
@@ -1164,7 +1168,7 @@ export function createLogseqBlockFixture(): GraphObjectEnvelope[] {
         index: 1,
         depth: 1,
         text: "",
-        properties: {}
+        properties: []
       }),
       blockNamespace
     ),
@@ -1189,7 +1193,7 @@ export function createLogseqBlockFixture(): GraphObjectEnvelope[] {
         index: 1,
         depth: 0,
         text: legacyBlockFixtureText.tombstoned,
-        properties: {}
+        properties: []
       }),
       { ...blockNamespace, tombstone: true }
     ),

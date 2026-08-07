@@ -364,7 +364,23 @@ export const ProvisionalBlockPayloadSchema = z
     /** Outline nesting. Zero is the top level, never an absence. */
     depth: z.number().int().nonnegative(),
     text: z.string().max(ProvisionalBlockTextMax),
-    properties: z.record(z.string(), z.unknown()).optional()
+    /**
+     * MEASURED as an array of {key, value} string pairs — not a record. The
+     * first rehearsal against a real corpus refused every one of its blocks as
+     * `unmeasured-block-shape` because this field was written from a prose
+     * description ("Logseq key:: value pairs") instead of a measurement: the
+     * describer meant the concept and the schema heard an object. Empty for the
+     * overwhelming majority of blocks, which is still a real, present value —
+     * an importer that always writes the key is telling us the field exists.
+     */
+    properties: z.array(
+      z
+        .object({
+          key: z.string().min(1).max(512),
+          value: z.string().max(ProvisionalBlockTextMax)
+        })
+        .strict()
+    )
   })
   .strict();
 export type ProvisionalBlockPayload = z.infer<typeof ProvisionalBlockPayloadSchema>;
