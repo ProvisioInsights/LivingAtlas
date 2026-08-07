@@ -266,6 +266,152 @@ describe("the verifier can fail", () => {
   });
 });
 
+/**
+ * THE FIELDS ADR 0029 PROMISED, EACH ONE PROVEN INDIVIDUALLY.
+ *
+ * The check used to compare block COUNT and TOTAL TEXT LENGTH and nothing else,
+ * so five of the seven carried keys were unverified end to end and the sixth was
+ * only length-checked. Measured against a store the real durable plane wrote:
+ * deleting a block's whole `properties` map, changing its `depth`, changing its
+ * `index`, changing both source refs, and rewriting its `text` to the same
+ * length ALL produced `ok: true` with zero findings.
+ *
+ * Every case below is one of those, and each must now fail. The deferral was
+ * accepted on a promise that nothing would be lost; this is the instrument that
+ * checks the promise, over the one irreversible run.
+ */
+describe("a carried block that lost a field the ADR promised", () => {
+  type Carried = ReturnType<typeof readMigrationStore>["provisionalBlocks"][number];
+
+  async function blockStore(): Promise<{ plan: ProjectionPlan; store: ReturnType<typeof readMigrationStore> }> {
+    const plan = planFor(createLogseqBlockFixture());
+    return { plan, store: readMigrationStore(await migratedStore(plan)) };
+  }
+
+  /** Replace the first carried block that has text, via `mutate`. */
+  function withMutatedBlock(
+    store: ReturnType<typeof readMigrationStore>,
+    mutate: (block: Record<string, unknown>) => Record<string, unknown>
+  ): Carried[] {
+    const target = store.provisionalBlocks.find(
+      (candidate) =>
+        candidate.record.record_kind === "provisional-block" && candidate.record.block.text.length > 0
+    );
+    if (!target || target.record.record_kind !== "provisional-block") {
+      throw new Error("fixture carried no block with text");
+    }
+    const record = target.record;
+    return store.provisionalBlocks.map((candidate) =>
+      candidate.object_id === target.object_id
+        ? {
+            ...candidate,
+            record: {
+              ...record,
+              block: mutate({ ...record.block } as Record<string, unknown>)
+            } as Carried["record"]
+          }
+        : candidate
+    );
+  }
+
+  const cases: { name: string; mutate: (block: Record<string, unknown>) => Record<string, unknown> }[] = [
+    {
+      name: "its properties map was dropped entirely",
+      mutate: (block) => {
+        const { properties: _dropped, ...rest } = block;
+        return rest;
+      }
+    },
+    // Relative, not absolute: a fixture block that already sat at depth 0 would
+    // make an absolute mutation a no-op and the test vacuous.
+    { name: "its depth moved", mutate: (block) => ({ ...block, depth: Number(block.depth) + 1 }) },
+    { name: "its index moved", mutate: (block) => ({ ...block, index: Number(block.index) + 1 }) },
+    {
+      name: "its source refs point somewhere else",
+      mutate: (block) => ({
+        ...block,
+        source_path_ref: "pages/elsewhere.md",
+        source_block_ref: "block-0000"
+      })
+    },
+    {
+      name: "its text was rewritten to the same length",
+      mutate: (block) => ({
+        ...block,
+        text: "x".repeat(String(block.text).length)
+      })
+    },
+    { name: "its kind was relabelled", mutate: (block) => ({ ...block, kind: "something-else" }) }
+  ];
+
+  for (const testCase of cases) {
+    it(`fails when ${testCase.name}`, async () => {
+      const { plan, store } = await blockStore();
+      const result = checkProvisionalBlocks(plan, {
+        ...store,
+        provisionalBlocks: withMutatedBlock(store, testCase.mutate)
+      });
+
+      expect(result.ok).toBe(false);
+      const mismatch = result.findings.find((item) => item.code === "block-digest-mismatch");
+      expect(mismatch).toBeDefined();
+      // It names the key of the block that differs — an id — and nothing else.
+      expect(mismatch?.idempotency_key).toBeTruthy();
+      assertFindingIsContentFree(mismatch!);
+    });
+  }
+
+  it("passes the untouched store, so the digest is not simply always different", async () => {
+    const { plan, store } = await blockStore();
+    const result = checkProvisionalBlocks(plan, store);
+    expect(result.findings).toEqual([]);
+    expect(result.ok).toBe(true);
+    expect(result.examined).toBeGreaterThan(0);
+  });
+
+  it("does not print the block text it is comparing", async () => {
+    const { plan, store } = await blockStore();
+    const result = checkProvisionalBlocks(plan, {
+      ...store,
+      provisionalBlocks: withMutatedBlock(store, (block) => ({ ...block, text: "leaked prose" }))
+    });
+    const rendered = JSON.stringify(result.findings);
+    expect(rendered).not.toContain("leaked prose");
+    // Nor the value it expected instead, which is the more tempting leak.
+    const original = store.provisionalBlocks.find(
+      (candidate) =>
+        candidate.record.record_kind === "provisional-block" && candidate.record.block.text.length > 0
+    );
+    if (original?.record.record_kind !== "provisional-block") throw new Error("no block with text");
+    expect(rendered).not.toContain(original.record.block.text);
+  });
+
+  it("fails the whole verdict, not just the check, over a store that lost a field", async () => {
+    // The end-to-end statement: `renderFaithfulnessReport` said "verdict pass"
+    // over a store where none of five blocks had kept its properties map.
+    const plan = planFor(createLogseqBlockFixture());
+    const storeDir = await migratedStore(plan);
+    const path = migrationPlaneDirectories(storeDir).provisional;
+    const rewritten = readFileSync(path, "utf8")
+      .split("\n")
+      .filter((line) => line.length > 0)
+      .map((line) => {
+        const parsed = JSON.parse(line) as { record: { record_kind: string; block?: Record<string, unknown> } };
+        if (parsed.record.record_kind === "provisional-block" && parsed.record.block) {
+          delete parsed.record.block.properties;
+        }
+        return JSON.stringify(parsed);
+      })
+      .join("\n");
+    writeFileSync(path, `${rewritten}\n`, "utf8");
+
+    const report = verifyMigrationFaithfulness({ plan, store_directory: storeDir });
+    expect(report.ok).toBe(false);
+    expect(renderFaithfulnessReport(report)).toContain("verdict                   FAIL");
+    expect(report.findings.map((item) => item.code)).toContain("block-digest-mismatch");
+  });
+});
+
 describe("the report is content-free", () => {
   /**
    * THE CONTRACT THIS FILE EXISTS TO HOLD.

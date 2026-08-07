@@ -149,9 +149,17 @@ Two properties are asserted rather than assumed:
 - Carrying blocks does not make one a resolvable edge endpoint. A block is not an
   endpoint; an edge naming one still refuses `endpoint-not-projected` rather than
   landing on a record with no type to satisfy the predicate's range.
-- The legacy block id now redirects at the carried record instead of answering
-  "nothing carried this across". The alias row names no slot, because there is no
-  entity to name.
+- ~~The legacy block id now redirects at the carried record instead of answering
+  "nothing carried this across".~~ **Superseded before this ADR shipped.** The
+  legacy block id gets a TERMINAL alias row, not a redirect: it resolves as
+  `no-target` with disposition `projected-as-provisional`. See the merge-time
+  amendment, section A, and OPEN-29.8 — `atlas.alias-row:v1` is a released shape
+  whose dispositions are a closed set, and the only two ways to write a redirect
+  would have been to publish the very kind this ADR keeps unpublished, or to
+  claim the block became an assertion. The sentence above is struck rather than
+  deleted because it is what the reader of the merged tree would otherwise have
+  believed, and the correction sits a hundred lines further down under a heading
+  about a different ADR.
 
 ### 5. Pages and attachments do NOT ride along
 

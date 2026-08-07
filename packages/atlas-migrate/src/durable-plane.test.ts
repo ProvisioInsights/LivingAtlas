@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -31,6 +31,7 @@ import {
   migrationPlaneDirectories,
   openDurableMigrationPlane,
   readMigrationPlaneCensus,
+  readMigrationStore,
   readProvisionalBlockLines,
   type DurableMigrationPlane,
   type MigrationIdempotencyKey,
@@ -737,8 +738,187 @@ describe("a carried block on the durable plane", () => {
     plane.close();
 
     const path = migrationPlaneDirectories(root).provisional;
+    // A COMPLETE line — it ends with a newline — that is not JSON. The writer
+    // fsynced before anything followed it, so this is corruption or tampering
+    // rather than a tear, and it still refuses.
     writeFileSync(path, `${readFileSync(path, "utf8")}{"idempotency_key": "truncated"\n`);
     expect(() => readProvisionalBlockLines(root)).toThrow(/not readable JSON/);
     expect(() => readMigrationPlaneCensus(root)).toThrow(/not readable JSON/);
+  });
+});
+
+/**
+ * A TORN TAIL USED TO BRICK THE STORE.
+ *
+ * `readProvisionalBlockLines` threw on any unparseable line, and it is called
+ * both by the census and by the plane's constructor — so after a crash between
+ * the write and the fsync the operator could neither resume the migration nor
+ * take a census of what it had done. atlas-core's segment logs tolerate exactly
+ * this damage in exactly this place; the file that takes the overwhelming
+ * majority of the writes did not.
+ */
+describe("a carried file whose last line was torn by a crash", () => {
+  /**
+   * Chop `bytes` off the end and report how many bytes are then unterminated.
+   *
+   * The torn region is everything after the LAST newline, which is the whole
+   * remainder of the final record rather than the bytes that were removed —
+   * exactly what a crash between the write and the fsync leaves behind.
+   */
+  function tearTail(root: string, bytes: number): { tornBytes: number; linesBefore: number } {
+    const path = migrationPlaneDirectories(root).provisional;
+    const raw = readFileSync(path);
+    const linesBefore = readProvisionalBlockLines(root).length;
+    const kept = raw.subarray(0, raw.length - bytes);
+    writeFileSync(path, kept);
+    return { tornBytes: kept.length - (kept.lastIndexOf(0x0a) + 1), linesBefore };
+  }
+
+  async function storeWithBlocks(root: string): Promise<number> {
+    const plan = buildProjectionPlan(createLogseqBlockFixture(), {
+      authority_id: legacyFixtureAuthorityId,
+      resolve_payload: legacyFixturePayloadResolver
+    });
+    const plane = openPlane(root);
+    await applyOnce(plan, plane, "2026-08-06T10:00:00.000Z");
+    plane.close();
+    return readMigrationPlaneCensus(root).provisional_blocks;
+  }
+
+  it("can still be counted, one record short, instead of throwing", async () => {
+    const root = temporaryRoot();
+    await storeWithBlocks(root);
+    const { linesBefore } = tearTail(root, 40);
+
+    // The whole point: a census is possible at all. Before this it threw, and
+    // the operator could neither resume the run nor find out what it had done.
+    const census = readMigrationPlaneCensus(root);
+    expect(census.provisional_blocks + census.provisional_retractions).toBe(linesBefore - 1);
+    expect(readProvisionalBlockLines(root)).toHaveLength(linesBefore - 1);
+  });
+
+  it("is truncated by the WRITER, and the discarded bytes are named durably", async () => {
+    const root = temporaryRoot();
+    await storeWithBlocks(root);
+    const { tornBytes } = tearTail(root, 40);
+    expect(tornBytes).toBeGreaterThan(0);
+
+    const plane = openPlane(root);
+    // Reported to the caller, so the apply report can print it.
+    expect(plane.repairs).toHaveLength(1);
+    expect(plane.repairs[0]?.discarded_bytes).toBe(tornBytes);
+    plane.close();
+
+    // And durably, before the run wrote anything: the digest is how a human
+    // confirms WHICH bytes were dropped against a backup.
+    const repair = auditEvents(root).find(
+      (event) => event.event_schema === "living-atlas-migration-provisional-repair:v1"
+    );
+    expect(repair?.discarded_bytes).toBe(tornBytes);
+    expect(String(repair?.discarded_digest)).toMatch(/^sha256:[0-9a-f]{64}$/);
+
+    // Truncated for real. Left in place, the torn bytes would be welded into the
+    // middle of the file by the first append of the resumed run.
+    const raw = readFileSync(migrationPlaneDirectories(root).provisional);
+    expect(raw.at(-1)).toBe(0x0a);
+  });
+
+  it("lets the interrupted migration finish, carrying the lost block again", async () => {
+    const root = temporaryRoot();
+    const plan = buildProjectionPlan(createLogseqBlockFixture(), {
+      authority_id: legacyFixtureAuthorityId,
+      resolve_payload: legacyFixturePayloadResolver
+    });
+    const complete = await storeWithBlocks(root);
+    tearTail(root, 40);
+
+    const resumed = openPlane(root);
+    const result = await applyOnce(plan, resumed, "2026-08-06T11:00:00.000Z");
+    resumed.close();
+
+    expect(result.ok).toBe(true);
+    // Back to the full count, with no duplicate: the torn record had no receipt,
+    // so the resume commits it, and every other key replays.
+    expect(readMigrationPlaneCensus(root).provisional_blocks).toBe(complete);
+    const keys = readProvisionalBlockLines(root).map((line) => line.idempotency_key);
+    expect(new Set(keys).size).toBe(keys.length);
+  });
+
+  it("counts the tear as damage when the store is read for verification", async () => {
+    const root = temporaryRoot();
+    await storeWithBlocks(root);
+    expect(readMigrationStore(root).segment_repairs).toBe(0);
+
+    tearTail(root, 40);
+    // A verifier must never repair what it is measuring, and it must never call
+    // a damaged store faithful either.
+    const damaged = readMigrationStore(root);
+    expect(damaged.segment_repairs).toBe(1);
+    // Untouched: the bytes are still short, because reading did not repair.
+    expect(readMigrationStore(root).segment_repairs).toBe(1);
+  });
+});
+
+/**
+ * THE STORE IS LOCAL-PRIVATE, INCLUDING THE FILE NOBODY THOUGHT ABOUT.
+ *
+ * The two log directories were pre-created here with a mode-less `mkdirSync`,
+ * which landed them at 0755 and made `SegmentWriter`'s explicit 0700 a no-op —
+ * `mkdirSync` does not chmod a directory that already exists. Both sidecars were
+ * opened with no mode and landed at 0644. The worst offender was
+ * `provisional-blocks.jsonl`, which holds the source's outline prose verbatim
+ * and was the only file in the store anybody on the machine could read.
+ */
+describe("every path under the target root", () => {
+  function pathsUnder(root: string): string[] {
+    const found: string[] = [];
+    const walk = (directory: string): void => {
+      for (const entry of readdirSync(directory)) {
+        const path = join(directory, entry);
+        found.push(path);
+        if (statSync(path).isDirectory()) walk(path);
+      }
+    };
+    walk(root);
+    return found;
+  }
+
+  it("is owner-only after a real apply", async () => {
+    const root = temporaryRoot();
+    const plane = openPlane(root);
+    await applyOnce(
+      buildProjectionPlan(createLogseqBlockFixture(), {
+        authority_id: legacyFixtureAuthorityId,
+        resolve_payload: legacyFixturePayloadResolver
+      }),
+      plane,
+      "2026-08-06T10:00:00.000Z"
+    );
+    plane.close();
+
+    const looser: string[] = [];
+    for (const path of [root, ...pathsUnder(root)]) {
+      const stats = statSync(path);
+      const mode = stats.mode & 0o777;
+      const allowed = stats.isDirectory() ? 0o700 : 0o600;
+      if ((mode & ~allowed) !== 0) looser.push(`${path} ${mode.toString(8)}`);
+    }
+    // Named rather than counted: a failure has to say WHICH file is readable.
+    expect(looser).toEqual([]);
+    // And the sidecars really were created, so this is not vacuous.
+    expect(pathsUnder(root).some((path) => path.endsWith("provisional-blocks.jsonl"))).toBe(true);
+    expect(pathsUnder(root).some((path) => path.endsWith("migration-apply.jsonl"))).toBe(true);
+  });
+
+  it("is tightened even when the root was already there at 0755", async () => {
+    // A resume over a directory an earlier build created, or one the operator
+    // made by hand with `mkdir -p`. Creating with the right mode is not enough
+    // when the directory already exists.
+    const root = temporaryRoot();
+    mkdirSync(join(root, "store"), { recursive: true, mode: 0o755 });
+    const target = join(root, "store");
+    const plane = openDurableMigrationPlane({ directory: target, authority_id: legacyFixtureAuthorityId });
+    plane.close();
+    expect(statSync(target).mode & 0o777).toBe(0o700);
   });
 });

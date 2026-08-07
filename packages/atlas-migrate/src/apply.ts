@@ -187,8 +187,16 @@ export type MigrationApplyAudit = {
    * of the outcome count, which a reader can only notice if they already
    * suspect. AGENTS.md requires a durable inspectable event for every mutating
    * operation; an event that misreports its own outcome is not one.
+   *
+   * `aborted` is the same rule applied to the case that used to produce NO event
+   * at all: a throw between the first commit and the end of the alias loop —
+   * a full disk, a retraction naming an uncommitted record, a refused alias row
+   * — left records permanently in the log with nothing naming the run that put
+   * them there. That is the run an operator most needs an event for, and it was
+   * the one run that had none. The counters on an `aborted` event are what the
+   * run had done when it died, not what it set out to do.
    */
-  outcome: "committed" | "alias-ledger-conflict" | "closure-gate-failed";
+  outcome: "committed" | "alias-ledger-conflict" | "closure-gate-failed" | "aborted";
   gate_verdict: "pass" | "fail";
   source_object_count: number;
   refused_source_objects: number;
@@ -384,164 +392,25 @@ export async function applyProjectionPlan(input: ApplyProjectionPlanInput): Prom
   let assertionsMinted = 0;
   let recordsCommitted = 0;
   let recordsReplayed = 0;
-
-  for (const record of orderRecords(plan.records)) {
-    const existing = await sink.receiptFor(record.idempotency_key);
-    if (existing) {
-      objectIdByRecordKey.set(record.idempotency_key, existing.object_id);
-      // EVERY record that puts a slot into the plane, replayed exactly as the
-      // commit branch below registers it. Asking `isEntityRecord` alone missed
-      // `minted-entity`, so a resume that replayed an already-committed topic
-      // node left its slot unknown and threw on the first `has-type` edge
-      // pointing at it — a partial apply that could never be finished, reachable
-      // only when the failure fell between a topic node and its edges.
-      const replayedSlot = slotMintedBy(record);
-      if (replayedSlot !== undefined) {
-        entityIdBySlot.set(replayedSlot, existing.object_id);
-      }
-      // The counter advances on a REPLAY too, and that is not bookkeeping —
-      // it is the per-assertion seq invariant. A run that died part-way (sink
-      // throw, full disk, killed process) leaves some keys with receipts and
-      // some without; the resume replays the committed ones and commits the
-      // rest. With the counter left at zero across the replays, the first
-      // record the resume actually commits would be handed seq=1 — a number a
-      // record already committed in the failed run is holding. Measured: a
-      // tombstoned object's entity record committed seq=1 in the first run and
-      // its retraction committed seq=1 in the resume.
-      const replayedGroup = seqStreamKey(record);
-      seqByLegacyObject.set(
-        replayedGroup,
-        Math.max(seqByLegacyObject.get(replayedGroup) ?? 0, existing.seq)
-      );
-      receipts.push(existing);
-      recordsReplayed += 1;
-      continue;
-    }
-
-    const group = seqStreamKey(record);
-    const seq = (seqByLegacyObject.get(group) ?? 0) + 1;
-    seqByLegacyObject.set(group, seq);
-
-    let objectId: string;
-    let resolved: CommitResolution;
-
-    if (isEntityRecord(record) || isMintedEntityRecord(record)) {
-      const legacyObjectId = legacyObjectIdFor(record);
-      const minted = await registry.mintEntity({
-        idempotency_key: record.idempotency_key,
-        slot: record.slot,
-        entity_type: record.entity_type,
-        name: record.name,
-        // A minted node carries no `aliases` key at all — it was never a legacy
-        // row and has no other names anybody wrote down. Spelled as a presence
-        // check rather than `record.aliases ?? []` so the two record shapes stay
-        // visibly different instead of one pretending to be the other.
-        aliases: "aliases" in record ? [...record.aliases] : [],
-        // `"entity_subtype" in record` rather than a bare property read: a
-        // minted entity has no such key, and the ratified vocabulary leaves
-        // seven of the eight endpoint types with no subtype at all.
-        ...("entity_subtype" in record && record.entity_subtype !== undefined
-          ? { entity_subtype: record.entity_subtype }
-          : {}),
-        ...(legacyObjectId === undefined ? {} : { legacy_object_id: legacyObjectId }),
-        // Absent for a minted entity, present (and possibly `derived`) for
-        // every other entity. Spread rather than assigned so the key does not
-        // appear holding `undefined`, which a sink would persist as a recorded
-        // absence rather than as no record at all.
-        ...(hasLegacyProvenance(record) ? { provenance: record.provenance } : {})
-      });
-      objectId = minted.entity_id;
-      entitiesMinted += 1;
-      entityIdBySlot.set(record.slot, objectId);
-      resolved = { record_kind: "entity" };
-    } else {
-      // Narrowed past both entity kinds, so `provenance` is known to be present
-      // here -- which is why this reads it directly while the entity branch
-      // above has to ask.
-      const legacyObjectId = legacyObjectIdOf(record);
-      const minted = await registry.mintAssertion({
-        record_kind: record.record_kind,
-        ...(legacyObjectId === undefined ? {} : { legacy_object_id: legacyObjectId }),
-        provenance: record.provenance
-      });
-      objectId = minted.assertion_id;
-      assertionsMinted += 1;
-
-      if (record.record_kind === "relationship" || record.record_kind === "minted-relationship") {
-        const sourceEntityId = entityIdBySlot.get(record.source_slot);
-        const targetEntityId = entityIdBySlot.get(record.target_slot);
-        if (!sourceEntityId || !targetEntityId) {
-          throw new Error(`relationship ${record.idempotency_key} has an endpoint slot with no minted entity`);
-        }
-        resolved = { record_kind: "relationship", source_entity_id: sourceEntityId, target_entity_id: targetEntityId };
-      } else if (record.record_kind === "retraction") {
-        const retractsObjectId = objectIdByRecordKey.get(record.retracts_idempotency_key);
-        if (!retractsObjectId) {
-          throw new Error(`retraction ${record.idempotency_key} names a record that was not committed`);
-        }
-        resolved = { record_kind: "retraction", retracts_object_id: retractsObjectId };
-      } else if (record.record_kind === "provisional-block") {
-        // Named rather than swept into the `absence` default. A sink deciding
-        // how to persist a record reads this field, and a provisional block told
-        // it was an absence would be stored as a report that content did not
-        // come across — the exact inverse of what it is.
-        resolved = { record_kind: "provisional-block" };
-      } else {
-        resolved = { record_kind: "absence" };
-      }
-    }
-
-    const receipt = await sink.commit({
-      idempotency_key: record.idempotency_key,
-      object_id: objectId,
-      recorded_at: recordedAt,
-      seq,
-      record,
-      resolved
-    });
-    objectIdByRecordKey.set(record.idempotency_key, receipt.object_id);
-    receipts.push(receipt);
-    committedKinds.push(record.record_kind);
-    recordsCommitted += 1;
-  }
-
   let aliasRowsWritten = 0;
   let aliasRowsReused = 0;
   const conflicts: AliasLedgerConflict[] = [];
 
-  for (const outcome of [...plan.outcomes].sort((left, right) =>
-    left.legacy_object_id < right.legacy_object_id ? -1 : left.legacy_object_id > right.legacy_object_id ? 1 : 0
-  )) {
-    const planned = plannedAliasTarget(outcome, objectIdByRecordKey);
-    const existing = await aliasLedger.resolve(outcome.legacy_object_id);
-    if (existing) {
-      if (JSON.stringify(existing.target) !== JSON.stringify(planned)) {
-        conflicts.push({ legacy_object_id: outcome.legacy_object_id, existing: existing.target, planned });
-        continue;
-      }
-      aliasRowsReused += 1;
-      continue;
-    }
-    await aliasLedger.append({
-      legacy_object_id: outcome.legacy_object_id,
-      basis: AliasBasis,
-      target: planned,
-      recorded_at: recordedAt
-    });
-    aliasRowsWritten += 1;
-  }
-
-  // Built AFTER the alias loop, so the outcome the event reports is the outcome
-  // the caller is about to be given rather than the one the run was hoping for.
-  // Still exactly one event per call.
-  const audit: MigrationApplyAudit = {
+  /**
+   * The event, built from wherever the counters have got to.
+   *
+   * One builder for the successful and the aborted event so the two cannot
+   * drift into disagreeing about what a field means — the whole reason `outcome`
+   * exists is that `mode` alone once said a conflicted run had gone fine.
+   */
+  const auditFor = (outcome: MigrationApplyAudit["outcome"]): MigrationApplyAudit => ({
     event_schema: MigrationApplyAuditSchemaName,
     authority_id: plan.authority_id,
     actor_id: input.actor_id,
     plan_digest: plan.plan_digest,
     recorded_at: recordedAt,
     mode: "apply",
-    outcome: conflicts.length > 0 ? "alias-ledger-conflict" : "committed",
+    outcome,
     gate_verdict: "pass",
     source_object_count: plan.breakdown.source_object_count,
     refused_source_objects: plan.breakdown.refused_count,
@@ -553,7 +422,30 @@ export async function applyProjectionPlan(input: ApplyProjectionPlanInput): Prom
     alias_rows_reused: aliasRowsReused,
     alias_rows_conflicted: conflicts.length,
     resolution_assertions_written: committedKinds.filter((kind) => ResolutionBearingRecordKinds.has(kind)).length
-  };
+  });
+
+  try {
+    await commitRecords();
+    await writeAliasRows();
+  } catch (error) {
+    // RECORDS ARE ALREADY DURABLE AT THIS POINT, and nothing else will say so.
+    // The event is written before the throw is re-raised so the store never
+    // holds records from a run the audit file has never heard of.
+    try {
+      await input.audit.record(auditFor("aborted"));
+    } catch {
+      // The abort is the diagnosis the operator needs, and a sink that cannot
+      // take the event is nearly always the same failure that stopped the run
+      // (a full disk stops both). Replacing the cause with a bookkeeping error
+      // would hide the only useful fact.
+    }
+    throw error;
+  }
+
+  // Built AFTER both loops, so the outcome the event reports is the outcome the
+  // caller is about to be given rather than the one the run was hoping for.
+  // Still exactly one event per call.
+  const audit = auditFor(conflicts.length > 0 ? "alias-ledger-conflict" : "committed");
   await input.audit.record(audit);
 
   if (conflicts.length > 0) {
@@ -561,4 +453,150 @@ export async function applyProjectionPlan(input: ApplyProjectionPlanInput): Prom
   }
 
   return { ok: true, audit, receipts };
+
+  async function commitRecords(): Promise<void> {
+    for (const record of orderRecords(plan.records)) {
+      const existing = await sink.receiptFor(record.idempotency_key);
+      if (existing) {
+        objectIdByRecordKey.set(record.idempotency_key, existing.object_id);
+        // EVERY record that puts a slot into the plane, replayed exactly as the
+        // commit branch below registers it. Asking `isEntityRecord` alone missed
+        // `minted-entity`, so a resume that replayed an already-committed topic
+        // node left its slot unknown and threw on the first `has-type` edge
+        // pointing at it — a partial apply that could never be finished, reachable
+        // only when the failure fell between a topic node and its edges.
+        const replayedSlot = slotMintedBy(record);
+        if (replayedSlot !== undefined) {
+          entityIdBySlot.set(replayedSlot, existing.object_id);
+        }
+        // The counter advances on a REPLAY too, and that is not bookkeeping —
+        // it is the per-assertion seq invariant. A run that died part-way (sink
+        // throw, full disk, killed process) leaves some keys with receipts and
+        // some without; the resume replays the committed ones and commits the
+        // rest. With the counter left at zero across the replays, the first
+        // record the resume actually commits would be handed seq=1 — a number a
+        // record already committed in the failed run is holding. Measured: a
+        // tombstoned object's entity record committed seq=1 in the first run and
+        // its retraction committed seq=1 in the resume.
+        const replayedGroup = seqStreamKey(record);
+        seqByLegacyObject.set(
+          replayedGroup,
+          Math.max(seqByLegacyObject.get(replayedGroup) ?? 0, existing.seq)
+        );
+        receipts.push(existing);
+        recordsReplayed += 1;
+        continue;
+      }
+
+      const group = seqStreamKey(record);
+      const seq = (seqByLegacyObject.get(group) ?? 0) + 1;
+      seqByLegacyObject.set(group, seq);
+
+      let objectId: string;
+      let resolved: CommitResolution;
+
+      if (isEntityRecord(record) || isMintedEntityRecord(record)) {
+        const legacyObjectId = legacyObjectIdFor(record);
+        const minted = await registry.mintEntity({
+          idempotency_key: record.idempotency_key,
+          slot: record.slot,
+          entity_type: record.entity_type,
+          name: record.name,
+          // A minted node carries no `aliases` key at all — it was never a legacy
+          // row and has no other names anybody wrote down. Spelled as a presence
+          // check rather than `record.aliases ?? []` so the two record shapes stay
+          // visibly different instead of one pretending to be the other.
+          aliases: "aliases" in record ? [...record.aliases] : [],
+          // `"entity_subtype" in record` rather than a bare property read: a
+          // minted entity has no such key, and the ratified vocabulary leaves
+          // seven of the eight endpoint types with no subtype at all.
+          ...("entity_subtype" in record && record.entity_subtype !== undefined
+            ? { entity_subtype: record.entity_subtype }
+            : {}),
+          ...(legacyObjectId === undefined ? {} : { legacy_object_id: legacyObjectId }),
+          // Absent for a minted entity, present (and possibly `derived`) for
+          // every other entity. Spread rather than assigned so the key does not
+          // appear holding `undefined`, which a sink would persist as a recorded
+          // absence rather than as no record at all.
+          ...(hasLegacyProvenance(record) ? { provenance: record.provenance } : {})
+        });
+        objectId = minted.entity_id;
+        entitiesMinted += 1;
+        entityIdBySlot.set(record.slot, objectId);
+        resolved = { record_kind: "entity" };
+      } else {
+        // Narrowed past both entity kinds, so `provenance` is known to be present
+        // here -- which is why this reads it directly while the entity branch
+        // above has to ask.
+        const legacyObjectId = legacyObjectIdOf(record);
+        const minted = await registry.mintAssertion({
+          record_kind: record.record_kind,
+          ...(legacyObjectId === undefined ? {} : { legacy_object_id: legacyObjectId }),
+          provenance: record.provenance
+        });
+        objectId = minted.assertion_id;
+        assertionsMinted += 1;
+
+        if (record.record_kind === "relationship" || record.record_kind === "minted-relationship") {
+          const sourceEntityId = entityIdBySlot.get(record.source_slot);
+          const targetEntityId = entityIdBySlot.get(record.target_slot);
+          if (!sourceEntityId || !targetEntityId) {
+            throw new Error(`relationship ${record.idempotency_key} has an endpoint slot with no minted entity`);
+          }
+          resolved = { record_kind: "relationship", source_entity_id: sourceEntityId, target_entity_id: targetEntityId };
+        } else if (record.record_kind === "retraction") {
+          const retractsObjectId = objectIdByRecordKey.get(record.retracts_idempotency_key);
+          if (!retractsObjectId) {
+            throw new Error(`retraction ${record.idempotency_key} names a record that was not committed`);
+          }
+          resolved = { record_kind: "retraction", retracts_object_id: retractsObjectId };
+        } else if (record.record_kind === "provisional-block") {
+          // Named rather than swept into the `absence` default. A sink deciding
+          // how to persist a record reads this field, and a provisional block told
+          // it was an absence would be stored as a report that content did not
+          // come across — the exact inverse of what it is.
+          resolved = { record_kind: "provisional-block" };
+        } else {
+          resolved = { record_kind: "absence" };
+        }
+      }
+
+      const receipt = await sink.commit({
+        idempotency_key: record.idempotency_key,
+        object_id: objectId,
+        recorded_at: recordedAt,
+        seq,
+        record,
+        resolved
+      });
+      objectIdByRecordKey.set(record.idempotency_key, receipt.object_id);
+      receipts.push(receipt);
+      committedKinds.push(record.record_kind);
+      recordsCommitted += 1;
+    }
+  }
+
+  async function writeAliasRows(): Promise<void> {
+    for (const outcome of [...plan.outcomes].sort((left, right) =>
+      left.legacy_object_id < right.legacy_object_id ? -1 : left.legacy_object_id > right.legacy_object_id ? 1 : 0
+    )) {
+      const planned = plannedAliasTarget(outcome, objectIdByRecordKey);
+      const existing = await aliasLedger.resolve(outcome.legacy_object_id);
+      if (existing) {
+        if (JSON.stringify(existing.target) !== JSON.stringify(planned)) {
+          conflicts.push({ legacy_object_id: outcome.legacy_object_id, existing: existing.target, planned });
+          continue;
+        }
+        aliasRowsReused += 1;
+        continue;
+      }
+      await aliasLedger.append({
+        legacy_object_id: outcome.legacy_object_id,
+        basis: AliasBasis,
+        target: planned,
+        recorded_at: recordedAt
+      });
+      aliasRowsWritten += 1;
+    }
+  }
 }

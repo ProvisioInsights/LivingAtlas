@@ -1,11 +1,26 @@
-import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, writeSync } from "node:fs";
+import {
+  chmodSync,
+  closeSync,
+  existsSync,
+  fsyncSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  statSync,
+  truncateSync
+} from "node:fs";
 import { join } from "node:path";
 import type { EndpointType } from "@living-atlas/contracts";
 import {
   DurableAssertionLog,
   DurableEntityRegistry,
+  LocalPrivateDirectoryMode,
+  LocalPrivateFileMode,
+  digestOf,
   scanIdentityLog,
   scanSegmentLog,
+  splitLines,
+  writeAllSync,
   type AssertionDraft,
   type AssertionId,
   type EntityId,
@@ -507,19 +522,66 @@ export type ProvisionalBlockLine = {
 };
 
 /**
- * Every carried block, re-read from the file.
+ * Bytes at the end of the carried file that no newline closed.
  *
- * A malformed line THROWS rather than being skipped. A reader that shrugs at a
- * line it cannot parse turns a corrupt carry-over into a smaller carry-over, and
- * the reconciliation downstream would report the shortfall as a count mismatch
- * with no idea that the bytes were the problem.
+ * Shaped like atlas-core's `RepairNote` — byte count and digest — for the reason
+ * that type gives: a digest is how a human confirms WHICH bytes were dropped
+ * against a backup, and two files computing it two ways would make that
+ * comparison useless.
  */
-export function readProvisionalBlockLines(directory: string): ProvisionalBlockLine[] {
+export type ProvisionalTailRepair = {
+  reason: "torn-tail";
+  discarded_bytes: number;
+  discarded_digest: string;
+};
+
+export type ProvisionalBlockFileContents = {
+  lines: ProvisionalBlockLine[];
+  /** Present only when the final line was torn. */
+  repair?: ProvisionalTailRepair;
+};
+
+/**
+ * Every carried block, re-read from the file, under the SEGMENT LOG'S TAIL RULE.
+ *
+ * A malformed COMPLETE line throws, exactly as before: a line the writer closed
+ * with a newline was fsynced before anything followed it, so damage there is
+ * corruption or tampering and a reader that shrugged at it would turn a corrupt
+ * carry-over into a smaller carry-over.
+ *
+ * A TORN FINAL LINE is different, and this file used to throw on it too. That
+ * was the one damage a crash can actually cause here — the process died between
+ * `writeAllSync` and `fsyncSync`, or the disk filled mid-record — and throwing on
+ * it made the store unopenable and the migration unresumable: the census could
+ * not count, the plane could not construct, so the operator could neither finish
+ * the run nor find out what it had done. atlas-core states the rule the other
+ * way round for exactly this reason: "Damage is only ever repaired where damage
+ * is POSSIBLE — the tail of the final segment." The file that takes the
+ * overwhelming majority of the writes now follows it.
+ *
+ * Tolerating is not forgetting. The torn bytes come back as a `repair` note, the
+ * writer records it durably before it appends anything, and the read-only
+ * verifier counts it as damage — so the tear is evidence rather than silence.
+ *
+ * `repair: true` TRUNCATES, and only a writer passes it. Leaving the torn bytes
+ * in place would weld them into the middle of the file the moment the next
+ * append lands past them, turning a repairable tail into permanent mid-file
+ * corruption; every read-only caller leaves the evidence exactly where it is.
+ */
+export function readProvisionalBlockFile(
+  directory: string,
+  options: { repair?: boolean } = {}
+): ProvisionalBlockFileContents {
   const path = migrationPlaneDirectories(directory).provisional;
-  if (!existsSync(path)) return [];
+  if (!existsSync(path)) return { lines: [] };
+  const raw = readFileSync(path);
+  // Split on the byte rather than on a decoded string: a write that died partway
+  // through a multi-byte character decodes to a replacement character, and the
+  // torn bytes then look like a legitimate — if strange — line.
+  const split = splitLines(raw);
+
   const lines: ProvisionalBlockLine[] = [];
-  const text = readFileSync(path, "utf8");
-  for (const [index, line] of text.split("\n").entries()) {
+  for (const [index, line] of split.complete.toString("utf8").split("\n").entries()) {
     if (line.trim() === "") continue;
     try {
       lines.push(JSON.parse(line) as ProvisionalBlockLine);
@@ -531,7 +593,20 @@ export function readProvisionalBlockLines(directory: string): ProvisionalBlockLi
       );
     }
   }
-  return lines;
+
+  if (split.torn.length === 0) return { lines };
+  const repair: ProvisionalTailRepair = {
+    reason: "torn-tail",
+    discarded_bytes: split.torn.length,
+    discarded_digest: digestOf(split.torn)
+  };
+  if (options.repair === true) truncateSync(path, split.complete.length);
+  return { lines, repair };
+}
+
+/** The carried blocks alone, read-only: nothing is repaired by asking. */
+export function readProvisionalBlockLines(directory: string): ProvisionalBlockLine[] {
+  return readProvisionalBlockFile(directory).lines;
 }
 
 export function readMigrationPlaneCensus(directory: string): MigrationPlaneCensus {
@@ -559,10 +634,73 @@ export type DurableMigrationPlane = {
   sink: TargetPlaneSink;
   audit: MigrationAuditSink;
   directory: string;
+  /**
+   * Damage this plane found in the carried file and truncated on the way in.
+   *
+   * Surfaced to the caller as well as written durably, because the operator
+   * reading the apply report is the person who has to decide whether the
+   * discarded bytes matter, and a note only the file knows about is a note
+   * nobody reads.
+   */
+  repairs: ProvisionalTailRepair[];
   /** Counts read back off the segment files, after the run. */
   census(): MigrationPlaneCensus;
   close(): void;
 };
+
+/**
+ * The event a truncated tail leaves behind.
+ *
+ * A separate schema from the apply audit rather than a field on it: this is
+ * written at construction, before the run has done anything, and folding it into
+ * the one-per-run apply event would mean a run that died before its audit event
+ * lost the record of the repair as well.
+ */
+export const MigrationProvisionalRepairSchemaName =
+  "living-atlas-migration-provisional-repair:v1" as const;
+
+export type MigrationProvisionalRepairEvent = ProvisionalTailRepair & {
+  event_schema: typeof MigrationProvisionalRepairSchemaName;
+  authority_id: string;
+  recorded_at: string;
+};
+
+/**
+ * A directory this store owns, at owner-only permissions.
+ *
+ * `mkdirSync` applies its `mode` only to directories it CREATES, so a store root
+ * that already exists keeps whatever bits it was made with — which is how the
+ * two log directories landed at 0755 while `SegmentWriter` was passing 0700 into
+ * a `mkdirSync` that had nothing left to create. An existing directory is
+ * therefore tightened rather than trusted.
+ */
+function ensureLocalPrivateDirectory(path: string): void {
+  mkdirSync(path, { recursive: true, mode: LocalPrivateDirectoryMode });
+  const mode = statSync(path).mode & 0o777;
+  if ((mode & ~LocalPrivateDirectoryMode) !== 0) chmodSync(path, LocalPrivateDirectoryMode);
+}
+
+/**
+ * Append one line to a sidecar file, owner-only, and return once it is durable.
+ *
+ * The mode argument matters on CREATION only, so an existing file is tightened
+ * the same way a directory is: these two files carry the owner's outline prose
+ * and the run's audit trail, and a store where every segment is 0600 and the
+ * most content-bearing file is 0644 is not a local-private store.
+ */
+function appendLocalPrivateLine(path: string, line: string): void {
+  const handle = openSync(path, "a", LocalPrivateFileMode);
+  try {
+    const mode = statSync(path).mode & 0o777;
+    if ((mode & ~LocalPrivateFileMode) !== 0) chmodSync(path, LocalPrivateFileMode);
+    writeAllSync(handle, line);
+    // fsync before the caller is told anything: a receipt is a statement that
+    // the bytes are on disk, not that they are in a buffer.
+    fsyncSync(handle);
+  } finally {
+    closeSync(handle);
+  }
+}
 
 class MigrationPlane {
   private readonly log: DurableAssertionLog;
@@ -587,11 +725,18 @@ class MigrationPlane {
    */
   private deferredAssertions = 0;
   private closed = false;
+  /** Torn tails this plane truncated on the way in. Empty on a healthy store. */
+  readonly repairs: ProvisionalTailRepair[] = [];
 
   constructor(options: DurableMigrationPlaneOptions & { authority_id: string }) {
     const paths = migrationPlaneDirectories(options.directory);
-    mkdirSync(paths.assertions, { recursive: true });
-    mkdirSync(paths.identity, { recursive: true });
+    // The ROOT too, and at 0700 like everything under it. The two logs were
+    // created here without a mode and landed at 0755, which made
+    // `SegmentWriter`'s own 0700 a no-op: `mkdirSync` does not chmod a directory
+    // that already exists.
+    ensureLocalPrivateDirectory(options.directory);
+    ensureLocalPrivateDirectory(paths.assertions);
+    ensureLocalPrivateDirectory(paths.identity);
     this.root = options.directory;
     this.authorityId = options.authority_id;
     this.auditPath = paths.audit;
@@ -628,7 +773,24 @@ class MigrationPlane {
     // Block resumability, rebuilt from the carried file for the same reason.
     // Without it a resumed run appends every block a second time and the
     // reconciliation reports more records than the source ever held.
-    for (const line of readProvisionalBlockLines(options.directory)) {
+    //
+    // `repair: true` because this IS the writer. A torn tail left in place would
+    // be welded into the middle of the file by the first append of this run;
+    // truncating it here is what keeps the damage confined to the tail, where a
+    // crash can put it. The note is written durably before any record is, so a
+    // run that dies immediately afterwards still leaves the evidence.
+    const carried = readProvisionalBlockFile(options.directory, { repair: true });
+    if (carried.repair) {
+      this.repairs.push(carried.repair);
+      const event: MigrationProvisionalRepairEvent = {
+        event_schema: MigrationProvisionalRepairSchemaName,
+        authority_id: this.authorityId,
+        recorded_at: this.now().toISOString(),
+        ...carried.repair
+      };
+      appendLocalPrivateLine(this.auditPath, `${JSON.stringify(event)}\n`);
+    }
+    for (const line of carried.lines) {
       const existing = this.provisionalByKey.get(line.idempotency_key);
       if (existing && existing.object_id !== line.object_id) {
         throw new Error(
@@ -793,15 +955,11 @@ class MigrationPlane {
       recorded_at: recordedAt,
       record
     };
-    const handle = openSync(this.provisionalPath, "a");
-    try {
-      writeSync(handle, `${JSON.stringify(line)}\n`);
-      // fsync before the receipt, exactly as the logs do: a receipt is a
-      // statement that the bytes are on disk, not that they are in a buffer.
-      fsyncSync(handle);
-    } finally {
-      closeSync(handle);
-    }
+    // Owner-only, and every byte written before the receipt is returned. This
+    // file holds the source's prose verbatim; it was opened without a mode and
+    // landed at 0644, the only file in the store anybody on the machine could
+    // read.
+    appendLocalPrivateLine(this.provisionalPath, `${JSON.stringify(line)}\n`);
     const receipt = {
       idempotency_key: request.idempotency_key,
       object_id: objectId,
@@ -1136,13 +1294,7 @@ class MigrationPlane {
    * anyone allowed to read audit.
    */
   async recordAudit(event: MigrationApplyAudit): Promise<void> {
-    const handle = openSync(this.auditPath, "a");
-    try {
-      writeSync(handle, `${JSON.stringify(event)}\n`);
-      fsyncSync(handle);
-    } finally {
-      closeSync(handle);
-    }
+    appendLocalPrivateLine(this.auditPath, `${JSON.stringify(event)}\n`);
   }
 
   census(): MigrationPlaneCensus {
@@ -1187,6 +1339,7 @@ export function openDurableMigrationPlane(
       record: (event) => plane.recordAudit(event)
     },
     directory: options.directory,
+    repairs: plane.repairs,
     census: () => plane.census(),
     close: () => plane.close()
   };

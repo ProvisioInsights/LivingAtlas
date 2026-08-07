@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -13,6 +14,7 @@ import {
   type ProjectedRecordKind,
   type ProjectionPlan
 } from "@living-atlas/atlas-migrate";
+import { checkReportPathIsSafe } from "./migration-apply.js";
 
 /**
  * DID THE NEW STORE FAITHFULLY CARRY THE OLD ONE?
@@ -65,7 +67,15 @@ export const FaithfulnessFindingCodeValues = [
   /** A sampled record could not be compared because its endpoint never minted. */
   "endpoint-unresolved",
   "block-count-mismatch",
-  "block-text-length-mismatch"
+  "block-text-length-mismatch",
+  /**
+   * A carried block whose fields are not the fields the plan called for.
+   *
+   * Compared as a digest over the whole block, so it fires for a change to any
+   * of the seven carried keys — including a rewrite of `text` that kept its
+   * length, and a `properties` map that was dropped entirely.
+   */
+  "block-digest-mismatch"
 ] as const;
 export type FaithfulnessFindingCode = (typeof FaithfulnessFindingCodeValues)[number];
 
@@ -84,6 +94,12 @@ export type FaithfulnessFinding = {
   legacy_object_id?: string;
   /** The new-plane record, when one exists. */
   object_id?: string;
+  /**
+   * The plan's key for the record, when the finding is about one specific
+   * planned record and no store-side id exists to name it by. Deterministic over
+   * (authority, legacy id, kind, ordinal) — an id, like every other string here.
+   */
+  idempotency_key?: string;
   record_kind?: ProjectedRecordKind;
   slot?: string;
   /** The NAME of the field that differs. Never its value on either side. */
@@ -142,7 +158,7 @@ export function assertFindingIsContentFree(finding: FaithfulnessFinding): void {
     if (key === "expected_word" || key === "observed_word") continue;
     if (key === "field" || key === "check" || key === "code") continue;
     if (key === "record_kind" || key === "slot") continue;
-    if (key === "legacy_object_id" || key === "object_id") continue;
+    if (key === "legacy_object_id" || key === "object_id" || key === "idempotency_key") continue;
     throw new Error(
       `finding carries an unrecognised string field ${key}; every string on a finding must be an ` +
         "id, a closed-vocabulary word or a field name, because a free-text field is where content leaks"
@@ -483,12 +499,51 @@ export function checkSampledFields(
 }
 
 /**
- * CHECK 4. The carried blocks, by count and by total text length.
+ * A value rendered so that two of them compare equal iff they ARE equal.
  *
- * Length rather than the text, and a TOTAL rather than a per-block list. It is
- * the strongest statement that can be made about 2.5 MB of somebody's private
- * prose without reproducing any of it: a truncation, a dropped block or an
- * encoding change moves the total, and the total names nobody.
+ * Object keys are emitted in sorted order, so a serialisation that happened to
+ * write them in a different order does not read as a difference. Absent and
+ * empty stay distinguishable — `{}` renders as `{}` and an absent key renders
+ * not at all — which matters because `properties` is the one optional key on a
+ * carried block and ADR 0029 leaves absent-versus-empty explicitly open. A
+ * canonicaliser that normalised the two together would certify away the very
+ * distinction the ADR says must be preserved.
+ */
+export function canonicalJson(value: unknown): string {
+  if (value === null || typeof value !== "object") return JSON.stringify(value) ?? "null";
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  const entries = Object.entries(value as Record<string, unknown>)
+    .filter(([, item]) => item !== undefined)
+    .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0));
+  return `{${entries.map(([key, item]) => `${JSON.stringify(key)}:${canonicalJson(item)}`).join(",")}}`;
+}
+
+/** The one number that stands in for a block without reproducing a byte of it. */
+export function blockDigest(block: unknown): string {
+  return createHash("sha256").update(canonicalJson(block)).digest("hex").slice(0, 32);
+}
+
+/**
+ * CHECK 4. The carried blocks: count, total text length, and a DIGEST PER BLOCK.
+ *
+ * The count and the length are kept because they say which axis moved. They are
+ * not sufficient and were, until now, all this check did — which meant the
+ * verifier certified a store that had lost fields ADR 0029 promises to preserve.
+ * Measured against a real store the durable plane wrote: deleting a block's
+ * whole `properties` map, changing its `depth`, changing its `index`, changing
+ * both source refs, and rewriting its `text` to the same length ALL passed with
+ * zero findings. Five of the seven promised fields were unverified end to end
+ * and the sixth was only length-checked.
+ *
+ * A digest over the canonicalised block closes all of it at once and stays as
+ * content-free as a length: it is a number that names nobody, and it moves for
+ * any change to any field, including a same-length rewrite of the text.
+ *
+ * MULTISETS, not a keyed join. Two blocks may legitimately be byte-identical
+ * (an empty bullet appears many times in an outline), so what has to hold is
+ * that the store's bag of digests equals the plan's — and the finding names the
+ * idempotency key of a block whose digest the store does not hold, which is an
+ * id rather than a value.
  */
 export function checkProvisionalBlocks(
   plan: ProjectionPlan,
@@ -524,6 +579,35 @@ export function checkProvisionalBlocks(
         observed_count: observedLength
       })
     );
+  }
+
+  // The store's digests, as a bag: a digest is consumed when it is matched, so a
+  // store holding one block twice cannot cover two different planned blocks.
+  const observedDigests = new Map<string, number>();
+  for (const carried of store.provisionalBlocks) {
+    const digest = blockDigest((carried.record as { block?: unknown }).block);
+    observedDigests.set(digest, (observedDigests.get(digest) ?? 0) + 1);
+  }
+
+  let mismatched = 0;
+  for (const record of planned) {
+    const digest = blockDigest((record as { block: unknown }).block);
+    const remaining = observedDigests.get(digest) ?? 0;
+    if (remaining > 0) {
+      observedDigests.set(digest, remaining - 1);
+      continue;
+    }
+    mismatched += 1;
+    if (mismatched <= MaxFindingsPerCode) {
+      findings.push(
+        finding({
+          check: "provisional-blocks",
+          code: "block-digest-mismatch",
+          record_kind: record.record_kind,
+          idempotency_key: record.idempotency_key
+        })
+      );
+    }
   }
 
   return {
@@ -582,6 +666,7 @@ function renderFinding(item: FaithfulnessFinding): string {
   if (item.slot) parts.push(`slot=${item.slot}`);
   if (item.legacy_object_id) parts.push(`legacy=${item.legacy_object_id}`);
   if (item.object_id) parts.push(`object=${item.object_id}`);
+  if (item.idempotency_key) parts.push(`key=${item.idempotency_key}`);
   if (item.expected_word !== undefined || item.observed_word !== undefined) {
     parts.push(`expected=${item.expected_word ?? "-"} observed=${item.observed_word ?? "-"}`);
   }
@@ -691,6 +776,21 @@ async function main(): Promise<void> {
   if (!isAbsolute(storeDir)) throw new Error("MIGRATION_TARGET_DIR must be an absolute path");
   if (!Number.isFinite(sampleSize) || sampleSize < 0) {
     throw new Error("MIGRATION_VERIFY_SAMPLE_SIZE must be a non-negative number");
+  }
+
+  // "Both directories are opened read-only" was true of the two stores and false
+  // of this one path: the report is a truncating write to an operator-supplied
+  // path. A verifier that destroyed a segment of the store it was checking would
+  // be the worst possible place for this defect to survive.
+  if (reportOut !== undefined) {
+    const refusal = checkReportPathIsSafe(reportOut, [
+      { label: "the frozen replica", directory: graphDir },
+      { label: "the new store", directory: storeDir }
+    ]);
+    if (refusal) {
+      process.stderr.write(`REFUSED ${refusal.guard}: ${refusal.detail}\n`);
+      process.exit(1);
+    }
   }
 
   const plan = await planFromReplica(graphDir, keyringPath, authorityId);

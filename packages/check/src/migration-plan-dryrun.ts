@@ -21,6 +21,7 @@ import {
   renderProjectionPlanReport,
   type LegacyPayloadResolution
 } from "@living-atlas/atlas-migrate";
+import { checkReportPathIsSafe } from "./migration-apply.js";
 
 function requireEnv(name: string): string {
   const value = process.env[name];
@@ -33,6 +34,18 @@ async function main(): Promise<void> {
   const keyringPath = requireEnv("LIVING_ATLAS_LOCAL_KEYRING");
   const authorityId = requireEnv("LIVING_ATLAS_BACKUP_AUTHORITY_ID");
   const reportOut = requireEnv("MIGRATION_PLAN_REPORT_OUT");
+
+  // "Read-only by construction" was true of everything except this one path.
+  // The report is a truncating write to an operator-supplied path, so a dry run
+  // aimed at `<replica>/snapshot.json` would destroy the graph it was supposed
+  // to be reading — the same guard the apply gets, for the same reason.
+  const reportRefusal = checkReportPathIsSafe(reportOut, [
+    { label: "the frozen replica", directory: graphDir }
+  ]);
+  if (reportRefusal) {
+    process.stderr.write(`REFUSED ${reportRefusal.guard}: ${reportRefusal.detail}\n`);
+    process.exit(1);
+  }
 
   const passphrase = resolveLocalSecret("LIVING_ATLAS_LOCAL_KEYRING_PASSPHRASE");
   if (!passphrase) throw new Error("keyring passphrase not resolvable");

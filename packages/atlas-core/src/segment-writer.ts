@@ -13,9 +13,68 @@ const SEGMENT_DIGITS = 10;
 const SEGMENT_SUFFIX = ".ndjson";
 const SEGMENT_PATTERN = new RegExp(`^\\d{${SEGMENT_DIGITS}}\\${SEGMENT_SUFFIX}$`);
 
-/** Owner-only. New content defaults to local-private, including its bytes. */
-const FILE_MODE = 0o600;
-const DIRECTORY_MODE = 0o700;
+/**
+ * Owner-only. New content defaults to local-private, including its bytes.
+ *
+ * EXPORTED because the store is not only these segment files. The migration
+ * plane writes two sidecar files of its own into the same target root, and it
+ * opened both without a mode until they were found at 0644 — the one file
+ * holding the owner's outline prose verbatim was the one file in the store
+ * anybody on the machine could read. Two octal literals in two packages are two
+ * things that drift; a store-wide rule has to be a store-wide constant.
+ */
+export const LocalPrivateFileMode = 0o600;
+export const LocalPrivateDirectoryMode = 0o700;
+const FILE_MODE = LocalPrivateFileMode;
+const DIRECTORY_MODE = LocalPrivateDirectoryMode;
+
+/**
+ * Write every byte, or throw.
+ *
+ * `writeSync` is allowed to write FEWER bytes than it was handed — a short write
+ * from a full disk (ENOSPC), a signal (EINTR) or a pipe — and it reports that by
+ * returning the count, not by throwing. Every call site in this repo ignored the
+ * return value, so a short write left a half-written line on disk and reported
+ * success. In an append-only log that is a torn record welded into the file the
+ * moment the next append lands past it.
+ *
+ * The payload is converted to a Buffer first so the retry can resume at a BYTE
+ * offset: re-slicing a string by the byte count returned would cut a multi-byte
+ * character in half and write a different line than the caller asked for.
+ *
+ * `write` is injectable for one reason: a short write cannot be provoked from a
+ * test against a real file, so a loop nothing can exercise is a loop nobody
+ * knows is correct. No production path passes anything but the default.
+ */
+export type PartialWrite = (
+  handle: number,
+  bytes: Buffer,
+  offset: number,
+  length: number
+) => number;
+
+export function writeAllSync(
+  handle: number,
+  payload: string | Buffer,
+  write: PartialWrite = writeSync
+): number {
+  const bytes = typeof payload === "string" ? Buffer.from(payload, "utf8") : payload;
+  let written = 0;
+  while (written < bytes.length) {
+    const advanced = write(handle, bytes, written, bytes.length - written);
+    // A zero-byte write that does not throw would spin this loop forever, so it
+    // is a refusal rather than a retry: the file cannot accept the record and
+    // pretending otherwise is how a caller is told a write happened.
+    if (advanced <= 0) {
+      throw new Error(
+        `write stalled after ${written} of ${bytes.length} bytes; the record is not durable and ` +
+          "the caller must not be told it is"
+      );
+    }
+    written += advanced;
+  }
+  return bytes.length;
+}
 
 /** 8 MiB. A roll HINT, never a write limit — see `appendGroup`. */
 export const DEFAULT_MAX_SEGMENT_BYTES = 8 * 1024 * 1024;
@@ -136,7 +195,7 @@ export class SegmentWriter<R extends SegmentRecord = LogRecord> {
     // into one log.
     const handle = openSync(path, "ax", FILE_MODE);
     const header = serializeRecord(this.makeHeader(ordinal));
-    writeSync(handle, header);
+    writeAllSync(handle, header);
     fsyncSync(handle);
     fsyncDirectory(this.directory);
     this.activeBytes = Buffer.byteLength(header, "utf8");
@@ -179,7 +238,7 @@ export class SegmentWriter<R extends SegmentRecord = LogRecord> {
       this.roll();
     }
 
-    writeSync(this.handle, payload);
+    writeAllSync(this.handle, payload);
     fsyncSync(this.handle);
     this.activeBytes += bytes;
     this.activeRecords += records.length;

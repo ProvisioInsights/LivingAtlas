@@ -2,7 +2,7 @@ import { scanIdentityLog, scanSegmentLog, type Assertion, type Entity } from "@l
 import {
   MigrationClientId,
   migrationPlaneDirectories,
-  readProvisionalBlockLines
+  readProvisionalBlockFile
 } from "./durable-plane.js";
 import type { ProjectedRecord } from "./target-plane.js";
 
@@ -31,7 +31,14 @@ export type MigrationStoreContents = {
   aliasDispositionByLegacyId: Map<string, string>;
   provisionalBlocks: { object_id: string; idempotency_key: string; record: ProjectedRecord }[];
   provisionalRetractions: { object_id: string; idempotency_key: string }[];
-  /** Damage found while reading, reported rather than repaired. */
+  /**
+   * Damage found while reading, reported rather than repaired.
+   *
+   * Counts the carried file's torn tail as well as the two segment logs'. The
+   * verifier's verdict turns on this number, and a store whose most
+   * content-bearing file ends mid-record is a store nobody should be told
+   * carried the old one faithfully — the tear is damage wherever it is.
+   */
   segment_repairs: number;
 };
 
@@ -59,9 +66,13 @@ export function readMigrationStore(directory: string): MigrationStoreContents {
   const aliasDispositionByLegacyId = new Map<string, string>();
   for (const row of identity.restored.rows) aliasDispositionByLegacyId.set(row.old_id, row.disposition);
 
+  // Read-only, like both scans above: no `repair`, so a torn tail is reported
+  // and left exactly where it is. A verifier is opened over a store precisely
+  // when somebody doubts it.
+  const carried = readProvisionalBlockFile(directory);
   const provisionalBlocks: MigrationStoreContents["provisionalBlocks"] = [];
   const provisionalRetractions: MigrationStoreContents["provisionalRetractions"] = [];
-  for (const line of readProvisionalBlockLines(directory)) {
+  for (const line of carried.lines) {
     if (line.record.record_kind === "retraction") {
       provisionalRetractions.push({ object_id: line.object_id, idempotency_key: line.idempotency_key });
     } else {
@@ -81,6 +92,7 @@ export function readMigrationStore(directory: string): MigrationStoreContents {
     aliasDispositionByLegacyId,
     provisionalBlocks,
     provisionalRetractions,
-    segment_repairs: assertions.repairs.length + identity.repairs.length
+    segment_repairs:
+      assertions.repairs.length + identity.repairs.length + (carried.repair ? 1 : 0)
   };
 }
