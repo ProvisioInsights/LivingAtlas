@@ -65,7 +65,21 @@ afterEach(async () => {
   );
 });
 
-describe("canonical source refresh", () => {
+/**
+ * A LONGER CLOCK, NOT A WEAKER ASSERTION.
+ *
+ * Every test here builds real git repositories: `init`, two `clone`s, several
+ * `add`/`commit` pairs, then the refresh itself — around fifteen subprocesses
+ * per test. Alone that lands at roughly 4.5s against vitest's 5s default, which
+ * is not a margin: under a fully parallel suite the same test crosses it and
+ * fails as a timeout, intermittently, with nothing wrong. Measured — it passed
+ * in isolation and on a quiet suite, and timed out at 5394ms on a loaded one.
+ *
+ * A flaky failure in a checked-in suite is worse than a slow one: it teaches
+ * everybody to re-run rather than to read, which is exactly how a real
+ * regression gets waved through. Nothing about what these tests assert changes.
+ */
+describe("canonical source refresh", { timeout: 30_000 }, () => {
   it("treats case and Unicode aliases within one preserved delta as overlap", () => {
     expect(summarizeCanonicalPathOverlaps({
       live_delta_paths: [],
