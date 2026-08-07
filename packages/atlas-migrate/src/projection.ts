@@ -1,3 +1,4 @@
+import { z } from "zod";
 import {
   AuthorityIdSchema,
   EndpointRecordSchema,
@@ -95,6 +96,15 @@ export const SourceDispositionKindValues = [
   "refused",
   "other"
 ] as const;
+/**
+ * The vocabulary as a parser, not only as a type.
+ *
+ * The durable alias ledger stores a disposition inside a free-text reason and
+ * has to read it back, and anything read back off disk is untrusted until it
+ * has been parsed. Derived from the same array as the type so the two cannot
+ * name different sets.
+ */
+export const SourceDispositionKindSchema = z.enum(SourceDispositionKindValues);
 export type SourceDispositionKind = (typeof SourceDispositionKindValues)[number];
 
 export type SourceDisposition =
