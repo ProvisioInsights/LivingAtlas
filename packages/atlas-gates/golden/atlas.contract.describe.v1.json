@@ -314,6 +314,12 @@
             "summary": "The record exists and this credential may not read it — either the record is marked withheld or its tier is outside the grant. Returned as a redaction stub, never dropped."
           },
           {
+            "code": "store-read-only",
+            "origin": "store",
+            "retryable": true,
+            "summary": "This server opened its store read-only, so no proposal from any credential can be committed. A property of the server, not of the grant — a wider grant does not lift it."
+          },
+          {
             "code": "snapshot-expired",
             "origin": "store",
             "retryable": false,

@@ -38,10 +38,11 @@ npm run atlas-mcp:consumer -- --audit-log /tmp/living-atlas-audit.jsonl
 ```
 
 This starts an MCP **stdio** server on protocol revision **2026-07-28** over an
-**empty** in-memory graph. It serves the surface, not data: `server/discover`,
-the twelve published tools, the envelope rules, and the escalation path. Start
-with `atlas.contract.describe.v1` (the live vocabularies, limits and history
-floor) and `atlas.scope.describe.v1` (your credential's grant).
+**empty** in-memory graph, because no store was named. It serves the surface, not
+data: `server/discover`, the twelve published tools, the envelope rules, and the
+escalation path. Start with `atlas.contract.describe.v1` (the live vocabularies,
+limits and history floor) and `atlas.scope.describe.v1` (your credential's
+grant). Step 6 points the same binary at a store you already have.
 
 > The server runs `legacy: 'reject'`. A client that opens with a 2025-era
 > `initialize` is refused with `-32022` and told which revision is supported,
@@ -132,30 +133,41 @@ file before running any of them.
 
 ## 6. Connect an MCP client
 
-⚠ **Open question, and it is open rather than decided.** The 30-tool local
-server — with its daemon, its `0600` Unix-socket proxy and its loopback
-Streamable HTTP listener — is retired (see
+The 30-tool local server — with its daemon, its `0600` Unix-socket proxy and its
+loopback Streamable HTTP listener — is retired (see
 [ADR 0017](architecture/adr-0017-retiring-the-legacy-local-surface.md)). Its
-replacement, `packages/atlas-mcp`, serves an **empty in-memory graph**: binding
-it to a durable replica is deliberately a separate, reviewable act, and
-migrating real data into the new store is blocked on offline backup media.
+replacement is `packages/atlas-mcp`.
 
-So there is currently **no supported way to point a client at your own graph**.
-Step 3 connects a client to the surface; it will answer every tool with an empty
-result. Do not read that as data loss — the replica is untouched and read-only,
+**Pointing it at a store.** `LIVING_ATLAS_STORE_DIR` names a durable store that
+already exists — one root holding `assertions/` and `identity/` segment logs. It
+is opened **read-only** unless `LIVING_ATLAS_STORE_MODE=read-write`, because
+new-format backup does not exist yet and anything written into the new store is
+unprotected until it does. A directory that is not there is a startup failure,
+never an empty graph. See
+[ADR 0028](architecture/adr-0028-serving-a-durable-store-from-a-directory.md).
+
+⚠ **Still open, and open rather than decided.** Migrating your own data INTO that
+store is a separate act, and this entry point authenticates nobody: it holds one
+fixed credential whose grant reaches the `open` tier only, so content at
+`local-private` — the tier anything unclassified is stamped with — arrives as
+redaction stubs rather than records. A credential directory on this entry point
+has not been built. Your legacy replica is untouched and read-only either way,
 and `packages/backup` still backs it up.
 
-Client configuration for the replacement will be written when the store binding
-lands. Until then:
+Omit the variable and the config below connects to the surface: every tool
+answers with an empty result.
 
 ```jsonc
-// Claude Code .mcp.json / Claude Desktop claude_desktop_config.json — SURFACE ONLY
+// Claude Code .mcp.json / Claude Desktop claude_desktop_config.json
 {
   "mcpServers": {
     "living-atlas": {
       "command": "npx",
       "args": ["tsx", "packages/atlas-mcp/src/cli.ts", "--audit-log", "/absolute/path/to/audit.jsonl"],
-      "cwd": "/absolute/path/to/LivingAtlas"
+      "cwd": "/absolute/path/to/LivingAtlas",
+      // Omit `env` entirely for the surface-only server. With it, the store must
+      // already exist: a directory that is not there is a startup failure.
+      "env": { "LIVING_ATLAS_STORE_DIR": "/absolute/path/to/store" }
     }
   }
 }
