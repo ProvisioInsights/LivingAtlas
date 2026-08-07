@@ -633,16 +633,42 @@ export function buildProjectionPlan(
         // whether or not it satisfied the schema the gate later validates.
         block: block.data
       });
-      // The legacy id now redirects at a real record, so it resolves to the
-      // block instead of answering "nothing carried this across". It claims NO
-      // entity slot: a block is not an endpoint, and an edge that names one must
-      // still refuse rather than land on a record with no type.
-      draft.primary = { record_key: blockKey, record_kind: "provisional-block" };
       // A deleted block is carried AND retracted, exactly like a deleted node.
       // Importing nothing would turn a recorded deletion into an absence of
       // history; `retractTombstonedDrafts` emits the retraction once every pass
-      // has run.
+      // has run. It reads `draft.records`, not the primary below, so a block
+      // still retracts without claiming an alias target.
       draft.disposition = tombstone ? { kind: "projected-as-retraction" } : { kind: "projected-as-provisional" };
+      // A BLOCK CLAIMS NO ALIAS REDIRECT, and that is a published-vocabulary
+      // fact rather than a preference.
+      //
+      // `atlas.alias-row:v1` is a RELEASED shape whose dispositions are a closed
+      // set, and a redirect row has to name its target as one of them. Pointing
+      // one at a provisional block leaves two choices, and both are worse than
+      // saying plainly that the published ledger has no word for this: add a
+      // disposition, which publishes the very kind ADR 0029 keeps unpublished --
+      // into a revision that can never be edited, which is the accident the
+      // whole deferral exists to avoid -- or file it as `mapped-assertion`,
+      // which claims the block became an assertion and is simply false.
+      //
+      // So the row says what happened: carried across, disposition `other`,
+      // detail naming the carry. Nothing is lost -- the block is still carried
+      // verbatim, still counted by `UnmodelledRecordKinds`, still readable in
+      // the frozen replica. What the legacy id does not get is a redirect, and
+      // that is one of the things the modelling pass has to decide (OPEN-29.8).
+      //
+      // Set HERE rather than left to `finalizeAliasTargets` so both planes plan
+      // the same row: the durable ledger can only store this as a terminal
+      // disposition, and a plan that had promised a redirect would compare
+      // unequal to the row that came back and report a conflict with itself on
+      // every resume.
+      draft.alias_target = {
+        kind: "no-target",
+        disposition: draft.disposition.kind,
+        detail:
+          "carried across as a provisional block; the published alias vocabulary has no disposition " +
+          "that can name an unmodelled record"
+      };
       continue;
     }
 

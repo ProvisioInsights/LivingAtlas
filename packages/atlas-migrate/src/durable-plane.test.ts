@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -18,17 +18,20 @@ import {
   buildProjectionPlan,
   countDeferredEntityContent,
   createLegacyGraphFixture,
+  createLogseqBlockFixture,
   createUnmappedCategoryFixture,
   decodeNoTargetReason,
   encodeNoTargetReason,
   isEntityRecord,
   isMintedEntityRecord,
+  legacyBlockFixtureIds,
   legacyFixtureAuthorityId,
   legacyFixtureIds,
   legacyFixturePayloadResolver,
   migrationPlaneDirectories,
   openDurableMigrationPlane,
   readMigrationPlaneCensus,
+  readProvisionalBlockLines,
   type DurableMigrationPlane,
   type MigrationIdempotencyKey,
   type ProjectionPlan,
@@ -369,7 +372,14 @@ describe("the durable migration plane", () => {
 
     expect(result.ok).toBe(false);
     const census = readMigrationPlaneCensus(root);
-    expect(census).toEqual({ entities: 0, assertions: 0, alias_rows: 0, empty_submissions: 0 });
+    expect(census).toEqual({
+      entities: 0,
+      assertions: 0,
+      alias_rows: 0,
+      empty_submissions: 0,
+      provisional_blocks: 0,
+      provisional_retractions: 0
+    });
     expect(auditEvents(root)).toHaveLength(1);
     expect(auditEvents(root)[0]?.outcome).toBe("closure-gate-failed");
   });
@@ -592,5 +602,143 @@ describe("resuming a durable apply that died part-way", () => {
       log.close();
       registry.close();
     }
+  });
+});
+
+/**
+ * THE PAIR NEITHER LANE COULD TEST.
+ *
+ * The blocks lane proved the carry-over against the in-memory plane, which
+ * accepts any id and any alias target. This lane proved the durable plane
+ * against a fixture with no blocks in it. The combination -- an unmodelled
+ * record reaching a store whose every shape is released and uneditable -- was
+ * the one path nobody could exercise, and it is where the two designs actually
+ * disagreed.
+ */
+describe("a carried block on the durable plane", () => {
+  function blockPlanFor(): ProjectionPlan {
+    return buildProjectionPlan(createLogseqBlockFixture(), {
+      authority_id: legacyFixtureAuthorityId,
+      resolve_payload: legacyFixturePayloadResolver
+    });
+  }
+
+  it("carries the blocks into a file of their own and writes none of them as assertions", async () => {
+    const root = temporaryRoot();
+    const plan = blockPlanFor();
+    const plane = openPlane(root);
+
+    const result = await applyOnce(plan, plane, "2026-08-06T10:00:00.000Z");
+    plane.close();
+
+    expect(result.ok).toBe(true);
+    const planned = countByKind(plan)["provisional-block"] ?? 0;
+    expect(planned).toBeGreaterThan(0);
+
+    const census = readMigrationPlaneCensus(root);
+    expect(census.provisional_blocks).toBe(planned);
+
+    // The load-bearing half. Every carried block is in the sidecar and NONE of
+    // them is in the assertion log: routing one through `atlas.assertion:v1`
+    // would freeze by accident the shape the deferral exists to keep unfrozen.
+    const lines = readProvisionalBlockLines(root);
+    const carried = lines.filter((line) => line.record.record_kind === "provisional-block");
+    expect(carried).toHaveLength(planned);
+    expect(lines.every((line) => line.object_id.startsWith("la_provisional_"))).toBe(true);
+    for (const assertion of assertionsOnDisk(root)) {
+      expect(assertion.value).not.toHaveProperty("block");
+    }
+
+    // The tombstoned block's retraction went here too, because a retraction is
+    // an `atlas.assertion:v1` and the assertion log holds no record with the
+    // block's id for it to name. Dropping it would turn a recorded deletion into
+    // an absence of history.
+    const retractions = lines.filter((line) => line.record.record_kind === "retraction");
+    expect(retractions.length).toBeGreaterThan(0);
+    expect(census.provisional_retractions).toBe(retractions.length);
+  });
+
+  it("carries every measured key verbatim through the file, not just through the plan", async () => {
+    const root = temporaryRoot();
+    const plan = blockPlanFor();
+    const plane = openPlane(root);
+    await applyOnce(plan, plane, "2026-08-06T10:00:00.000Z");
+    plane.close();
+
+    const planned = plan.records.filter((record) => record.record_kind === "provisional-block");
+    const byKey = new Map(readProvisionalBlockLines(root).map((line) => [line.idempotency_key, line.record]));
+    // Compared against the PLAN's records, so a serialisation that dropped a
+    // zero index or an empty text is caught here and not only in the projector.
+    for (const record of planned) {
+      expect(byKey.get(record.idempotency_key)).toEqual(record);
+    }
+  });
+
+  /**
+   * The row the durable ledger writes must read back EQUAL to the row the plan
+   * called for. Anything else reports a conflict with itself on every resume --
+   * which is exactly what a redirect naming a provisional block would have done,
+   * because the published ledger can only store it as a terminal disposition.
+   */
+  it("reads the block's alias row back as the row the plan planned", async () => {
+    const root = temporaryRoot();
+    const plan = blockPlanFor();
+    const plane = openPlane(root);
+    await applyOnce(plan, plane, "2026-08-06T10:00:00.000Z");
+
+    const row = await plane.alias_ledger.resolve(legacyBlockFixtureIds.block);
+    plane.close();
+
+    const planned = plan.outcomes.find(
+      (outcome) => outcome.legacy_object_id === legacyBlockFixtureIds.block
+    );
+    expect(planned?.alias_target.kind).toBe("no-target");
+    expect(row?.target.kind).toBe("no-target");
+    if (row?.target.kind !== "no-target" || planned?.alias_target.kind !== "no-target") {
+      throw new Error("expected a terminal row on both sides");
+    }
+    expect(row.target.disposition).toBe(planned.alias_target.disposition);
+    expect(row.target.detail).toBe(planned.alias_target.detail);
+    // Key order too: `applyProjectionPlan` compares with `JSON.stringify`.
+    expect(JSON.stringify(row.target)).toBe(JSON.stringify(planned.alias_target));
+  });
+
+  it("replays a resumed run instead of carrying every block a second time", async () => {
+    const root = temporaryRoot();
+    const plan = blockPlanFor();
+
+    const first = openPlane(root);
+    await applyOnce(plan, first, "2026-08-06T10:00:00.000Z");
+    first.close();
+    const afterFirst = readMigrationPlaneCensus(root);
+
+    // A NEW plane over the same directory, so resumability comes from the file
+    // on disk rather than from anything the first run kept in memory.
+    const second = openPlane(root);
+    const result = await applyOnce(plan, second, "2026-08-06T11:00:00.000Z");
+    second.close();
+
+    expect(result.ok).toBe(true);
+    expect(readMigrationPlaneCensus(root)).toEqual(afterFirst);
+    expect(readProvisionalBlockLines(root)).toHaveLength(
+      afterFirst.provisional_blocks + afterFirst.provisional_retractions
+    );
+  });
+
+  /**
+   * A torn or hand-edited line is a THROW, not a shorter count. Skipping it
+   * would turn damaged bytes into "fewer blocks arrived", and the reconciliation
+   * downstream would report a shortfall with no idea the file was the problem.
+   */
+  it("refuses to count a carried-block file it cannot read", async () => {
+    const root = temporaryRoot();
+    const plane = openPlane(root);
+    await applyOnce(blockPlanFor(), plane, "2026-08-06T10:00:00.000Z");
+    plane.close();
+
+    const path = migrationPlaneDirectories(root).provisional;
+    writeFileSync(path, `${readFileSync(path, "utf8")}{"idempotency_key": "truncated"\n`);
+    expect(() => readProvisionalBlockLines(root)).toThrow(/not readable JSON/);
+    expect(() => readMigrationPlaneCensus(root)).toThrow(/not readable JSON/);
   });
 });

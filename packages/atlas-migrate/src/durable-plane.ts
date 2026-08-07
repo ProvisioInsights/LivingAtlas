@@ -1,4 +1,4 @@
-import { closeSync, fsyncSync, mkdirSync, openSync, writeSync } from "node:fs";
+import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, writeSync } from "node:fs";
 import { join } from "node:path";
 import type { EndpointType } from "@living-atlas/contracts";
 import {
@@ -33,6 +33,7 @@ import {
   MigrationOrigin,
   MigrationRecordedAtFidelity,
   isLegacyObjectProvenance,
+  isUnmodelledRecord,
   type MigrationIdempotencyKey,
   type ProjectedProvenance,
   type ProjectedRecord,
@@ -104,6 +105,32 @@ export const MigrationConfidence = {
 export const MigrationAssertionLogDirectoryName = "assertions" as const;
 export const MigrationIdentityLogDirectoryName = "identity" as const;
 export const MigrationAuditFileName = "migration-apply.jsonl" as const;
+/**
+ * Where a record whose modelling is deferred is carried (ADR 0029).
+ *
+ * A FILE OF ITS OWN, beside the two logs rather than inside either. The
+ * assertion log serialises `atlas.assertion:v1` and the identity log
+ * `atlas.entity:v1`, both RELEASED and both uneditable; writing a provisional
+ * block through either would freeze by accident the shape the deferral exists to
+ * keep unfrozen. It is also not `absence`: an absence says content did NOT come
+ * across, and this says content came across whole and unmodelled -- opposite
+ * facts that must not share a count.
+ *
+ * The name says `provisional` so nobody mistakes it for a log the consumer
+ * contract knows about, and the `.jsonl` so an operator can read it with the
+ * tools already on the machine.
+ */
+export const MigrationProvisionalFileName = "provisional-blocks.jsonl" as const;
+/**
+ * The prefix a carried record's durable id takes.
+ *
+ * Deliberately NOT `la_entity_` or `la_assertion_`: `redirectRecordKindOf` reads
+ * those two prefixes to recover what an alias redirect points at, and an id that
+ * collided with either would let a carried record be read back as a record kind
+ * it is not. It is also what tells `commitRetraction` that a tombstone names
+ * something the published log does not hold.
+ */
+export const ProvisionalRecordIdPrefix = "la_provisional_" as const;
 
 /**
  * What `mintAssertion` returns, and why it is not an assertion id.
@@ -174,6 +201,11 @@ export const TerminalDispositionBySourceDisposition: Record<
   "projected-as-relationship": "other",
   "projected-as-retraction": "other",
   "projected-as-alias-redirect": "other",
+  // A provisional block never had a redirect to lose: the published ledger has
+  // no disposition that can name an unmodelled record, so the projector plans a
+  // terminal row for it in the first place (see `projection.ts`). `other` is
+  // what that row says, and the detail says the rest.
+  "projected-as-provisional": "other",
   other: "other"
 };
 
@@ -353,7 +385,7 @@ export function decodeNoTargetReason(reason: string): Extract<AliasLedgerTarget,
  *    so every value counted here is still readable at its source.
  *  - IT IS VISIBLE. This number is printed by `real-data:migration-apply` on
  *    every run, zero or not, so it cannot decay into silence.
- *  - AN ADR STATES IT. See ADR 0028, which also names what a later modelling
+ *  - AN ADR STATES IT. See ADR 0030, which also names what a later modelling
  *    pass has to decide.
  */
 export type DeferredEntityContent = {
@@ -430,24 +462,83 @@ export type MigrationPlaneCensus = {
    * record and deliberately wrote nothing, instead of proving it by silence.
    */
   empty_submissions: number;
+  /**
+   * Records carried with their modelling deferred (ADR 0029). Counted like
+   * everything else here -- by re-reading the file -- because a deferral that
+   * only the writer's own counter can see is the silence the owner was warned
+   * about, wearing a number.
+   */
+  provisional_blocks: number;
+  /**
+   * Retractions of carried records. Counted apart from `assertions` because
+   * that is where they would otherwise have gone: a deleted block's tombstone
+   * has no published shape to live in, so it lands beside the block, and folding
+   * the two counts together would hide a retraction that went to the wrong file.
+   */
+  provisional_retractions: number;
 };
 
 export function migrationPlaneDirectories(directory: string): {
   assertions: string;
   identity: string;
   audit: string;
+  provisional: string;
 } {
   return {
     assertions: join(directory, MigrationAssertionLogDirectoryName),
     identity: join(directory, MigrationIdentityLogDirectoryName),
-    audit: join(directory, MigrationAuditFileName)
+    audit: join(directory, MigrationAuditFileName),
+    provisional: join(directory, MigrationProvisionalFileName)
   };
+}
+
+/**
+ * One carried block, as it sits on disk.
+ *
+ * The whole projected record is stored, not a summary of it: the point of the
+ * carry-over is that a later modelling pass reads what the source held without
+ * going back to a replica that may by then be gone.
+ */
+export type ProvisionalBlockLine = {
+  idempotency_key: string;
+  object_id: string;
+  recorded_at: string;
+  record: ProjectedRecord;
+};
+
+/**
+ * Every carried block, re-read from the file.
+ *
+ * A malformed line THROWS rather than being skipped. A reader that shrugs at a
+ * line it cannot parse turns a corrupt carry-over into a smaller carry-over, and
+ * the reconciliation downstream would report the shortfall as a count mismatch
+ * with no idea that the bytes were the problem.
+ */
+export function readProvisionalBlockLines(directory: string): ProvisionalBlockLine[] {
+  const path = migrationPlaneDirectories(directory).provisional;
+  if (!existsSync(path)) return [];
+  const lines: ProvisionalBlockLine[] = [];
+  const text = readFileSync(path, "utf8");
+  for (const [index, line] of text.split("\n").entries()) {
+    if (line.trim() === "") continue;
+    try {
+      lines.push(JSON.parse(line) as ProvisionalBlockLine);
+    } catch (cause) {
+      throw new Error(
+        `${MigrationProvisionalFileName} line ${index + 1} is not readable JSON; the carried blocks ` +
+          "cannot be counted, and a partial count would be reported as records that never arrived",
+        { cause }
+      );
+    }
+  }
+  return lines;
 }
 
 export function readMigrationPlaneCensus(directory: string): MigrationPlaneCensus {
   const paths = migrationPlaneDirectories(directory);
   const identity = scanIdentityLog(paths.identity);
   const assertions = scanSegmentLog(paths.assertions);
+  const provisional = readProvisionalBlockLines(directory);
   let emptySubmissions = 0;
   for (const receipt of assertions.restored.submissions.values()) {
     if (receipt.assertion_ids.length === 0) emptySubmissions += 1;
@@ -456,7 +547,9 @@ export function readMigrationPlaneCensus(directory: string): MigrationPlaneCensu
     entities: identity.restored.entities.length,
     assertions: assertions.restored.assertions.length,
     alias_rows: identity.restored.rows.length,
-    empty_submissions: emptySubmissions
+    empty_submissions: emptySubmissions,
+    provisional_blocks: provisional.filter((line) => isUnmodelledRecord(line.record)).length,
+    provisional_retractions: provisional.filter((line) => line.record.record_kind === "retraction").length
   };
 }
 
@@ -476,7 +569,16 @@ class MigrationPlane {
   private readonly identity: DurableEntityRegistry;
   private readonly root: string;
   private readonly auditPath: string;
+  private readonly provisionalPath: string;
+  private readonly now: () => Date;
   private readonly authorityId: string;
+  /**
+   * Migration idempotency key -> the receipt that key's carried block already
+   * has. Rebuilt from the file in the constructor, never from a sidecar, for the
+   * same reason `entityByKey` is rebuilt from the identity log: a second copy of
+   * a fact is a thing that can disagree with it.
+   */
+  private readonly provisionalByKey = new Map<string, CommitReceipt>();
   /** Migration idempotency key -> the entity that key already minted. */
   private readonly entityByKey = new Map<string, { entity_id: EntityId; registered_at: string }>();
   /**
@@ -493,6 +595,8 @@ class MigrationPlane {
     this.root = options.directory;
     this.authorityId = options.authority_id;
     this.auditPath = paths.audit;
+    this.provisionalPath = paths.provisional;
+    this.now = options.clock ?? (() => new Date());
     this.log = DurableAssertionLog.open({
       directory: paths.assertions,
       ...(options.clock ? { clock: options.clock } : {})
@@ -519,6 +623,26 @@ class MigrationPlane {
         );
       }
       this.entityByKey.set(key, { entity_id: entity.entity_id, registered_at: entity.registered_at });
+    }
+
+    // Block resumability, rebuilt from the carried file for the same reason.
+    // Without it a resumed run appends every block a second time and the
+    // reconciliation reports more records than the source ever held.
+    for (const line of readProvisionalBlockLines(options.directory)) {
+      const existing = this.provisionalByKey.get(line.idempotency_key);
+      if (existing && existing.object_id !== line.object_id) {
+        throw new Error(
+          `${MigrationProvisionalFileName} holds two carried blocks for migration key ` +
+            `${line.idempotency_key} (${existing.object_id} and ${line.object_id}); a resume cannot ` +
+            "choose between them"
+        );
+      }
+      this.provisionalByKey.set(line.idempotency_key, {
+        idempotency_key: line.idempotency_key as MigrationIdempotencyKey,
+        object_id: line.object_id,
+        recorded_at: line.recorded_at,
+        seq: 0
+      });
     }
   }
 
@@ -599,6 +723,11 @@ class MigrationPlane {
       };
     }
 
+    // Checked last, and it must be checked: a carried block leaves no submission
+    // and no entity, so without this every resumed run re-appends the lot.
+    const provisional = this.provisionalByKey.get(idempotencyKey);
+    if (provisional) return { ...provisional, idempotency_key: idempotencyKey };
+
     return undefined;
   }
 
@@ -612,7 +741,78 @@ class MigrationPlane {
         return this.commitRetraction(request, request.resolved);
       case "absence":
         return this.commitAbsence(request);
+      case "provisional-block":
+        return this.commitProvisionalBlock(request);
     }
+  }
+
+  /**
+   * Carries a record whose modelling is deferred, into a file the consumer
+   * contract does not know about (ADR 0029).
+   *
+   * IT MUST NOT REACH `commitDrafts`. That writes `atlas.assertion:v1`, a
+   * released and uneditable shape, and mapping an unmodelled record onto it
+   * would freeze the shape this deferral exists to keep unfrozen. The guard is
+   * `UnmodelledRecordKinds` rather than a comment, so a second deferred kind
+   * added later is refused here instead of quietly taking the assertion path.
+   */
+  private commitProvisionalBlock(request: CommitRequest): CommitReceipt {
+    const record = request.record;
+    if (!isUnmodelledRecord(record)) {
+      throw new Error(
+        `commit resolved ${record.record_kind} as a provisional block; the resolution and the ` +
+          "record must agree about what is being written"
+      );
+    }
+    return this.commitProvisional(request);
+  }
+
+  /**
+   * Appends one line to the carried file: a block, or the retraction of one.
+   *
+   * Both go here for the same reason -- neither has a published shape that can
+   * hold it -- and they are told apart on the way out by `record.record_kind`
+   * rather than by a second file, so a reader cannot see one and miss the other.
+   */
+  private commitProvisional(request: CommitRequest): CommitReceipt {
+    const record = request.record;
+    const existing = this.provisionalByKey.get(request.idempotency_key);
+    // A replayed key returns the receipt the file already justifies. Appending a
+    // second line would double the count that the reconciliation checks, and the
+    // run would report records the source never held.
+    if (existing) return { ...existing, idempotency_key: request.idempotency_key };
+
+    const recordedAt = this.now().toISOString();
+    // Derived from the idempotency key, which is itself deterministic over
+    // (authority, legacy id, kind, ordinal). A counter would hand the same block
+    // a different id on a resumed run.
+    const objectId = `${ProvisionalRecordIdPrefix}${request.idempotency_key}`;
+    const line: ProvisionalBlockLine = {
+      idempotency_key: request.idempotency_key,
+      object_id: objectId,
+      recorded_at: recordedAt,
+      record
+    };
+    const handle = openSync(this.provisionalPath, "a");
+    try {
+      writeSync(handle, `${JSON.stringify(line)}\n`);
+      // fsync before the receipt, exactly as the logs do: a receipt is a
+      // statement that the bytes are on disk, not that they are in a buffer.
+      fsyncSync(handle);
+    } finally {
+      closeSync(handle);
+    }
+    const receipt = {
+      idempotency_key: request.idempotency_key,
+      object_id: objectId,
+      recorded_at: recordedAt,
+      // Not on the assertion change feed -- it is not an assertion. Zero cannot
+      // be mistaken for a position, because an assertion's seq is always
+      // positive. Same convention as an entity receipt.
+      seq: 0
+    };
+    this.provisionalByKey.set(request.idempotency_key, receipt);
+    return receipt;
   }
 
   /**
@@ -763,6 +963,16 @@ class MigrationPlane {
         value
       };
       return this.commitDrafts(request, [draft]);
+    }
+
+    // A DELETED BLOCK STAYS DELETED, and its retraction goes where the block
+    // went. A retraction is an `atlas.assertion:v1`, and the assertion log holds
+    // no record with this id to name -- so the published shapes cannot express
+    // "the unmodelled thing over there was deleted" at all. Dropping it would
+    // turn a recorded deletion into an absence of history, which an append-only
+    // plane must never do, so it is carried beside the block instead.
+    if (targetId.startsWith(ProvisionalRecordIdPrefix)) {
+      return this.commitProvisional(request);
     }
 
     throw new Error(

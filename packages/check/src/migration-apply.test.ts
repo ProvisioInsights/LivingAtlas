@@ -157,7 +157,9 @@ describe("the apply entrypoint", () => {
       entities: 0,
       assertions: 0,
       alias_rows: 0,
-      empty_submissions: 0
+      empty_submissions: 0,
+      provisional_blocks: 0,
+      provisional_retractions: 0
     });
     expect(run.report).toContain("closure-gate                      REFUSED");
   });
@@ -263,12 +265,35 @@ describe("the reconciliation", () => {
       assertions: at("relationship") + at("minted-relationship") + at("retraction"),
       alias_rows: plan.outcomes.length,
       empty_submissions: at("absence"),
+      provisional_blocks: at("provisional-block"),
+      provisional_retractions: 0,
       ...overrides
     };
   }
 
-  it("passes only when all four numbers agree", () => {
+  it("passes only when all five numbers agree", () => {
     expect(reconcileMigrationApply(plan, census()).ok).toBe(true);
+  });
+
+  it("fails a run that carried a block the plan did not call for", () => {
+    const result = reconcileMigrationApply(
+      plan,
+      census({ provisional_blocks: census().provisional_blocks + 1 })
+    );
+    expect(result.ok).toBe(false);
+    expect(result.mismatches).toEqual(["provisional blocks: expected 0, found 1"]);
+  });
+
+  /**
+   * The equation that would otherwise be missing entirely. A carried block
+   * leaves no assertion, no entity and no submission, so if it had no line of
+   * its own a run could drop every one of them and still reconcile.
+   */
+  it("fails a run that carried none of the blocks the plan called for", () => {
+    const withBlocks = { ...plan, breakdown: { ...plan.breakdown, records_by_kind: [...plan.breakdown.records_by_kind, { record_kind: "provisional-block" as const, count: 3 }] } };
+    const result = reconcileMigrationApply(withBlocks, census({ provisional_blocks: 0 }));
+    expect(result.ok).toBe(false);
+    expect(result.mismatches).toEqual(["provisional blocks: expected 3, found 0"]);
   });
 
   it("fails a run that committed one entity too many", () => {

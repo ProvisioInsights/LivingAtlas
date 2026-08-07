@@ -1,4 +1,4 @@
-# ADR 0028: The Durable Migration Adapter and the Apply Entrypoint
+# ADR 0030: The Durable Migration Adapter and the Apply Entrypoint
 
 Status: Accepted for implementation
 Date: 2026-08-06

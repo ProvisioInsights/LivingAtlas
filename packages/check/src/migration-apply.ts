@@ -12,6 +12,7 @@ import {
   openDurableMigrationPlane,
   readMigrationPlaneCensus,
   renderProjectionPlanReport,
+  UnmodelledRecordKinds,
   type ApplyProjectionPlanResult,
   type LegacyPayloadResolution,
   type MigrationPlaneCensus,
@@ -200,6 +201,21 @@ export type MigrationApplyExpectation = {
   alias_rows: number;
   /** Reported, and proven to have produced nothing by the two equations above. */
   absence_records: number;
+  /**
+   * Records carried with their modelling deferred (ADR 0029). It gets an
+   * equation of its own because it is the one class of record with no contract:
+   * if it were folded into any of the other three, the run could carry every
+   * block into the wrong file, or none of them anywhere, and still reconcile.
+   */
+  provisional_blocks: number;
+  /**
+   * Retractions of carried records, which land beside the block rather than in
+   * the assertion log. Subtracted from `assertions` below rather than counted
+   * twice: a tombstoned block produces a retraction the published log cannot
+   * hold, and an equation that still expected it there would fail every run that
+   * carried one.
+   */
+  provisional_retractions: number;
 };
 
 export type MigrationApplyReconciliation = {
@@ -211,6 +227,26 @@ export type MigrationApplyReconciliation = {
 
 function recordsOfKind(plan: ProjectionPlan, kind: ProjectedRecordKind): number {
   return plan.breakdown.records_by_kind.find((entry) => entry.record_kind === kind)?.count ?? 0;
+}
+
+/**
+ * Retractions whose target is a record with no published shape.
+ *
+ * Resolved through the plan's own records rather than assumed from a count: the
+ * question is what each retraction POINTS AT, and only the record it names can
+ * answer that. A retraction naming a key the plan does not hold is left in the
+ * assertion total, where the apply path will fail on it loudly, instead of being
+ * quietly excused here.
+ */
+function countRetractionsOfUnmodelledRecords(plan: ProjectionPlan): number {
+  const kindByKey = new Map(plan.records.map((record) => [record.idempotency_key, record.record_kind]));
+  let count = 0;
+  for (const record of plan.records) {
+    if (record.record_kind !== "retraction") continue;
+    const targetKind = kindByKey.get(record.retracts_idempotency_key);
+    if (targetKind !== undefined && UnmodelledRecordKinds.has(targetKind)) count += 1;
+  }
+  return count;
 }
 
 /**
@@ -234,14 +270,18 @@ export function reconcileMigrationApply(
   plan: ProjectionPlan,
   observed: MigrationPlaneCensus
 ): MigrationApplyReconciliation {
+  const provisionalRetractions = countRetractionsOfUnmodelledRecords(plan);
   const expected: MigrationApplyExpectation = {
     entities: recordsOfKind(plan, "entity") + recordsOfKind(plan, "minted-entity"),
     assertions:
       recordsOfKind(plan, "relationship") +
       recordsOfKind(plan, "minted-relationship") +
-      recordsOfKind(plan, "retraction"),
+      recordsOfKind(plan, "retraction") -
+      provisionalRetractions,
     alias_rows: plan.outcomes.length,
-    absence_records: recordsOfKind(plan, "absence")
+    absence_records: recordsOfKind(plan, "absence"),
+    provisional_blocks: recordsOfKind(plan, "provisional-block"),
+    provisional_retractions: provisionalRetractions
   };
 
   const mismatches: string[] = [];
@@ -252,6 +292,8 @@ export function reconcileMigrationApply(
   compare("assertions", expected.assertions, observed.assertions);
   compare("alias rows", expected.alias_rows, observed.alias_rows);
   compare("absence receipts", expected.absence_records, observed.empty_submissions);
+  compare("provisional blocks", expected.provisional_blocks, observed.provisional_blocks);
+  compare("provisional retractions", expected.provisional_retractions, observed.provisional_retractions);
 
   return { ok: mismatches.length === 0, expected, observed, mismatches };
 }
@@ -334,7 +376,7 @@ function renderApplyReport(input: {
    *
    * An entity record carries attributes, a description and sometimes a subtype
    * that `atlas.entity:v1` has no field for, and this adapter does not invent an
-   * assertion shape to hold them — see ADR 0028. The values are still readable
+   * assertion shape to hold them — see ADR 0030. The values are still readable
    * in the frozen replica, so nothing is lost; what would be lost is anyone's
    * awareness of it, which is why the count is a line in the report rather than
    * a sentence in a document. A section that disappeared when it read zero is a
@@ -343,7 +385,7 @@ function renderApplyReport(input: {
   const deferred = countDeferredEntityContent(input.plan.records);
   lines.push(
     "",
-    "entity-content-not-carried (ADR 0028; still readable in the frozen replica)",
+    "entity-content-not-carried (ADR 0030; still readable in the frozen replica)",
     `  ${pad("entity records")}${deferred.entity_records}`,
     `  ${pad("with attributes")}${deferred.with_attributes}`,
     `  ${pad("with a description")}${deferred.with_a_description}`,
@@ -361,7 +403,12 @@ function renderApplyReport(input: {
       `  ${pad("entities")}${reconciliation.observed.entities} / ${reconciliation.expected.entities}`,
       `  ${pad("assertions")}${reconciliation.observed.assertions} / ${reconciliation.expected.assertions}`,
       `  ${pad("alias rows")}${reconciliation.observed.alias_rows} / ${reconciliation.expected.alias_rows}`,
-      `  ${pad("absence receipts")}${reconciliation.observed.empty_submissions} / ${reconciliation.expected.absence_records}`
+      `  ${pad("absence receipts")}${reconciliation.observed.empty_submissions} / ${reconciliation.expected.absence_records}`,
+      // Printed whether or not the run carried any, matching the plan report's
+      // unmodelled-records section. A line that appears only when the number is
+      // interesting is a line nobody learns to look for.
+      `  ${pad("provisional blocks")}${reconciliation.observed.provisional_blocks} / ${reconciliation.expected.provisional_blocks}`,
+      `  ${pad("provisional retractions")}${reconciliation.observed.provisional_retractions} / ${reconciliation.expected.provisional_retractions}`
     );
     for (const mismatch of reconciliation.mismatches) lines.push(`    ${mismatch}`);
   }

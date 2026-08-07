@@ -235,3 +235,62 @@ deferral, written down.
   models blocks must also say what happens to the carried records: rewritten in
   place, superseded and retracted, or left as the durable source layer beneath the
   modelled one.
+
+## Merge-time amendment: what the durable plane forced
+
+This ADR was written against the in-memory target plane. Wiring the durable
+plane (ADR 0030) in the same tree contradicted two things it assumed, because a
+durable store's every shape is released and uneditable while a provisional
+record's whole point is that it is not.
+
+### A. A legacy block id gets a terminal alias row, not a redirect
+
+The projector originally named the carried block as the legacy id's alias
+primary, so the id redirected at the record. `atlas.alias-row:v1` is a RELEASED
+shape whose dispositions are a closed set, and a redirect row must name its
+target as one of them. That left only two ways to write it, and both are worse
+than saying plainly that the published ledger has no word for this:
+
+- add a disposition for provisional targets — which publishes the very kind this
+  ADR keeps unpublished, into a revision that can never be edited; or
+- file it as `mapped-assertion` — which claims the block became an assertion.
+
+So a block's legacy id now resolves as `no-target` with disposition
+`projected-as-provisional` and a detail naming the carry. **Nothing about the
+carry-over changed**: the block is still carried verbatim, still counted, still
+readable in the frozen replica. What the id does not get is a redirect.
+
+This is also why the change is in the projector rather than in one adapter. The
+durable ledger can only store this as a terminal disposition, so a plan that had
+promised a redirect would compare unequal to the row that came back and report a
+conflict with itself on every resume.
+
+### B. Carried records live in a file of their own, and so do their retractions
+
+`provisional-blocks.jsonl` sits beside the two logs under the target root. Not
+in the assertion log, which serialises `atlas.assertion:v1`; not in the identity
+log, which serialises `atlas.entity:v1`; and not as an `absence`, which asserts
+the opposite fact — that content did NOT come across.
+
+A tombstoned block forced the second half. A retraction is itself an
+`atlas.assertion:v1` naming what it supersedes, and the assertion log holds no
+record with a carried block's id for it to name — so the published shapes cannot
+express "the unmodelled thing over there was deleted" at all. The retraction is
+carried beside the block. Dropping it would turn a recorded deletion into an
+absence of history, which an append-only plane must never do.
+
+Both are counted separately (`provisional_blocks`, `provisional_retractions`) and
+both are reconciled against the plan on every apply. The assertion equation
+subtracts retractions that target unmodelled records, resolved through the
+records they actually name rather than assumed from a count.
+
+- **OPEN-29.8 — How should a legacy block id resolve once blocks are modelled?**
+  The terminal row is honest but it is not a redirect, so a lookup of a block's
+  old id cannot follow a pointer to the carried record. Restoring that needs
+  either a published record kind for blocks or a ledger disposition that can name
+  an unpublished target. Both are modelling decisions, and modelling is what this
+  ADR defers.
+- **OPEN-29.9 — A legacy redirect that resolves to a block now refuses.** With no
+  alias primary, a redirect chain ending at a block reports `endpoint-not-projected`
+  rather than inheriting the block's target. On the fixtures no chain ends at a
+  block; whether any does in the real corpus is unmeasured.

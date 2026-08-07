@@ -169,18 +169,28 @@ describe("carrying outline blocks across without modelling them", () => {
   });
 
   /**
-   * The legacy id now resolves at the carried record instead of answering
-   * "nothing carried this across", which is the whole point of moving them now.
+   * The legacy id answers "carried across, into a record the published ledger
+   * has no word for" -- NOT a redirect.
+   *
+   * `atlas.alias-row:v1` is released and its dispositions are a closed set, so a
+   * redirect row naming a provisional block could only be written by adding a
+   * disposition -- publishing the kind ADR 0029 keeps unpublished, in a revision
+   * that can never be edited -- or by filing it as `mapped-assertion`, which
+   * claims the block became an assertion. The terminal row is the honest answer,
+   * and it still says the block was carried.
    */
-  it("redirects the legacy block id at the record that carries it", () => {
+  it("does not claim an alias redirect the published ledger cannot name", () => {
     const outcome = outcomeFor(planFor(), legacyBlockFixtureIds.block);
 
-    expect(outcome.alias_target.kind).toBe("record");
-    if (outcome.alias_target.kind !== "record") throw new Error("expected a redirect");
-    expect(outcome.alias_target.record_kind).toBe("provisional-block");
-    expect(outcome.record_keys).toContain(outcome.alias_target.record_key);
-    // A block is not an entity, so the alias row names no slot to resolve to.
-    expect(outcome.alias_target.slot).toBeUndefined();
+    expect(outcome.alias_target.kind).toBe("no-target");
+    if (outcome.alias_target.kind !== "no-target") throw new Error("expected a terminal row");
+    expect(outcome.alias_target.disposition).toBe("projected-as-provisional");
+    // Still says it was carried. A row that read as "never migrated" would be
+    // the silence this whole deferral is built to avoid.
+    expect(outcome.alias_target.detail).toContain("carried across as a provisional block");
+    // The record itself is still planned and still counted -- the id losing its
+    // redirect is not the block losing its carry.
+    expect(outcome.record_keys.length).toBeGreaterThan(0);
   });
 
   /**
@@ -464,11 +474,17 @@ describe("applying a carried block", () => {
 
     const row = await plane.alias_ledger.resolve(legacyBlockFixtureIds.block);
     const target = row?.target;
-    expect(target?.kind).toBe("redirect");
-    if (target?.kind !== "redirect") throw new Error("expected a redirect row");
-    expect(target.record_kind).toBe("provisional-block");
+    expect(target?.kind).toBe("no-target");
+    if (target?.kind !== "no-target") throw new Error("expected a terminal row");
+    expect(target.disposition).toBe("projected-as-provisional");
 
-    const commit = plane.sink.commits.find((request) => request.object_id === target.object_id);
-    expect(commit?.record.record_kind).toBe("provisional-block");
+    // The row is terminal, and the block was still committed. Both halves
+    // matter: the first is what the published vocabulary can honestly say, the
+    // second is that saying it cost the carry-over nothing.
+    const commit = plane.sink.commits.find(
+      (request) => request.record.record_kind === "provisional-block"
+    );
+    expect(commit).toBeDefined();
+    expect(commit?.resolved.record_kind).toBe("provisional-block");
   });
 });
