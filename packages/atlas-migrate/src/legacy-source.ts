@@ -47,6 +47,15 @@ export const LegacySourceCategoryValues = [
   "opaque-object",
   "quarantined-object",
   "narrative-object",
+  /**
+   * A block of a Logseq outline, whose shape this projector has measured and
+   * carries across verbatim. Named for what the SOURCE is, not for what the
+   * migration decides to do with it — the target record's provisional status is
+   * a fact about the record, and the category vocabulary describes legacy
+   * shapes. See `ProvisionalBlockSchemaNamespaces`.
+   */
+  "outline-block",
+  "tombstoned-outline-block",
   "derived-index",
   "other"
 ] as const;
@@ -69,6 +78,23 @@ export type LegacyRedirectPayload = z.infer<typeof LegacyRedirectPayloadSchema>;
  * a drop is not.
  */
 const NarrativeObjectTypes = new Set<string>(["page", "block", "attachment"]);
+
+/** The Logseq outline-block namespace, exported so a fixture cannot mistype it. */
+export const LogseqBlockSchemaNamespace = "import/logseq-semantic/block";
+
+/**
+ * Namespaces whose payload shape has been MEASURED and is carried across
+ * verbatim as a provisional record (ADR 0029).
+ *
+ * The set is keyed on the namespace and not on `object_type`, and that is the
+ * whole safety property of this branch: a block whose namespace is not in this
+ * set has an unmeasured shape, falls through to the narrative check, and is
+ * still refused by name. The migration carries what it has measured and refuses
+ * what it has not — the alternative is a category that means "any block-shaped
+ * thing", which would carry a shape nobody has looked at under a schema written
+ * for a different one.
+ */
+const ProvisionalBlockSchemaNamespaces = new Set<string>([LogseqBlockSchemaNamespace]);
 
 /**
  * `object_type` is the STORAGE shape; `schema_namespace` is what the record
@@ -153,6 +179,17 @@ export function classifyLegacySource(
     return { category: tombstone ? "tombstoned-typed-edge" : "typed-edge", resolution };
   }
 
+  // BEFORE the narrative check and after the typed ones. A block is STORED as
+  // `object_type: "block"`, which the narrative set claims, so a namespace this
+  // projector has measured has to be read first or the carry-over is
+  // unreachable — the same storage-shape-beats-meaning defect that filed the
+  // whole node layer as prose. It stays AFTER entity and edge because a typed
+  // fact is not a provisional carry: if a namespace ever appeared in both sets,
+  // reading it as a node or an edge must win.
+  if (namespace !== undefined && ProvisionalBlockSchemaNamespaces.has(namespace)) {
+    return { category: tombstone ? "tombstoned-outline-block" : "outline-block", resolution };
+  }
+
   if (NarrativeObjectTypes.has(envelope.object_type)) {
     return { category: "narrative-object", resolution };
   }
@@ -179,6 +216,24 @@ export const MigrationRefusalReasonValues = [
    * shape hide behind a deliberate omission.
    */
   "derived-index-not-migrated",
+  /**
+   * A block in a namespace this projector carries, whose payload does not match
+   * the measured shape — a key the measurement never saw, or one it saw always
+   * and this block lacks.
+   *
+   * Its own reason rather than `invalid-legacy-payload`, which is the code for
+   * "these bytes are malformed". They are not: the record is fine and OUR
+   * description of it is short. An operator told the payload was invalid goes
+   * looking for corruption; an operator told the shape was not measured goes and
+   * measures it, which is the remedy. This is the same distinction the predicate
+   * refusals below were split out to make.
+   *
+   * Nothing is lost when it fires: the frozen replica still holds the block, and
+   * a refusal is counted by name. What must not happen is a block carried with a
+   * key silently dropped, which is the one outcome a carry-over that calls
+   * itself lossless can never produce.
+   */
+  "unmeasured-block-shape",
   /**
    * A retired subtype word that Rule A's closed table does not name. Also
    * distinct from `unclassified-source-category`: the source category WAS

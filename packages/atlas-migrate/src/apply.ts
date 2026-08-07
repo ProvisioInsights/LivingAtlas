@@ -104,7 +104,21 @@ export type CommitResolution =
   | { record_kind: "entity" }
   | { record_kind: "relationship"; source_entity_id: string; target_entity_id: string }
   | { record_kind: "retraction"; retracts_object_id: string }
-  | { record_kind: "absence" };
+  | { record_kind: "absence" }
+  /**
+   * A record carried across with its modelling deferred (ADR 0029). It resolves
+   * to nothing — no endpoints, no retraction target — so the variant carries no
+   * fields, and it is a variant of its own rather than folded into `absence`
+   * because the two are opposite facts: an absence says content did NOT come
+   * across, and this says content came across whole and unmodelled.
+   *
+   * A SINK MUST NOT WRITE THIS INTO A PUBLISHED CONTRACT SHAPE. The kind is
+   * unpublished precisely because it is expected to change, and a released
+   * revision cannot be edited once it ships — so a durable adapter that mapped
+   * it onto `atlas.assertion:v1` would freeze by accident the shape this whole
+   * deferral exists to keep unfrozen. `UnmodelledRecordKinds` is the check.
+   */
+  | { record_kind: "provisional-block" };
 
 export type CommitRequest = {
   idempotency_key: MigrationIdempotencyKey;
@@ -212,6 +226,11 @@ const RecordKindOrder: Record<ProjectedRecordKind, number> = {
   // topic node committed after its edges would leave them unresolvable.
   "minted-entity": 0,
   absence: 1,
+  // Nothing resolves through a provisional record and it resolves through
+  // nothing, so its wave is free. It commits BEFORE retractions because a
+  // deleted block is carried and then retracted, and a retraction whose target
+  // has not committed throws.
+  "provisional-block": 1,
   relationship: 2,
   "minted-relationship": 2,
   retraction: 3
@@ -436,6 +455,12 @@ export async function applyProjectionPlan(input: ApplyProjectionPlanInput): Prom
           throw new Error(`retraction ${record.idempotency_key} names a record that was not committed`);
         }
         resolved = { record_kind: "retraction", retracts_object_id: retractsObjectId };
+      } else if (record.record_kind === "provisional-block") {
+        // Named rather than swept into the `absence` default. A sink deciding
+        // how to persist a record reads this field, and a provisional block told
+        // it was an absence would be stored as a report that content did not
+        // come across — the exact inverse of what it is.
+        resolved = { record_kind: "provisional-block" };
       } else {
         resolved = { record_kind: "absence" };
       }

@@ -182,8 +182,11 @@ disagreement. The event is still built after the alias loop and written once.
 - **Legacy `confidence` band** — the new plane requires a confidence assessment
   backed by evidence refs; manufacturing one from a bare band would fabricate
   evidence.
-- **Narrative objects** (`page`, `block`, `attachment`) — refused with
-  `no-typed-target-representation` rather than dropped.
+- **Narrative objects** (`page`, `attachment`, and any `block` outside a measured
+  namespace) — refused with `no-typed-target-representation` rather than dropped.
+  **Superseded in part by ADR 0029**: outline blocks in a namespace whose shape
+  has been measured are now carried across verbatim as provisional records, under
+  their own category and disposition. Pages and attachments stay refused.
 
 The plan report is content-free by construction: ids, types and counts only. A
 dry-run artifact is the last place that should hold plaintext.
@@ -195,7 +198,8 @@ dry-run artifact is the last place that should hold plaintext.
 - The gate will **fail on the real corpus today**, by design: temporal events and
   narrative objects have no typed target representation in v1, and objects whose
   keys are not loaded refuse as `ciphertext-not-attempted`. Those refusals are
-  the work list, not a bug.
+  the work list, not a bug. Outline blocks have since come off that list by being
+  carried rather than modelled (ADR 0029); pages and attachments have not.
 - Absence records and `no-target` alias rows mean the new plane holds a permanent,
   queryable record of what the old store contained and did not survive.
 

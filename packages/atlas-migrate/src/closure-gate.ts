@@ -15,6 +15,7 @@ import {
   isProjectedFromLegacyObject,
   isRelationshipRecord,
   isRetractionRecord,
+  isUnmodelledRecord,
   slotMintedBy,
   type ProjectedRecord,
   type TopicScheme
@@ -44,6 +45,7 @@ export const ClosureGateFindingCodeValues = [
   "unnamed-topic-scheme",
   "alias-row-missing",
   "alias-target-missing-record",
+  "unmodelled-record-carried",
   "other"
 ] as const;
 export type ClosureGateFindingCode = (typeof ClosureGateFindingCodeValues)[number];
@@ -51,12 +53,28 @@ export type ClosureGateFindingCode = (typeof ClosureGateFindingCodeValues)[numbe
 /**
  * Whether a finding stops the plan certifying.
  *
- * `tolerated` exists for exactly one shape of problem: a condition the migration
- * FOUND rather than caused, that the owner has decided to carry across as it
- * stands. It is still counted, still named and still printed on every run — the
- * owner must not be able to stop learning about it — but refusing to certify
- * would block the migration forever on a state the source is already in, and no
- * amount of re-running the projector changes a fact about the corpus.
+ * `tolerated` covers TWO shapes of problem, and both share the property that
+ * makes toleration safe: re-running the projector cannot change them, so
+ * refusing to certify would block the migration forever rather than fix
+ * anything. Both are still counted, still named and still printed on every run —
+ * the owner must not be able to stop learning about them.
+ *
+ *   1. A condition the migration FOUND rather than caused, that the owner has
+ *      decided to carry across as it stands. Two topic nodes the corpus already
+ *      holds for one word are a data-quality problem that predates the run.
+ *
+ *   2. A DEFERRAL the owner decided, where the finding is the mechanism that
+ *      keeps the deferral visible. Blocks carried without a model are the case
+ *      this was widened for (ADR 0029): the owner was told that an unmodelled
+ *      record type tends to stay unmodelled, and a finding on every run is what
+ *      turns that risk into a number somebody sees. Filing it as a `failure`
+ *      would mean no migration could ever certify; filing it nowhere is the
+ *      silence the owner was warned about.
+ *
+ * The second shape is a narrow door and it must stay narrow: it is for a
+ * deferral the owner has decided IN WRITING, with an ADR naming what was
+ * preserved and what a later pass must decide. A defect the author would rather
+ * not fix is not a deferral, and the test is whether the ADR exists.
  *
  * It is NOT an acknowledgement flag or a suppression list. A code is tolerated
  * or it is not; there is no per-subject exemption, because an exemption is a
@@ -98,6 +116,8 @@ export const ClosureGateFindingSeverity: Record<ClosureGateFindingCode, ClosureG
   "unnamed-topic-scheme": "failure",
   "alias-row-missing": "failure",
   "alias-target-missing-record": "failure",
+  // The deferral shape of `tolerated` — see the severity doc above and ADR 0029.
+  "unmodelled-record-carried": "tolerated",
   other: "failure"
 };
 
@@ -168,6 +188,7 @@ export function evaluateClosureGate(plan: ProjectionPlan, options: ClosureGateOp
   findings.push(...checkTopicVocabulary(plan.records));
   findings.push(...checkEndpointsResolve(plan.records));
   findings.push(...checkAliasRows(plan.outcomes, plan.records));
+  findings.push(...checkUnmodelledRecords(plan.records));
 
   return {
     gate_schema: ClosureGateSchemaName,
@@ -590,6 +611,49 @@ function checkTopicVocabulary(records: ProjectedRecord[]): ClosureGateFinding[] 
     );
   }
   return findings;
+}
+
+/**
+ * HOW MUCH OF THIS RUN IS DEFERRED, said out loud, on every run that defers any.
+ *
+ * The plan carries records whose kind nothing has modelled — today the Logseq
+ * outline blocks, which the owner chose to move now and model later. That
+ * decision came with a stated risk: an unmodelled record type tends to stay
+ * unmodelled, and it would be the one thing in the store with no contract. The
+ * only structural defence against that is a count nobody can stop seeing, so it
+ * is a gate finding rather than a report line alone — the report can be skimmed
+ * past, and `migration-plan-dryrun` prints every finding to stderr by severity.
+ *
+ * TOLERATED, not a failure: the records are exactly what the owner asked for, so
+ * failing would mean no plan could ever certify. Toleration here is not
+ * approval — it is the second shape named in the severity doc, and it is bounded
+ * by an ADR that says what a later pass must decide.
+ *
+ * SUBJECTS ARE IDEMPOTENCY KEYS. The finding is about records, and a key is
+ * opaque: it resolves to its block locally, on the machine that already holds
+ * the graph, and carries nothing into a report that might be pasted elsewhere.
+ * A block's own text is the most content-bearing thing in the plan and none of
+ * it belongs in a review artifact — which is the same rule that made the topic
+ * findings report slots rather than words.
+ */
+function checkUnmodelledRecords(records: ProjectedRecord[]): ClosureGateFinding[] {
+  const unmodelled = records.filter(isUnmodelledRecord);
+  if (unmodelled.length === 0) {
+    return [];
+  }
+
+  const kinds = [...new Set(unmodelled.map((record) => record.record_kind))].sort();
+  return [
+    finding(
+      "unmodelled-record-carried",
+      "this run carries records whose kind nothing has modelled and no contract revision publishes: " +
+        `${kinds.join(", ")}. They are carried verbatim so a later modelling pass has everything, and ` +
+        "they are counted here so the deferral is a number on every run rather than a silence. An " +
+        "unmodelled record type tends to stay unmodelled — see ADR 0029 for what a later pass must " +
+        "decide. Subjects are idempotency keys; resolve them locally.",
+      unmodelled.map((record) => record.idempotency_key)
+    )
+  ];
 }
 
 function checkRecordAccounting(outcomes: SourceOutcome[], records: ProjectedRecord[]): ClosureGateFinding[] {
