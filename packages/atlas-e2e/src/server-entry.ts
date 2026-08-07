@@ -43,13 +43,17 @@ import { layoutFor } from "./layout.js";
  * for the test.
  *
  * What is NOT the product is this file's own wiring — the data directory, the
- * synthetic fixture, and the credential file. `packages/atlas-mcp/src/cli.ts`
- * serves the SURFACE against an empty in-memory graph on purpose; wiring a
- * durable store to the shipped binary is a separate, reviewable act with real
- * data implications, and doing it here instead keeps that decision where it
- * belongs. Composing real components is not mocking them: the difference is that
- * a mock answers questions, and this file only decides which directory the real
- * answers are written to.
+ * synthetic fixture, and the credential file. Composing real components is not
+ * mocking them: the difference is that a mock answers questions, and this file
+ * only decides which directory the real answers are written to.
+ *
+ * The shipped binary opens a durable store of its own now, from
+ * `LIVING_ATLAS_STORE_DIR` (ADR 0028), and `serve-store.e2e.test.ts` drives THAT
+ * directly. This file stays because steps 1–12 need something the shipped entry
+ * deliberately does not provide: a graph seeded with known contents and a
+ * credential directory holding two principals. Two entries, two claims — "the
+ * server works when a harness composes it" and "the thing you install can be
+ * pointed at your graph" — and neither one proves the other.
  *
  * It reads NOTHING outside the directory it is told to use. It has no
  * environment-variable fallbacks, no profile lookup, and no default path — a

@@ -34,6 +34,13 @@ export const OPERATOR_ERROR_CODES: readonly ErrorCodeEntry[] = [
     summary: "That reconcile subject is not one this server implements. Refused rather than treated as a no-op, which would report success for work nobody did."
   },
   {
+    code: "store-not-opened",
+    origin: "store",
+    retryable: false,
+    summary:
+      "This server was not opened over a durable store, so there is no store state to report. Refused rather than answered with zeroes: a store that is not there and a store that is empty need different responses from an operator."
+  },
+  {
     code: "replication-target-unknown",
     origin: "store",
     retryable: false,

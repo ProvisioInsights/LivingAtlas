@@ -131,6 +131,48 @@ const describeOperatorScope: OperatorHandler = (_args, context) => {
 };
 
 // ---------------------------------------------------------------------------
+// atlas.ops.store.status.read.v1
+// ---------------------------------------------------------------------------
+
+/**
+ * What store this server opened, and in what posture.
+ *
+ * The operator-plane answer to the question the consumer plane cannot be asked:
+ * a consumer reading an empty page cannot tell a store that holds nothing from a
+ * server that opened no store at all, and neither can an operator reading a
+ * migration window. So the absent case is a REFUSAL with its own code rather
+ * than a row of zeroes — the whole reason `store.ts` refuses an absent directory
+ * is that zero and not-there must never be spelled the same way, and reporting
+ * them the same way here would put the confusion back one layer up.
+ *
+ * `mode` is on this result because read-only and read-write are different
+ * security postures, and which one a running server is in is not something an
+ * operator should have to deduce from a refusal it happened to provoke.
+ */
+const readStoreStatus: OperatorHandler = (_args, context) => {
+  const status = context.source.store?.();
+  if (status === undefined) {
+    return {
+      kind: "refusal",
+      error: errorRecord({
+        code: "store-not-opened",
+        message:
+          "This server was not opened over a durable store, so there is no store state to report. " +
+          "It is serving an in-memory graph.",
+        retryable: false
+      }),
+      audit: { outcome: "refused", reasonCode: "store-not-opened", counts: {} }
+    };
+  }
+
+  return {
+    kind: "complete",
+    structured: { store: { ...status } },
+    audit: { outcome: "ok", counts: { evaluated: status.assertions, returned: 1 } }
+  };
+};
+
+// ---------------------------------------------------------------------------
 // atlas.ops.migration.window.read.v1
 // ---------------------------------------------------------------------------
 
@@ -482,6 +524,32 @@ export const OPERATOR_TOOLS: readonly OperatorToolDefinition[] = [
       error_codes: z.array(z.looseObject({ code: z.string(), origin: z.string(), retryable: z.boolean(), summary: z.string() }))
     }),
     handler: describeOperatorScope
+  },
+  {
+    name: "atlas.ops.store.status.read.v1",
+    title: "Read the durable store this server opened",
+    description:
+      "Report which store this server is serving and in what posture: read-only or read-write, feed epoch, belief-time floor, published watermark, record and segment counts, and what the load found wrong. Refused when this server opened no store at all, because a store that is absent and a store that is empty need different responses. No graph content and no filesystem path is reported.",
+    annotations: READ_ONLY,
+    input: z.strictObject({}),
+    output: z.looseObject({
+      store: z.looseObject({
+        mode: z.string(),
+        feed_epoch: z.string(),
+        bitemporal_since: z.string(),
+        published_watermark: z.number().int(),
+        assertions: z.number().int(),
+        entities: z.number().int(),
+        predicates: z.number().int(),
+        assertion_segments: z.number().int(),
+        identity_segments: z.number().int(),
+        segment_repairs: z.number().int(),
+        ignored_files: z.number().int(),
+        conflicting_supersessions: z.number().int(),
+        conflicting_alias_rows: z.number().int()
+      })
+    }),
+    handler: readStoreStatus
   },
   {
     name: "atlas.ops.migration.window.read.v1",

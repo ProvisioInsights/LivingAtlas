@@ -27,6 +27,7 @@ The journey, asserted step by step:
 | 7–9 | `atlas.sensitive.reveal.v1`: refusal without the elicitation capability, approval with it, and a tampered `requestState` rejected | `reveal.e2e.test.ts` |
 | 10 | **SIGKILL the server, restart on the same data**: same answers, cursor resumes, the retry still replays the original receipt | `restart.e2e.test.ts` |
 | 11–12 | The operator plane is invisible to a consumer credential, and an operator credential never reaches a handler | `plane-isolation.e2e.test.ts` |
+| 13 | **The SHIPPED binary, pointed at a store that already exists**: reads back what atlas-core wrote, survives SIGKILL and restart on the same directory, refuses a proposal read-only, still serves the empty in-memory graph with the variable unset, and EXITS rather than serving an empty graph when the directory is not there | `serve-store.e2e.test.ts` |
 
 Each scenario is an independent test. A scenario that **writes** — a proposal, a
 restart — takes its own temporary directory and its own server process, because
@@ -45,20 +46,30 @@ better than three processes each seeing one credential would.
 
 The files match the repository's vitest include (`packages/**/*.test.ts`) and are
 named `*.e2e.test.ts` so a reader of a failure knows immediately that a real
-process was involved. The whole suite is a few seconds and spawns fourteen child
+process was involved. The whole suite is a few seconds and spawns twenty child
 processes: the synthetic fixture is two entities and five assertions.
 
-If you add a scenario, take a private server only if it writes. Fourteen spawns is
+If you add a scenario, take a private server only if it writes. Twenty spawns is
 not an arbitrary budget — an earlier version at thirty-four reliably tipped an
 existing CPU-bound test elsewhere in the repository over its timeout.
 
+Step 13 is the exception to "share a server for reads": every one of its
+scenarios needs its own process, because what it varies IS the environment the
+process was started with.
+
 ## Privacy
 
-Everything is fabricated and everything lives under `os.tmpdir()`. The spawned
-server reads **nothing** outside the directory it is told to use: no environment
-fallback, no profile lookup, no default path. A missing `--data-dir` is a usage
-error rather than a guess, because a harness server that helpfully guessed a
-location is one that can be pointed at real data by omission.
+Everything is fabricated and everything lives under `os.tmpdir()`. The fixture
+server (`server-entry.ts`) reads **nothing** outside the directory it is told to
+use: no environment fallback, no profile lookup, no default path. A missing
+`--data-dir` is a usage error rather than a guess, because a harness server that
+helpfully guessed a location is one that can be pointed at real data by omission.
+
+Step 13 spawns the shipped binary, which DOES read `LIVING_ATLAS_STORE_DIR` — so
+it is given a replacement environment holding only that variable, pointed at a
+directory this suite created two lines earlier. Inheriting the parent's
+environment would let a variable set on somebody's machine decide what the child
+serves, and a test that passed because of a shell profile proves nothing.
 
 Credential secrets are minted by the parent and never written to disk, never put
 on the child's command line (argv is readable through `ps`), and never placed in
@@ -69,7 +80,12 @@ The credential file the child reads holds **hashes and principals only**.
 
 `server-entry.ts` is harness wiring: it decides which directory the real answers
 are written to and seeds a synthetic fixture on first boot. It is not the shipped
-binary. `packages/atlas-mcp/src/cli.ts` deliberately serves the *surface* against
-an empty in-memory graph — wiring a durable store to the shipped entry is a
-separate, reviewable act with real-data implications, and it belongs in that
-package's own change rather than smuggled in through a test.
+binary, and it is still the right vehicle for steps 1–12, which need a graph with
+known contents and two credentials in it.
+
+The shipped binary now opens a durable store of its own, from
+`LIVING_ATLAS_STORE_DIR` (ADR 0028), and step 13 drives THAT — resolved through
+`packages/atlas-mcp`'s own `bin` entry, so a test claiming "the shipped entry
+serves a store" cannot keep passing against a file the package stopped shipping.
+The two are kept apart on purpose: "the server works when a harness composes it"
+and "the thing you install can be pointed at your graph" are different claims.

@@ -1,4 +1,5 @@
 import type { AuditEvent } from "../audit.js";
+import type { AtlasStoreStatus } from "../store.js";
 
 /**
  * What the operator plane reads and writes through.
@@ -93,6 +94,21 @@ export type AuditReader = {
 };
 
 export type OperatorSource = {
+  /**
+   * The durable store this plane was opened over, when it was opened over one.
+   *
+   * ABSENT is a meaningful answer and not a missing feature: a server serving
+   * the in-memory fixture has no store, and the operator tool that reads this
+   * refuses rather than reporting a store with zero records. That is the same
+   * rule the consumer entry keeps at startup — an absent store must never look
+   * like an empty one — applied where an operator would go to check.
+   *
+   * `AtlasStoreStatus` carries counts and health and no graph content, so this
+   * does not reopen the read path `source.ts` deliberately leaves out. It does
+   * not carry the store's directory either: the operator supplied the path and a
+   * tool result is not the place to publish where a deployment keeps its data.
+   */
+  store?(): AtlasStoreStatus;
   migrationWindows(): readonly MigrationWindow[];
   replicationTargets(): readonly ReplicationTarget[];
   meteredUsage(): readonly MeteredUsage[];

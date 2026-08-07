@@ -1026,6 +1026,38 @@ const proposeAssertions: ToolHandler = (args, context) => {
     };
   }
 
+  /**
+   * The store's own posture, checked BEFORE the grant checks below.
+   *
+   * Order is the point. A read-only store refuses every proposal from every
+   * credential, so answering `predicate-not-writable` first would send the
+   * caller to `atlas.scope.describe.v1` and then to whoever issues grants, for a
+   * refusal no grant can lift. Checked after argument validation, because a
+   * malformed request is malformed against any store.
+   *
+   * This is also the seam that stops a read-only store accepting a write into
+   * memory: `store.ts` opens the log with no journal, so a commit that reached
+   * it would return a receipt for bytes that vanish at exit. The log throws too
+   * — see `ReadOnlyAssertionLog` — but a throw arrives as `invalid-argument`,
+   * which would blame the caller for a property of the server.
+   */
+  if (context.graph.readOnly === true) {
+    return {
+      kind: "refusal",
+      error: errorRecord({
+        code: "store-read-only",
+        message:
+          "This server opened its store read-only, so no proposal from any credential can be committed. " +
+          "Nothing was written and nothing was held.",
+        // Retryable: the same request could succeed against the same store
+        // reopened read-write, and reopening is not something the CALLER does to
+        // its request. Same reading as sensitivity-withheld.
+        retryable: true
+      }),
+      audit: { outcome: "refused", reasonCode: "store-read-only", counts: { refused: proposals.length } }
+    };
+  }
+
   const expectedEpoch = str(args["expected_feed_epoch"]);
   if (expectedEpoch !== undefined && expectedEpoch !== context.graph.assertions.feedEpoch) {
     return {

@@ -179,13 +179,25 @@ something it cannot validate. See
 for the server and [ADR 0015](docs/architecture/adr-0015-operator-plane-and-capability-grants.md)
 for the operator plane and capability grants.
 
-The stdio entry point serves the SURFACE against an empty in-memory graph.
-Wiring a durable store to it is a separate, reviewable act, and migration
-against real data is blocked on offline backup media:
+With no store named, both stdio entry points serve the SURFACE — the consumer
+over an empty in-memory graph, the operator over a synthetic operational source:
 
 ```bash
 npm run atlas-mcp:consumer -- --audit-log /path/to/audit.jsonl
 npm run atlas-mcp:operator -- --audit-log /path/to/operator-audit.jsonl
+```
+
+`LIVING_ATLAS_STORE_DIR` points either plane at a durable store that already
+exists, holding `assertions/` and `identity/` segment logs. It is opened
+**read-only** unless `LIVING_ATLAS_STORE_MODE=read-write` says otherwise, because
+new-format backup does not exist yet — anything written into the new store is
+unprotected until it lands. A directory that is not there is a startup failure,
+never an empty graph. See
+[ADR 0028](docs/architecture/adr-0028-serving-a-durable-store-from-a-directory.md).
+
+```bash
+LIVING_ATLAS_STORE_DIR=/path/to/store \
+  npm run atlas-mcp:consumer -- --audit-log /path/to/audit.jsonl
 ```
 
 The 30-tool local surface these replace — its daemon, its Unix-socket proxy, and

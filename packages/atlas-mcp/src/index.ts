@@ -16,5 +16,6 @@ export * from "./schema-provider.js";
 export * from "./reveal-state.js";
 export * from "./server.js";
 export * from "./stdio.js";
+export * from "./store.js";
 export * from "./tool-context.js";
 export * from "./tools.js";
