@@ -1,0 +1,153 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:living-atlas:contract:2026.08.2:tool:atlas.assertion.read.v1:output",
+  "title": "atlas.assertion.read.v1 — result",
+  "description": "Read specific assertions whether or not they are still believed, optionally with their lineage. An id compaction reclaimed returns a typed atlas.error:v1 carrying the reclamation note — never a bare not-found, because a dangling reference and a typo must not look the same.",
+  "type": "object",
+  "properties": {
+    "results": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "record_schema"
+        ],
+        "properties": {
+          "record_schema": {
+            "type": "string",
+            "minLength": 1,
+            "x-atlas-known-values": [
+              "atlas.assertion:v1",
+              "atlas.redaction:v1",
+              "atlas.error:v1"
+            ]
+          }
+        },
+        "allOf": [
+          {
+            "if": {
+              "required": [
+                "record_schema"
+              ],
+              "properties": {
+                "record_schema": {
+                  "const": "atlas.assertion:v1"
+                }
+              }
+            },
+            "then": {
+              "$ref": "urn:living-atlas:contract:2026.08.2:record:atlas.assertion:v1"
+            }
+          },
+          {
+            "if": {
+              "required": [
+                "record_schema"
+              ],
+              "properties": {
+                "record_schema": {
+                  "const": "atlas.redaction:v1"
+                }
+              }
+            },
+            "then": {
+              "$ref": "urn:living-atlas:contract:2026.08.2:record:atlas.redaction:v1"
+            }
+          },
+          {
+            "if": {
+              "required": [
+                "record_schema"
+              ],
+              "properties": {
+                "record_schema": {
+                  "const": "atlas.error:v1"
+                }
+              }
+            },
+            "then": {
+              "$ref": "urn:living-atlas:contract:2026.08.2:record:atlas.error:v1"
+            }
+          }
+        ]
+      }
+    },
+    "lineage": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "assertion_id": {
+            "$ref": "urn:living-atlas:contract:2026.08.2:common:output#/$defs/assertion_id"
+          },
+          "supersedes": {
+            "type": "array",
+            "items": {
+              "$ref": "urn:living-atlas:contract:2026.08.2:common:output#/$defs/assertion_id"
+            }
+          },
+          "superseded_by": {
+            "anyOf": [
+              {
+                "$ref": "urn:living-atlas:contract:2026.08.2:common:output#/$defs/assertion_id"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "lineage_action": {
+            "type": "string",
+            "enum": [
+              "assert",
+              "correct",
+              "retract",
+              "invalidate",
+              "reinstate",
+              "other"
+            ]
+          }
+        },
+        "required": [
+          "assertion_id",
+          "supersedes",
+          "superseded_by",
+          "lineage_action"
+        ]
+      }
+    },
+    "reclamations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "assertion_id": {
+            "$ref": "urn:living-atlas:contract:2026.08.2:common:output#/$defs/assertion_id"
+          },
+          "note": {
+            "$ref": "urn:living-atlas:contract:2026.08.2:common:output#/$defs/reclamation_note"
+          }
+        },
+        "required": [
+          "assertion_id",
+          "note"
+        ]
+      }
+    },
+    "coverage": {
+      "$ref": "urn:living-atlas:contract:2026.08.2:common:output#/$defs/coverage"
+    },
+    "horizon": {
+      "$ref": "urn:living-atlas:contract:2026.08.2:record:atlas.horizon:v1"
+    },
+    "cache": {
+      "$ref": "urn:living-atlas:contract:2026.08.2:common:output#/$defs/cache"
+    }
+  },
+  "required": [
+    "results",
+    "coverage",
+    "horizon",
+    "cache"
+  ]
+}

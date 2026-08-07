@@ -1,12 +1,12 @@
 {
   "case": "atlas.assertion.propose.v1",
-  "contract_revision": "2026.08.1",
+  "contract_revision": "2026.08.2",
   "intent": "A one-item submission committed under the calling credential, with its receipt.",
   "response": {
     "_meta": {
       "io.modelcontextprotocol/serverInfo": {
         "name": "living-atlas-consumer",
-        "version": "2026.08.1"
+        "version": "2026.08.2"
       }
     },
     "content": "<the text block is JSON.stringify(structuredContent)>",

@@ -146,6 +146,9 @@ importers:
 
   packages/atlas-migrate:
     dependencies:
+      '@living-atlas/atlas-core':
+        specifier: workspace:*
+        version: link:../atlas-core
       '@living-atlas/contracts':
         specifier: workspace:*
         version: link:../contracts

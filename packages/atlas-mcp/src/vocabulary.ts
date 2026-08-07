@@ -172,6 +172,17 @@ export const ERROR_CODES: readonly ErrorCodeEntry[] = [
       "The record exists and this credential may not read it — either the record is marked withheld or its tier is outside the grant. Returned as a redaction stub, never dropped."
   },
   {
+    code: "store-read-only",
+    origin: "store",
+    // Retryable: the identical request could succeed against the same store
+    // reopened read-write, and reopening is something the OPERATOR does to the
+    // server rather than something the caller does to its request. Same reading
+    // as sensitivity-withheld.
+    retryable: true,
+    summary:
+      "This server opened its store read-only, so no proposal from any credential can be committed. A property of the server, not of the grant — a wider grant does not lift it."
+  },
+  {
     code: "snapshot-expired",
     origin: "store",
     retryable: false,
@@ -241,6 +252,13 @@ export const ERROR_CODES: readonly ErrorCodeEntry[] = [
     origin: "identity",
     retryable: false,
     summary: "The id was never migrated forward. The disposition says why."
+  },
+  {
+    code: "carried-as-assertion",
+    origin: "identity",
+    retryable: false,
+    summary:
+      "The id resolves, and what it names is an assertion rather than an entity. Read it from the assertion log; the refusal carries its id."
   },
   {
     code: "redirect-chain-too-long",

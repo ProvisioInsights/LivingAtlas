@@ -485,6 +485,77 @@ describe("an id Atlas has returned resolves forever", () => {
     // A dropped record and a typo are different answers, and stay different.
     expect(refused(registry.resolve("legacy-object-9999")).code).toBe("unknown-id");
   });
+
+  /**
+   * The mechanical sibling of `split()`, for halves that already exist.
+   *
+   * A migration mints both halves in its own record pass, so `split()` — which
+   * mints them as part of the decision — would produce a SECOND pair and leave
+   * the first unreferenced. This writes only the row, over the ids that are
+   * already there.
+   */
+  it("records a mechanical split over entities that already exist", () => {
+    const registry = new EntityRegistry({ clock: fixedClock().now });
+    const place = registry.register(draft({ type: "place", display_name: "Venue 0" }), OWNER);
+    const business = registry.register(draft({ type: "organization", display_name: "Venue 0" }), OWNER);
+
+    const recorded = registry.recordAmbiguousSplit({
+      old_id: "legacy-object-0003",
+      candidate_ids: [place.entity_id, business.entity_id],
+      reason: "one legacy venue row meant a place and a business",
+      client_id: "migrator"
+    });
+
+    expect(recorded.ok).toBe(true);
+    if (!recorded.ok) throw new Error("unreachable");
+    expect(recorded.row.disposition).toBe("ambiguous-split");
+    // Mechanical: no human judged anything, so no evidence is manufactured.
+    expect(recorded.row.basis).toBe("mechanical-migration");
+    expect(recorded.row.resolution_assertion_id).toBeNull();
+    expect(recorded.row.provenance.origin).toBe("pre-contract-import");
+
+    const result = refused(registry.resolve("legacy-object-0003"));
+    expect(result.code).toBe("ambiguous-split");
+    if (result.code !== "ambiguous-split") throw new Error("unreachable");
+    expect(result.candidate_ids.sort()).toEqual([place.entity_id, business.entity_id].sort());
+    expect(registry.verifyLedger().ok).toBe(true);
+  });
+
+  it("refuses a mechanical split naming a candidate the registry does not hold", () => {
+    const registry = new EntityRegistry({ clock: fixedClock().now });
+    const place = registry.register(draft({ type: "place" }), OWNER);
+    const missing = mintEntityId(new Date("2026-08-04T12:00:00.000Z"));
+
+    const recorded = registry.recordAmbiguousSplit({
+      old_id: "legacy-object-0004",
+      candidate_ids: [place.entity_id, missing],
+      reason: "a split whose second half was never registered",
+      client_id: "migrator"
+    });
+
+    // A split with one reachable candidate is worse than a redirect: it says
+    // the id is ambiguous and then hands back a list that cannot be resolved.
+    expect(recorded.ok).toBe(false);
+    if (recorded.ok) throw new Error("unreachable");
+    expect(recorded.code).toBe("split-candidate-unresolvable");
+    expect(refused(registry.resolve("legacy-object-0004")).code).toBe("unknown-id");
+  });
+
+  it("refuses a mechanical split with fewer than two candidates", () => {
+    const registry = new EntityRegistry({ clock: fixedClock().now });
+    const only = registry.register(draft(), OWNER);
+
+    const recorded = registry.recordAmbiguousSplit({
+      old_id: "legacy-object-0005",
+      candidate_ids: [only.entity_id],
+      reason: "not actually a split",
+      client_id: "migrator"
+    });
+
+    expect(recorded.ok).toBe(false);
+    if (recorded.ok) throw new Error("unreachable");
+    expect(recorded.code).toBe("split-needs-two-candidates");
+  });
 });
 
 describe("redirect resolution always terminates", () => {

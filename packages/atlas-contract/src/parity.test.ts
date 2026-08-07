@@ -286,7 +286,8 @@ describe("published error codes cover the model's refusals", () => {
     "redirect-chain-too-long": true,
     "redirect-dangling": true,
     "ambiguous-split": true,
-    "not-carried-forward": true
+    "not-carried-forward": true,
+    "carried-as-assertion": true
   };
 
   /**

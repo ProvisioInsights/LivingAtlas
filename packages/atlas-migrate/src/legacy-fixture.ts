@@ -1,6 +1,10 @@
 import { createHash } from "node:crypto";
 import { GraphObjectEnvelopeSchema, type GraphObjectEnvelope, type ObjectType } from "@living-atlas/contracts";
-import { LegacyRedirectSchemaNamespace, type LegacyPayloadResolver } from "./legacy-source.js";
+import {
+  LegacyRedirectSchemaNamespace,
+  LogseqBlockSchemaNamespace,
+  type LegacyPayloadResolver
+} from "./legacy-source.js";
 
 /**
  * A synthetic legacy graph shaped by the real contracts but containing invented
@@ -1043,5 +1047,209 @@ export function createUnmappedCategoryFixture(): GraphObjectEnvelope[] {
   return [
     ...createLegacyGraphFixture(),
     plaintextEnvelope(legacyFixtureIds.unmappedObject, "index", { entries: 3 })
+  ];
+}
+
+export const legacyBlockFixtureIds = {
+  /** Nested, with properties, non-zero index and depth. */
+  block: "la_object_legacy_lsblock_0",
+  /**
+   * The FALSY-ZERO case: first block of a file, at the top of the outline.
+   * `index: 0` and `depth: 0` are real positions and a carry-over written with
+   * a truthiness check drops both without failing anything else.
+   */
+  blockAtOrigin: "la_object_legacy_lsblock_1",
+  /** An empty bullet. A node of the outline whose text happens to be "". */
+  blockEmptyText: "la_object_legacy_lsblock_2",
+  /**
+   * No `properties` key at all. MEASURED as a shape that never occurs — every
+   * real block carries the key, empty array or not — so this refuses as
+   * `unmeasured-block-shape` rather than being carried.
+   */
+  blockWithoutProperties: "la_object_legacy_lsblock_3",
+  /** Deleted: carried AND retracted, exactly like a deleted node. */
+  blockTombstoned: "la_object_legacy_lsblock_4",
+  /** Carries a key the shape measurement never saw, so it must be refused. */
+  blockUnmeasuredShape: "la_object_legacy_lsblock_5",
+  /** A block-shaped object in no namespace this projector measured. */
+  blockUnknownNamespace: "la_object_legacy_lsblock_6",
+  /** A page and an attachment, which stay refused — see ADR 0029. */
+  page: "la_object_legacy_lspage_0",
+  attachment: "la_object_legacy_lsattach_0",
+  /**
+   * A node that projects, so the edge below fails on the END it is about. With
+   * an absent source the edge would refuse as `dangling-edge-endpoint` and the
+   * assertion would pass for a reason that has nothing to do with blocks.
+   */
+  author: "la_object_legacy_lsblock_person",
+  /** An edge naming a block. Carrying blocks must not make it resolvable. */
+  edgeAtBlock: "la_object_legacy_lsblock_edge"
+} as const;
+
+/**
+ * Invented outline text. Long enough to be recognisable in an assertion that the
+ * plan REPORT does not contain it — a block's text is the most content-bearing
+ * thing the plan holds, and the review surface must stay free of it.
+ */
+export const legacyBlockFixtureText = {
+  nested: "Synthetic outline bullet about a fictional errand.",
+  origin: "Synthetic first bullet of a synthetic file.",
+  withoutProperties: "Synthetic bullet carrying no properties at all.",
+  tombstoned: "Synthetic bullet that was later deleted."
+} as const;
+
+function blockPayload(fields: {
+  source_path_ref: string;
+  source_block_ref: string;
+  index: number;
+  depth: number;
+  text: string;
+  properties?: Array<{ key: string; value: string }>;
+}): Record<string, unknown> {
+  return {
+    kind: "block",
+    source_path_ref: fields.source_path_ref,
+    source_block_ref: fields.source_block_ref,
+    index: fields.index,
+    depth: fields.depth,
+    text: fields.text,
+    ...(fields.properties === undefined ? {} : { properties: fields.properties })
+  };
+}
+
+/**
+ * The outline blocks the owner decided to carry across now and model later
+ * (ADR 0029), beside the two shapes that must NOT ride along with them.
+ *
+ * Separate from `createLegacyGraphFixture` on purpose. That fixture's job is to
+ * be a plan with no gate findings at all, and a carried block legitimately
+ * produces a tolerated one — folding these in would have cost the repository its
+ * only "a clean plan is completely silent" assertion in exchange for nothing.
+ *
+ * Every payload is invented. The shapes are the ones the carry-over was written
+ * against; the words are not from anybody's graph.
+ */
+export function createLogseqBlockFixture(): GraphObjectEnvelope[] {
+  const ids = legacyBlockFixtureIds;
+  const blockNamespace = { schema_namespace: LogseqBlockSchemaNamespace };
+  return [
+    plaintextEnvelope(
+      ids.block,
+      "block",
+      blockPayload({
+        source_path_ref: "pages/synthetic-note.md",
+        source_block_ref: "block-ref-0001",
+        index: 3,
+        depth: 2,
+        text: legacyBlockFixtureText.nested,
+        properties: [{ key: "synthetic-key", value: "synthetic-value" }]
+      }),
+      blockNamespace
+    ),
+    plaintextEnvelope(
+      ids.blockAtOrigin,
+      "block",
+      blockPayload({
+        source_path_ref: "pages/synthetic-note.md",
+        source_block_ref: "block-ref-0002",
+        index: 0,
+        depth: 0,
+        text: legacyBlockFixtureText.origin,
+        properties: []
+      }),
+      blockNamespace
+    ),
+    plaintextEnvelope(
+      ids.blockEmptyText,
+      "block",
+      blockPayload({
+        source_path_ref: "pages/synthetic-note.md",
+        source_block_ref: "block-ref-0003",
+        index: 1,
+        depth: 1,
+        text: "",
+        properties: []
+      }),
+      blockNamespace
+    ),
+    plaintextEnvelope(
+      ids.blockWithoutProperties,
+      "block",
+      blockPayload({
+        source_path_ref: "pages/synthetic-other.md",
+        source_block_ref: "block-ref-0004",
+        index: 0,
+        depth: 0,
+        text: legacyBlockFixtureText.withoutProperties
+      }),
+      blockNamespace
+    ),
+    plaintextEnvelope(
+      ids.blockTombstoned,
+      "block",
+      blockPayload({
+        source_path_ref: "pages/synthetic-other.md",
+        source_block_ref: "block-ref-0005",
+        index: 1,
+        depth: 0,
+        text: legacyBlockFixtureText.tombstoned,
+        properties: []
+      }),
+      { ...blockNamespace, tombstone: true }
+    ),
+
+    // A key nobody measured. Refused BY NAME rather than carried with the key
+    // dropped: a carry-over that calls itself lossless can never produce a
+    // record that quietly holds less than its source did.
+    plaintextEnvelope(
+      ids.blockUnmeasuredShape,
+      "block",
+      {
+        ...blockPayload({
+          source_path_ref: "pages/synthetic-other.md",
+          source_block_ref: "block-ref-0006",
+          index: 2,
+          depth: 0,
+          text: "Synthetic bullet from a later importer."
+        }),
+        collapsed: true
+      },
+      blockNamespace
+    ),
+
+    // Block-shaped, in a namespace this projector has not measured. It stays
+    // narrative and stays refused, which is what keeps the carry-over scoped to
+    // a shape somebody has actually looked at.
+    plaintextEnvelope(
+      ids.blockUnknownNamespace,
+      "block",
+      { body: "Synthetic block from an importer nobody has measured." },
+      { schema_namespace: "import/some-other-importer/block" }
+    ),
+
+    // PAGES AND ATTACHMENTS DO NOT RIDE ALONG — ADR 0029. A page has a different
+    // shape and this lane measured none of it; an attachment's content is a file
+    // the store never held. Both stay refused under a named reason, both stay
+    // readable in the frozen replica, and the closure gate still balances.
+    plaintextEnvelope(ids.page, "page", { title: "Synthetic Note", body: "Synthetic page body." }),
+    plaintextEnvelope(ids.attachment, "attachment", { filename: "synthetic.pdf", byte_length: 11 }),
+
+    plaintextEnvelope(ids.author, "entity", endpointPayload(ids.author, "person", "Reader 0")),
+
+    // An edge whose target is a carried block. It must STILL be refused: a block
+    // is not an endpoint, and carrying one must not turn an unresolvable edge
+    // into an edge pointing at a record with no type.
+    plaintextEnvelope(
+      ids.edgeAtBlock,
+      "edge",
+      edgePayload("la_edge_legacy_lsblock_1", {
+        source_object_id: ids.author,
+        source_type: "person",
+        target_object_id: ids.block,
+        target_type: "topic",
+        predicate: "about",
+        valid_from: "2024-01-01"
+      })
+    )
   ];
 }

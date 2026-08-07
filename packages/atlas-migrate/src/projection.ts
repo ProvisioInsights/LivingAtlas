@@ -1,3 +1,4 @@
+import { z } from "zod";
 import {
   AuthorityIdSchema,
   EndpointRecordSchema,
@@ -59,6 +60,8 @@ import {
   MigrationOrigin,
   MigrationRecordedAtFidelity,
   ProjectorVersion,
+  ProvisionalBlockPayloadSchema,
+  UnmodelledRecordKinds,
   canonicalDigest,
   entitySlotForLegacyObject,
   TopicSchemeValues,
@@ -90,11 +93,28 @@ export const SourceDispositionKindValues = [
   "projected-as-relationship",
   "projected-as-retraction",
   "projected-as-alias-redirect",
+  /**
+   * Carried across whole, with its modelling deferred (ADR 0029). Its own
+   * disposition rather than one of the `projected-as-*` above: those name what
+   * the object BECAME in the ratified vocabulary, and this object became nothing
+   * in it. Filing a block as `projected-as-entity` would put a number nobody can
+   * act on into the row an operator reads to see how much of the graph arrived.
+   */
+  "projected-as-provisional",
   "unrecoverable-ciphertext",
   "redaction-stub",
   "refused",
   "other"
 ] as const;
+/**
+ * The vocabulary as a parser, not only as a type.
+ *
+ * The durable alias ledger stores a disposition inside a free-text reason and
+ * has to read it back, and anything read back off disk is untrusted until it
+ * has been parsed. Derived from the same array as the type so the two cannot
+ * name different sets.
+ */
+export const SourceDispositionKindSchema = z.enum(SourceDispositionKindValues);
 export type SourceDispositionKind = (typeof SourceDispositionKindValues)[number];
 
 export type SourceDisposition =
@@ -157,6 +177,21 @@ export type ProjectionBreakdown = {
    */
   entities_minted_from_attributes: number;
   relationships_derived_from_attributes: number;
+  /**
+   * Records this run carries whose kind nothing has modelled yet (ADR 0029).
+   *
+   * A row rather than a scalar because the question a reader has is "which
+   * kinds", and because a second provisional kind must appear here without
+   * anybody widening a field. Recomputed by the closure gate from the records
+   * like every other row, so the plan cannot assert a deferral it did not make.
+   *
+   * The deferral is the whole reason this exists: an unmodelled record type
+   * tends to stay unmodelled, and the only thing that reliably stops it is a
+   * number an operator sees on every run. `renderProjectionPlanReport` prints
+   * the total even when it is zero, because an absent count reads as "not
+   * measured" and a zero reads as "nothing deferred".
+   */
+  unmodelled_records: Array<{ record_kind: ProjectedRecordKind; count: number }>;
   /**
    * How many topic nodes each concept scheme contributes.
    *
@@ -553,6 +588,90 @@ export function buildProjectionPlan(
       continue;
     }
 
+    if (category === "outline-block" || category === "tombstoned-outline-block") {
+      const blockNamespace = envelope.visible_metadata.schema_namespace;
+      if (blockNamespace === undefined) {
+        // Unreachable while the classifier reaches this category only through a
+        // namespace it recognises. Refused rather than defaulted: a default
+        // would put a record into the plan claiming a namespace nothing
+        // measured, which is worse than refusing an object nobody can classify.
+        draft.disposition = refuse(
+          "unmeasured-block-shape",
+          "a block reached the carry-over with no schema namespace to have measured it against"
+        );
+        continue;
+      }
+
+      const block = ProvisionalBlockPayloadSchema.safeParse(resolution.data);
+      if (!block.success) {
+        // Named for what actually happened. `invalid-legacy-payload` would send
+        // the operator looking for corrupt bytes; the bytes are fine and this
+        // projector's description of them is short by a key.
+        draft.disposition = refuse(
+          "unmeasured-block-shape",
+          "this block's payload does not match the measured block shape; it is refused by name and left " +
+            "readable in the frozen replica rather than carried with a key dropped"
+        );
+        continue;
+      }
+
+      const blockKey = projectionIdempotencyKey({
+        authority_id: authorityId,
+        legacy_object_id: envelope.object_id,
+        record_kind: "provisional-block",
+        ordinal: 0
+      });
+      draft.records.push({
+        record_kind: "provisional-block",
+        idempotency_key: blockKey,
+        origin: MigrationOrigin,
+        recorded_at_fidelity: MigrationRecordedAtFidelity,
+        provenance,
+        source_schema_namespace: blockNamespace,
+        // The PARSED payload, not the raw map. Parsing is what proves the shape,
+        // and re-reading `resolution.data` here would carry whatever arrived
+        // whether or not it satisfied the schema the gate later validates.
+        block: block.data
+      });
+      // A deleted block is carried AND retracted, exactly like a deleted node.
+      // Importing nothing would turn a recorded deletion into an absence of
+      // history; `retractTombstonedDrafts` emits the retraction once every pass
+      // has run. It reads `draft.records`, not the primary below, so a block
+      // still retracts without claiming an alias target.
+      draft.disposition = tombstone ? { kind: "projected-as-retraction" } : { kind: "projected-as-provisional" };
+      // A BLOCK CLAIMS NO ALIAS REDIRECT, and that is a published-vocabulary
+      // fact rather than a preference.
+      //
+      // `atlas.alias-row:v1` is a RELEASED shape whose dispositions are a closed
+      // set, and a redirect row has to name its target as one of them. Pointing
+      // one at a provisional block leaves two choices, and both are worse than
+      // saying plainly that the published ledger has no word for this: add a
+      // disposition, which publishes the very kind ADR 0029 keeps unpublished --
+      // into a revision that can never be edited, which is the accident the
+      // whole deferral exists to avoid -- or file it as `mapped-assertion`,
+      // which claims the block became an assertion and is simply false.
+      //
+      // So the row says what happened: carried across, disposition `other`,
+      // detail naming the carry. Nothing is lost -- the block is still carried
+      // verbatim, still counted by `UnmodelledRecordKinds`, still readable in
+      // the frozen replica. What the legacy id does not get is a redirect, and
+      // that is one of the things the modelling pass has to decide (OPEN-29.8).
+      //
+      // Set HERE rather than left to `finalizeAliasTargets` so both planes plan
+      // the same row: the durable ledger can only store this as a terminal
+      // disposition, and a plan that had promised a redirect would compare
+      // unequal to the row that came back and report a conflict with itself on
+      // every resume.
+      draft.alias_target = {
+        kind: "no-target",
+        disposition: draft.disposition.kind,
+        detail:
+          "carried across as a provisional block; the published alias vocabulary has no disposition " +
+          "that can name an unmodelled record"
+      };
+      continue;
+    }
+
     if (category === "legacy-redirect") {
       const redirect = LegacyRedirectPayloadSchema.safeParse(resolution.data);
       if (!redirect.success) {
@@ -821,9 +940,24 @@ function compareOutcomes(left: SourceOutcome, right: SourceOutcome): number {
 }
 
 /**
- * An absence record still gets an identity in the new plane, so an old link to a
- * deleted or withheld object resolves to "this existed and did not come across,
- * for this reason" instead of a bare miss.
+ * An absence record reports that an object existed and did not come across.
+ *
+ * IT DELIBERATELY CLAIMS NO ALIAS TARGET. `draft.primary` is what makes a
+ * legacy id redirect to a record, and an absence record is not something an id
+ * can redirect TO: there is no entity, no assertion, nothing to resolve to. The
+ * outcome therefore falls through to `no-target`, carrying the disposition and
+ * the reason — which is the answer the durable ledger already models as
+ * `content-unrecoverable` and `redacted-in-place`.
+ *
+ * Setting `primary` here made the id redirect at the record, and the two write
+ * paths then competed for one ledger row: the sink wrote the terminal
+ * disposition and the alias pass tried to write a redirect to the same legacy
+ * id, which the ledger refuses. One writer, one row.
+ *
+ * The id still resolves — that is the whole point, and it is why this is a
+ * `no-target` row rather than no row at all. "This existed and here is why you
+ * cannot read it" is a different answer from "no such thing", and on this corpus
+ * it is the answer for the large majority of source objects.
  */
 function pushAbsenceRecord(
   draft: Draft,
@@ -847,7 +981,6 @@ function pushAbsenceRecord(
     absence_kind: absenceKind,
     detail: detail.slice(0, 512)
   });
-  draft.primary = { record_key: key, record_kind: "absence" };
 }
 
 function applyNonProjectableDisposition(
@@ -1844,6 +1977,13 @@ export function recomputeProjectionBreakdown(
     relationships_derived_from_attributes: records.filter(
       (record) => record.record_kind === "relationship" && record.derivation !== undefined
     ).length,
+    // Counted off `UnmodelledRecordKinds` rather than off a literal list of
+    // kinds, so the row cannot fall behind the set that declares what is
+    // deferred. The universe keeps the print order stable.
+    unmodelled_records: countBy(
+      records.map((record) => record.record_kind).filter((kind) => UnmodelledRecordKinds.has(kind)),
+      ProjectedRecordKindUniverse
+    ).map(({ value, count }) => ({ record_kind: value, count })),
     topic_nodes_by_scheme: countBy(topicSchemesOf(records), TopicSchemeValues).map(({ value, count }) => ({
       scheme: value,
       count
@@ -1956,6 +2096,8 @@ const LegacySourceCategoryUniverse = [
   "opaque-object",
   "quarantined-object",
   "narrative-object",
+  "outline-block",
+  "tombstoned-outline-block",
   "derived-index",
   "other"
 ] as const satisfies readonly LegacySourceCategory[];
@@ -1994,6 +2136,7 @@ const MigrationRefusalReasonUniverse = [
   "dangling-alias-target",
   "unclassified-source-category",
   "derived-index-not-migrated",
+  "unmeasured-block-shape",
   "unmapped-legacy-subtype",
   "predicate-domain-violation",
   "predicate-range-violation",
@@ -2013,5 +2156,6 @@ const ProjectedRecordKindUniverse = [
   "retraction",
   "absence",
   "minted-entity",
-  "minted-relationship"
+  "minted-relationship",
+  "provisional-block"
 ] as const satisfies readonly ProjectedRecordKind[];

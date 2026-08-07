@@ -82,15 +82,23 @@ it does not authorize real graph import or personal Cloudflare deployment.
 ## MCP Surface, And Local Fixture Stores
 
 The MCP servers are `packages/atlas-mcp`. Both speak protocol revision
-**2026-07-28 only** and both serve an **empty in-memory graph** — they exist so a
-client can be pointed at a real server and see the surface without any data
-being involved. Neither reads a profile directory, a graph path, or any location
-outside the directory it is told to write its audit log to.
+**2026-07-28 only**. With no store named they serve the surface and no data — an
+empty in-memory graph on the consumer plane, a synthetic operational source on
+the operator plane — so a client can be pointed at a real server without any data
+being involved. Neither reads a profile directory or any location outside the
+directory it is told to write its audit log to.
 
 ```bash
 npm run atlas-mcp:consumer -- --audit-log /tmp/living-atlas-audit.jsonl
 npm run atlas-mcp:operator -- --audit-log /tmp/living-atlas-operator-audit.jsonl
 ```
+
+`LIVING_ATLAS_STORE_DIR` points either plane at a durable store that already
+exists (`assertions/` and `identity/` segment logs under one root), opened
+**read-only** unless `LIVING_ATLAS_STORE_MODE=read-write`. A directory that is
+not there is a startup failure rather than an empty graph, and neither plane ever
+creates one. See
+[ADR 0028](architecture/adr-0028-serving-a-durable-store-from-a-directory.md).
 
 A plain terminal invocation waits on stdio; drive it from an MCP client on the
 2026-07-28 revision, or by piping JSON-RPC lines. Binding a durable store to

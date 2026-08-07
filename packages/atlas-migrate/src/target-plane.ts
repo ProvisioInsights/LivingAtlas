@@ -319,6 +319,109 @@ export const ProjectedRetractionRecordSchema = ProjectedRecordBaseSchema.extend(
 }).strict();
 export type ProjectedRetractionRecord = z.infer<typeof ProjectedRetractionRecordSchema>;
 
+/**
+ * A ceiling, not a length rule. It sits an order of magnitude above the longest
+ * block the shape measurement found, so on the corpus this was written for it
+ * never fires; it exists so one pathological object cannot make the plan
+ * unreviewable. A block over it is REFUSED by name and stays readable in the
+ * frozen replica — the one thing this must never do is truncate, because a
+ * truncated block is the only outcome that is both lossy and silent.
+ */
+const ProvisionalBlockTextMax = 65_536;
+
+/**
+ * A LOGSEQ OUTLINE BLOCK, CARRIED VERBATIM.
+ *
+ * Every key is the source's own key, spelled exactly as the legacy payload
+ * spells it, so a later modelling pass diffs this against the frozen replica
+ * without a mapping table in between. Renaming even one of them would make
+ * "carried verbatim" a claim somebody has to verify by reading code.
+ *
+ * STRICT, and that is the lossless property made mechanical. A passthrough
+ * would carry unmeasured keys too and read as MORE lossless, but it would also
+ * mean the schema had stopped describing what the store holds — and the point of
+ * carrying these now is that a later pass inherits something it can enumerate.
+ * A payload that does not fit is refused as `unmeasured-block-shape`, counted,
+ * and left readable in the frozen replica.
+ *
+ * `properties` is the one optional key. Logseq blocks routinely carry none, and
+ * whether the importer materialised an empty map or omitted the key is not
+ * something this lane measured; requiring it would refuse a large population for
+ * a difference nobody has looked at. Absent in stays absent out — the record is
+ * the payload, not a normalisation of it. OPEN in ADR 0029.
+ *
+ * `text` may be EMPTY. An empty bullet is a real node of the outline, and
+ * `index` and `depth` only describe a tree if every node of it is present.
+ */
+export const ProvisionalBlockPayloadSchema = z
+  .object({
+    /** The importer's own discriminator, carried because verbatim means verbatim. */
+    kind: z.string().min(1).max(512),
+    source_path_ref: z.string().min(1).max(4_096),
+    source_block_ref: z.string().min(1).max(4_096),
+    /** Position among siblings. Zero is a real position, never an absence. */
+    index: z.number().int().nonnegative(),
+    /** Outline nesting. Zero is the top level, never an absence. */
+    depth: z.number().int().nonnegative(),
+    text: z.string().max(ProvisionalBlockTextMax),
+    /**
+     * MEASURED as an array of {key, value} string pairs — not a record. The
+     * first rehearsal against a real corpus refused every one of its blocks as
+     * `unmeasured-block-shape` because this field was written from a prose
+     * description ("Logseq key:: value pairs") instead of a measurement: the
+     * describer meant the concept and the schema heard an object. Empty for the
+     * overwhelming majority of blocks, which is still a real, present value —
+     * an importer that always writes the key is telling us the field exists.
+     */
+    properties: z.array(
+      z
+        .object({
+          key: z.string().min(1).max(512),
+          value: z.string().max(ProvisionalBlockTextMax)
+        })
+        .strict()
+    )
+  })
+  .strict();
+export type ProvisionalBlockPayload = z.infer<typeof ProvisionalBlockPayloadSchema>;
+
+/**
+ * A record the migration carries WITHOUT modelling it (ADR 0029).
+ *
+ * The owner chose to move the blocks now and decide their modelling later,
+ * having been told the risk in as many words: an unmodelled record type tends to
+ * stay unmodelled. So the deferral is structural rather than a promise —
+ *
+ *   - nothing is lost: every measured key is here, verbatim, under its own name;
+ *   - nothing is published: this kind is declared in the migration package and
+ *     appears in no released contract revision, because a shape published by
+ *     accident is frozen by accident and released revisions cannot be edited;
+ *   - nothing is silent: `UnmodelledRecordKinds` drives a count in the plan
+ *     breakdown, a section in the plan report printed at zero, and a closure-gate
+ *     finding on every run that carries one.
+ *
+ * It carries a full `LegacyProvenance` like every imported record, so the block
+ * is traceable to the object it came from and the apply path counts its `seq`
+ * within that object with no special case.
+ *
+ * IT NAMES NO ENTITY. The Logseq importer derived endpoints from blocks and
+ * never stored the link, so there is no recorded edge from a block to the node
+ * it produced. A field for one would have to be filled by inference — a content
+ * hash, a title match — and inventing the link is exactly the identity decision
+ * this migration is built not to make. The absence is the honest state.
+ */
+export const ProjectedProvisionalBlockRecordSchema = ProjectedRecordBaseSchema.extend({
+  record_kind: z.literal("provisional-block"),
+  /**
+   * The namespace the shape was measured against. On the record rather than
+   * implied by the kind, so a second namespace carried under the same kind later
+   * is distinguishable in the store without re-reading the replica.
+   */
+  source_schema_namespace: z.string().min(1).max(512),
+  block: ProvisionalBlockPayloadSchema
+}).strict();
+export type ProjectedProvisionalBlockRecord = z.infer<typeof ProjectedProvisionalBlockRecordSchema>;
+
 export const AbsenceKindSchema = z.enum(["unrecoverable-ciphertext", "redaction-stub"]);
 export type AbsenceKind = z.infer<typeof AbsenceKindSchema>;
 
@@ -423,10 +526,34 @@ export const ProjectedRecordSchema = z.discriminatedUnion("record_kind", [
   ProjectedRetractionRecordSchema,
   ProjectedAbsenceRecordSchema,
   ProjectedMintedEntityRecordSchema,
-  ProjectedMintedRelationshipRecordSchema
+  ProjectedMintedRelationshipRecordSchema,
+  ProjectedProvisionalBlockRecordSchema
 ]);
 export type ProjectedRecord = z.infer<typeof ProjectedRecordSchema>;
 export type ProjectedRecordKind = ProjectedRecord["record_kind"];
+
+/**
+ * Record kinds this migration carries across without having modelled them.
+ *
+ * ONE DECLARATION, read by the breakdown, the plan report and the closure gate,
+ * so a second provisional kind added later is counted by all three without
+ * anybody remembering to. A deferral that has to be re-listed in three files is
+ * a deferral that goes uncounted in at least one of them.
+ *
+ * The set is also the boundary a durable adapter must respect: a record whose
+ * kind is in here MUST NOT be written into a published contract shape. The
+ * whole reason it is unpublished is that its shape is expected to change, and a
+ * released revision cannot be edited once it ships.
+ */
+export const UnmodelledRecordKinds = new Set<ProjectedRecordKind>(["provisional-block"]);
+
+export function isUnmodelledRecord(record: ProjectedRecord): boolean {
+  return UnmodelledRecordKinds.has(record.record_kind);
+}
+
+export function isProvisionalBlockRecord(record: ProjectedRecord): record is ProjectedProvisionalBlockRecord {
+  return record.record_kind === "provisional-block";
+}
 
 /**
  * Records that name a legacy object. Written as a guard rather than as an

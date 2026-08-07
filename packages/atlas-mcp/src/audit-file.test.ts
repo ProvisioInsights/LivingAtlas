@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import { mkdtempSync, readFileSync, renameSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -115,6 +115,69 @@ describe("the durable audit journal", () => {
     journal.close();
 
     expect(statSync(path).mode & 0o777).toBe(0o600);
+  });
+
+  /**
+   * ROTATION IS A RENAME, AND A HELD HANDLE DOES NOT FOLLOW IT.
+   *
+   * `rotate-atlas-logs.sh` renames the journal and never truncates, on the
+   * reasoning that "renaming leaves the open writer appending to the now-unlinked
+   * inode until it reopens". Nothing reopened. Measured over a live server: after
+   * the rename the documented audit path did not exist, and the next event landed
+   * 937 bytes into the `.1` file — outside the rotator's own glob, permanently.
+   * The reasoning was right for the launchd stdout/stderr files, which launchd
+   * reopens per invocation, and wrong for the one file the script was written for.
+   */
+  it("follows the path when rotation renames the file out from under it", () => {
+    const path = join(scratch(), "audit.jsonl");
+    const journal = new DurableFileAuditJournal(path);
+    const recorder = new AuditRecorder({ journal, clock: fixedClock() });
+
+    anEvent(recorder, "before-rotation");
+    // Exactly what `rotate_one` does.
+    renameSync(path, `${path}.1`);
+    anEvent(recorder, "after-rotation");
+    journal.close();
+
+    // The live path exists again and holds the event written after the rename.
+    const live = readFileSync(path, "utf8").trimEnd().split("\n");
+    expect(live.map((line) => (JSON.parse(line) as AuditEvent).tool)).toEqual(["after-rotation"]);
+    // And nothing was lost: the rotated generation still holds the earlier one.
+    const rotated = readFileSync(`${path}.1`, "utf8").trimEnd().split("\n");
+    expect(rotated.map((line) => (JSON.parse(line) as AuditEvent).tool)).toEqual(["before-rotation"]);
+  });
+
+  it("reopens the path when the file is deleted rather than renamed", () => {
+    // The other half of the same question. A journal appending into an unlinked
+    // inode reports every subsequent disclosure into a file nobody can open.
+    const path = join(scratch(), "audit.jsonl");
+    const journal = new DurableFileAuditJournal(path);
+    const recorder = new AuditRecorder({ journal, clock: fixedClock() });
+
+    anEvent(recorder, "first");
+    rmSync(path);
+    anEvent(recorder, "second");
+    journal.close();
+
+    const lines = readFileSync(path, "utf8").trimEnd().split("\n");
+    expect(lines.map((line) => (JSON.parse(line) as AuditEvent).tool)).toEqual(["second"]);
+  });
+
+  it("keeps one handle for an untouched path rather than reopening per event", () => {
+    // The reopen must be conditional. Reopening on every append would add two
+    // syscalls to every tool call and make durability depend on close semantics.
+    const path = join(scratch(), "audit.jsonl");
+    const journal = new DurableFileAuditJournal(path);
+    const recorder = new AuditRecorder({ journal, clock: fixedClock() });
+
+    anEvent(recorder, "a");
+    const inode = statSync(path).ino;
+    anEvent(recorder, "b");
+    anEvent(recorder, "c");
+    journal.close();
+
+    expect(statSync(path).ino).toBe(inode);
+    expect(readFileSync(path, "utf8").trimEnd().split("\n")).toHaveLength(3);
   });
 
   it("throws rather than degrading once closed, so a lost event is never silent", () => {

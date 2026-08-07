@@ -1,0 +1,181 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:living-atlas:contract:2026.08.2:tool:atlas.graph.neighbors.v1:output",
+  "title": "atlas.graph.neighbors.v1 — result",
+  "description": "Traverse relationship assertions outward from one entity, bounded by depth and pinned to both time axes. Nodes and edges are returned as self-describing records; anything this credential may not read arrives as a redaction stub so the shape of what was skipped is still visible.",
+  "type": "object",
+  "properties": {
+    "nodes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "record_schema"
+        ],
+        "properties": {
+          "record_schema": {
+            "type": "string",
+            "minLength": 1,
+            "x-atlas-known-values": [
+              "atlas.entity:v1",
+              "atlas.redaction:v1"
+            ]
+          }
+        },
+        "allOf": [
+          {
+            "if": {
+              "required": [
+                "record_schema"
+              ],
+              "properties": {
+                "record_schema": {
+                  "const": "atlas.entity:v1"
+                }
+              }
+            },
+            "then": {
+              "$ref": "urn:living-atlas:contract:2026.08.2:record:atlas.entity:v1"
+            }
+          },
+          {
+            "if": {
+              "required": [
+                "record_schema"
+              ],
+              "properties": {
+                "record_schema": {
+                  "const": "atlas.redaction:v1"
+                }
+              }
+            },
+            "then": {
+              "$ref": "urn:living-atlas:contract:2026.08.2:record:atlas.redaction:v1"
+            }
+          }
+        ]
+      }
+    },
+    "edges": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "record_schema"
+        ],
+        "properties": {
+          "record_schema": {
+            "type": "string",
+            "minLength": 1,
+            "x-atlas-known-values": [
+              "atlas.assertion:v1",
+              "atlas.redaction:v1"
+            ]
+          }
+        },
+        "allOf": [
+          {
+            "if": {
+              "required": [
+                "record_schema"
+              ],
+              "properties": {
+                "record_schema": {
+                  "const": "atlas.assertion:v1"
+                }
+              }
+            },
+            "then": {
+              "$ref": "urn:living-atlas:contract:2026.08.2:record:atlas.assertion:v1"
+            }
+          },
+          {
+            "if": {
+              "required": [
+                "record_schema"
+              ],
+              "properties": {
+                "record_schema": {
+                  "const": "atlas.redaction:v1"
+                }
+              }
+            },
+            "then": {
+              "$ref": "urn:living-atlas:contract:2026.08.2:record:atlas.redaction:v1"
+            }
+          }
+        ]
+      }
+    },
+    "traversal": {
+      "type": "object",
+      "properties": {
+        "origin_entity_id": {
+          "$ref": "urn:living-atlas:contract:2026.08.2:common:output#/$defs/entity_id"
+        },
+        "direction": {
+          "type": "string",
+          "enum": [
+            "outbound",
+            "inbound",
+            "both",
+            "other"
+          ]
+        },
+        "max_depth": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "deepest_reached": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "truncated_by": {
+          "anyOf": [
+            {
+              "type": "string",
+              "description": "Why the walk stopped short. A truncated traversal that does not say so is a subgraph presented as a graph.",
+              "enum": [
+                "max_depth",
+                "page_size",
+                "policy",
+                "other"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "origin_entity_id",
+        "direction",
+        "max_depth",
+        "deepest_reached",
+        "truncated_by"
+      ]
+    },
+    "page": {
+      "$ref": "urn:living-atlas:contract:2026.08.2:common:output#/$defs/page"
+    },
+    "coverage": {
+      "$ref": "urn:living-atlas:contract:2026.08.2:common:output#/$defs/coverage"
+    },
+    "horizon": {
+      "$ref": "urn:living-atlas:contract:2026.08.2:record:atlas.horizon:v1"
+    },
+    "cache": {
+      "$ref": "urn:living-atlas:contract:2026.08.2:common:output#/$defs/cache"
+    }
+  },
+  "required": [
+    "nodes",
+    "edges",
+    "traversal",
+    "page",
+    "coverage",
+    "horizon",
+    "cache"
+  ]
+}

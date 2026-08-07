@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import type { GraphObjectEnvelope } from "@living-atlas/contracts";
-import { classifyLegacySource, type LegacyPayloadResolver } from "./legacy-source.js";
+import {
+  LogseqBlockSchemaNamespace,
+  classifyLegacySource,
+  type LegacyPayloadResolver
+} from "./legacy-source.js";
 
 /**
  * These pin the storage-shape-vs-meaning distinction that the first real-data
@@ -76,7 +80,7 @@ describe("meaning beats storage shape", () => {
     }
   });
 
-  it("still reads a genuine page or block as narrative", () => {
+  it("still reads a genuine page as narrative", () => {
     // The fix must not swallow real prose into the entity branch — that would
     // trade one silent misclassification for another.
     expect(
@@ -85,12 +89,57 @@ describe("meaning beats storage shape", () => {
         resolver
       ).category
     ).toBe("narrative-object");
+  });
+
+  /**
+   * The owner decided the outline blocks migrate now and are modelled later
+   * (ADR 0029), so the block namespace is no longer prose the projector refuses.
+   * It has to be read BEFORE the narrative check, because a block is stored as
+   * `object_type: "block"` and the narrative set claims that word — the same
+   * storage-shape-beats-meaning defect this file was written for.
+   */
+  it("reads a measured outline block as its own category, not as prose", () => {
     expect(
       classifyLegacySource(
-        envelope({ object_type: "block", schema_namespace: "import/logseq-semantic/block" }),
+        envelope({ object_type: "block", schema_namespace: LogseqBlockSchemaNamespace }),
+        resolver
+      ).category
+    ).toBe("outline-block");
+    expect(
+      classifyLegacySource(
+        envelope({ object_type: "block", schema_namespace: LogseqBlockSchemaNamespace, tombstone: true }),
+        resolver
+      ).category
+    ).toBe("tombstoned-outline-block");
+  });
+
+  /**
+   * The carry-over is scoped to a shape somebody has MEASURED, and the namespace
+   * is what says so. A block-shaped object from an importer nobody has looked at
+   * stays narrative and stays refused — carrying it would put an unmeasured
+   * shape into the store under a schema written for a different one.
+   */
+  it("leaves a block the measured namespace does not claim as narrative", () => {
+    expect(
+      classifyLegacySource(
+        envelope({ object_type: "block", schema_namespace: "import/some-other-importer/block" }),
         resolver
       ).category
     ).toBe("narrative-object");
+    expect(classifyLegacySource(envelope({ object_type: "block" }), resolver).category).toBe("narrative-object");
+  });
+
+  it("still lets quarantine win over the block namespace", () => {
+    expect(
+      classifyLegacySource(
+        envelope({
+          object_type: "block",
+          schema_namespace: LogseqBlockSchemaNamespace,
+          access_class: "quarantine"
+        }),
+        resolver
+      ).category
+    ).toBe("quarantined-object");
   });
 
   it("routes a derived index away from both, so a cache is never migrated as knowledge", () => {

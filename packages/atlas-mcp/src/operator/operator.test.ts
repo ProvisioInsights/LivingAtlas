@@ -1,4 +1,5 @@
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
@@ -7,16 +8,21 @@ import { ERROR_CODE_SET } from "../vocabulary.js";
 import { OPERATOR_ERROR_CODES, OPERATOR_ERROR_CODE_SET } from "./vocabulary.js";
 import { MemoryAuditJournal } from "../audit.js";
 import { InMemoryCredentialDirectory, credentialResolver, hashCredential } from "../credentials.js";
+import { openAtlasStore, type AtlasStore } from "../store.js";
 import { TOOL_HANDLERS } from "../tools.js";
 import type { Principal } from "../principal.js";
 import {
   CONSUMER_PRINCIPAL,
+  STORE_FIXTURE_FEED_EPOCH,
+  STORE_FIXTURE_HISTORY_FLOOR,
   callTool,
   credentialEnvelope,
   listTools,
+  seedStoreDirectory,
   startHarness,
   type Harness
 } from "../testing.js";
+import { storeBackedOperatorSource } from "./store-source.js";
 import { OPERATOR_TOOL_NAMES } from "./tools.js";
 import {
   OPERATOR_GRANT,
@@ -315,6 +321,99 @@ describe("operational tools", () => {
       // named none of them.
       expect(event.subjects).toEqual([]);
     }
+  });
+});
+
+describe("the store this server opened", () => {
+  const roots: string[] = [];
+  const stores: AtlasStore[] = [];
+
+  afterEach(() => {
+    while (stores.length > 0) stores.pop()?.close();
+    while (roots.length > 0) {
+      const root = roots.pop();
+      if (root !== undefined) rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  function overAStore(mode: "read-only" | "read-write" = "read-only"): OperatorHarness {
+    const root = mkdtempSync(join(tmpdir(), "atlas-operator-store-"));
+    roots.push(root);
+    seedStoreDirectory(root);
+    const store = openAtlasStore({ directory: root, mode });
+    stores.push(store);
+    const journal = new MemoryAuditJournal();
+    const directory = bothPlanes();
+    return operatorHarness({
+      source: storeBackedOperatorSource({ store, audit: () => journal.events }) as never,
+      auditJournal: journal,
+      resolvePrincipal: credentialResolver({ directory, plane: "operator" })
+    });
+  }
+
+  it("reports the store's identity, posture and health, and no path", async () => {
+    const { client } = overAStore();
+    client.send(callOperator({ id: 1, name: "atlas.ops.store.status.read.v1", secret: OPERATOR_SECRET }));
+    const response = await client.await(1);
+    const store = structured(response)["store"] as Record<string, unknown>;
+
+    expect(store).toMatchObject({
+      mode: "read-only",
+      feed_epoch: STORE_FIXTURE_FEED_EPOCH,
+      bitemporal_since: STORE_FIXTURE_HISTORY_FLOOR,
+      assertions: 3,
+      entities: 2,
+      segment_repairs: 0,
+      ignored_files: 0
+    });
+    // Where a deployment keeps its data is not something a tool result
+    // publishes. `os.tmpdir()` appears in every path this test could leak.
+    expect(JSON.stringify(response)).not.toContain(tmpdir());
+  });
+
+  it("reports the posture, so an operator does not have to provoke a refusal to learn it", async () => {
+    const { client } = overAStore("read-write");
+    client.send(callOperator({ id: 1, name: "atlas.ops.store.status.read.v1", secret: OPERATOR_SECRET }));
+    expect((structured(await client.await(1))["store"] as Record<string, unknown>)["mode"]).toBe("read-write");
+  });
+
+  it("refuses when this server opened no store, rather than reporting zeroes", async () => {
+    // The whole reason `store.ts` refuses an absent directory is that zero and
+    // not-there must never be spelled the same way. Reporting a row of zeroes
+    // here would put that confusion back one layer up.
+    const directory = bothPlanes();
+    const { client } = operatorHarness({ resolvePrincipal: credentialResolver({ directory, plane: "operator" }) });
+    client.send(callOperator({ id: 1, name: "atlas.ops.store.status.read.v1", secret: OPERATOR_SECRET }));
+    expect(errorPayload(await client.await(1))["code"]).toBe("store-not-opened");
+  });
+
+  it("reports no migration window and no replication target rather than fabricating them", async () => {
+    // The synthetic source invents both because a harness needs rows to page
+    // through. A real store holds neither, and carrying the fabrications over
+    // would have an operator reading a lag for a replica that does not exist.
+    const { client } = overAStore();
+    client.send(callOperator({ id: 1, name: "atlas.ops.migration.window.read.v1", secret: OPERATOR_SECRET }));
+    const windows = structured(await client.await(1));
+    expect(windows["windows"]).toEqual([]);
+    expect(windows["page"]).toMatchObject({ returned: 0, evaluated: 0, has_more: false });
+
+    client.send(callOperator({ id: 2, name: "atlas.ops.replication.status.read.v1", secret: OPERATOR_SECRET }));
+    expect(structured(await client.await(2))["targets"]).toEqual([]);
+  });
+
+  it("refuses a reconcile against state the store does not hold", async () => {
+    const { client } = overAStore();
+    client.send(
+      callOperator({
+        id: 1,
+        name: "atlas.ops.reconcile.run.v1",
+        secret: OPERATOR_SECRET,
+        args: { subject: "replication", target_id: "replica-one" }
+      })
+    );
+    // Not `{applied: true, changes: []}`. Reporting success for work nobody did
+    // is the failure `reconcile-subject-unknown` already exists to prevent.
+    expect(errorPayload(await client.await(1))["code"]).toBe("reconcile-refused");
   });
 });
 

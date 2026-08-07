@@ -38,6 +38,22 @@ export type GraphSource = {
   encryptedUnsearchable(): number;
   /** The live predicate vocabulary, cardinality included. */
   predicateRegistry(): readonly PredicateEntry[];
+  /**
+   * True when this port was opened over a store nothing may write to.
+   *
+   * A property of the STORE and never of the credential, which is why it lives
+   * here rather than in the grant: "no credential was granted this predicate"
+   * and "this server cannot write at all" are different facts, and a caller told
+   * the first when the second is true will go and ask for a wider grant that
+   * cannot help it.
+   *
+   * Optional, and absent means writable. Every in-memory `GraphSource` in this
+   * repository predates the durable one and accepts commits; making the field
+   * required would have meant editing each of them to restate what they already
+   * were, and a field nobody set would then read as "read-only" the first time
+   * someone forgot.
+   */
+  readOnly?: boolean;
 };
 
 /** The functional half of the registry, as the contested-group check needs it. */

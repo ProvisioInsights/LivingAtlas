@@ -226,6 +226,12 @@ export const SEED_ERROR_CODES: readonly ErrorCodeEntry[] = [
     summary: "The id resolves to a terminal disposition: never migrated, content unrecoverable, or redacted in place."
   },
   {
+    code: "carried-as-assertion",
+    origin: "identity",
+    retryable: false,
+    summary: "The id resolves, and what it names is an assertion rather than an entity: a legacy edge object carried across as a claim."
+  },
+  {
     code: "identity-ambiguous",
     origin: "identity",
     retryable: false,

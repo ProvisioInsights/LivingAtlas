@@ -1,12 +1,12 @@
 {
   "case": "atlas.sensitive.reveal.v1",
-  "contract_revision": "2026.08.1",
+  "contract_revision": "2026.08.2",
   "intent": "A refusal that is still a complete contract result: unknown stub id, audit receipt attached.",
   "response": {
     "_meta": {
       "io.modelcontextprotocol/serverInfo": {
         "name": "living-atlas-consumer",
-        "version": "2026.08.1"
+        "version": "2026.08.2"
       }
     },
     "content": "<the text block is JSON.stringify(structuredContent)>",

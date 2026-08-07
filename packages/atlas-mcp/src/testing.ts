@@ -1,3 +1,4 @@
+import { mkdirSync } from "node:fs";
 import { PassThrough } from "node:stream";
 import { StdioServerTransport, type StdioServerHandle } from "@modelcontextprotocol/server/stdio";
 import {
@@ -13,7 +14,16 @@ import {
   type LoadedContract
 } from "@living-atlas/atlas-contract";
 import { CONTRACT_REVISION } from "@living-atlas/atlas-contract";
-import { AssertionLog, EntityRegistry, canonicalRecordedAt, type Entity, type EntityId } from "@living-atlas/atlas-core";
+import {
+  AssertionLog,
+  DurableAssertionLog,
+  DurableEntityRegistry,
+  EntityRegistry,
+  canonicalRecordedAt,
+  type Entity,
+  type EntityId,
+  type RecordedAt
+} from "@living-atlas/atlas-core";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { MemoryAuditJournal } from "./audit.js";
@@ -241,6 +251,147 @@ export function seedWithheldAssertion(graph: SyntheticGraph, clientId = "fixture
     ],
     sensitivity: { tier: "sealed", rank: 90, withheld: true }
   });
+}
+
+// ---------------------------------------------------------------------------
+// a durable store on disk
+// ---------------------------------------------------------------------------
+
+/**
+ * A synthetic store in a directory the CALLER owns, built the way a migration
+ * would build one: with atlas-core directly, closed before anything opens it for
+ * serving.
+ *
+ * It lives here rather than in one test file because three places need the same
+ * bytes — the store unit tests, the operator plane's store tools, and the
+ * end-to-end harness that spawns the shipped binary against a real directory —
+ * and three seeders would be three fixtures that drift until an assertion about
+ * one stops meaning anything about the others.
+ *
+ * The caller supplies the root and removes it. Nothing here chooses a location,
+ * so no helper in this package can be pointed at a real graph by default.
+ */
+
+export const STORE_FIXTURE_FEED_EPOCH = "e-store-fixture";
+export const STORE_FIXTURE_HISTORY_FLOOR = "2026-06-01T00:00:00.000Z";
+export const STORE_FIXTURE_ENTITY_NAMES = ["Synthetic Person Alpha", "Synthetic Person Beta"] as const;
+export const STORE_FIXTURE_PREDICATE = "worked-at";
+export const STORE_FIXTURE_EDGE_PREDICATE = "reports-to";
+export const STORE_FIXTURE_SEALED_PREDICATE = "medical-note";
+
+export type SeededStoreDirectory = {
+  root: string;
+  subjectEntityId: string;
+  targetEntityId: string;
+  /** The values of the OPEN assertions, in commit order. What a reader must see. */
+  openValues: string[];
+};
+
+export function seedStoreDirectory(
+  root: string,
+  options: { assertions?: number; withheld?: boolean } = {}
+): SeededStoreDirectory {
+  const assertionsDirectory = join(root, "assertions");
+  const identityDirectory = join(root, "identity");
+  mkdirSync(assertionsDirectory, { recursive: true });
+  mkdirSync(identityDirectory, { recursive: true });
+
+  const identity = DurableEntityRegistry.open({ directory: identityDirectory });
+  const registered = STORE_FIXTURE_ENTITY_NAMES.map((displayName) =>
+    identity.registry.register(
+      {
+        type: "person",
+        display_name: displayName,
+        also_known_as: [`alias-${displayName.split(" ").pop()?.toLowerCase() ?? "x"}`]
+      },
+      // `open` explicitly rather than by default: a fixture whose readability
+      // changes when a privacy default changes is a fixture that stops testing
+      // what it was written to test.
+      { client_id: "fixture", sensitivity: { ...FIXTURE_OPEN } }
+    )
+  );
+
+  const subject = registered[0];
+  const target = registered[1];
+  if (!subject || !target) throw new Error("the store fixture failed to register its entities");
+
+  const log = DurableAssertionLog.open({
+    directory: assertionsDirectory,
+    feedEpoch: STORE_FIXTURE_FEED_EPOCH,
+    bitemporalSince: STORE_FIXTURE_HISTORY_FLOOR as RecordedAt
+  });
+
+  const openValues: string[] = [];
+  const count = options.assertions ?? 2;
+  for (let index = 0; index < count; index += 1) {
+    const value = `Synthetic Employer ${index}`;
+    openValues.push(value);
+    log.commit({
+      client_id: "fixture",
+      idempotency_key: `store-fixture-open-${index}`,
+      drafts: [
+        {
+          kind: "fact",
+          lineage_action: "assert",
+          subject_entity_id: subject.entity_id,
+          predicate: STORE_FIXTURE_PREDICATE,
+          value,
+          confidence: { band: "high" },
+          evidence_links: [{ evidence_id: `ev-store-${index}`, stance: "supports" }],
+          supersedes: []
+        }
+      ],
+      sensitivity: { ...FIXTURE_OPEN }
+    });
+  }
+
+  log.commit({
+    client_id: "fixture",
+    idempotency_key: "store-fixture-edge",
+    drafts: [
+      {
+        kind: "relationship",
+        lineage_action: "assert",
+        subject_entity_id: subject.entity_id,
+        predicate: STORE_FIXTURE_EDGE_PREDICATE,
+        target_entity_id: target.entity_id,
+        confidence: { band: "high" },
+        evidence_links: [{ evidence_id: "ev-store-edge", stance: "supports" }],
+        supersedes: []
+      }
+    ],
+    sensitivity: { ...FIXTURE_OPEN }
+  });
+
+  if (options.withheld === true) {
+    // One record no narrow grant may read, so a reader over this store has to
+    // show a redaction stub rather than a shorter list.
+    log.commit({
+      client_id: "fixture",
+      idempotency_key: "store-fixture-sealed",
+      drafts: [
+        {
+          kind: "fact",
+          lineage_action: "assert",
+          subject_entity_id: subject.entity_id,
+          predicate: STORE_FIXTURE_SEALED_PREDICATE,
+          value: "synthetic sealed value",
+          confidence: { band: "high" },
+          evidence_links: [{ evidence_id: "ev-store-sealed", stance: "supports" }],
+          supersedes: []
+        }
+      ],
+      sensitivity: { tier: "sealed", rank: 90, withheld: true }
+    });
+  }
+
+  // Closed before anything serves from it. A fixture that left a writer open
+  // would be handing the server a directory another process is still appending
+  // to, which is the corruption the one-handle rule exists to prevent.
+  log.close();
+  identity.close();
+
+  return { root, subjectEntityId: subject.entity_id, targetEntityId: target.entity_id, openValues };
 }
 
 // ---------------------------------------------------------------------------

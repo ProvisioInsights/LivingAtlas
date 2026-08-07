@@ -80,6 +80,46 @@
         "tools/atlas.text.search.v1.input.json": "sha256:dfe22817d4d2f4026b8d4ca3602cfb1bd4e2dc20badb1db5b71bd2719bc5e6e5",
         "tools/atlas.text.search.v1.output.json": "sha256:6bc2a16d0e4d4c68b15807fc6e09fdf08d35cbd5d370f7c7767c7639544f0620"
       }
+    },
+    {
+      "revision": "2026.08.2",
+      "released_at": "2026-08-06",
+      "note": "Frozen on release. Every file below is byte-identical to what consumers fetched; a change to any of them is a new revision.",
+      "files": {
+        "common.input.json": "sha256:e1452eaa47ca06451b11778d6f0ac54024cd8f26adb26ecaea5cee130e19fb39",
+        "common.output.json": "sha256:a1d19c4ebefea3b0377ba6b9363205b6f433499eed2b11991b51afb223efe92b",
+        "manifest.json": "sha256:0c64614ca890860302127243feb7ae8f813e6a34ce7555503e84b8797692b6bb",
+        "records/atlas.assertion-v1.json": "sha256:d3c331145dd82deea8c6f5fff14b46edf24c08ea08a13b223616c9437f8e8c82",
+        "records/atlas.change-v1.json": "sha256:0c7ef36e06d0be148339bcca8393dcf3d9e5d26fd881b53a1f9204494080a5df",
+        "records/atlas.entity-v1.json": "sha256:0e3177d195c6abdab913d49e26dae3baa5ae00444415c4f46b4590d9681b6fb8",
+        "records/atlas.error-v1.json": "sha256:d18c59f4fbd0267c34f1948b59305090becd44957a6efd761416a40bf22901af",
+        "records/atlas.horizon-v1.json": "sha256:7ac598d7552b0cddaf2e5895d02de4b2277b9e5b043e510b9fb70d6a18ae840e",
+        "records/atlas.redaction-v1.json": "sha256:c4cdc756430d4019c2bda2b05cef1417ef483cacdb29185f9e50907e35f11728",
+        "tools/atlas.assertion.propose.v1.input.json": "sha256:ab149768504be2950c76d44e083f81667db290c979490a296c4f97be290b36fe",
+        "tools/atlas.assertion.propose.v1.output.json": "sha256:2e196fe7bca6277212f7e79b7b1e4ed7e6b180b688d92c7b96db8d92a8e85a77",
+        "tools/atlas.assertion.query.v1.input.json": "sha256:4b8d28009c693bc47d35863d36b5170081a733a44866f8e58bbe05f56b8715d4",
+        "tools/atlas.assertion.query.v1.output.json": "sha256:44b0fde816074de5f68ce1f6f324d3ac88b74ae1172bd388915f7214189b97e9",
+        "tools/atlas.assertion.read.v1.input.json": "sha256:2d23e01841e5c779912fcc4c16e30abfcaeb8f44942d8d46a947a49ed7dec07e",
+        "tools/atlas.assertion.read.v1.output.json": "sha256:f2c8b0c087dabfc5d78c542f4e9035dac58ebcfe282b88653fe1e3e6e67156b6",
+        "tools/atlas.changes.read.v1.input.json": "sha256:4505bbfaa4d49a2591f0a18d00fcb078f1cce2678dc3877d5a0298a921934baf",
+        "tools/atlas.changes.read.v1.output.json": "sha256:5582cc26a4108cb0d5066e9007c1ded10a59c9a311fdf259d9d50f410229a973",
+        "tools/atlas.contract.describe.v1.input.json": "sha256:0ea6636e504e701f9c7b9ef7c0a2f6659959ffbc6ee122b73ffd543a8ac6fdae",
+        "tools/atlas.contract.describe.v1.output.json": "sha256:eae505121d2a8f6b9541519f0a0496b07d523239cb00f64c416bd6d2487ef678",
+        "tools/atlas.entity.read.v1.input.json": "sha256:56a72aca1062643fca78a3ead4501cb9029b8dc810bffa625a7021a4d909c681",
+        "tools/atlas.entity.read.v1.output.json": "sha256:f040d04ff9c89dde8425500d1c2d1e5c7612dbfaf561a4017a7dd2e06ff97a35",
+        "tools/atlas.entity.resolve.v1.input.json": "sha256:a1bf6ec58bb50e2c351f1276d33dcb4b68a9170167762e8dfcd571eaddee4e01",
+        "tools/atlas.entity.resolve.v1.output.json": "sha256:2fa794abc3cb063f3cf05f5e273fdc4df3be9881c9a12a7ff4b0a68dfb59cedb",
+        "tools/atlas.graph.neighbors.v1.input.json": "sha256:ef069200f2eacde459752ff01111cece6f047092a1c34a95e23c4d62f6bf97a8",
+        "tools/atlas.graph.neighbors.v1.output.json": "sha256:848575f1080f5bac86d41a8c098a7436dfb367123c550de65050e844196377ce",
+        "tools/atlas.scope.describe.v1.input.json": "sha256:7f922ffe989571710f48c23dbb9631d4a36922505bda9209032182235d84220e",
+        "tools/atlas.scope.describe.v1.output.json": "sha256:e948cca477480753894d47cd3959ce3f8f7106396288241666ecb3b9e841aab5",
+        "tools/atlas.sensitive.reveal.v1.input.json": "sha256:f854076aeb574d9ea4974bcbc1971d24649afaedaf0b6658e741132947349233",
+        "tools/atlas.sensitive.reveal.v1.output.json": "sha256:f8cd2f2c93180eeb1dad7a6f1c2407a7ec5ce47a740862a71ee18a1edc9aece8",
+        "tools/atlas.submission.read.v1.input.json": "sha256:dbbb8fddac1faf45fec9ec0a8884b85ca4d44d6ebb6a31b021eefa4f8531bb16",
+        "tools/atlas.submission.read.v1.output.json": "sha256:8efa0174e44349bd4951a0f34b320c9e5c60cf4284f66605117a1f3c870b79d1",
+        "tools/atlas.text.search.v1.input.json": "sha256:cabd3fae0b04b64da90f8ed6e76eebd564ac8b9292f3cb001b14222399e358d7",
+        "tools/atlas.text.search.v1.output.json": "sha256:56dfc13a251a24d005ef870150d9bc0c50a91634404806d7e86f06cecf85ef65"
+      }
     }
   ]
 }

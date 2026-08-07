@@ -437,4 +437,79 @@ describe("resuming an apply that died part-way", () => {
     expect(tombstoned[0]?.record.record_kind).toBe("entity");
     expect(tombstoned[1]?.record.record_kind).toBe("retraction");
   });
+
+  /**
+   * THE RUN THAT DIED USED TO LEAVE NO EVENT AT ALL.
+   *
+   * The single audit event was recorded only after both loops had completed, so
+   * every throw in between — a sink failure, a retraction naming an uncommitted
+   * record, a refused alias row, a full disk — exited the function with records
+   * already durable and nothing written to the audit file. Measured: six commits
+   * then ENOSPC left seven entities permanently in the identity log, zero audit
+   * events, and no audit file on disk. AGENTS.md requires one durable inspectable
+   * event per mutating call, and this was the run that most needed one.
+   */
+  it("writes an audit event naming the abort, before the throw reaches the caller", async () => {
+    const plan = planFor();
+    const plane = createInMemoryTargetPlane();
+
+    await expect(
+      applyProjectionPlan({
+        plan,
+        actor_id: applyActorId,
+        registry: plane.registry,
+        alias_ledger: plane.alias_ledger,
+        sink: sinkThatDiesAfter(plane.sink, 6),
+        audit: plane.audit,
+        now: fixedClock("2026-08-04T10:00:00.000Z")
+      })
+    ).rejects.toThrow(/no space left on device/);
+
+    // Still exactly one event: an abort is not fanout either.
+    expect(plane.audit.events).toHaveLength(1);
+    const event = plane.audit.events[0];
+    expect(event?.outcome).toBe("aborted");
+    // `mode` says what was attempted, as it does for a conflict: the run really
+    // did apply, and six records are durable because of it.
+    expect(event?.mode).toBe("apply");
+    expect(event?.records_committed).toBe(6);
+    expect(event?.records_committed).toBeLessThan(plan.records.length);
+    // The counters are what the run HAD DONE, not what it set out to do, so the
+    // alias loop never having started reads as zero rather than as the plan's
+    // outcome count.
+    expect(event?.alias_rows_written).toBe(0);
+    expect(event?.plan_digest).toBe(plan.plan_digest);
+    expect(event?.actor_id).toBe(applyActorId);
+  });
+
+  it("does not let a failing audit sink swallow the reason the run died", async () => {
+    // A full disk stops the run AND the sink that would record it. The abort is
+    // the diagnosis; replacing it with a bookkeeping error would hide the only
+    // useful fact.
+    const plan = planFor();
+    const plane = createInMemoryTargetPlane();
+
+    await expect(
+      applyProjectionPlan({
+        plan,
+        actor_id: applyActorId,
+        registry: plane.registry,
+        alias_ledger: plane.alias_ledger,
+        sink: sinkThatDiesAfter(plane.sink, 2),
+        audit: {
+          record: async () => {
+            throw new Error("audit sink is also out of space");
+          }
+        },
+        now: fixedClock("2026-08-04T10:00:00.000Z")
+      })
+    ).rejects.toThrow(/no space left on device/);
+  });
+
+  it("still records `committed` when nothing aborted, so `aborted` is not the only value", async () => {
+    const plane = createInMemoryTargetPlane();
+    const result = await applyOnce(planFor(), plane, "2026-08-04T10:00:00.000Z");
+    expect(result.ok).toBe(true);
+    expect(plane.audit.events.map((event) => event.outcome)).toEqual(["committed"]);
+  });
 });
