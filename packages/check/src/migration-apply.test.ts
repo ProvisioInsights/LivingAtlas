@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   buildProjectionPlan,
   createLegacyGraphFixture,
+  createLogseqBlockFixture,
   createUnmappedCategoryFixture,
   legacyFixtureAuthorityId,
   legacyFixturePayloadResolver,
@@ -273,6 +274,47 @@ describe("the reconciliation", () => {
 
   it("passes only when all five numbers agree", () => {
     expect(reconcileMigrationApply(plan, census()).ok).toBe(true);
+  });
+
+  /**
+   * A TOMBSTONED BLOCK'S RETRACTION IS NOT IN THE ASSERTION LOG.
+   *
+   * It has no published shape to live in — a retraction is an
+   * `atlas.assertion:v1` naming what it supersedes, and the log holds no record
+   * with a carried block's id — so it is carried beside the block instead. The
+   * assertion equation has to subtract it. Without the subtraction this expects
+   * a retraction in a file it was never written to, and every run that carried a
+   * deleted block reconciles as a mismatch.
+   *
+   * The fixture above has no blocks in it, so this is the only place the
+   * subtraction is exercised at all.
+   */
+  it("does not expect a carried block's retraction in the assertion log", () => {
+    const blockPlan = buildProjectionPlan(createLogseqBlockFixture(), {
+      authority_id: legacyFixtureAuthorityId,
+      resolve_payload: legacyFixturePayloadResolver
+    });
+    const kinds = new Map(blockPlan.breakdown.records_by_kind.map((entry) => [entry.record_kind, entry.count]));
+    const at = (kind: string): number => kinds.get(kind as never) ?? 0;
+
+    // The fixture really does tombstone a block, so the subtraction is not
+    // vacuously zero.
+    expect(at("retraction")).toBeGreaterThan(0);
+    expect(at("provisional-block")).toBeGreaterThan(0);
+
+    const result = reconcileMigrationApply(blockPlan, {
+      entities: at("entity") + at("minted-entity"),
+      // Every retraction in this plan targets a block, so none of them reaches
+      // the assertion log.
+      assertions: at("relationship") + at("minted-relationship"),
+      alias_rows: blockPlan.outcomes.length,
+      empty_submissions: at("absence"),
+      provisional_blocks: at("provisional-block"),
+      provisional_retractions: at("retraction")
+    });
+    expect(result.mismatches).toEqual([]);
+    expect(result.ok).toBe(true);
+    expect(result.expected.provisional_retractions).toBe(at("retraction"));
   });
 
   it("fails a run that carried a block the plan did not call for", () => {
