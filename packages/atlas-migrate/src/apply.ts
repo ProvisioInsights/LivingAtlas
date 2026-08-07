@@ -18,9 +18,27 @@ import {
 } from "./target-plane.js";
 
 export type EntityMintRequest = {
+  /**
+   * The plan's key for the record this entity comes from, carried so a durable
+   * registry can write it beside the entity and answer "did this record already
+   * mint an id?" from its own log on the next run.
+   *
+   * Without it the only place that mapping could live is a file beside the log,
+   * and a second copy of a fact is a thing that can disagree with the first —
+   * including by being lost, at which point a resume mints the whole corpus a
+   * second time.
+   */
+  idempotency_key: MigrationIdempotencyKey;
   slot: EntitySlot;
   entity_type: EndpointType;
   entity_subtype?: EndpointSubtype;
+  /**
+   * What the node is CALLED. A registry that mints identity has to be handed
+   * one: a display name is required on every entity, and an adapter that had to
+   * invent one would put a placeholder where the graph shows a person's name.
+   */
+  name: string;
+  aliases: string[];
   /**
    * The legacy object this entity came from, ABSENT when the migration minted
    * the node from a value shared by many objects. Optional rather than a
@@ -391,8 +409,15 @@ export async function applyProjectionPlan(input: ApplyProjectionPlanInput): Prom
     if (isEntityRecord(record) || isMintedEntityRecord(record)) {
       const legacyObjectId = legacyObjectIdFor(record);
       const minted = await registry.mintEntity({
+        idempotency_key: record.idempotency_key,
         slot: record.slot,
         entity_type: record.entity_type,
+        name: record.name,
+        // A minted node carries no `aliases` key at all — it was never a legacy
+        // row and has no other names anybody wrote down. Spelled as a presence
+        // check rather than `record.aliases ?? []` so the two record shapes stay
+        // visibly different instead of one pretending to be the other.
+        aliases: "aliases" in record ? [...record.aliases] : [],
         // `"entity_subtype" in record` rather than a bare property read: a
         // minted entity has no such key, and the ratified vocabulary leaves
         // seven of the eight endpoint types with no subtype at all.
