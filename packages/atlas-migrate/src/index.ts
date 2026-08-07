@@ -10,6 +10,7 @@ export * from "./plan-report.js";
 export * from "./apply.js";
 export * from "./in-memory-plane.js";
 export * from "./durable-plane.js";
+export * from "./store-reader.js";
 export * from "./legacy-fixture.js";
 export * from "./edge-migration.js";
 export * from "./legacy-vocabulary-fixture.js";
