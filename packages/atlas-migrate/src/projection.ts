@@ -60,6 +60,8 @@ import {
   MigrationOrigin,
   MigrationRecordedAtFidelity,
   ProjectorVersion,
+  ProvisionalBlockPayloadSchema,
+  UnmodelledRecordKinds,
   canonicalDigest,
   entitySlotForLegacyObject,
   TopicSchemeValues,
@@ -91,6 +93,14 @@ export const SourceDispositionKindValues = [
   "projected-as-relationship",
   "projected-as-retraction",
   "projected-as-alias-redirect",
+  /**
+   * Carried across whole, with its modelling deferred (ADR 0029). Its own
+   * disposition rather than one of the `projected-as-*` above: those name what
+   * the object BECAME in the ratified vocabulary, and this object became nothing
+   * in it. Filing a block as `projected-as-entity` would put a number nobody can
+   * act on into the row an operator reads to see how much of the graph arrived.
+   */
+  "projected-as-provisional",
   "unrecoverable-ciphertext",
   "redaction-stub",
   "refused",
@@ -167,6 +177,21 @@ export type ProjectionBreakdown = {
    */
   entities_minted_from_attributes: number;
   relationships_derived_from_attributes: number;
+  /**
+   * Records this run carries whose kind nothing has modelled yet (ADR 0029).
+   *
+   * A row rather than a scalar because the question a reader has is "which
+   * kinds", and because a second provisional kind must appear here without
+   * anybody widening a field. Recomputed by the closure gate from the records
+   * like every other row, so the plan cannot assert a deferral it did not make.
+   *
+   * The deferral is the whole reason this exists: an unmodelled record type
+   * tends to stay unmodelled, and the only thing that reliably stops it is a
+   * number an operator sees on every run. `renderProjectionPlanReport` prints
+   * the total even when it is zero, because an absent count reads as "not
+   * measured" and a zero reads as "nothing deferred".
+   */
+  unmodelled_records: Array<{ record_kind: ProjectedRecordKind; count: number }>;
   /**
    * How many topic nodes each concept scheme contributes.
    *
@@ -560,6 +585,64 @@ export function buildProjectionPlan(
 
     if (resolution.kind !== "plaintext") {
       draft.disposition = refuse("invalid-legacy-payload", "expected a readable payload for this category");
+      continue;
+    }
+
+    if (category === "outline-block" || category === "tombstoned-outline-block") {
+      const blockNamespace = envelope.visible_metadata.schema_namespace;
+      if (blockNamespace === undefined) {
+        // Unreachable while the classifier reaches this category only through a
+        // namespace it recognises. Refused rather than defaulted: a default
+        // would put a record into the plan claiming a namespace nothing
+        // measured, which is worse than refusing an object nobody can classify.
+        draft.disposition = refuse(
+          "unmeasured-block-shape",
+          "a block reached the carry-over with no schema namespace to have measured it against"
+        );
+        continue;
+      }
+
+      const block = ProvisionalBlockPayloadSchema.safeParse(resolution.data);
+      if (!block.success) {
+        // Named for what actually happened. `invalid-legacy-payload` would send
+        // the operator looking for corrupt bytes; the bytes are fine and this
+        // projector's description of them is short by a key.
+        draft.disposition = refuse(
+          "unmeasured-block-shape",
+          "this block's payload does not match the measured block shape; it is refused by name and left " +
+            "readable in the frozen replica rather than carried with a key dropped"
+        );
+        continue;
+      }
+
+      const blockKey = projectionIdempotencyKey({
+        authority_id: authorityId,
+        legacy_object_id: envelope.object_id,
+        record_kind: "provisional-block",
+        ordinal: 0
+      });
+      draft.records.push({
+        record_kind: "provisional-block",
+        idempotency_key: blockKey,
+        origin: MigrationOrigin,
+        recorded_at_fidelity: MigrationRecordedAtFidelity,
+        provenance,
+        source_schema_namespace: blockNamespace,
+        // The PARSED payload, not the raw map. Parsing is what proves the shape,
+        // and re-reading `resolution.data` here would carry whatever arrived
+        // whether or not it satisfied the schema the gate later validates.
+        block: block.data
+      });
+      // The legacy id now redirects at a real record, so it resolves to the
+      // block instead of answering "nothing carried this across". It claims NO
+      // entity slot: a block is not an endpoint, and an edge that names one must
+      // still refuse rather than land on a record with no type.
+      draft.primary = { record_key: blockKey, record_kind: "provisional-block" };
+      // A deleted block is carried AND retracted, exactly like a deleted node.
+      // Importing nothing would turn a recorded deletion into an absence of
+      // history; `retractTombstonedDrafts` emits the retraction once every pass
+      // has run.
+      draft.disposition = tombstone ? { kind: "projected-as-retraction" } : { kind: "projected-as-provisional" };
       continue;
     }
 
@@ -1868,6 +1951,13 @@ export function recomputeProjectionBreakdown(
     relationships_derived_from_attributes: records.filter(
       (record) => record.record_kind === "relationship" && record.derivation !== undefined
     ).length,
+    // Counted off `UnmodelledRecordKinds` rather than off a literal list of
+    // kinds, so the row cannot fall behind the set that declares what is
+    // deferred. The universe keeps the print order stable.
+    unmodelled_records: countBy(
+      records.map((record) => record.record_kind).filter((kind) => UnmodelledRecordKinds.has(kind)),
+      ProjectedRecordKindUniverse
+    ).map(({ value, count }) => ({ record_kind: value, count })),
     topic_nodes_by_scheme: countBy(topicSchemesOf(records), TopicSchemeValues).map(({ value, count }) => ({
       scheme: value,
       count
@@ -1980,6 +2070,8 @@ const LegacySourceCategoryUniverse = [
   "opaque-object",
   "quarantined-object",
   "narrative-object",
+  "outline-block",
+  "tombstoned-outline-block",
   "derived-index",
   "other"
 ] as const satisfies readonly LegacySourceCategory[];
@@ -2018,6 +2110,7 @@ const MigrationRefusalReasonUniverse = [
   "dangling-alias-target",
   "unclassified-source-category",
   "derived-index-not-migrated",
+  "unmeasured-block-shape",
   "unmapped-legacy-subtype",
   "predicate-domain-violation",
   "predicate-range-violation",
@@ -2037,5 +2130,6 @@ const ProjectedRecordKindUniverse = [
   "retraction",
   "absence",
   "minted-entity",
-  "minted-relationship"
+  "minted-relationship",
+  "provisional-block"
 ] as const satisfies readonly ProjectedRecordKind[];

@@ -85,6 +85,27 @@ export function renderProjectionPlanReport(plan: ProjectionPlan, gate?: ClosureG
   );
 
   /**
+   * WHAT THIS RUN DEFERRED, PRINTED WHETHER OR NOT IT DEFERRED ANYTHING.
+   *
+   * Unconditional, unlike every other section here, and the zero is the reason.
+   * An absent section reads as "not measured"; `carried 0` reads as "nothing was
+   * deferred in this run", which is the sentence a reviewer needs in order to
+   * notice the run where it stops being zero.
+   *
+   * The owner accepted a stated risk to carry the outline blocks now and model
+   * them later — that an unmodelled record type tends to stay unmodelled. This
+   * line, plus the closure-gate finding, is what that acceptance is held to: the
+   * deferral is a number on the review surface of every run.
+   */
+  const unmodelledTotal = breakdown.unmodelled_records.reduce((total, entry) => total + entry.count, 0);
+  lines.push(
+    "",
+    "unmodelled-records",
+    `  ${pad("carried (no contract, no revision)")}${unmodelledTotal}`,
+    ...breakdown.unmodelled_records.map((entry) => `  ${pad(entry.record_kind)}${entry.count}`)
+  );
+
+  /**
    * The three vocabularies as three populations. Label uniqueness is scoped per
    * scheme, so an operator reading a homonym finding needs to know which schemes
    * exist and how big each is; one flat topic count cannot answer that, and a
