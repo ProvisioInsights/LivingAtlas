@@ -23,7 +23,7 @@ import type { Plane, Principal, PrincipalResolution, PrincipalResolver } from ".
  * permissions; withholding is an authorization decision made per read against
  * the caller's grant, not encryption. So a directory that reaches `local-private`
  * WIDENS what one principal may be shown; it never decrypts anything, and there
- * is no key material anywhere in this file. See ADR 0032.
+ * is no key material anywhere in this file. See ADR 0033.
  *
  * Three refusals govern the load, and each is a failure this system has already
  * paid for once:

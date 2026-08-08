@@ -1,4 +1,4 @@
-# ADR 0032: The Credential Directory, And The Owner's Grant
+# ADR 0033: The Credential Directory, And The Owner's Grant
 
 Status: Accepted for implementation
 Date: 2026-08-08
