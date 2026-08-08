@@ -8,6 +8,8 @@
   },
   "dependencies": {
     "@living-atlas/atlas-client": "workspace:*",
+    "@living-atlas/atlas-core": "workspace:*",
+    "@living-atlas/atlas-mcp": "workspace:*",
     "@living-atlas/atlas-migrate": "workspace:*",
     "@living-atlas/backup": "workspace:*",
     "@living-atlas/cloudflare-worker": "workspace:*",
