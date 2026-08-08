@@ -167,6 +167,12 @@ importers:
       '@living-atlas/atlas-client':
         specifier: workspace:*
         version: link:../atlas-client
+      '@living-atlas/atlas-core':
+        specifier: workspace:*
+        version: link:../atlas-core
+      '@living-atlas/atlas-mcp':
+        specifier: workspace:*
+        version: link:../atlas-mcp
       '@living-atlas/atlas-migrate':
         specifier: workspace:*
         version: link:../atlas-migrate

@@ -83,6 +83,8 @@
     "real-data:backfill-outbox": "tsx packages/check/src/local-backfill-outbox.ts",
     "backup:run": "tsx packages/check/src/backup-run.ts",
     "backup:restore": "tsx packages/check/src/backup-restore.ts",
+    "real-data:store-backup": "tsx packages/check/src/store-backup.ts",
+    "real-data:store-restore": "tsx packages/check/src/store-restore.ts",
     "real-data:migration-plan": "tsx packages/check/src/migration-plan-dryrun.ts",
     "real-data:migration-verify": "tsx packages/check/src/migration-verify.ts",
     "real-data:migration-apply": "tsx packages/check/src/migration-apply.ts"
