@@ -7,9 +7,9 @@ import {
   InMemoryCredentialDirectory,
   credentialResolver,
   hashCredential,
+  parseCredentialRecord,
   type CredentialRecord
 } from "../credentials.js";
-import { PrincipalSchema } from "../principal.js";
 import {
   STORE_DIRECTORY_ENV,
   STORE_MODE_ENV,
@@ -79,16 +79,10 @@ function argument(name: string): string | undefined {
 function loadCredentials(path: string): CredentialRecord[] {
   const parsed = JSON.parse(readFileSync(path, "utf8")) as unknown;
   if (!Array.isArray(parsed)) throw new Error("the credentials file must hold a JSON array");
-  return parsed.map((entry) => {
-    const record = entry as { token_hash?: unknown; principal?: unknown };
-    if (typeof record.token_hash !== "string" || !record.token_hash.startsWith("sha256:")) {
-      throw new Error("every credential record needs a token_hash of the form sha256:<hex>");
-    }
-    // Parsed here rather than trusted: the directory refuses a principal whose
-    // plane and credential class disagree, and a configuration file is exactly
-    // where that mismatch would otherwise be introduced.
-    return { token_hash: record.token_hash, principal: PrincipalSchema.parse(record.principal) };
-  });
+  // `parseCredentialRecord` is shared with the consumer's directory loader so the
+  // two config surfaces cannot drift on what a valid record is: the hash-not-a-
+  // secret rule and the parse-not-trust rule are one function, not two copies.
+  return parsed.map((entry) => parseCredentialRecord(entry));
 }
 
 const auditLog = argument("audit-log");

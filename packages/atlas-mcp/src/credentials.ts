@@ -71,6 +71,30 @@ export function hashCredential(secret: string): string {
 }
 
 /**
+ * One parse for a credential record read from configuration, wherever it is read.
+ *
+ * The operator CLI reads an array of these out of one file; the consumer reads a
+ * directory of them, one per file. Both need the SAME two refusals, and a second
+ * copy of them is a second rule that agrees with the first only until somebody
+ * edits one:
+ *
+ *  - the token_hash must be a `sha256:` hash and never a secret. The whole reason
+ *    a credential set is reviewable in a diff is that the file holds no secrets;
+ *    a record carrying a raw secret in the hash slot would put one there.
+ *  - the principal is PARSED, not trusted. Configuration is exactly where a
+ *    principal whose plane and credential class disagree would be introduced, and
+ *    `PrincipalSchema` refuses that at the point the file is loaded rather than
+ *    when a call finally arrives against it.
+ */
+export function parseCredentialRecord(entry: unknown): CredentialRecord {
+  const record = entry as { token_hash?: unknown; principal?: unknown };
+  if (typeof record.token_hash !== "string" || !record.token_hash.startsWith("sha256:")) {
+    throw new Error("every credential record needs a token_hash of the form sha256:<hex>");
+  }
+  return { token_hash: record.token_hash, principal: PrincipalSchema.parse(record.principal) };
+}
+
+/**
  * A directory held in memory, keyed by token hash.
  *
  * Keyed by HASH rather than by the secret so the secret is not resident in the

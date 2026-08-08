@@ -106,6 +106,51 @@ export const CONSUMER_PRINCIPAL: Principal = {
   grant: CONSUMER_GRANT
 };
 
+/**
+ * The OWNER grant: reaches `open` and `local-private`, and stops there.
+ *
+ * `local-private` is what atlas-core stamps on content committed without an
+ * explicit classification — nearly all of a migrated graph — so naming it is what
+ * lets the owner read their own graph as content rather than as redaction stubs.
+ *
+ * It deliberately does NOT name `sealed`. Reaching a tier is by NAME, not by
+ * rank, so an owner reaching `local-private` (rank 10) says nothing about `sealed`
+ * (rank 90): the sealed/escalation tier stays behind the two-key MRTR reveal
+ * path, and a grant that widened its way to it by listing the tier would make
+ * that gate decorative. And reads remain reads: no predicate is writable and no
+ * write tier is permitted, because widening what one principal may READ is a
+ * different decision from letting it WRITE.
+ */
+export const OWNER_GRANT: CapabilityGrant = {
+  grant_id: "grant-owner",
+  sensitivity_reachable: [
+    { tier: "open", rank: 0 },
+    { tier: "local-private", rank: 10 }
+  ],
+  tools_permitted: [...CONTRACT_TOOL_NAMES],
+  predicates_writable: [],
+  write_tiers_permitted: [],
+  limits: {},
+  coverage_counts_basis: "exact",
+  supersession_scope: "own-client-id",
+  reveal_available: true
+};
+
+/**
+ * The owner principal, on the CONSUMER plane and the `owner` credential class.
+ *
+ * `owner` is a consumer-plane credential class, not the operator plane: reading
+ * one's own graph is a consumer act. `PrincipalSchema` binds only the operator
+ * class to the operator plane, so an owner-on-consumer principal is valid and an
+ * owner principal can never acquire the operator plane by editing one field.
+ */
+export const OWNER_PRINCIPAL: Principal = {
+  client_id: "owner",
+  credential_class: "owner",
+  plane: "consumer",
+  grant: OWNER_GRANT
+};
+
 /** The same principal with part of its grant replaced. */
 export function withGrant(principal: Principal, patch: Partial<CapabilityGrant>): Principal {
   return { ...principal, grant: { ...principal.grant, ...patch } };
@@ -227,6 +272,37 @@ export function seedRelationship(
       }
     ],
     sensitivity: { ...FIXTURE_OPEN }
+  });
+}
+
+/**
+ * Commit one `local-private`, NON-withheld assertion.
+ *
+ * The tier atlas-core stamps on unclassified content, so this is the shape nearly
+ * all of a migrated graph takes. Not `withheld`: withholding is the projection's
+ * per-reader decision, not a property the record carries, and the point of the
+ * fixture is that a grant reaching `local-private` reads it as content while a
+ * grant reaching only `open` sees a stub for the very same record.
+ */
+export function seedLocalPrivateAssertion(graph: SyntheticGraph, clientId = "fixture"): void {
+  const subject = graph.entityList[0];
+  if (!subject) throw new Error("the synthetic graph has no entities to assert about");
+  graph.assertions.commit({
+    client_id: clientId,
+    idempotency_key: `local-private-${clientId}`,
+    drafts: [
+      {
+        kind: "fact",
+        lineage_action: "assert",
+        subject_entity_id: subject.entity_id,
+        predicate: "worked-at",
+        value: "synthetic local-private value",
+        confidence: { band: "high" },
+        evidence_links: [{ evidence_id: "ev-local-private", stance: "supports" }],
+        supersedes: []
+      }
+    ],
+    sensitivity: { tier: "local-private", rank: 10, withheld: false }
   });
 }
 
