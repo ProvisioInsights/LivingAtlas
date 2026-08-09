@@ -100,6 +100,106 @@ describe("the protocol gate", () => {
   });
 });
 
+describe("the legacy era", () => {
+  const legacyInitialize = (version: unknown) => ({
+    jsonrpc: "2.0" as const,
+    id: 1,
+    method: "initialize",
+    params: { protocolVersion: version, capabilities: {}, clientInfo: { name: "desktop", version: "1" } }
+  });
+
+  it("admits an initialize naming an admitted legacy revision, for the SDK to serve", () => {
+    const decision = gateInbound(legacyInitialize("2025-11-25"), {
+      supportedVersions: SUPPORTED_PROTOCOL_VERSIONS,
+      legacyVersions: ["2025-11-25"]
+    });
+    // Pass, not serve: the gate steps aside and the SDK's legacy path pins the
+    // connection. The gate's whole job on the opening is to narrow which ones
+    // reach that path.
+    expect(decision.kind).toBe("pass");
+  });
+
+  it.each([["2025-06-18"], ["2019-01-01"], ["not-a-date"], [""]])(
+    "refuses a legacy initialize naming the non-admitted revision %j",
+    (version) => {
+      const decision = gateInbound(legacyInitialize(version), {
+        supportedVersions: SUPPORTED_PROTOCOL_VERSIONS,
+        legacyVersions: ["2025-11-25"]
+      });
+      expect(decision.kind).toBe("reject");
+      if (decision.kind !== "reject") return;
+      expect(decision.rejection.code).toBe(-32022);
+      // The door opens for the admitted revision, not for anything: a rejected
+      // client is told both revisions this server will actually accept.
+      expect(decision.response).toMatchObject({
+        error: { code: -32022, data: { supported: [CONTRACT_PROTOCOL_VERSION, "2025-11-25"], requested: version } }
+      });
+    }
+  );
+
+  it("refuses a legacy initialize whose protocolVersion is not a string", () => {
+    const decision = gateInbound(legacyInitialize(20251125), {
+      supportedVersions: SUPPORTED_PROTOCOL_VERSIONS,
+      legacyVersions: ["2025-11-25"]
+    });
+    expect(decision.kind).toBe("reject");
+  });
+
+  it("passes a legacy session's own envelope-less traffic, so its reads are not gated off", () => {
+    // A 2025 tools/call carries no protocol-version envelope. Once an admitted
+    // legacy `initialize` has established the session, this is how every
+    // subsequent request looks, and the gate must not turn it into a version
+    // refusal. The established session is the precondition — the transport
+    // latches it from the opening's `establishesLegacy`.
+    const decision = gateInbound(
+      { jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "atlas.contract.describe.v1", arguments: {} } },
+      { supportedVersions: SUPPORTED_PROTOCOL_VERSIONS, legacyVersions: ["2025-11-25"] },
+      { legacyEstablished: true }
+    );
+    expect(decision.kind).toBe("pass");
+  });
+
+  it("refuses that same envelope-less traffic BEFORE a legacy session is established", () => {
+    // The mirror of the case above and the reason it needs state: with no legacy
+    // session yet, an envelope-less tools/call is a modern client that dropped
+    // its envelope, and the SDK's legacy:'serve' would mis-serve it. The gate
+    // refuses it, naming the modern revision only — not advising a downgrade.
+    const decision = gateInbound(
+      { jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "atlas.contract.describe.v1", arguments: {} } },
+      { supportedVersions: SUPPORTED_PROTOCOL_VERSIONS, legacyVersions: ["2025-11-25"] }
+    );
+    expect(decision.kind).toBe("reject");
+    if (decision.kind !== "reject") return;
+    expect(decision.response).toMatchObject({ error: { code: -32022, data: { supported: [CONTRACT_PROTOCOL_VERSION] } } });
+  });
+
+  it("latches the legacy session from the admitted opening", () => {
+    // The `establishesLegacy` flag is what the transport reads to set the
+    // context above. It is present only on the admitted opening.
+    const opening = gateInbound(
+      {
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: { protocolVersion: "2025-11-25", capabilities: {}, clientInfo: { name: "d", version: "1" } }
+      },
+      { supportedVersions: SUPPORTED_PROTOCOL_VERSIONS, legacyVersions: ["2025-11-25"] }
+    );
+    expect(opening).toMatchObject({ kind: "pass", establishesLegacy: true });
+  });
+
+  it("with the era switched off, passes the opening to the SDK exactly as before", () => {
+    // The sunset state: `legacyVersions` empty. The gate adds nothing to the
+    // opening and the SDK's `legacy:'reject'` answers it, which is the original
+    // modern-only server byte for byte.
+    const decision = gateInbound(legacyInitialize("2025-11-25"), {
+      supportedVersions: SUPPORTED_PROTOCOL_VERSIONS,
+      legacyVersions: []
+    });
+    expect(decision.kind).toBe("pass");
+  });
+});
+
 describe("server/discover", () => {
   it("answers with supportedVersions, capabilities, instructions, serverInfo and the caching fields", async () => {
     const { client } = harness();
@@ -217,7 +317,11 @@ describe("the per-request envelope", () => {
     expect(rejected).toHaveLength(1);
   });
 
-  it("refuses a 2025-era initialize rather than serving a legacy connection", async () => {
+  it("refuses a 2025-era initialize whose revision is not the admitted one", async () => {
+    // Composed through the shipped stdio entry, which now runs `legacy:'serve'`.
+    // A non-admitted legacy opening must still be refused — the era being ON is
+    // what makes this the meaningful test: the gate, not the SDK, is what turns
+    // 2025-06-18 away while 2025-11-25 is served.
     const { client } = harness();
     client.send({
       jsonrpc: "2.0",
@@ -227,6 +331,23 @@ describe("the per-request envelope", () => {
     });
     const response = await client.await(1);
     expect(response.error?.code).toBe(-32022);
+    expect(response.error?.data).toMatchObject({ requested: "2025-06-18" });
+  });
+
+  it("serves an admitted 2025-11-25 initialize as a legacy connection", async () => {
+    // The thing Claude Desktop actually does on the wire. The handshake is
+    // answered with a result rather than -32022, and the negotiated revision is
+    // echoed as the legacy one, not silently upgraded to the modern revision.
+    const { client } = harness();
+    client.send({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "initialize",
+      params: { protocolVersion: "2025-11-25", capabilities: {}, clientInfo: { name: "desktop", version: "1" } }
+    });
+    const response = await client.await(1);
+    expect(response.error).toBeUndefined();
+    expect(response.result?.["protocolVersion"]).toBe("2025-11-25");
   });
 });
 
