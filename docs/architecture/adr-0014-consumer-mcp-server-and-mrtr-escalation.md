@@ -352,6 +352,16 @@ function and cannot disagree.
 
 ## Consequences
 
+> **Superseded in part by ADR 0034 (2026-08-06).** The two bullets about the 2025
+> era below were written on the belief that Claude Desktop negotiates 2026-07-28
+> on the wire. It does not — it opens with an `initialize` at 2025-11-25, verified
+> from the server's own stderr — so under this decision Claude Desktop was
+> refused, the opposite of the first bullet's claim. ADR 0034 admits a transitional
+> 2025-11-25 legacy opening. The per-request value gate of Decision 1 is unchanged
+> and still in force; what changed is that the no-envelope opening is no longer
+> uniformly refused. The bullets are left here as written rather than edited,
+> because the falsified premise is the useful record.
+
 - Claude Desktop connects. Claude Code 2.1.191 and Codex 0.142.1 are legacy and
   will not, until they update. Accepted, and deliberately not designed around.
 - A withheld record in a GUI now produces an owner prompt instead of a sentence.

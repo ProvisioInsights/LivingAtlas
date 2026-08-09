@@ -60,7 +60,7 @@ function usage(): never {
       "living-atlas-atlas-mcp — Living Atlas consumer plane over stdio",
       "",
       `  contract revision : ${CONTRACT_REVISION}`,
-      "  protocol revision : 2026-07-28 only (no legacy era, no dual era)",
+      "  protocol revision : 2026-07-28, plus a transitional 2025-11-25 legacy opening (ADR 0034)",
       "",
       "  --audit-log <path>   Where the one-event-per-tool-call log is appended (required).",
       "  --client-id <id>     The principal this connection speaks as. Default: local-consumer.",

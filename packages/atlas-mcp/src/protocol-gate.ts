@@ -31,9 +31,22 @@ import {
  * the only part a client can branch on — is lost. Verified by running it.
  */
 
-/** The single revision this server speaks. There is no legacy era and no dual era. */
 export type ProtocolGateOptions = {
   supportedVersions: readonly string[];
+  /**
+   * The 2025-era protocol revisions this server will let the SDK serve as a
+   * LEGACY connection. Empty means modern-only, which is the original decision
+   * and restores it exactly (see `serveAtlasStdio`).
+   *
+   * This half of the era decision is here because the SDK's `legacy:'serve'`
+   * admits ANY 2025-era `initialize` — it classifies by "does this carry a
+   * modern envelope", never by which legacy revision it names. Left to the SDK
+   * alone, turning the era on would open the door to 2025-06-18 and to a garbage
+   * version string alike. The gate is what makes it open for exactly the
+   * revisions named here and nothing else, by refusing every other legacy
+   * `initialize` BEFORE the SDK can pin a connection to it.
+   */
+  legacyVersions?: readonly string[];
   /**
    * Methods answered without an envelope check. Empty by design: the 2026-07-28
    * revision has no handshake, so there is no request that legitimately arrives
@@ -58,7 +71,27 @@ export type GateRejection = {
  * bad envelope is dropped by the SDK's own classifier; inventing an error
  * response for it would put an unmatched id on the wire.
  */
-export type GateDecision = { kind: "pass" } | { kind: "reject"; response: unknown; rejection: GateRejection };
+export type GateDecision =
+  | {
+      kind: "pass";
+      /**
+       * True only for an admitted legacy `initialize`. The transport latches it
+       * so the rest of that connection's envelope-less traffic — a 2025 client's
+       * tool calls carry no version envelope — is recognised as the legacy
+       * session's own rather than mistaken for a modern client that dropped its
+       * envelope.
+       */
+      establishesLegacy?: boolean;
+    }
+  | { kind: "reject"; response: unknown; rejection: GateRejection };
+
+/**
+ * What the transport knows about the connection so far. The gate is otherwise a
+ * pure function of one message; this is the one fact it cannot read off the
+ * single message in front of it, because "envelope-less" means one thing before
+ * a legacy handshake and the opposite after it.
+ */
+export type GateContext = { legacyEstablished?: boolean };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -90,7 +123,7 @@ function errorResponse(id: string | number, code: ProtocolErrorCode, message: st
  * pure function against literal wire bytes — the wrapper only decides where the
  * answer goes.
  */
-export function gateInbound(message: unknown, options: ProtocolGateOptions): GateDecision {
+export function gateInbound(message: unknown, options: ProtocolGateOptions, context: GateContext = {}): GateDecision {
   const request = requestShape(message);
   if (!request) return { kind: "pass" };
   if (options.exemptMethods?.includes(request.method)) return { kind: "pass" };
@@ -99,11 +132,71 @@ export function gateInbound(message: unknown, options: ProtocolGateOptions): Gat
   const meta = params && isRecord(params["_meta"]) ? params["_meta"] : undefined;
   const requested = meta?.[PROTOCOL_VERSION_META_KEY];
 
-  // No envelope at all is the SDK's own case and it already answers -32022 for
-  // it. Passing it through keeps ONE answer for that shape rather than two
-  // implementations that can drift; the gate exists for the value check the SDK
-  // does not perform.
-  if (requested === undefined) return { kind: "pass" };
+  if (requested === undefined) {
+    const legacyVersions = options.legacyVersions ?? [];
+
+    // ERA OFF (the sunset state). The gate adds nothing to the no-version case;
+    // the SDK's `legacy:'reject'` answers it, which is the original modern-only
+    // behaviour byte for byte. Emptying `legacyVersions` reverts the whole
+    // change to exactly this line.
+    if (legacyVersions.length === 0) return { kind: "pass" };
+
+    // ERA ON. The legacy OPENING is an `initialize` naming a protocol version in
+    // `params`. The gate admits exactly the named revisions — before the SDK's
+    // `legacy:'serve'` can pin a connection — so the door opens for the admitted
+    // revision and not for whatever else names a version.
+    if (request.method === "initialize") {
+      const legacyVersion = params?.["protocolVersion"];
+      if (typeof legacyVersion === "string" && legacyVersions.includes(legacyVersion)) {
+        return { kind: "pass", establishesLegacy: true };
+      }
+      const named = typeof legacyVersion === "string" ? legacyVersion : JSON.stringify(legacyVersion);
+      return {
+        kind: "reject",
+        rejection: {
+          id: request.id,
+          method: request.method,
+          code: ProtocolErrorCode.UnsupportedProtocolVersion,
+          ...(typeof legacyVersion === "string" ? { requested: legacyVersion } : {})
+        },
+        response: errorResponse(
+          request.id,
+          ProtocolErrorCode.UnsupportedProtocolVersion,
+          `Unsupported protocol version: ${named}`,
+          // A client that NAMED a legacy revision is legacy-oriented, so it is
+          // told both revisions the server accepts — including the admitted
+          // legacy one it could fall back to.
+          { supported: [...options.supportedVersions, ...legacyVersions], requested: named }
+        )
+      };
+    }
+
+    // Envelope-less traffic inside an established legacy session — a 2025 client's
+    // tool calls carry no version envelope — is that session's own and passes.
+    if (context.legacyEstablished === true) return { kind: "pass" };
+
+    // ERA ON, no version, not an opening, and no legacy session to belong to.
+    // This is a MODERN client that dropped its envelope, or a client that skipped
+    // its handshake. The SDK's `legacy:'serve'` would now mis-serve it as a
+    // legacy connection — the exact conflation the era switch introduces — so the
+    // gate refuses it here. The answer names the MODERN revision only: a request
+    // that named no version is not a legacy client, and advising it to downgrade
+    // to 2025-11-25 would be wrong.
+    return {
+      kind: "reject",
+      rejection: {
+        id: request.id,
+        method: request.method,
+        code: ProtocolErrorCode.UnsupportedProtocolVersion
+      },
+      response: errorResponse(
+        request.id,
+        ProtocolErrorCode.UnsupportedProtocolVersion,
+        "Unsupported protocol version: the request did not name a protocol version",
+        { supported: [...options.supportedVersions] }
+      )
+    };
+  }
 
   if (typeof requested !== "string" || !options.supportedVersions.includes(requested)) {
     const named = typeof requested === "string" ? requested : JSON.stringify(requested);
@@ -160,11 +253,18 @@ export function gateTransport(
     setSupportedProtocolVersions: inner.setSupportedProtocolVersions?.bind(inner)
   };
 
+  // Latched once, for the lifetime of this connection: an admitted legacy
+  // `initialize` passed the gate, so this connection's later envelope-less
+  // traffic is the legacy session's own. One `gateTransport` wraps one
+  // connection, so this state cannot leak between clients.
+  let legacyEstablished = false;
+
   inner.onclose = () => gated.onclose?.();
   inner.onerror = (error: Error) => gated.onerror?.(error);
   inner.onmessage = (message, extra) => {
-    const decision = gateInbound(message, options);
+    const decision = gateInbound(message, options, { legacyEstablished });
     if (decision.kind === "pass") {
+      if (decision.establishesLegacy === true) legacyEstablished = true;
       gated.onmessage?.(message, extra);
       return;
     }
