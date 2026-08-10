@@ -185,12 +185,25 @@ describe("per-request version negotiation", () => {
     expect(error.data?.["supported"]).toEqual([...HTTP_SUPPORTED_PROTOCOL_VERSIONS]);
   });
 
-  it("refuses a 2025-era initialize handshake rather than serving a legacy era", async () => {
+  it("refuses a 2025-era initialize at a revision the transitional era does NOT admit", async () => {
     /**
      * Sent as a 2025-06-18 client actually sends it: that revision defined the
      * `MCP-Protocol-Version` header, so the header names 2025 and the body is a
      * bare `initialize` with no `_meta` envelope. The answer names what this
      * server does speak, which is what lets the client retry rather than guess.
+     *
+     * REWRITTEN FOR ADR 0036, which gave HTTP a transitional legacy era. This
+     * case used to read "refuses a 2025-era initialize handshake rather than
+     * serving a legacy era", and that premise is now deliberately false — but
+     * only for `2025-11-25`. It is kept, pointed at a revision the era does NOT
+     * admit, because the property worth pinning was never "refuse all of 2025";
+     * it was "admit exactly what is named and nothing adjacent".
+     *
+     * It also caught a real hole when the era landed: with the SDK's legacy mode
+     * on, this request was SERVED, because the edge's era gate only inspected
+     * header-LESS requests and a 2025-06-18 client sends a header. The admitted
+     * set is now enforced on the header value too. The admitted revision's happy
+     * path lives in `legacy-era.test.ts`.
      */
     const http = await harness();
     const response = await http.raw(
@@ -211,14 +224,18 @@ describe("per-request version negotiation", () => {
 
   it("refuses a pre-2025-06-18 client, which sends no version header at all, with a recognizable modern error", async () => {
     /**
-     * The interaction between this server's no-legacy-era stance and the
-     * revision's fallback rules. A client older than 2025-06-18 sends no
-     * `MCP-Protocol-Version`, so it meets the header MUST first and is answered
-     * `-32020` rather than `-32022`. That is still the RIGHT answer for such a
-     * client: the backward-compatibility rules tell it to inspect a 400 body and
-     * only fall back to the legacy `initialize` flow when the body is "not a
-     * recognized modern JSON-RPC error". `-32020` is one, so the client learns
-     * this endpoint is modern instead of retrying an HTTP+SSE handshake against it.
+     * The interaction between this server's admitted-era set and the revision's
+     * fallback rules. A client older than 2025-06-18 sends no
+     * `MCP-Protocol-Version`, so it reaches the era gate, which reads the
+     * revision its `initialize` names and refuses it as unadmitted.
+     *
+     * UPDATED FOR ADR 0036: the code moved from `-32020` to `-32022`. What the
+     * requirement actually asks for is unchanged and still satisfied — the
+     * backward-compatibility rules tell such a client to inspect a 400 body and
+     * fall back to the legacy HTTP+SSE `initialize` flow only when the body is
+     * "not a recognized modern JSON-RPC error". `-32022` is one, and it is the
+     * MORE informative of the two: it names the revision that was refused
+     * instead of only complaining about a header the client's revision predates.
      */
     const http = await harness();
     const response = await http.raw(
@@ -232,7 +249,7 @@ describe("per-request version negotiation", () => {
     );
 
     expect(response.status).toBe(400);
-    expect((await errorBody(response)).code).toBe(-32020);
+    expect((await errorBody(response)).code).toBe(-32022);
   });
 });
 
