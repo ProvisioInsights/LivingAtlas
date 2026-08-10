@@ -180,8 +180,51 @@ export function acquireWriteLock(
     };
   }
 
-  // Stale: the holder is gone. Reclaim, and say so — a reclaim is evidence of a
-  // previous crash, and an operator who never hears about it never looks.
+  /**
+   * Stale: the holder is gone. Reclaim, and say so — a reclaim is evidence of a
+   * previous crash, and an operator who never hears about it never looks.
+   *
+   * THE UNLINK IS CONDITIONAL, and that is the whole correctness of this branch.
+   * An unconditional `rmSync` here is a real race: after a crash, two processes
+   * both read the same stale record and both decide it is dead. The first
+   * unlinks and creates its lock; the second then deletes THAT — a live lock —
+   * and creates its own, and both proceed to open the store read-write, which is
+   * precisely the corruption this file exists to prevent.
+   *
+   * So the record is re-read immediately before the unlink and must still be
+   * byte-identical to the stale one that was just judged dead. The loser of the
+   * race re-reads the winner's record, does not recognise it, and refuses.
+   *
+   * The residual window — between this re-read and the unlink — is microseconds
+   * wide and cannot be closed with POSIX primitives (there is no "unlink if the
+   * inode is still X"). It is bounded on the other side by `take()`, whose
+   * `openSync(path, "wx")` is atomic: even if two processes both reached the
+   * unlink, only one of them can create the file, and the other is told the lock
+   * is held.
+   */
+  const confirmed = readRecord(path);
+  if (
+    confirmed === undefined ||
+    confirmed.pid !== existing.pid ||
+    confirmed.acquired_at !== existing.acquired_at ||
+    processIsAlive(confirmed.pid)
+  ) {
+    return {
+      ok: false,
+      code: "held",
+      path,
+      ...(confirmed ? { heldBy: confirmed } : {}),
+      message:
+        `the Atlas write lock at ${path} changed while it was being reclaimed as stale; another ` +
+        "process claimed it first. Refusing rather than deleting a lock this process did not observe."
+    };
+  }
   rmSync(path, { force: true });
-  return take(existing.pid);
+  const reclaimed = take(existing.pid);
+  if (!reclaimed.ok) {
+    // Lost the narrow window: somebody created between our unlink and our
+    // create. `take` already reports them as the holder, which is correct.
+    return reclaimed;
+  }
+  return reclaimed;
 }

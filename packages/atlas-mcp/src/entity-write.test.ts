@@ -195,6 +195,64 @@ describe("atlas.entity.rename.v1", () => {
     expect(entity["also_known_as"]).toEqual(subject.also_known_as);
   });
 
+  it("writes NOTHING when renamed to the names it already has, so the published idempotent hint is true", async () => {
+    /**
+     * `idempotentHint: true` tells a client that retrying after a lost response
+     * is free. `EntityRegistry.rename` stamps a fresh `updated_at` and appends
+     * another identity record on every call, so without the no-op the hint is a
+     * lie and a retry drifts `updated_at` with the network.
+     */
+    const graph = syntheticGraph();
+    const subject = graph.entityList[0];
+    expect(subject).toBeDefined();
+    if (!subject) return;
+    const { client, auditJournal } = harness({ graph });
+
+    client.send(
+      callTool({
+        id: 1,
+        name: "atlas.entity.rename.v1",
+        args: { entity_id: subject.entity_id, display_name: subject.display_name }
+      })
+    );
+    const entity = structured(await client.await(1))["entity"] as Record<string, unknown>;
+
+    expect(entity["display_name"]).toBe(subject.display_name);
+    // The proof it wrote nothing: `updated_at` did not move.
+    expect(entity["updated_at"]).toBe(subject.updated_at);
+    // ...and the audit says so, so a replayed retry cannot read as a second edit.
+    expect(auditJournal.events[0]?.counts).toMatchObject({ committed: 0 });
+
+    // A real change still moves it.
+    client.send(
+      callTool({
+        id: 2,
+        name: "atlas.entity.rename.v1",
+        args: { entity_id: subject.entity_id, display_name: "Genuinely Different" }
+      })
+    );
+    const changed = structured(await client.await(2))["entity"] as Record<string, unknown>;
+    expect(String(changed["updated_at"]) > String(subject.updated_at)).toBe(true);
+  });
+
+  it("treats an also_known_as list that matches the current one as a no-op too", async () => {
+    const graph = syntheticGraph();
+    const subject = graph.entityList[0];
+    expect(subject).toBeDefined();
+    if (!subject) return;
+    const { client } = harness({ graph });
+
+    client.send(
+      callTool({
+        id: 1,
+        name: "atlas.entity.rename.v1",
+        args: { entity_id: subject.entity_id, also_known_as: [...subject.also_known_as] }
+      })
+    );
+    const entity = structured(await client.await(1))["entity"] as Record<string, unknown>;
+    expect(entity["updated_at"]).toBe(subject.updated_at);
+  });
+
   it("refuses a rename that changes nothing rather than answering a silent no-op", async () => {
     const graph = syntheticGraph();
     const subject = graph.entityList[0];
@@ -303,6 +361,44 @@ describe("publishing an entity-write tool grants nobody anything", () => {
     );
 
     expect(errorPayload(await client.await(1))["code"]).toBe("store-read-only");
+  });
+
+  it("refuses a credential that may WRITE the tier but may not READ it", async () => {
+    /**
+     * Read reach and write reach are deliberately independent, so this grant is
+     * legal — and without the read check it is a disclosure channel: both tools
+     * answer with the WHOLE entity record, and for a rename that is a record the
+     * caller never supplied. A credential that cannot read `local-private` could
+     * learn any entity's names and provenance by renaming it to the name it
+     * already has.
+     */
+    const graph = syntheticGraph();
+    const subject = graph.entityList[0];
+    expect(subject).toBeDefined();
+    if (!subject) return;
+    const writeOnly = withGrant(CONSUMER_PRINCIPAL, {
+      sensitivity_reachable: [{ tier: "open", rank: 0 }],
+      write_tiers_permitted: ["local-private"]
+    });
+    const { client } = harness({ graph, principal: writeOnly });
+
+    client.send(
+      callTool({
+        id: 1,
+        name: "atlas.entity.rename.v1",
+        args: { entity_id: subject.entity_id, display_name: "Should Not Be Disclosed" }
+      })
+    );
+    const payload = errorPayload(await client.await(1));
+
+    expect(payload["code"]).toBe("sensitivity-withheld");
+    // And nothing leaked: the refusal carries no entity record.
+    expect(JSON.stringify(payload)).not.toContain(subject.display_name);
+
+    client.send(
+      callTool({ id: 2, name: "atlas.entity.create.v1", args: { type: "person", display_name: "Also Refused" } })
+    );
+    expect(errorPayload(await client.await(2))["code"]).toBe("sensitivity-withheld");
   });
 
   it("refuses a credential whose grant does not carry the write tier, on a writable graph", async () => {

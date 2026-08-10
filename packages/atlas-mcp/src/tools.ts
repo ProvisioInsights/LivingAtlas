@@ -18,7 +18,7 @@ import {
   type RecordedAt
 } from "@living-atlas/atlas-core";
 import { decideAssertion, decideEntity, maySupersede, redactionId } from "./access.js";
-import { effectiveLimit, mayWritePredicate, mayWriteTier, permittedTools } from "./grant.js";
+import { effectiveLimit, mayWritePredicate, mayWriteTier, permittedTools, reachesTier } from "./grant.js";
 import { functionalPredicates } from "./graph.js";
 import { ceilingOf, type Principal } from "./principal.js";
 import { ERROR_CODES } from "./vocabulary.js";
@@ -1257,6 +1257,37 @@ function entityWriteRefusal(context: ToolContext): ToolOutcome | undefined {
       audit: { outcome: "refused", reasonCode: "write-tier-not-permitted", counts: {} }
     };
   }
+  /**
+   * READ REACH IS REQUIRED TOO, and this is a disclosure control rather than
+   * tidiness.
+   *
+   * Read reach and write reach are deliberately independent (`grant.ts`), so a
+   * grant may permit writing `local-private` while omitting that tier from
+   * `sensitivity_reachable`. Both these tools answer with the WHOLE entity
+   * record — and for a rename that is a record the caller did not supply:
+   * the existing `display_name`, the whole `also_known_as` list, the provenance.
+   * A credential that cannot read the tier could therefore learn the contents of
+   * any entity whose id it could guess, by renaming it to the name it already
+   * has.
+   *
+   * Refused rather than redacted: the published output requires an
+   * `atlas.entity:v1`, so there is no shape in this revision for a
+   * write-receipt-without-the-record. "You may not rename what you may not read"
+   * is the honest rule, and it is the narrower one.
+   */
+  if (!reachesTier(context.principal.grant, COMMIT_TIER)) {
+    return {
+      kind: "refusal",
+      error: errorRecord({
+        code: "sensitivity-withheld",
+        message: `This credential's grant does not reach the ${COMMIT_TIER} tier, and both entity-write tools answer with the whole entity record. A credential that cannot read the tier cannot write at it either.`,
+        retryable: false,
+        remedy: { tool: "atlas.scope.describe.v1" },
+        details: { tier: COMMIT_TIER }
+      }),
+      audit: { outcome: "refused", reasonCode: "sensitivity-withheld", counts: {} }
+    };
+  }
   return undefined;
 }
 
@@ -1346,6 +1377,43 @@ const renameEntity: ToolHandler = (args, context) => {
       error: errorRecord({ code: "store-read-only", message: "This store exposes no entity writer.", retryable: true }),
       audit: { outcome: "refused", reasonCode: "store-read-only", counts: {} }
     };
+  }
+
+  /**
+   * A RENAME TO THE NAMES IT ALREADY HAS WRITES NOTHING.
+   *
+   * This tool publishes `idempotentHint: true`, which tells a client that
+   * retrying after a lost response is free. Without this branch that would be a
+   * lie: `EntityRegistry.rename` stamps a fresh `updated_at` and appends another
+   * identity record every time it is called, so the "safe" retry is another
+   * observable mutation and the entity's `updated_at` drifts with the network.
+   *
+   * So the no-op is made real rather than the hint made false. The comparison is
+   * against the CURRENT record, and `also_known_as` is compared only when the
+   * caller supplied it — omitting it means "leave the nicknames alone", which
+   * cannot make the call a change.
+   *
+   * Distinct from the `invalid-argument` above: that refuses a call that names
+   * NO field to change. This one accepts a well-formed call whose requested
+   * state the entity is already in.
+   */
+  const current = context.graph.entities.read(entityId as EntityId);
+  if (current !== undefined) {
+    const nameUnchanged = displayName === undefined || displayName === current.display_name;
+    const aliasesUnchanged =
+      alsoKnownAs === undefined ||
+      (alsoKnownAs.length === current.also_known_as.length &&
+        alsoKnownAs.every((alias, index) => alias === current.also_known_as[index]));
+    if (nameUnchanged && aliasesUnchanged) {
+      return {
+        kind: "complete",
+        structured: { entity: current, horizon: horizonFor(context, { fidelityMixed: false }) },
+        // `committed: 0` — the call succeeded and nothing was written. An audit
+        // event claiming a commit here would make a replayed retry look like a
+        // second edit to anybody reconciling the log.
+        audit: { outcome: "ok", counts: { committed: 0 }, subjects: [entityId] }
+      };
+    }
   }
 
   const result = rename(
