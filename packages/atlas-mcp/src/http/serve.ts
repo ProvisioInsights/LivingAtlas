@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import {
   ProtocolErrorCode,
   createMcpHandler,
@@ -43,8 +44,29 @@ import { applyCapabilityRefusal } from "./refusal-rewrite.js";
  * must: Origin validation, and authentication. Both are below, in code.
  */
 
-/** The single revision either plane speaks over HTTP. Same constant as stdio. */
+/** The single MODERN revision either plane speaks over HTTP. Same constant as stdio. */
 export const HTTP_SUPPORTED_PROTOCOL_VERSIONS = [CONTRACT_PROTOCOL_VERSION] as const;
+
+/**
+ * THE HTTP SUNSET SWITCH (ADR 0036), and deliberately NOT the stdio one.
+ *
+ * ADR 0034 gave the stdio entry a transitional legacy era and left HTTP
+ * modern-only, noting that HTTP has its own conformance surface to re-verify.
+ * This is that surface, re-verified — and it has its own constant rather than
+ * sharing `SUPPORTED_LEGACY_PROTOCOL_VERSIONS` because the two transports do not
+ * carry the same risk. A pipe is reachable only by whoever spawned the process;
+ * a loopback socket is reachable by every process on the host. They should be
+ * retirable independently, and one shared switch would mean retiring the safer
+ * one forced a decision about the riskier one.
+ *
+ * Empty means modern-only: the SDK runs `legacy: 'reject'` and every 2025-era
+ * opening is refused, which is the behaviour that shipped before this ADR.
+ *
+ * Retire this when Claude Desktop negotiates 2026-07-28 on the wire — the same
+ * condition ADR 0034 records for stdio, and it must be verified by reading a
+ * handshake rather than a bundle.
+ */
+export const HTTP_SUPPORTED_LEGACY_PROTOCOL_VERSIONS: readonly string[] = ["2025-11-25"];
 
 /**
  * `HeaderMismatch`, the code the revision assigns to a header that is missing,
@@ -58,6 +80,12 @@ export const HTTP_SUPPORTED_PROTOCOL_VERSIONS = [CONTRACT_PROTOCOL_VERSION] as c
  */
 export const HEADER_MISMATCH_CODE = -32020;
 
+/**
+ * `UnsupportedProtocolVersionError`. Spelled out for the same reason
+ * `HEADER_MISMATCH_CODE` is: the SDK emits it and publishes no enum member.
+ */
+export const UNSUPPORTED_PROTOCOL_VERSION_CODE = -32022;
+
 /** The MCP endpoint path. One path, POST only, as the revision requires. */
 export const DEFAULT_MCP_ENDPOINT = "/mcp";
 
@@ -67,7 +95,8 @@ export type AtlasHttpRejection = {
     | "endpoint-unknown"
     | "origin-forbidden"
     | "bearer-required"
-    | "protocol-version-header-required";
+    | "protocol-version-header-required"
+    | "protocol-version-unsupported";
 };
 
 export type AtlasHttpServeOptions = {
@@ -118,6 +147,59 @@ function protocolVersionHeaderMissing(request: Request): boolean {
   return request.headers.get("mcp-protocol-version") === null;
 }
 
+type RequestScope = { resolvePrincipal: PrincipalResolver; sink: CapabilityRefusalSink };
+
+/**
+ * What a header-less POST turns out to be.
+ *
+ * `modern-envelope` is the case that makes the era safe: a 2026-07-28 client
+ * MUST carry `io.modelcontextprotocol/protocolVersion` in `params._meta`, and a
+ * 2025-era client never does. So a request with no header but a modern envelope
+ * is not a legacy client — it is a modern one that dropped a required header,
+ * and serving it from a legacy-era server would answer it in a shape it never
+ * asked for while both ends believed they agreed.
+ */
+type LegacyOpening =
+  | { kind: "initialize"; version: string }
+  | { kind: "initialize-unversioned" }
+  | { kind: "modern-envelope"; version: string }
+  | { kind: "legacy-follow-up" };
+
+/**
+ * Read a header-less POST far enough to classify it, WITHOUT consuming the body
+ * the SDK still has to read.
+ *
+ * `clone()` rather than reading and rebuilding: rebuilding a `Request` loses
+ * headers a future SDK version might read. A body that is not JSON is treated as
+ * a follow-up and left to the SDK, which already answers `415`/`-32700` for it —
+ * it is not this function's job to reject anything, only to classify.
+ */
+async function legacyOpeningOf(request: Request): Promise<LegacyOpening> {
+  try {
+    const body: unknown = await request.clone().json();
+    if (typeof body !== "object" || body === null) return { kind: "legacy-follow-up" };
+    const message = body as {
+      method?: unknown;
+      params?: { protocolVersion?: unknown; _meta?: Record<string, unknown> };
+    };
+
+    // The envelope is checked FIRST and on every method, not just initialize: a
+    // modern client that drops the header mid-session must be refused too.
+    const envelopeVersion = message.params?._meta?.["io.modelcontextprotocol/protocolVersion"];
+    if (typeof envelopeVersion === "string") return { kind: "modern-envelope", version: envelopeVersion };
+
+    if (message.method !== "initialize") return { kind: "legacy-follow-up" };
+    const version = message.params?.protocolVersion;
+    // An initialize naming no version gets its OWN kind rather than falling in
+    // with follow-ups, because the follow-up branch is the ADMITTING one: an
+    // opening that states no revision would otherwise be admitted to an era
+    // that is defined entirely by the revisions it names.
+    return typeof version === "string" ? { kind: "initialize", version } : { kind: "initialize-unversioned" };
+  } catch {
+    return { kind: "legacy-follow-up" };
+  }
+}
+
 type AtlasHttpServer = { server: McpServer | Server };
 
 /**
@@ -143,10 +225,31 @@ export function atlasHttpFetchHandler(
 
   const endpoint = options.endpoint ?? DEFAULT_MCP_ENDPOINT;
   const allowedOrigins = options.allowedOrigins ?? localhostAllowedOrigins();
-  const scopes = new WeakMap<Request, { resolvePrincipal: PrincipalResolver; sink: CapabilityRefusalSink }>();
+  const scopes = new WeakMap<Request, RequestScope>();
+  /** Binds the credential to this request's async execution — see `factory`. */
+  const requestScope = new AsyncLocalStorage<RequestScope>();
 
   const factory = (ctx: McpRequestContext): McpServer | Server => {
-    const scope = ctx.requestInfo === undefined ? undefined : scopes.get(ctx.requestInfo);
+    /**
+     * IDENTITY FIRST, THEN ASYNC CONTEXT — and the second one is why the legacy
+     * era works at all.
+     *
+     * The `WeakMap` keyed on the `Request` object holds on the modern path,
+     * where the SDK hands the factory the very object this edge registered.
+     * MEASURED: on the legacy path it does not. `@modelcontextprotocol/server@2.0.0`
+     * passes a DIFFERENT `Request` (same `ctx.requestInfo !== undefined`, same
+     * fields, different identity), so the lookup missed and the factory threw
+     * "refusing to build a server with no bound credential" — a 500 on every
+     * legacy opening. The guard was right; the key was fragile.
+     *
+     * `AsyncLocalStorage` binds the scope to the async execution of THIS request
+     * instead of to an object the SDK is free to rebuild. The WeakMap is kept as
+     * the first lookup because it is exact when it hits, and because keeping it
+     * means an SDK upgrade that stops preserving async context degrades to the
+     * throw below rather than to a silently unauthenticated server.
+     */
+    const byIdentity = ctx.requestInfo === undefined ? undefined : scopes.get(ctx.requestInfo);
+    const scope = byIdentity ?? requestScope.getStore();
     if (scope === undefined) {
       // Unreachable through `serve` below, which always registers a scope before
       // it calls `fetch`. It throws rather than falling back to the unbound
@@ -159,7 +262,7 @@ export function atlasHttpFetchHandler(
   };
 
   const handler: McpHttpHandler = createMcpHandler(factory, {
-    legacy: "reject",
+    legacy: HTTP_SUPPORTED_LEGACY_PROTOCOL_VERSIONS.length > 0 ? "stateless" : "reject",
     ...(options.onerror === undefined ? {} : { onerror: options.onerror })
   });
 
@@ -213,16 +316,111 @@ export function atlasHttpFetchHandler(
       );
     }
 
-    // 4. The one conformance gap the SDK leaves open on the modern path.
-    if (request.method === "POST" && protocolVersionHeaderMissing(request)) {
+    /**
+     * 4. The version gate, and the ONE door the legacy era opens.
+     *
+     * A header-less POST is the shape of two very different callers, and the
+     * whole correctness of the era is telling them apart:
+     *
+     *  - a 2025-era client, which sends the header on nothing, ever;
+     *  - a modern client that dropped its header, which must still be refused,
+     *    because serving it from a legacy-era server would answer a 2026-07-28
+     *    caller in a shape it never asked for while both ends believed they
+     *    agreed.
+     *
+     * They are separated by the `_meta` ENVELOPE, not by a session and not by a
+     * guess. A modern client MUST carry
+     * `io.modelcontextprotocol/protocolVersion` in `params._meta`; a 2025-era
+     * client never does. MEASURED: the SDK's HTTP legacy mode is `stateless` —
+     * it issues no `Mcp-Session-Id` — so a session-based discriminator would
+     * have refused every legacy request after the opening. The envelope needs no
+     * state at all, which is also why there is none to bound or evict.
+     *
+     * With the era switched off the whole block collapses to the refusal that
+     * shipped before it, because `legacyOpeningOf` is only consulted here.
+     */
+    /**
+     * A NAMED header is checked before anything else, because turning the SDK's
+     * legacy mode on widened a door this edge does not own.
+     *
+     * MEASURED: with `legacy: 'reject'` the SDK answered `-32022` to a
+     * `2025-06-18` client that sends the header its revision defined. With
+     * legacy enabled it SERVES it — so the era would have admitted every 2025
+     * revision, not the one it names, and the gate below never saw it because
+     * that client does send a header.
+     *
+     * The admitted set is therefore enforced here, on the value, for both eras.
+     */
+    const namedVersion = request.headers.get("mcp-protocol-version");
+    if (
+      request.method === "POST" &&
+      namedVersion !== null &&
+      namedVersion !== CONTRACT_PROTOCOL_VERSION &&
+      !HTTP_SUPPORTED_LEGACY_PROTOCOL_VERSIONS.includes(namedVersion)
+    ) {
       return reject(
-        { status: 400, reasonCode: "protocol-version-header-required" },
-        edgeError(
-          400,
-          HEADER_MISMATCH_CODE,
-          `Missing required header MCP-Protocol-Version. This server speaks ${CONTRACT_PROTOCOL_VERSION} only and has no legacy era to infer a version for.`
+        { status: 400, reasonCode: "protocol-version-unsupported" },
+        new Response(
+          JSON.stringify({
+            jsonrpc: "2.0",
+            error: {
+              code: UNSUPPORTED_PROTOCOL_VERSION_CODE,
+              message: `Unsupported protocol version: ${namedVersion}`,
+              // `supported` names the MODERN revision only. The transitional era
+              // is a door held open for clients that cannot yet speak it, never
+              // a revision this server offers anybody to negotiate onto.
+              data: { supported: [...HTTP_SUPPORTED_PROTOCOL_VERSIONS], requested: namedVersion }
+            }
+          }),
+          { status: 400, headers: { "content-type": "application/json" } }
         )
       );
+    }
+
+    if (request.method === "POST" && protocolVersionHeaderMissing(request)) {
+      const opening =
+        HTTP_SUPPORTED_LEGACY_PROTOCOL_VERSIONS.length > 0
+          ? await legacyOpeningOf(request)
+          : ({ kind: "legacy-follow-up" } as const);
+
+      const refuseHeaderMissing = (): Response =>
+        reject(
+          { status: 400, reasonCode: "protocol-version-header-required" },
+          edgeError(
+            400,
+            HEADER_MISMATCH_CODE,
+            `Missing required header MCP-Protocol-Version. This server speaks ${CONTRACT_PROTOCOL_VERSION}` +
+              (HTTP_SUPPORTED_LEGACY_PROTOCOL_VERSIONS.length > 0
+                ? `, and admits a 2025-era client only through an initialize naming ${HTTP_SUPPORTED_LEGACY_PROTOCOL_VERSIONS.join(", ")} and carrying no modern _meta envelope.`
+                : " only and has no legacy era to infer a version for.")
+          )
+        );
+
+      if (opening.kind === "initialize-unversioned") {
+        // An opening that states no revision cannot be admitted to an era that
+        // is defined by the revisions it names.
+        return refuseHeaderMissing();
+      }
+      if (opening.kind === "modern-envelope") {
+        // A modern client that dropped a required header. Refused as the header
+        // problem it is, NOT admitted as legacy.
+        return refuseHeaderMissing();
+      }
+      if (opening.kind === "initialize" && !HTTP_SUPPORTED_LEGACY_PROTOCOL_VERSIONS.includes(opening.version)) {
+        // Named rather than lumped in with the header refusal: this caller told
+        // us a revision, and it is entitled to know which ones are served.
+        return reject(
+          { status: 400, reasonCode: "protocol-version-unsupported" },
+          edgeError(
+            400,
+            UNSUPPORTED_PROTOCOL_VERSION_CODE,
+            `Unsupported protocol version: ${opening.version}. This server speaks ${CONTRACT_PROTOCOL_VERSION}, and transitionally ${HTTP_SUPPORTED_LEGACY_PROTOCOL_VERSIONS.join(", ")}.`
+          )
+        );
+      }
+      if (opening.kind === "legacy-follow-up" && HTTP_SUPPORTED_LEGACY_PROTOCOL_VERSIONS.length === 0) {
+        return refuseHeaderMissing();
+      }
     }
 
     const scope = {
@@ -231,7 +429,11 @@ export function atlasHttpFetchHandler(
     };
     scopes.set(request, scope);
 
-    const response = await handler.fetch(request);
+    // `run` rather than a bare call: the legacy path rebuilds the `Request`, so
+    // the async context is the only binding that survives to the factory.
+    const response = await requestScope.run(scope, () => handler.fetch(request));
+
+
     return applyCapabilityRefusal(response, scope.sink);
   };
 
