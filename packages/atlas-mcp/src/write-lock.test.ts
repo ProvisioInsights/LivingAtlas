@@ -224,6 +224,37 @@ describe("the lock is taken at the STORE boundary, so no entrypoint can forget i
   });
 });
 
+describe("a failed record write does not poison the store", () => {
+  it("leaves no lock file behind when the record cannot be written", () => {
+    /**
+     * `wx` has already created the file by the time the write runs. A transient
+     * ENOSPC that left an empty record behind would be classified `unreadable`
+     * by every later acquisition — correctly, since it is not a record this code
+     * wrote — so the store would stay unwritable long after the disk recovered.
+     */
+    const root = storeRoot();
+    const boom = new Error("ENOSPC: no space left on device");
+    // The clock throwing stands in for any post-creation failure: it runs after
+    // `wx` has already created the file, which is exactly the window that used
+    // to leave a truncated record behind.
+    expect(() =>
+      acquireWriteLock(root, {
+        holder: "doomed",
+        now: () => {
+          throw boom;
+        }
+      })
+    ).toThrow(/ENOSPC/);
+
+    expect(existsSync(writeLockPath(root))).toBe(false);
+    // ...and the store is immediately acquirable again, which is the property
+    // that makes a transient failure transient.
+    const after = acquireWriteLock(root, { holder: "recovered" });
+    expect(after.ok).toBe(true);
+    if (after.ok) held.push(after.lock);
+  });
+});
+
 describe("the liveness probe", () => {
   it("treats ESRCH as gone", () => {
     const gone = (): never => {

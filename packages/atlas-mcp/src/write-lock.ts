@@ -115,7 +115,6 @@ export function acquireWriteLock(
   const now = options.now ?? (() => new Date());
 
   const take = (reclaimedFrom?: number): WriteLockOutcome => {
-    const record: WriteLockRecord = { pid, holder, acquired_at: now().toISOString() };
     let handle: number;
     try {
       // `wx`: create exclusively. If somebody won the race between our check and
@@ -132,11 +131,40 @@ export function acquireWriteLock(
         message: `another process took the Atlas write lock at ${path} first`
       };
     }
+    /**
+     * A FAILED WRITE TAKES THE FILE WITH IT.
+     *
+     * `openSync(…, "wx")` has already created the file by this point. If the
+     * write then fails or comes up short — transient ENOSPC is the realistic
+     * case — an empty or truncated lock record is left behind, and this process
+     * has no `WriteLock` to release it with. Every later acquisition parses it,
+     * classifies it `unreadable`, and correctly refuses to reclaim a file it
+     * does not recognise: the store stays unwritable long after the disk
+     * recovers, until somebody deletes a file by hand. Cleaning up here is what
+     * keeps a transient failure transient.
+     *
+     * The byte count is checked rather than assumed, because a short write is
+     * not an exception — it is a smaller number.
+     *
+     * The record is BUILT here rather than before the open, so everything that
+     * can fail after the file exists is inside one cleanup, and so `acquired_at`
+     * is stamped when the lock actually came into being rather than a moment
+     * before it might not have.
+     */
+    let record: WriteLockRecord;
     try {
-      writeSync(handle, JSON.stringify(record));
-    } finally {
+      record = { pid, holder, acquired_at: now().toISOString() };
+      const payload = JSON.stringify(record);
+      const written = writeSync(handle, payload);
+      if (written !== Buffer.byteLength(payload, "utf8")) {
+        throw new Error(`short write: ${written} of ${Buffer.byteLength(payload, "utf8")} bytes`);
+      }
+    } catch (cause) {
       closeSync(handle);
+      rmSync(path, { force: true });
+      throw cause;
     }
+    closeSync(handle);
     return {
       ok: true,
       lock: {

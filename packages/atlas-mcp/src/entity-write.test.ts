@@ -253,6 +253,42 @@ describe("atlas.entity.rename.v1", () => {
     expect(entity["updated_at"]).toBe(subject.updated_at);
   });
 
+  it("does NOT let the no-op shortcut answer for a merged-away id", async () => {
+    /**
+     * `entities.read` returns the historical record for a merged id, so a no-op
+     * check built on it alone would report success — with the stale entity —
+     * for exactly the id the contract says must be refused. The shortcut has to
+     * resolve first, or it inverts the rule it sits in front of.
+     */
+    const graph = syntheticGraph();
+    const [stale, canonical] = graph.entityList;
+    expect(stale).toBeDefined();
+    expect(canonical).toBeDefined();
+    if (!stale || !canonical) return;
+    graph.registry.merge({
+      client_id: "fixture",
+      basis: "mechanical-migration",
+      from: stale.entity_id,
+      into: canonical.entity_id,
+      reason: "one thing, two records"
+    });
+    const { client } = harness({ graph });
+
+    // The names MATCH the stale record — the exact case that would take the
+    // no-op path and report success.
+    client.send(
+      callTool({
+        id: 1,
+        name: "atlas.entity.rename.v1",
+        args: { entity_id: stale.entity_id, display_name: stale.display_name }
+      })
+    );
+    const payload = errorPayload(await client.await(1));
+
+    expect(payload["code"]).toBe("entity-redirected");
+    expect((payload["remedy"] as Record<string, unknown> | undefined)?.["tool"]).toBe("atlas.entity.resolve.v1");
+  });
+
   it("refuses a rename that changes nothing rather than answering a silent no-op", async () => {
     const graph = syntheticGraph();
     const subject = graph.entityList[0];

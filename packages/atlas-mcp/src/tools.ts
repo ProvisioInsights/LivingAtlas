@@ -1397,7 +1397,22 @@ const renameEntity: ToolHandler = (args, context) => {
    * NO field to change. This one accepts a well-formed call whose requested
    * state the entity is already in.
    */
-  const current = context.graph.entities.read(entityId as EntityId);
+  /**
+   * A MERGED-AWAY ID NEVER TAKES THE NO-OP PATH.
+   *
+   * `entities.read` returns the historical record for an id that has since been
+   * merged, so a no-op check built on `read` alone would answer "renamed" —
+   * with the stale entity attached — for exactly the id the contract says must
+   * be REFUSED with `entity-redirected`. The shortcut would have quietly
+   * inverted the rule it sits in front of.
+   *
+   * `resolve` follows the ledger, so an id that has moved fails this guard and
+   * falls through to `rename`, which produces the refusal and names
+   * `atlas.entity.resolve.v1` as the remedy.
+   */
+  const resolution = context.graph.entities.resolve(entityId);
+  const isCurrentId = resolution.ok && resolution.entity.entity_id === entityId;
+  const current = isCurrentId ? context.graph.entities.read(entityId as EntityId) : undefined;
   if (current !== undefined) {
     const nameUnchanged = displayName === undefined || displayName === current.display_name;
     const aliasesUnchanged =
