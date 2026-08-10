@@ -16,7 +16,7 @@
     "@living-atlas/contracts": "workspace:*",
     "@living-atlas/mcp-contract": "workspace:*",
     "@living-atlas/remote-crypto": "workspace:*",
-    "@modelcontextprotocol/sdk": "1.29.0",
+    "@modelcontextprotocol/sdk": "1.30.0",
     "@simplewebauthn/server": "13.3.2",
     "agents": "0.17.3",
     "zod": "4.4.3"
