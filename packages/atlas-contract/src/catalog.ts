@@ -17,7 +17,7 @@ import {
 } from "./shape.js";
 
 /**
- * The 12 consumer tools and the 6 record schemas, authored ONCE.
+ * The 14 consumer tools and the 6 record schemas, authored ONCE.
  *
  * Nothing in this file says `additionalProperties`, and nothing may: strictness
  * is a property of the wire position, applied by the renderer in `shape.ts`. An
@@ -1346,6 +1346,82 @@ export const CATALOG_TOOLS: readonly CatalogTool[] = [
         horizon: record("atlas.horizon:v1")
       },
       ["outcome", "audit", "horizon"]
+    )
+  },
+
+  {
+    name: "atlas.entity.create.v1",
+    title: "Register a new entity",
+    description:
+      "Mint a new entity and return it. The id is minted by Atlas and never derived from the name, so renaming later cannot move it. This does NOT deduplicate: two calls make two entities, repairable by a merge, because guessing that two requests meant one thing is the conflation the identity model exists to prevent. Facts ABOUT the entity are separate assertions via atlas.assertion.propose.v1.",
+    annotations: {
+      readOnlyHint: false,
+      // Append-only identity: registration writes a new record and touches no
+      // existing one. Nothing here can overwrite or delete.
+      destructiveHint: false,
+      // Each call mints a fresh id; a retry is a second entity, not a replay.
+      idempotentHint: false,
+      openWorldHint: false
+    },
+    cache_ttl_ms: 0,
+    requires_capabilities: [],
+    input: obj(
+      {
+        type: enumOf(["person", "organization", "place", "concept", "source-document", "event"]),
+        display_name: scalar({ type: "string", minLength: 1 }),
+        also_known_as: arr(
+          scalar({ type: "string", minLength: 1 }),
+          {},
+          "Nicknames, not id aliases: an alias is a row in the id ledger, a nickname is an observation the registry holds. Optional; defaults to none."
+        )
+      },
+      ["type", "display_name"],
+      "An `other`-typed entity is not creatable here: `other` is an output-side reserved member, and a type introduced later reaches a consumer as `other` plus a label rather than as a token it can request. Create those through a maintenance path."
+    ),
+    output: obj(
+      {
+        entity: record("atlas.entity:v1"),
+        horizon: record("atlas.horizon:v1")
+      },
+      ["entity", "horizon"]
+    )
+  },
+
+  {
+    name: "atlas.entity.rename.v1",
+    title: "Rename an entity",
+    description:
+      "Change what an entity is CALLED, never what it IS. No id moves, no ledger row is written, and every reference keeps resolving — a rename is not a re-identification. Refused if the id has already been merged away: rename the entity that is current instead, which atlas.entity.resolve.v1 names.",
+    annotations: {
+      readOnlyHint: false,
+      // A name change, not a deletion. The id and every reference to it survive;
+      // nothing the graph makes claims about is destroyed.
+      destructiveHint: false,
+      // Renaming to the name it already has is a no-op result — same name out.
+      idempotentHint: true,
+      openWorldHint: false
+    },
+    cache_ttl_ms: 0,
+    requires_capabilities: [],
+    input: obj(
+      {
+        entity_id: ref("entity_id"),
+        display_name: scalar({ type: "string", minLength: 1 }),
+        also_known_as: arr(
+          scalar({ type: "string", minLength: 1 }),
+          {},
+          "Replaces the entire nickname list when supplied. Omit to leave it unchanged."
+        )
+      },
+      ["entity_id"],
+      "Supply at least one of display_name or also_known_as; a rename that changes nothing is invalid-argument rather than a silent no-op."
+    ),
+    output: obj(
+      {
+        entity: record("atlas.entity:v1"),
+        horizon: record("atlas.horizon:v1")
+      },
+      ["entity", "horizon"]
     )
   }
 ];

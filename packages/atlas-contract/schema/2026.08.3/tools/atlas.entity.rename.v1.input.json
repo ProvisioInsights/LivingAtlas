@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:living-atlas:contract:2026.08.3:tool:atlas.entity.rename.v1:input",
+  "title": "atlas.entity.rename.v1 — arguments",
+  "description": "Supply at least one of display_name or also_known_as; a rename that changes nothing is invalid-argument rather than a silent no-op.",
+  "type": "object",
+  "properties": {
+    "entity_id": {
+      "$ref": "urn:living-atlas:contract:2026.08.3:common:input#/$defs/entity_id"
+    },
+    "display_name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "also_known_as": {
+      "type": "array",
+      "description": "Replaces the entire nickname list when supplied. Omit to leave it unchanged.",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    }
+  },
+  "required": [
+    "entity_id"
+  ],
+  "additionalProperties": false
+}

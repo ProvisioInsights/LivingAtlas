@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:living-atlas:contract:2026.08.3:tool:atlas.entity.read.v1:input",
+  "title": "atlas.entity.read.v1 — arguments",
+  "description": "Read registered entities. An id that redirects is NOT followed here — that is atlas.entity.resolve.v1's job, and conflating the two is how a consumer stops noticing that the thing it asked about was merged away.",
+  "type": "object",
+  "properties": {
+    "entity_ids": {
+      "type": "array",
+      "items": {
+        "$ref": "urn:living-atlas:contract:2026.08.3:common:input#/$defs/entity_id"
+      },
+      "minItems": 1,
+      "maxItems": 100
+    },
+    "as_of_recorded": {
+      "$ref": "urn:living-atlas:contract:2026.08.3:common:input#/$defs/recorded_at",
+      "description": "BELIEF axis. Below the retained history floor this is refused, never answered from present state."
+    },
+    "as_of_valid": {
+      "$ref": "urn:living-atlas:contract:2026.08.3:common:input#/$defs/world_time_probe",
+      "description": "WORLD axis."
+    }
+  },
+  "required": [
+    "entity_ids"
+  ],
+  "additionalProperties": false
+}

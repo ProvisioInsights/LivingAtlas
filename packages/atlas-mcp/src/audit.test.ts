@@ -216,7 +216,7 @@ describe("the audit log", () => {
     expect(JSON.stringify(event)).not.toContain("a private search term");
   });
 
-  it("writes exactly one event for every one of the 12 tools", async () => {
+  it("writes exactly one event for every one of the 14 tools", async () => {
     const graph = syntheticGraph();
     seedAssertions(graph, 2);
     const { client, auditJournal, graph: fixture } = harness({ graph });
@@ -248,7 +248,9 @@ describe("the audit log", () => {
         ]
       },
       "atlas.submission.read.v1": { idempotency_key: "audit-k1" },
-      "atlas.sensitive.reveal.v1": { redaction_id: "la_redaction_absent", reason: "auditing the audit" }
+      "atlas.sensitive.reveal.v1": { redaction_id: "la_redaction_absent", reason: "auditing the audit" },
+      "atlas.entity.create.v1": { type: "organization", display_name: "Audited Institute" },
+      "atlas.entity.rename.v1": { entity_id: subject.entity_id, display_name: "Audited Rename" }
     };
 
     let id = 200;

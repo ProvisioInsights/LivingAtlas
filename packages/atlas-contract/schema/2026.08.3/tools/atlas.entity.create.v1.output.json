@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:living-atlas:contract:2026.08.3:tool:atlas.entity.create.v1:output",
+  "title": "atlas.entity.create.v1 — result",
+  "description": "Mint a new entity and return it. The id is minted by Atlas and never derived from the name, so renaming later cannot move it. This does NOT deduplicate: two calls make two entities, repairable by a merge, because guessing that two requests meant one thing is the conflation the identity model exists to prevent. Facts ABOUT the entity are separate assertions via atlas.assertion.propose.v1.",
+  "type": "object",
+  "properties": {
+    "entity": {
+      "$ref": "urn:living-atlas:contract:2026.08.3:record:atlas.entity:v1"
+    },
+    "horizon": {
+      "$ref": "urn:living-atlas:contract:2026.08.3:record:atlas.horizon:v1"
+    }
+  },
+  "required": [
+    "entity",
+    "horizon"
+  ]
+}

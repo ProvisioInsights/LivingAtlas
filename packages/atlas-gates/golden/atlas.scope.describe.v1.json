@@ -1,12 +1,12 @@
 {
   "case": "atlas.scope.describe.v1",
-  "contract_revision": "2026.08.2",
+  "contract_revision": "2026.08.3",
   "intent": "The calling credential's grant, published so a consumer never has to infer it from a transport.",
   "response": {
     "_meta": {
       "io.modelcontextprotocol/serverInfo": {
         "name": "living-atlas-consumer",
-        "version": "2026.08.2"
+        "version": "2026.08.3"
       }
     },
     "content": "<the text block is JSON.stringify(structuredContent)>",
@@ -73,7 +73,9 @@
         "atlas.changes.read.v1",
         "atlas.assertion.propose.v1",
         "atlas.submission.read.v1",
-        "atlas.sensitive.reveal.v1"
+        "atlas.sensitive.reveal.v1",
+        "atlas.entity.create.v1",
+        "atlas.entity.rename.v1"
       ],
       "write_tiers_permitted": [
         "local-private"

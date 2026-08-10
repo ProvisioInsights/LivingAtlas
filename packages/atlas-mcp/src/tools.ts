@@ -12,6 +12,8 @@ import {
   canonicalRecordedAt,
   validTimeFidelity,
   type Assertion,
+  type EntityContext,
+  type EntityDraft,
   type EntityId,
   type RecordedAt
 } from "@living-atlas/atlas-core";
@@ -1200,6 +1202,183 @@ const proposeAssertions: ToolHandler = (args, context) => {
 };
 
 // ---------------------------------------------------------------------------
+// atlas.entity.create.v1 / atlas.entity.rename.v1
+// ---------------------------------------------------------------------------
+
+/**
+ * The context an owner-authored entity write records.
+ *
+ * `origin: "owner-authored"` because these tools exist for a human editing the
+ * graph, not a mechanical import — the same distinction the assertion log draws.
+ * `client_id` is the authenticated principal's, which a caller cannot influence.
+ * Sensitivity is left to the registry default (local-private), the one tier
+ * `COMMIT_TIER` gates, so read reach and write reach stay a single decision.
+ */
+function ownerEntityContext(context: ToolContext): EntityContext {
+  return {
+    client_id: context.principal.client_id,
+    origin: "owner-authored",
+    recorded_at_fidelity: "authoritative"
+  };
+}
+
+/**
+ * The write-posture and write-tier gate shared by the two entity-write tools.
+ *
+ * Same order as `proposeAssertions`: the store's read-only posture is checked
+ * before the grant, because a read-only store refuses every credential and
+ * answering `write-tier-not-permitted` first would send the caller to ask for a
+ * grant no grant can lift. Returns a refusal to short-circuit, or undefined to
+ * proceed.
+ */
+function entityWriteRefusal(context: ToolContext): ToolOutcome | undefined {
+  if (context.graph.readOnly === true) {
+    return {
+      kind: "refusal",
+      error: errorRecord({
+        code: "store-read-only",
+        message:
+          "This server opened its store read-only, so no entity can be written by any credential. Nothing was written and nothing was held.",
+        retryable: true
+      }),
+      audit: { outcome: "refused", reasonCode: "store-read-only", counts: {} }
+    };
+  }
+  if (!mayWriteTier(context.principal.grant, COMMIT_TIER)) {
+    return {
+      kind: "refusal",
+      error: errorRecord({
+        code: "write-tier-not-permitted",
+        message: `This credential's grant does not permit writing at the ${COMMIT_TIER} tier, which is the tier a new entity is stamped with.`,
+        retryable: false,
+        remedy: { tool: "atlas.scope.describe.v1" },
+        details: { tier: COMMIT_TIER }
+      }),
+      audit: { outcome: "refused", reasonCode: "write-tier-not-permitted", counts: {} }
+    };
+  }
+  return undefined;
+}
+
+const createEntity: ToolHandler = (args, context) => {
+  const type = str(args["type"]);
+  const displayName = str(args["display_name"]);
+  const alsoKnownAs = strArray(args["also_known_as"]);
+  if (!type || !displayName) {
+    return {
+      kind: "refusal",
+      error: errorRecord({ code: "invalid-argument", message: "type and display_name are both required.", retryable: false }),
+      audit: { outcome: "refused", reasonCode: "invalid-argument", counts: {} }
+    };
+  }
+  const refusal = entityWriteRefusal(context);
+  if (refusal) return refusal;
+
+  const register = context.graph.entities.register;
+  if (!register) {
+    // Unreachable when `readOnly` is set correctly — a store that is neither
+    // read-only nor exposes a writer is an integrity failure, reported rather
+    // than crashed into a stack trace the client sees as "server disconnected".
+    return {
+      kind: "refusal",
+      error: errorRecord({ code: "store-read-only", message: "This store exposes no entity writer.", retryable: true }),
+      audit: { outcome: "refused", reasonCode: "store-read-only", counts: {} }
+    };
+  }
+
+  let entity;
+  try {
+    entity = register(
+      { type: type as EntityDraft["type"], display_name: displayName, also_known_as: alsoKnownAs },
+      ownerEntityContext(context)
+    );
+  } catch (cause) {
+    return {
+      kind: "refusal",
+      error: errorRecord({
+        code: "invalid-argument",
+        message: cause instanceof Error ? cause.message : "The entity was refused.",
+        retryable: false
+      }),
+      audit: { outcome: "refused", reasonCode: "invalid-argument", counts: {} }
+    };
+  }
+
+  return {
+    kind: "complete",
+    structured: { entity, horizon: horizonFor(context, { fidelityMixed: false }) },
+    // No caller-named id to record: the id is minted here, and putting a
+    // graph-produced id in `subjects` is exactly the unbounded-log defect the
+    // audit rule forbids. The one committed entity is the count.
+    audit: { outcome: "ok", counts: { committed: 1 } }
+  };
+};
+
+const renameEntity: ToolHandler = (args, context) => {
+  const entityId = str(args["entity_id"]);
+  const displayName = str(args["display_name"]);
+  const alsoKnownAs = Array.isArray(args["also_known_as"]) ? strArray(args["also_known_as"]) : undefined;
+  if (!entityId) {
+    return {
+      kind: "refusal",
+      error: errorRecord({ code: "invalid-argument", message: "entity_id is required.", retryable: false }),
+      audit: { outcome: "refused", reasonCode: "invalid-argument", counts: {} }
+    };
+  }
+  if (displayName === undefined && alsoKnownAs === undefined) {
+    return {
+      kind: "refusal",
+      error: errorRecord({
+        code: "invalid-argument",
+        message: "Supply at least one of display_name or also_known_as; a rename that changes nothing is refused rather than a silent no-op.",
+        retryable: false
+      }),
+      audit: { outcome: "refused", reasonCode: "invalid-argument", counts: {} }
+    };
+  }
+  const refusal = entityWriteRefusal(context);
+  if (refusal) return refusal;
+
+  const rename = context.graph.entities.rename;
+  if (!rename) {
+    return {
+      kind: "refusal",
+      error: errorRecord({ code: "store-read-only", message: "This store exposes no entity writer.", retryable: true }),
+      audit: { outcome: "refused", reasonCode: "store-read-only", counts: {} }
+    };
+  }
+
+  const result = rename(
+    entityId as EntityId,
+    {
+      ...(displayName === undefined ? {} : { display_name: displayName }),
+      ...(alsoKnownAs === undefined ? {} : { also_known_as: alsoKnownAs })
+    },
+    ownerEntityContext(context)
+  );
+  if (!result.ok) {
+    return {
+      kind: "refusal",
+      error: errorRecord({
+        code: result.code,
+        message: result.message,
+        retryable: false,
+        // A merged-away id is not a dead end: resolve() names the current entity.
+        ...(result.code === "entity-redirected" ? { remedy: { tool: "atlas.entity.resolve.v1" } } : {})
+      }),
+      audit: { outcome: "refused", reasonCode: result.code, counts: {} }
+    };
+  }
+
+  return {
+    kind: "complete",
+    structured: { entity: result.entity, horizon: horizonFor(context, { fidelityMixed: false }) },
+    // The caller named this id, so it is bounded and safe to record.
+    audit: { outcome: "ok", counts: { committed: 1 }, subjects: [entityId] }
+  };
+};
+
+// ---------------------------------------------------------------------------
 // atlas.submission.read.v1
 // ---------------------------------------------------------------------------
 
@@ -1528,5 +1707,7 @@ export const TOOL_HANDLERS: Record<ContractToolName, ToolHandler> = {
   "atlas.changes.read.v1": readChanges,
   "atlas.assertion.propose.v1": proposeAssertions,
   "atlas.submission.read.v1": readSubmission,
-  "atlas.sensitive.reveal.v1": revealSensitive
+  "atlas.sensitive.reveal.v1": revealSensitive,
+  "atlas.entity.create.v1": createEntity,
+  "atlas.entity.rename.v1": renameEntity
 };

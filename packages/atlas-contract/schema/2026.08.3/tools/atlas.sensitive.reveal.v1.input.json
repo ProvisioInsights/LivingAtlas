@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:living-atlas:contract:2026.08.3:tool:atlas.sensitive.reveal.v1:input",
+  "title": "atlas.sensitive.reveal.v1 — arguments",
+  "description": "Ask for the record behind an atlas.redaction:v1 stub. This is not a read: it always produces a durable audit event, and it may return input_required so the owner can decide in their own client. Requires the elicitation capability; without it the refusal names the capability rather than issuing a request nobody can answer.",
+  "type": "object",
+  "properties": {
+    "redaction_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "reason": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Recorded in the audit event and shown to the owner when a decision is requested. Required: an unattributed disclosure request is one the owner cannot judge."
+    },
+    "request_state": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Echo the value from a prior input_required response. Integrity-protected and bound to this principal, method and arguments."
+    }
+  },
+  "required": [
+    "redaction_id",
+    "reason"
+  ],
+  "additionalProperties": false
+}

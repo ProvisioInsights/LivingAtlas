@@ -52,7 +52,7 @@ describe("the MCP endpoint", () => {
 
     expect(response.status).toBe(200);
     expect(response.headers.get("content-type")).toContain("application/json");
-    expect((await resultBody(response))["tools"]).toHaveLength(12);
+    expect((await resultBody(response))["tools"]).toHaveLength(14);
   });
 
   it("serves one path and answers 404 with -32601 anywhere else", async () => {
@@ -322,7 +322,7 @@ describe("bearer authentication", () => {
       listTools({ id: 1, meta: envelope({ "io.livingatlas/credential": SYNTHETIC_SECRET }) })
     );
 
-    expect((response.result as { tools: unknown[] }).tools).toHaveLength(12);
+    expect((response.result as { tools: unknown[] }).tools).toHaveLength(14);
   });
 });
 
@@ -557,6 +557,6 @@ describe("the elicitation capability over HTTP", () => {
 
     expect(refused.error?.code).toBe(-32021);
     expect(innocent.error).toBeUndefined();
-    expect((innocent.result as { tools: unknown[] }).tools).toHaveLength(12);
+    expect((innocent.result as { tools: unknown[] }).tools).toHaveLength(14);
   });
 });

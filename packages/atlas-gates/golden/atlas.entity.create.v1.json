@@ -1,0 +1,49 @@
+{
+  "case": "atlas.entity.create.v1",
+  "contract_revision": "2026.08.3",
+  "intent": "A minted entity with the id Atlas chose, its owner-authored provenance and its sensitivity block. Records that the id is NOT derived from the name.",
+  "response": {
+    "_meta": {
+      "io.modelcontextprotocol/serverInfo": {
+        "name": "living-atlas-consumer",
+        "version": "2026.08.3"
+      }
+    },
+    "content": "<the text block is JSON.stringify(structuredContent)>",
+    "resultType": "complete",
+    "structuredContent": {
+      "entity": {
+        "also_known_as": [
+          "GI"
+        ],
+        "display_name": "Golden Institute",
+        "entity_id": "<la_entity:15>",
+        "provenance": {
+          "client_id": "synthetic-consumer",
+          "origin": "owner-authored",
+          "recorded_at_fidelity": "authoritative"
+        },
+        "record_schema": "atlas.entity:v1",
+        "registered_at": "2026-08-04T12:00:00.003Z",
+        "sensitivity": {
+          "rank": 10,
+          "tier": "local-private",
+          "withheld": false
+        },
+        "type": "organization",
+        "updated_at": "2026-08-04T12:00:00.003Z"
+      },
+      "horizon": {
+        "as_of_recorded": "2026-08-04T12:00:00.000Z",
+        "bitemporal_since": "2026-01-01T00:00:00.000Z",
+        "feed_epoch": "e-test",
+        "migration_window_open": false,
+        "record_schema": "atlas.horizon:v1",
+        "recorded_at_fidelity_mixed": false,
+        "seq_watermark": 5,
+        "status": "complete"
+      }
+    }
+  },
+  "tool": "atlas.entity.create.v1"
+}

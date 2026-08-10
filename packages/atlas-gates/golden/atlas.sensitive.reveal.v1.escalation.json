@@ -1,19 +1,19 @@
 {
   "case": "atlas.sensitive.reveal.v1.escalation",
-  "contract_revision": "2026.08.2",
+  "contract_revision": "2026.08.3",
   "intent": "The in-band escalation: a complete result carrying outcome input-required and a signed request_state.",
   "response": {
     "_meta": {
       "io.modelcontextprotocol/serverInfo": {
         "name": "living-atlas-consumer",
-        "version": "2026.08.2"
+        "version": "2026.08.3"
       }
     },
     "content": "<the text block is JSON.stringify(structuredContent)>",
     "resultType": "complete",
     "structuredContent": {
       "audit": {
-        "event_id": "<la_audit:17>",
+        "event_id": "<la_audit:18>",
         "recorded_at": "2026-08-04T12:00:00.002Z"
       },
       "horizon": {
@@ -29,8 +29,8 @@
       "input_request": {
         "expires_at": "2026-08-04T12:05:00.000Z",
         "prompt": "Disclose the withheld assertion to synthetic-consumer? Stated reason: gate fixture escalation",
-        "request_id": "<la_reveal:15>",
-        "request_state": "<request_state:16>",
+        "request_id": "<la_reveal:16>",
+        "request_state": "<request_state:17>",
         "required_capabilities": [
           "elicitation"
         ]

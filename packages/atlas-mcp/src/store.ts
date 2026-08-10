@@ -422,7 +422,19 @@ function buildStore(input: BuildStoreInput): AtlasStore {
     assertions: input.log,
     entities: {
       read: (entityId: EntityId) => input.registry.read(entityId),
-      resolve: (id: string) => input.registry.resolve(id)
+      resolve: (id: string) => input.registry.resolve(id),
+      // Present ONLY read-write, and this is load-bearing rather than tidy: the
+      // read-only registry is constructed with no journal, so a register/rename
+      // through it would mutate RAM and return a record for bytes that vanish at
+      // exit — the same lie `ReadOnlyAssertionLog.commit` refuses. Omitting the
+      // methods makes the handler refuse with `store-read-only` before it can
+      // reach for a writer that was never wired.
+      ...(input.mode === "read-write"
+        ? {
+            register: (draft, context) => input.registry.register(draft, context),
+            rename: (entityId: EntityId, change, context) => input.registry.rename(entityId, change, context)
+          }
+        : {})
     },
     searchableEntities: () => input.entities(),
     // Zero, and true: `atlas-core` stores values in the clear, so nothing in

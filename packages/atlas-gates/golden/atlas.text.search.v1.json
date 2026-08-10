@@ -1,12 +1,12 @@
 {
   "case": "atlas.text.search.v1",
-  "contract_revision": "2026.08.2",
+  "contract_revision": "2026.08.3",
   "intent": "Deterministic text scoring over the fixture's display names.",
   "response": {
     "_meta": {
       "io.modelcontextprotocol/serverInfo": {
         "name": "living-atlas-consumer",
-        "version": "2026.08.2"
+        "version": "2026.08.3"
       }
     },
     "content": "<the text block is JSON.stringify(structuredContent)>",

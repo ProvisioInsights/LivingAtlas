@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:living-atlas:contract:2026.08.3:record:atlas.horizon:v1",
+  "title": "atlas.horizon:v1",
+  "type": "object",
+  "description": "What this answer can and cannot speak for. Present on every read result — the honesty block is not optional and not conditional on anything having gone wrong.",
+  "properties": {
+    "record_schema": {
+      "const": "atlas.horizon:v1"
+    },
+    "status": {
+      "type": "string",
+      "description": "complete: everything matching was evaluated. partial: something was not reachable and coverage says how much. unknowable: the question cannot be answered from retained history at all.",
+      "enum": [
+        "complete",
+        "partial",
+        "unknowable",
+        "other"
+      ]
+    },
+    "bitemporal_since": {
+      "$ref": "urn:living-atlas:contract:2026.08.3:common:output#/$defs/recorded_at",
+      "description": "The belief-time history floor. Reads before it are refused, not answered from present state. Atlas has no pre-cutover belief history and says so rather than implying one."
+    },
+    "feed_epoch": {
+      "type": "string",
+      "minLength": 1,
+      "description": "A change of epoch invalidates every cursor, loudly."
+    },
+    "seq_watermark": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "The highest seq this answer accounts for. With feed_epoch and as_of_recorded it is the snapshot pin."
+    },
+    "as_of_recorded": {
+      "$ref": "urn:living-atlas:contract:2026.08.3:common:output#/$defs/recorded_at",
+      "description": "The belief instant this answer was computed at — echoed even when the caller did not supply one."
+    },
+    "as_of_valid": {
+      "$ref": "urn:living-atlas:contract:2026.08.3:common:output#/$defs/world_time_probe"
+    },
+    "recorded_at_fidelity_mixed": {
+      "type": "boolean",
+      "description": "True when the answer mixes Atlas-stamped belief times with import artifacts. Belief-time ordering across that boundary is meaningless, so it is a property of the RESULT and not only of the query."
+    },
+    "retention_floor_seq": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Highest seq compaction has reclaimed. 0 when nothing ever was."
+    },
+    "migration_window_open": {
+      "type": "boolean",
+      "description": "True while an audited migration window has append-only immutability suspended. Surfaced in READ responses because an answer taken during one may not be reproducible afterwards."
+    }
+  },
+  "required": [
+    "record_schema",
+    "status",
+    "bitemporal_since",
+    "feed_epoch",
+    "seq_watermark",
+    "as_of_recorded",
+    "recorded_at_fidelity_mixed"
+  ]
+}

@@ -1,12 +1,12 @@
 {
   "case": "atlas.assertion.query.v1",
-  "contract_revision": "2026.08.2",
+  "contract_revision": "2026.08.3",
   "intent": "A bitemporal page that includes a withheld row as a redaction stub, so counts reconcile.",
   "response": {
     "_meta": {
       "io.modelcontextprotocol/serverInfo": {
         "name": "living-atlas-consumer",
-        "version": "2026.08.2"
+        "version": "2026.08.3"
       }
     },
     "content": "<the text block is JSON.stringify(structuredContent)>",

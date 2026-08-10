@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:living-atlas:contract:2026.08.3:tool:atlas.text.search.v1:input",
+  "title": "atlas.text.search.v1 — arguments",
+  "description": "Rank entities and assertions by a deterministic text scorer. The answer states what was searchable: encrypted content is not scanned, and the count of what could not be searched is reported rather than silently excluded.",
+  "type": "object",
+  "properties": {
+    "query": {
+      "type": "string",
+      "minLength": 1
+    },
+    "entity_types": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "person",
+          "organization",
+          "place",
+          "concept",
+          "source-document",
+          "event"
+        ]
+      }
+    },
+    "predicates": {
+      "type": "array",
+      "items": {
+        "$ref": "urn:living-atlas:contract:2026.08.3:common:input#/$defs/predicate"
+      },
+      "maxItems": 100
+    },
+    "as_of_recorded": {
+      "$ref": "urn:living-atlas:contract:2026.08.3:common:input#/$defs/recorded_at",
+      "description": "BELIEF axis. Below the retained history floor this is refused, never answered from present state."
+    },
+    "as_of_valid": {
+      "$ref": "urn:living-atlas:contract:2026.08.3:common:input#/$defs/world_time_probe",
+      "description": "WORLD axis."
+    },
+    "page_size": {
+      "$ref": "urn:living-atlas:contract:2026.08.3:common:input#/$defs/page_size"
+    },
+    "cursor": {
+      "$ref": "urn:living-atlas:contract:2026.08.3:common:input#/$defs/page_cursor"
+    },
+    "snapshot": {
+      "$ref": "urn:living-atlas:contract:2026.08.3:common:input#/$defs/snapshot_token"
+    }
+  },
+  "required": [
+    "query"
+  ],
+  "additionalProperties": false
+}

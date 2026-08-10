@@ -1,0 +1,91 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:living-atlas:contract:2026.08.3:tool:atlas.entity.read.v1:output",
+  "title": "atlas.entity.read.v1 — result",
+  "description": "Read registered entities. An id that redirects is NOT followed here — that is atlas.entity.resolve.v1's job, and conflating the two is how a consumer stops noticing that the thing it asked about was merged away.",
+  "type": "object",
+  "properties": {
+    "results": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "record_schema"
+        ],
+        "properties": {
+          "record_schema": {
+            "type": "string",
+            "minLength": 1,
+            "x-atlas-known-values": [
+              "atlas.entity:v1",
+              "atlas.redaction:v1",
+              "atlas.error:v1"
+            ]
+          }
+        },
+        "allOf": [
+          {
+            "if": {
+              "required": [
+                "record_schema"
+              ],
+              "properties": {
+                "record_schema": {
+                  "const": "atlas.entity:v1"
+                }
+              }
+            },
+            "then": {
+              "$ref": "urn:living-atlas:contract:2026.08.3:record:atlas.entity:v1"
+            }
+          },
+          {
+            "if": {
+              "required": [
+                "record_schema"
+              ],
+              "properties": {
+                "record_schema": {
+                  "const": "atlas.redaction:v1"
+                }
+              }
+            },
+            "then": {
+              "$ref": "urn:living-atlas:contract:2026.08.3:record:atlas.redaction:v1"
+            }
+          },
+          {
+            "if": {
+              "required": [
+                "record_schema"
+              ],
+              "properties": {
+                "record_schema": {
+                  "const": "atlas.error:v1"
+                }
+              }
+            },
+            "then": {
+              "$ref": "urn:living-atlas:contract:2026.08.3:record:atlas.error:v1"
+            }
+          }
+        ]
+      }
+    },
+    "coverage": {
+      "$ref": "urn:living-atlas:contract:2026.08.3:common:output#/$defs/coverage"
+    },
+    "horizon": {
+      "$ref": "urn:living-atlas:contract:2026.08.3:record:atlas.horizon:v1"
+    },
+    "cache": {
+      "$ref": "urn:living-atlas:contract:2026.08.3:common:output#/$defs/cache"
+    }
+  },
+  "required": [
+    "results",
+    "coverage",
+    "horizon",
+    "cache"
+  ]
+}

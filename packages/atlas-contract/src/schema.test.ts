@@ -53,9 +53,9 @@ function subschemas(schema: JsonSchema, pointer = "#"): [string, JsonSchema][] {
 }
 
 describe("published schema documents", () => {
-  it("publishes exactly the twelve consumer tools, in contract order", () => {
+  it("publishes exactly the fourteen consumer tools, in contract order", () => {
     expect(contract.tools.map((tool) => tool.name)).toEqual([...CONTRACT_TOOL_NAMES]);
-    expect(contract.tools).toHaveLength(12);
+    expect(contract.tools).toHaveLength(14);
   });
 
   it("is valid JSON Schema 2020-12, checked against the metaschema itself", () => {

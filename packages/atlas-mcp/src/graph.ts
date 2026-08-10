@@ -1,4 +1,12 @@
-import type { AssertionLog, Entity, EntityId, Resolution } from "@living-atlas/atlas-core";
+import type {
+  AssertionLog,
+  Entity,
+  EntityContext,
+  EntityDraft,
+  EntityId,
+  RenameResult,
+  Resolution
+} from "@living-atlas/atlas-core";
 import type { PredicateEntry } from "./vocabulary.js";
 
 /**
@@ -28,6 +36,18 @@ export type GraphSource = {
   entities: {
     read(entityId: EntityId): Entity | undefined;
     resolve(id: string): Resolution;
+    /**
+     * Mint a new entity, present only when the store was opened read-write.
+     *
+     * Optional for the same reason `readOnly` is: every in-memory `GraphSource`
+     * that predates the durable store has no writer, and a required method would
+     * mean editing each of them to throw. A read-write store sets it; a
+     * read-only one leaves it absent and the handler refuses with
+     * `store-read-only` before ever reaching for it.
+     */
+    register?(draft: EntityDraft, context: EntityContext): Entity;
+    /** Rename an entity in place — no id moves. Present only when read-write. */
+    rename?(entityId: EntityId, change: { display_name?: string; also_known_as?: string[] }, context: EntityContext): RenameResult;
   };
   /** Entities the deterministic text scorer may scan. */
   searchableEntities(): Iterable<Entity>;
