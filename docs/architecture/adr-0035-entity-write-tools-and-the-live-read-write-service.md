@@ -115,6 +115,47 @@ plus a `ThrottleInterval`, and log rotation installed with it — the same job
 `install-atlas-log-rotation.sh` already performs. A service that cannot prove its
 logs are bounded does not get installed.
 
+### 3. Which clients can reach it today — measured, not assumed
+
+The HTTP plane is **2026-07-28 only**. ADR 0034 widened the *stdio* entry with a
+transitional legacy era for 2025-11-25 and explicitly left HTTP alone ("out of
+scope; Desktop is stdio, and HTTP has its own conformance surface to
+re-verify"). That deferral has a consequence which has now been measured against
+the running service rather than reasoned about:
+
+```
+# an initialize at 2025-11-25, i.e. what Claude Desktop 1.26832.0 actually sends
+-32020  Missing required header MCP-Protocol-Version. This server speaks
+        2026-07-28 only and has no legacy era to infer a version for.
+# and with the header supplied
+-32022  Unsupported protocol version: 2025-11-25  (supported: ["2026-07-28"])
+```
+
+**So Claude Desktop cannot connect to this service yet.** Its bundle contains
+URL and SSE transports, but ADR 0034's lesson applies unchanged: a bundle
+containing protocol code is not a client using it on the wire, and the only
+evidence that counts is the handshake. Desktop reaches Atlas today over stdio
+through the transitional legacy era, and that path still serves a per-process
+read-only snapshot — which is to say Desktop still needs a reconnect to see an
+edit.
+
+The service is nonetheless correct and useful as built: any 2026-07-28 client
+reaches it, and the properties it exists for — one writer, one authoritative
+state, an edit visible to the next query from any client — are proven on the
+wire. Closing the gap for Desktop is a **separate, deliberate decision** with
+three candidates, none of which is taken here:
+
+1. **Extend the transitional legacy era to HTTP**, gated by the same constant
+   `SUPPORTED_LEGACY_PROTOCOL_VERSIONS`. The honest analogue of ADR 0034, and it
+   re-opens a transport conformance surface (the header contract, the `_meta`
+   envelope, session handling) that must be re-verified rather than assumed.
+2. **A stdio-to-HTTP bridge** Desktop spawns, speaking legacy on the pipe and
+   modern to the service. Leaves the HTTP security surface untouched at the cost
+   of a second protocol implementation to keep from drifting — which is the
+   condition the anti-drift gates exist to prevent.
+3. **Wait for Desktop to negotiate 2026-07-28**, which is also the documented
+   condition for retiring the stdio legacy era.
+
 ## Consequences
 
 - The graph is editable in place by an authenticated owner writer: create,
@@ -126,6 +167,10 @@ logs are bounded does not get installed.
 - A client already connected when the service starts still sees its own old
   snapshot; pointing a client at the service is a one-time reconfiguration and
   one reconnect. After that, no restart is ever required to see an edit.
+- Claude Desktop is not yet one of those clients (§3). Until one of the three
+  options there is taken, Desktop keeps its stdio read-only path and still needs
+  a reconnect to see a change — so the owner-facing problem is solved for
+  2026-07-28 clients and open for Desktop.
 - The store is the only cleartext copy of irreplaceable data, and it is now
   writable by a running service. A verified backup before enabling writes is
   mandatory, and `real-data:store-backup` + `real-data:store-restore` are the
