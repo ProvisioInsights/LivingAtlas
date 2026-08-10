@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:living-atlas:contract:2026.08.3:tool:atlas.assertion.propose.v1:input",
+  "title": "atlas.assertion.propose.v1 — arguments",
+  "description": "Commit one or more assertions under a single idempotency key. The submission is all-or-nothing: one submission is one durable commit group. A retry with the same (client_id, idempotency_key) returns the ORIGINAL receipt with the ORIGINAL ids; the same key with a different payload is a typed conflict, never a silent accept of either version.",
+  "type": "object",
+  "properties": {
+    "idempotency_key": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "description": "Identity is (client_id, idempotency_key) and never a content hash: an assertion's body carries a server-assigned recorded_at, so the same logical write can never hash the same twice. Content-addressed identity and server-assigned belief time are mutually exclusive, and belief time wins."
+    },
+    "proposals": {
+      "type": "array",
+      "items": {
+        "$ref": "urn:living-atlas:contract:2026.08.3:common:input#/$defs/assertion_draft"
+      },
+      "minItems": 1,
+      "maxItems": 100
+    },
+    "expected_feed_epoch": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Refuse the commit if the epoch has rolled since you last read. Optional; supply it when superseding."
+    }
+  },
+  "required": [
+    "idempotency_key",
+    "proposals"
+  ],
+  "additionalProperties": false
+}

@@ -197,7 +197,30 @@ export function syntheticGraph(options: { clock?: () => Date; entityCount?: numb
     entityList,
     entities: {
       read: (entityId: EntityId) => registry.read(entityId),
-      resolve: (id: string) => registry.resolve(id)
+      resolve: (id: string) => registry.resolve(id),
+      // Present, because this fixture stands for a READ-WRITE store: everything
+      // here is RAM by construction, so a register that only reaches RAM is the
+      // whole truth rather than the durability lie `openReadOnly` refuses to
+      // tell. A test that wants the read-only refusal sets `readOnly: true` on
+      // its graph, which is what the handler actually checks.
+      //
+      // A newly registered entity is appended to `entityList` so
+      // `searchableEntities()` can find it. Without that, `atlas.text.search.v1`
+      // would report fewer plaintext candidates than the graph holds — the exact
+      // drift `openReadWrite` warns about for the durable plane.
+      register: (draft, context) => {
+        const entity = registry.register(draft, context);
+        entityList.push(entity);
+        return entity;
+      },
+      rename: (entityId: EntityId, change, context) => {
+        const result = registry.rename(entityId, change, context);
+        if (result.ok) {
+          const index = entityList.findIndex((candidate) => candidate.entity_id === entityId);
+          if (index >= 0) entityList[index] = result.entity;
+        }
+        return result;
+      }
     },
     searchableEntities: () => entityList,
     encryptedUnsearchable: () => 0,

@@ -9,7 +9,7 @@
  */
 
 /** Calendar-versioned, not semver: a revision is a date, not a promise about compatibility. */
-export const CONTRACT_REVISION = "2026.08.2";
+export const CONTRACT_REVISION = "2026.08.3";
 
 /**
  * The one MCP revision this contract speaks. There is no legacy era and no
@@ -167,7 +167,14 @@ export const CONTRACT_TOOL_NAMES = [
   "atlas.changes.read.v1",
   "atlas.assertion.propose.v1",
   "atlas.submission.read.v1",
-  "atlas.sensitive.reveal.v1"
+  "atlas.sensitive.reveal.v1",
+  // Entity lifecycle. Added in 2026.08.3 — the change feed already anticipated
+  // them (`entity-registered`, `entity-renamed` change_kinds). Writing an entity
+  // is graph content, so it lives on the consumer plane, not the operator plane
+  // whose charter is "never the knowledge in it". Both are grant-gated and both
+  // refuse against a read-only store.
+  "atlas.entity.create.v1",
+  "atlas.entity.rename.v1"
 ] as const;
 
 export type ContractToolName = (typeof CONTRACT_TOOL_NAMES)[number];

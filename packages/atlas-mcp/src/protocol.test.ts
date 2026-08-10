@@ -405,7 +405,9 @@ describe("resultType", () => {
         ]
       },
       "atlas.submission.read.v1": { idempotency_key: "k1" },
-      "atlas.sensitive.reveal.v1": { redaction_id: "la_redaction_none", reason: "checking the envelope" }
+      "atlas.sensitive.reveal.v1": { redaction_id: "la_redaction_none", reason: "checking the envelope" },
+      "atlas.entity.create.v1": { type: "organization", display_name: "Envelope Institute" },
+      "atlas.entity.rename.v1": { entity_id: subject.entity_id, display_name: "Envelope Rename" }
     };
 
     let id = 100;

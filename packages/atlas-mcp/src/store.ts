@@ -14,6 +14,7 @@ import {
   type RecordedAt
 } from "@living-atlas/atlas-core";
 import type { GraphSource } from "./graph.js";
+import { acquireWriteLock, type WriteLock } from "./write-lock.js";
 import type { PredicateEntry } from "./vocabulary.js";
 
 /**
@@ -138,6 +139,13 @@ export type AtlasStoreStatus = {
 
 export type AtlasStore = {
   readonly mode: AtlasStoreMode;
+  /**
+   * Set when opening read-write reclaimed a STALE write lock, naming the pid it
+   * was taken from. A reclaim is safe but it is evidence that a previous writer
+   * died without releasing, and an operator who never hears about it never
+   * checks the store's tail.
+   */
+  readonly reclaimedWriteLockFrom?: number;
   readonly layout: AtlasStoreLayout;
   readonly graph: GraphSource;
   /** Recomputed per call: `assertions` moves under a read-write store. */
@@ -150,6 +158,12 @@ export type OpenAtlasStoreOptions = {
   directory: string;
   /** Defaults to `read-only`. */
   mode?: AtlasStoreMode;
+  /**
+   * What to record in the write lock as the holder, so an operator reading a
+   * refusal is told WHICH writer has it. Read-write only; defaults to
+   * `atlas-mcp`.
+   */
+  holder?: string;
 };
 
 // ---------------------------------------------------------------------------
@@ -299,12 +313,58 @@ export function openAtlasStore(options: OpenAtlasStoreOptions): AtlasStore {
   }
   openDirectories.add(key);
 
+  /**
+   * THE CROSS-PROCESS LOCK, TAKEN HERE AND NOWHERE ELSE.
+   *
+   * `openDirectories` above stops a second handle inside THIS process. It says
+   * nothing about another process, and the read-write door is opened by more
+   * than one entrypoint: the stdio consumer (with `LIVING_ATLAS_STORE_MODE=read-write`),
+   * the operator plane, the long-lived HTTP service, and every `real-data:*`
+   * maintenance runner. All of them arrive HERE.
+   *
+   * The lock therefore belongs at this boundary rather than in whichever
+   * entrypoint remembered to take it. It first lived in the HTTP service alone,
+   * which made it advisory in the worst way: it stopped the service being
+   * started twice — the case nobody was worried about — and did nothing about
+   * the service running beside a read-write stdio client or a backup runner,
+   * which are the cases `write-lock.ts` was written for. A guarantee that every
+   * future caller has to remember is a guarantee that ends at the first caller
+   * who does not.
+   *
+   * Read-only takes no lock and blocks nobody: it opens no writer, so it cannot
+   * interleave anything.
+   */
+  let lock: WriteLock | undefined;
+  if (mode === "read-write") {
+    const outcome = acquireWriteLock(layout.root, { holder: options.holder ?? "atlas-mcp" });
+    if (!outcome.ok) {
+      openDirectories.delete(key);
+      throw new Error(outcome.message);
+    }
+    lock = outcome.lock;
+  }
+
   try {
-    return mode === "read-write" ? openReadWrite(layout, key) : openReadOnly(layout, key);
+    const store = mode === "read-write" ? openReadWrite(layout, key) : openReadOnly(layout, key);
+    if (lock === undefined) return store;
+    // The lock is released by CLOSING the store, so the two cannot drift apart.
+    // Released after the underlying handles, so a second writer cannot open the
+    // store while this one still holds a file handle on it.
+    const held = lock;
+    return {
+      ...store,
+      reclaimedWriteLockFrom: held.reclaimedFrom,
+      close: () => {
+        store.close();
+        held.release();
+      }
+    };
   } catch (cause) {
     // The handle is only held by a store that was actually built. Leaving it
     // registered after a failed open would make the retry — the thing an
-    // operator does next — fail with the wrong reason.
+    // operator does next — fail with the wrong reason. The lock goes back for
+    // the same reason.
+    lock?.release();
     openDirectories.delete(key);
     throw cause;
   }
@@ -360,16 +420,29 @@ function openReadWrite(layout: AtlasStoreLayout, key: string): AtlasStore {
   }
 
   /**
-   * The searchable set, read back from the identity log rather than remembered.
+   * The searchable set, seeded from the identity log and kept CURRENT.
    *
    * `EntityRegistry` exposes no enumeration — an id is read or resolved, never
-   * listed — so the list comes from the log, after the durable registry has
-   * opened and repaired it. This plane registers no entities, so the list is
-   * stable for the life of the process; a plane that ever gains an entity-write
-   * tool has to revisit this, and would find `atlas.text.search.v1` reporting
-   * fewer plaintext candidates than the graph holds.
+   * listed — so the initial list comes from the log, after the durable registry
+   * has opened and repaired it.
+   *
+   * It used to be a frozen array, correct only while this plane registered
+   * nothing, with a comment saying a plane that ever gained an entity-write tool
+   * would have to revisit it or find `atlas.text.search.v1` reporting fewer
+   * plaintext candidates than the graph holds. 2026.08.3 is that plane, and that
+   * is exactly what happened: measured against the live service, an entity
+   * created through `atlas.entity.create.v1` was readable by id and invisible to
+   * search — present in the store, absent from the one tool used to FIND things,
+   * with `coverage.evaluated` under-reporting the graph.
+   *
+   * Keyed by id rather than appended, so a rename REPLACES the record instead of
+   * leaving the old name in the searchable set beside the new one — which would
+   * make an entity findable under a name it no longer has.
    */
-  const entities: readonly Entity[] = scanIdentityLog(layout.identity, { repair: false }).restored.entities;
+  const searchable = new Map<EntityId, Entity>();
+  for (const entity of scanIdentityLog(layout.identity, { repair: false }).restored.entities) {
+    searchable.set(entity.entity_id, entity);
+  }
 
   return buildStore({
     mode: "read-write",
@@ -380,7 +453,8 @@ function openReadWrite(layout: AtlasStoreLayout, key: string): AtlasStore {
     // every commit is on disk before the receipt returns.
     log: durableAssertions.log,
     registry: durableIdentity.registry,
-    entities: () => entities,
+    entities: () => [...searchable.values()],
+    rememberEntity: (entity) => searchable.set(entity.entity_id, entity),
     counts: {
       assertion_segments: durableAssertions.report.segments,
       identity_segments: durableIdentity.report.segments,
@@ -403,6 +477,11 @@ type BuildStoreInput = {
   log: AssertionLog;
   registry: EntityRegistry;
   entities: () => readonly Entity[];
+  /**
+   * Called with every entity this store writes, so the searchable set stays
+   * current. Absent on a read-only store, which writes none.
+   */
+  rememberEntity?: (entity: Entity) => void;
   counts: Pick<
     AtlasStoreStatus,
     | "assertion_segments"
@@ -422,7 +501,34 @@ function buildStore(input: BuildStoreInput): AtlasStore {
     assertions: input.log,
     entities: {
       read: (entityId: EntityId) => input.registry.read(entityId),
-      resolve: (id: string) => input.registry.resolve(id)
+      resolve: (id: string) => input.registry.resolve(id),
+      // Present ONLY read-write, and this is load-bearing rather than tidy: the
+      // read-only registry is constructed with no journal, so a register/rename
+      // through it would mutate RAM and return a record for bytes that vanish at
+      // exit — the same lie `ReadOnlyAssertionLog.commit` refuses. Omitting the
+      // methods makes the handler refuse with `store-read-only` before it can
+      // reach for a writer that was never wired.
+      ...(input.mode === "read-write"
+        ? {
+            register: (draft, context) => {
+              const entity = input.registry.register(draft, context);
+              // Remembered before the caller sees the record: a created entity
+              // that is readable by id and invisible to `atlas.text.search.v1`
+              // is present in the store and absent from the tool used to FIND
+              // it. Measured against the live service before this line existed.
+              input.rememberEntity?.(entity);
+              return entity;
+            },
+            rename: (entityId: EntityId, change, context) => {
+              const result = input.registry.rename(entityId, change, context);
+              // Only on success, and it REPLACES: a failed rename must not touch
+              // the searchable set, and a successful one must not leave the old
+              // name in it beside the new.
+              if (result.ok) input.rememberEntity?.(result.entity);
+              return result;
+            }
+          }
+        : {})
     },
     searchableEntities: () => input.entities(),
     // Zero, and true: `atlas-core` stores values in the clear, so nothing in

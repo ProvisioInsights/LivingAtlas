@@ -732,6 +732,79 @@ export const SENSITIVE_REVEAL_RESULT_REQUIRED = {
 } satisfies RequiredKeyManifest<SensitiveRevealResult>;
 
 // ---------------------------------------------------------------------------
+// atlas.entity.create.v1
+// ---------------------------------------------------------------------------
+
+export type EntityCreateArgs = {
+  type: string;
+  display_name: string;
+  also_known_as?: string[];
+};
+
+export const ENTITY_CREATE_ARG_KEYS = {
+  type: true,
+  display_name: true,
+  also_known_as: true
+} satisfies KeyManifest<EntityCreateArgs>;
+
+export const ENTITY_CREATE_ARG_REQUIRED = {
+  type: true,
+  display_name: true
+} satisfies RequiredKeyManifest<EntityCreateArgs>;
+
+/**
+ * `AtlasEntity`, not `AtlasEntityRow`: the caller just wrote this record, so it
+ * cannot come back as a redaction stub or an error row. A union here would make
+ * every consumer narrow a case the write path cannot produce.
+ */
+export type EntityCreateResult = {
+  entity: AtlasEntity;
+  horizon: AtlasHorizon;
+};
+
+export const ENTITY_CREATE_RESULT_KEYS = {
+  entity: true,
+  horizon: true
+} satisfies KeyManifest<EntityCreateResult>;
+
+export const ENTITY_CREATE_RESULT_REQUIRED = ENTITY_CREATE_RESULT_KEYS satisfies RequiredKeyManifest<EntityCreateResult>;
+
+// ---------------------------------------------------------------------------
+// atlas.entity.rename.v1
+// ---------------------------------------------------------------------------
+
+export type EntityRenameArgs = {
+  entity_id: string;
+  display_name?: string;
+  also_known_as?: string[];
+};
+
+export const ENTITY_RENAME_ARG_KEYS = {
+  entity_id: true,
+  display_name: true,
+  also_known_as: true
+} satisfies KeyManifest<EntityRenameArgs>;
+
+/**
+ * Only `entity_id`. The "supply at least one of display_name or also_known_as"
+ * rule is a relationship BETWEEN two optional fields, which a required-key
+ * manifest cannot express; the server states it and refuses `invalid-argument`.
+ */
+export const ENTITY_RENAME_ARG_REQUIRED = { entity_id: true } satisfies RequiredKeyManifest<EntityRenameArgs>;
+
+export type EntityRenameResult = {
+  entity: AtlasEntity;
+  horizon: AtlasHorizon;
+};
+
+export const ENTITY_RENAME_RESULT_KEYS = {
+  entity: true,
+  horizon: true
+} satisfies KeyManifest<EntityRenameResult>;
+
+export const ENTITY_RENAME_RESULT_REQUIRED = ENTITY_RENAME_RESULT_KEYS satisfies RequiredKeyManifest<EntityRenameResult>;
+
+// ---------------------------------------------------------------------------
 // the tables the parity test reads
 // ---------------------------------------------------------------------------
 
@@ -798,6 +871,14 @@ export const TOOL_KEY_MANIFESTS: Record<ContractToolName, { input: SchemaKeyMani
   "atlas.sensitive.reveal.v1": {
     input: { keys: SENSITIVE_REVEAL_ARG_KEYS, required: SENSITIVE_REVEAL_ARG_REQUIRED },
     output: { keys: SENSITIVE_REVEAL_RESULT_KEYS, required: SENSITIVE_REVEAL_RESULT_REQUIRED }
+  },
+  "atlas.entity.create.v1": {
+    input: { keys: ENTITY_CREATE_ARG_KEYS, required: ENTITY_CREATE_ARG_REQUIRED },
+    output: { keys: ENTITY_CREATE_RESULT_KEYS, required: ENTITY_CREATE_RESULT_REQUIRED }
+  },
+  "atlas.entity.rename.v1": {
+    input: { keys: ENTITY_RENAME_ARG_KEYS, required: ENTITY_RENAME_ARG_REQUIRED },
+    output: { keys: ENTITY_RENAME_RESULT_KEYS, required: ENTITY_RENAME_RESULT_REQUIRED }
   }
 };
 
@@ -827,6 +908,8 @@ export type AtlasToolShapes = {
   "atlas.assertion.propose.v1": { args: AssertionProposeArgs; result: AssertionProposeResult };
   "atlas.submission.read.v1": { args: SubmissionReadArgs; result: SubmissionReadResult };
   "atlas.sensitive.reveal.v1": { args: SensitiveRevealArgs; result: SensitiveRevealResult };
+  "atlas.entity.create.v1": { args: EntityCreateArgs; result: EntityCreateResult };
+  "atlas.entity.rename.v1": { args: EntityRenameArgs; result: EntityRenameResult };
 };
 
 /** Compile-time proof that the shape table covers exactly the published tools. */

@@ -164,6 +164,24 @@ function caseSpecs(entityId: string, assertionId: string): CaseSpec[] {
       tool: "atlas.sensitive.reveal.v1",
       intent: "A refusal that is still a complete contract result: unknown stub id, audit receipt attached.",
       args: { redaction_id: "la_redaction_00000000000000000000000000000000", reason: "gate fixture probe" }
+    },
+    {
+      caseName: "atlas.entity.create.v1",
+      tool: "atlas.entity.create.v1",
+      intent:
+        "A minted entity with the id Atlas chose, its owner-authored provenance and its sensitivity block. Records that the id is NOT derived from the name.",
+      args: {
+        type: "organization",
+        display_name: "Golden Institute",
+        also_known_as: ["GI"]
+      }
+    },
+    {
+      caseName: "atlas.entity.rename.v1",
+      tool: "atlas.entity.rename.v1",
+      intent:
+        "A rename of a fixture entity: same entity_id and same registered_at, changed display_name and a moved updated_at — the record that proves a rename is not a re-identification.",
+      args: { entity_id: entityId, display_name: "Synthetic Person 0 (renamed)" }
     }
   ];
 }

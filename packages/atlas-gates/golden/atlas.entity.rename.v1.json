@@ -1,0 +1,49 @@
+{
+  "case": "atlas.entity.rename.v1",
+  "contract_revision": "2026.08.3",
+  "intent": "A rename of a fixture entity: same entity_id and same registered_at, changed display_name and a moved updated_at — the record that proves a rename is not a re-identification.",
+  "response": {
+    "_meta": {
+      "io.modelcontextprotocol/serverInfo": {
+        "name": "living-atlas-consumer",
+        "version": "2026.08.3"
+      }
+    },
+    "content": "<the text block is JSON.stringify(structuredContent)>",
+    "resultType": "complete",
+    "structuredContent": {
+      "entity": {
+        "also_known_as": [
+          "alias-0"
+        ],
+        "display_name": "Synthetic Person 0 (renamed)",
+        "entity_id": "<la_entity:0>",
+        "provenance": {
+          "client_id": "synthetic-consumer",
+          "origin": "consumer-proposed",
+          "recorded_at_fidelity": "authoritative"
+        },
+        "record_schema": "atlas.entity:v1",
+        "registered_at": "2026-08-04T12:00:00.000Z",
+        "sensitivity": {
+          "rank": 0,
+          "tier": "open",
+          "withheld": false
+        },
+        "type": "person",
+        "updated_at": "2026-08-04T12:00:00.004Z"
+      },
+      "horizon": {
+        "as_of_recorded": "2026-08-04T12:00:00.000Z",
+        "bitemporal_since": "2026-01-01T00:00:00.000Z",
+        "feed_epoch": "e-test",
+        "migration_window_open": false,
+        "record_schema": "atlas.horizon:v1",
+        "recorded_at_fidelity_mixed": false,
+        "seq_watermark": 5,
+        "status": "complete"
+      }
+    }
+  },
+  "tool": "atlas.entity.rename.v1"
+}

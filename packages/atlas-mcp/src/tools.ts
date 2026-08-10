@@ -12,11 +12,13 @@ import {
   canonicalRecordedAt,
   validTimeFidelity,
   type Assertion,
+  type EntityContext,
+  type EntityDraft,
   type EntityId,
   type RecordedAt
 } from "@living-atlas/atlas-core";
 import { decideAssertion, decideEntity, maySupersede, redactionId } from "./access.js";
-import { effectiveLimit, mayWritePredicate, mayWriteTier, permittedTools } from "./grant.js";
+import { effectiveLimit, mayWritePredicate, mayWriteTier, permittedTools, reachesTier } from "./grant.js";
 import { functionalPredicates } from "./graph.js";
 import { ceilingOf, type Principal } from "./principal.js";
 import { ERROR_CODES } from "./vocabulary.js";
@@ -1200,6 +1202,266 @@ const proposeAssertions: ToolHandler = (args, context) => {
 };
 
 // ---------------------------------------------------------------------------
+// atlas.entity.create.v1 / atlas.entity.rename.v1
+// ---------------------------------------------------------------------------
+
+/**
+ * The context an owner-authored entity write records.
+ *
+ * `origin: "owner-authored"` because these tools exist for a human editing the
+ * graph, not a mechanical import — the same distinction the assertion log draws.
+ * `client_id` is the authenticated principal's, which a caller cannot influence.
+ * Sensitivity is left to the registry default (local-private), the one tier
+ * `COMMIT_TIER` gates, so read reach and write reach stay a single decision.
+ */
+function ownerEntityContext(context: ToolContext): EntityContext {
+  return {
+    client_id: context.principal.client_id,
+    origin: "owner-authored",
+    recorded_at_fidelity: "authoritative"
+  };
+}
+
+/**
+ * The write-posture and write-tier gate shared by the two entity-write tools.
+ *
+ * Same order as `proposeAssertions`: the store's read-only posture is checked
+ * before the grant, because a read-only store refuses every credential and
+ * answering `write-tier-not-permitted` first would send the caller to ask for a
+ * grant no grant can lift. Returns a refusal to short-circuit, or undefined to
+ * proceed.
+ */
+function entityWriteRefusal(context: ToolContext): ToolOutcome | undefined {
+  if (context.graph.readOnly === true) {
+    return {
+      kind: "refusal",
+      error: errorRecord({
+        code: "store-read-only",
+        message:
+          "This server opened its store read-only, so no entity can be written by any credential. Nothing was written and nothing was held.",
+        retryable: true
+      }),
+      audit: { outcome: "refused", reasonCode: "store-read-only", counts: {} }
+    };
+  }
+  if (!mayWriteTier(context.principal.grant, COMMIT_TIER)) {
+    return {
+      kind: "refusal",
+      error: errorRecord({
+        code: "write-tier-not-permitted",
+        message: `This credential's grant does not permit writing at the ${COMMIT_TIER} tier, which is the tier a new entity is stamped with.`,
+        retryable: false,
+        remedy: { tool: "atlas.scope.describe.v1" },
+        details: { tier: COMMIT_TIER }
+      }),
+      audit: { outcome: "refused", reasonCode: "write-tier-not-permitted", counts: {} }
+    };
+  }
+  /**
+   * READ REACH IS REQUIRED TOO, and this is a disclosure control rather than
+   * tidiness.
+   *
+   * Read reach and write reach are deliberately independent (`grant.ts`), so a
+   * grant may permit writing `local-private` while omitting that tier from
+   * `sensitivity_reachable`. Both these tools answer with the WHOLE entity
+   * record — and for a rename that is a record the caller did not supply:
+   * the existing `display_name`, the whole `also_known_as` list, the provenance.
+   * A credential that cannot read the tier could therefore learn the contents of
+   * any entity whose id it could guess, by renaming it to the name it already
+   * has.
+   *
+   * Refused rather than redacted: the published output requires an
+   * `atlas.entity:v1`, so there is no shape in this revision for a
+   * write-receipt-without-the-record. "You may not rename what you may not read"
+   * is the honest rule, and it is the narrower one.
+   */
+  if (!reachesTier(context.principal.grant, COMMIT_TIER)) {
+    return {
+      kind: "refusal",
+      error: errorRecord({
+        code: "sensitivity-withheld",
+        message: `This credential's grant does not reach the ${COMMIT_TIER} tier, and both entity-write tools answer with the whole entity record. A credential that cannot read the tier cannot write at it either.`,
+        retryable: false,
+        remedy: { tool: "atlas.scope.describe.v1" },
+        details: { tier: COMMIT_TIER }
+      }),
+      audit: { outcome: "refused", reasonCode: "sensitivity-withheld", counts: {} }
+    };
+  }
+  return undefined;
+}
+
+const createEntity: ToolHandler = (args, context) => {
+  const type = str(args["type"]);
+  const displayName = str(args["display_name"]);
+  const alsoKnownAs = strArray(args["also_known_as"]);
+  if (!type || !displayName) {
+    return {
+      kind: "refusal",
+      error: errorRecord({ code: "invalid-argument", message: "type and display_name are both required.", retryable: false }),
+      audit: { outcome: "refused", reasonCode: "invalid-argument", counts: {} }
+    };
+  }
+  const refusal = entityWriteRefusal(context);
+  if (refusal) return refusal;
+
+  const register = context.graph.entities.register;
+  if (!register) {
+    // Unreachable when `readOnly` is set correctly — a store that is neither
+    // read-only nor exposes a writer is an integrity failure, reported rather
+    // than crashed into a stack trace the client sees as "server disconnected".
+    return {
+      kind: "refusal",
+      error: errorRecord({ code: "store-read-only", message: "This store exposes no entity writer.", retryable: true }),
+      audit: { outcome: "refused", reasonCode: "store-read-only", counts: {} }
+    };
+  }
+
+  let entity;
+  try {
+    entity = register(
+      { type: type as EntityDraft["type"], display_name: displayName, also_known_as: alsoKnownAs },
+      ownerEntityContext(context)
+    );
+  } catch (cause) {
+    return {
+      kind: "refusal",
+      error: errorRecord({
+        code: "invalid-argument",
+        message: cause instanceof Error ? cause.message : "The entity was refused.",
+        retryable: false
+      }),
+      audit: { outcome: "refused", reasonCode: "invalid-argument", counts: {} }
+    };
+  }
+
+  return {
+    kind: "complete",
+    structured: { entity, horizon: horizonFor(context, { fidelityMixed: false }) },
+    // No caller-named id to record: the id is minted here, and putting a
+    // graph-produced id in `subjects` is exactly the unbounded-log defect the
+    // audit rule forbids. The one committed entity is the count.
+    audit: { outcome: "ok", counts: { committed: 1 } }
+  };
+};
+
+const renameEntity: ToolHandler = (args, context) => {
+  const entityId = str(args["entity_id"]);
+  const displayName = str(args["display_name"]);
+  const alsoKnownAs = Array.isArray(args["also_known_as"]) ? strArray(args["also_known_as"]) : undefined;
+  if (!entityId) {
+    return {
+      kind: "refusal",
+      error: errorRecord({ code: "invalid-argument", message: "entity_id is required.", retryable: false }),
+      audit: { outcome: "refused", reasonCode: "invalid-argument", counts: {} }
+    };
+  }
+  if (displayName === undefined && alsoKnownAs === undefined) {
+    return {
+      kind: "refusal",
+      error: errorRecord({
+        code: "invalid-argument",
+        message: "Supply at least one of display_name or also_known_as; a rename that changes nothing is refused rather than a silent no-op.",
+        retryable: false
+      }),
+      audit: { outcome: "refused", reasonCode: "invalid-argument", counts: {} }
+    };
+  }
+  const refusal = entityWriteRefusal(context);
+  if (refusal) return refusal;
+
+  const rename = context.graph.entities.rename;
+  if (!rename) {
+    return {
+      kind: "refusal",
+      error: errorRecord({ code: "store-read-only", message: "This store exposes no entity writer.", retryable: true }),
+      audit: { outcome: "refused", reasonCode: "store-read-only", counts: {} }
+    };
+  }
+
+  /**
+   * A RENAME TO THE NAMES IT ALREADY HAS WRITES NOTHING.
+   *
+   * This tool publishes `idempotentHint: true`, which tells a client that
+   * retrying after a lost response is free. Without this branch that would be a
+   * lie: `EntityRegistry.rename` stamps a fresh `updated_at` and appends another
+   * identity record every time it is called, so the "safe" retry is another
+   * observable mutation and the entity's `updated_at` drifts with the network.
+   *
+   * So the no-op is made real rather than the hint made false. The comparison is
+   * against the CURRENT record, and `also_known_as` is compared only when the
+   * caller supplied it — omitting it means "leave the nicknames alone", which
+   * cannot make the call a change.
+   *
+   * Distinct from the `invalid-argument` above: that refuses a call that names
+   * NO field to change. This one accepts a well-formed call whose requested
+   * state the entity is already in.
+   */
+  /**
+   * A MERGED-AWAY ID NEVER TAKES THE NO-OP PATH.
+   *
+   * `entities.read` returns the historical record for an id that has since been
+   * merged, so a no-op check built on `read` alone would answer "renamed" —
+   * with the stale entity attached — for exactly the id the contract says must
+   * be REFUSED with `entity-redirected`. The shortcut would have quietly
+   * inverted the rule it sits in front of.
+   *
+   * `resolve` follows the ledger, so an id that has moved fails this guard and
+   * falls through to `rename`, which produces the refusal and names
+   * `atlas.entity.resolve.v1` as the remedy.
+   */
+  const resolution = context.graph.entities.resolve(entityId);
+  const isCurrentId = resolution.ok && resolution.entity.entity_id === entityId;
+  const current = isCurrentId ? context.graph.entities.read(entityId as EntityId) : undefined;
+  if (current !== undefined) {
+    const nameUnchanged = displayName === undefined || displayName === current.display_name;
+    const aliasesUnchanged =
+      alsoKnownAs === undefined ||
+      (alsoKnownAs.length === current.also_known_as.length &&
+        alsoKnownAs.every((alias, index) => alias === current.also_known_as[index]));
+    if (nameUnchanged && aliasesUnchanged) {
+      return {
+        kind: "complete",
+        structured: { entity: current, horizon: horizonFor(context, { fidelityMixed: false }) },
+        // `committed: 0` — the call succeeded and nothing was written. An audit
+        // event claiming a commit here would make a replayed retry look like a
+        // second edit to anybody reconciling the log.
+        audit: { outcome: "ok", counts: { committed: 0 }, subjects: [entityId] }
+      };
+    }
+  }
+
+  const result = rename(
+    entityId as EntityId,
+    {
+      ...(displayName === undefined ? {} : { display_name: displayName }),
+      ...(alsoKnownAs === undefined ? {} : { also_known_as: alsoKnownAs })
+    },
+    ownerEntityContext(context)
+  );
+  if (!result.ok) {
+    return {
+      kind: "refusal",
+      error: errorRecord({
+        code: result.code,
+        message: result.message,
+        retryable: false,
+        // A merged-away id is not a dead end: resolve() names the current entity.
+        ...(result.code === "entity-redirected" ? { remedy: { tool: "atlas.entity.resolve.v1" } } : {})
+      }),
+      audit: { outcome: "refused", reasonCode: result.code, counts: {} }
+    };
+  }
+
+  return {
+    kind: "complete",
+    structured: { entity: result.entity, horizon: horizonFor(context, { fidelityMixed: false }) },
+    // The caller named this id, so it is bounded and safe to record.
+    audit: { outcome: "ok", counts: { committed: 1 }, subjects: [entityId] }
+  };
+};
+
+// ---------------------------------------------------------------------------
 // atlas.submission.read.v1
 // ---------------------------------------------------------------------------
 
@@ -1528,5 +1790,7 @@ export const TOOL_HANDLERS: Record<ContractToolName, ToolHandler> = {
   "atlas.changes.read.v1": readChanges,
   "atlas.assertion.propose.v1": proposeAssertions,
   "atlas.submission.read.v1": readSubmission,
-  "atlas.sensitive.reveal.v1": revealSensitive
+  "atlas.sensitive.reveal.v1": revealSensitive,
+  "atlas.entity.create.v1": createEntity,
+  "atlas.entity.rename.v1": renameEntity
 };

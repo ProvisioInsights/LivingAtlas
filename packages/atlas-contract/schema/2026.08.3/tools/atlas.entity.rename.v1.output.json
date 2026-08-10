@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:living-atlas:contract:2026.08.3:tool:atlas.entity.rename.v1:output",
+  "title": "atlas.entity.rename.v1 — result",
+  "description": "Change what an entity is CALLED, never what it IS. No id moves, no ledger row is written, and every reference keeps resolving — a rename is not a re-identification. Refused if the id has already been merged away: rename the entity that is current instead, which atlas.entity.resolve.v1 names.",
+  "type": "object",
+  "properties": {
+    "entity": {
+      "$ref": "urn:living-atlas:contract:2026.08.3:record:atlas.entity:v1"
+    },
+    "horizon": {
+      "$ref": "urn:living-atlas:contract:2026.08.3:record:atlas.horizon:v1"
+    }
+  },
+  "required": [
+    "entity",
+    "horizon"
+  ]
+}

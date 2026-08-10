@@ -166,5 +166,15 @@ export const TOOL_INPUT_SAMPLES: Record<string, unknown> = {
   "atlas.sensitive.reveal.v1": {
     redaction_id: "fixture-redaction-1",
     reason: "reviewing an escalated claim before answering the owner"
-  }
+  },
+  "atlas.entity.create.v1": {
+    type: "organization",
+    display_name: "Synthetic Cooperative",
+    also_known_as: ["SynCo"]
+  },
+  // `display_name` alone: the "at least one of display_name or also_known_as"
+  // rule is a relationship between two optional fields, which JSON Schema states
+  // in prose here and the server enforces. The minimal call exercises the
+  // commoner half.
+  "atlas.entity.rename.v1": { entity_id: ENTITY_A, display_name: "Synthetic Cooperative (renamed)" }
 };
