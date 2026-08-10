@@ -14,6 +14,7 @@ import {
   type RecordedAt
 } from "@living-atlas/atlas-core";
 import type { GraphSource } from "./graph.js";
+import { acquireWriteLock, type WriteLock } from "./write-lock.js";
 import type { PredicateEntry } from "./vocabulary.js";
 
 /**
@@ -138,6 +139,13 @@ export type AtlasStoreStatus = {
 
 export type AtlasStore = {
   readonly mode: AtlasStoreMode;
+  /**
+   * Set when opening read-write reclaimed a STALE write lock, naming the pid it
+   * was taken from. A reclaim is safe but it is evidence that a previous writer
+   * died without releasing, and an operator who never hears about it never
+   * checks the store's tail.
+   */
+  readonly reclaimedWriteLockFrom?: number;
   readonly layout: AtlasStoreLayout;
   readonly graph: GraphSource;
   /** Recomputed per call: `assertions` moves under a read-write store. */
@@ -150,6 +158,12 @@ export type OpenAtlasStoreOptions = {
   directory: string;
   /** Defaults to `read-only`. */
   mode?: AtlasStoreMode;
+  /**
+   * What to record in the write lock as the holder, so an operator reading a
+   * refusal is told WHICH writer has it. Read-write only; defaults to
+   * `atlas-mcp`.
+   */
+  holder?: string;
 };
 
 // ---------------------------------------------------------------------------
@@ -299,12 +313,58 @@ export function openAtlasStore(options: OpenAtlasStoreOptions): AtlasStore {
   }
   openDirectories.add(key);
 
+  /**
+   * THE CROSS-PROCESS LOCK, TAKEN HERE AND NOWHERE ELSE.
+   *
+   * `openDirectories` above stops a second handle inside THIS process. It says
+   * nothing about another process, and the read-write door is opened by more
+   * than one entrypoint: the stdio consumer (with `LIVING_ATLAS_STORE_MODE=read-write`),
+   * the operator plane, the long-lived HTTP service, and every `real-data:*`
+   * maintenance runner. All of them arrive HERE.
+   *
+   * The lock therefore belongs at this boundary rather than in whichever
+   * entrypoint remembered to take it. It first lived in the HTTP service alone,
+   * which made it advisory in the worst way: it stopped the service being
+   * started twice — the case nobody was worried about — and did nothing about
+   * the service running beside a read-write stdio client or a backup runner,
+   * which are the cases `write-lock.ts` was written for. A guarantee that every
+   * future caller has to remember is a guarantee that ends at the first caller
+   * who does not.
+   *
+   * Read-only takes no lock and blocks nobody: it opens no writer, so it cannot
+   * interleave anything.
+   */
+  let lock: WriteLock | undefined;
+  if (mode === "read-write") {
+    const outcome = acquireWriteLock(layout.root, { holder: options.holder ?? "atlas-mcp" });
+    if (!outcome.ok) {
+      openDirectories.delete(key);
+      throw new Error(outcome.message);
+    }
+    lock = outcome.lock;
+  }
+
   try {
-    return mode === "read-write" ? openReadWrite(layout, key) : openReadOnly(layout, key);
+    const store = mode === "read-write" ? openReadWrite(layout, key) : openReadOnly(layout, key);
+    if (lock === undefined) return store;
+    // The lock is released by CLOSING the store, so the two cannot drift apart.
+    // Released after the underlying handles, so a second writer cannot open the
+    // store while this one still holds a file handle on it.
+    const held = lock;
+    return {
+      ...store,
+      reclaimedWriteLockFrom: held.reclaimedFrom,
+      close: () => {
+        store.close();
+        held.release();
+      }
+    };
   } catch (cause) {
     // The handle is only held by a store that was actually built. Leaving it
     // registered after a failed open would make the retry — the thing an
-    // operator does next — fail with the wrong reason.
+    // operator does next — fail with the wrong reason. The lock goes back for
+    // the same reason.
+    lock?.release();
     openDirectories.delete(key);
     throw cause;
   }

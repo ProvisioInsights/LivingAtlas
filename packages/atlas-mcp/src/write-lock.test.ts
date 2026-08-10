@@ -2,6 +2,8 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { openAtlasStore, type AtlasStore } from "./store.js";
+import { seedStoreDirectory } from "./testing.js";
 import { acquireWriteLock, processIsAlive, writeLockPath, type WriteLock } from "./write-lock.js";
 
 /**
@@ -14,8 +16,11 @@ import { acquireWriteLock, processIsAlive, writeLockPath, type WriteLock } from 
 
 const roots: string[] = [];
 const held: WriteLock[] = [];
+const stores: AtlasStore[] = [];
 
 afterEach(() => {
+  // Stores first: closing one releases the lock it holds.
+  while (stores.length > 0) stores.pop()?.close();
   while (held.length > 0) held.pop()?.release();
   while (roots.length > 0) {
     const root = roots.pop();
@@ -146,6 +151,76 @@ describe("a stale lock is reclaimed, and an unreadable one is not", () => {
     expect(outcome.ok).toBe(false);
     if (outcome.ok) return;
     expect(outcome.code).toBe("unreadable");
+  });
+});
+
+describe("the lock is taken at the STORE boundary, so no entrypoint can forget it", () => {
+  /**
+   * The hole this closes, found by adversarial review of the first version.
+   *
+   * The lock originally lived in the HTTP service's entrypoint alone. That made
+   * it advisory in the worst possible way: it stopped the service being started
+   * twice — the case nobody worried about — and did nothing about the service
+   * running beside a read-write stdio client or a `real-data:*` maintenance
+   * runner, which are the cases the lock was written for. All of those reach
+   * `openAtlasStore`, so the guard belongs there.
+   */
+  it("a read-write open takes the lock, and a second read-write open is refused", () => {
+    const seeded = seedStoreDirectory(storeRoot(), {});
+    const first = openAtlasStore({ directory: seeded.root, mode: "read-write", holder: "first-writer" });
+    stores.push(first);
+
+    expect(existsSync(writeLockPath(seeded.root))).toBe(true);
+
+    // A DIFFERENT process is simulated by taking the lock check the same way a
+    // second process would: the file is there and names a live pid (ours).
+    const second = acquireWriteLock(seeded.root, { holder: "second-writer", pid: 4242 });
+    expect(second.ok).toBe(false);
+    if (second.ok) return;
+    expect(second.code).toBe("held");
+    expect(second.heldBy?.holder).toBe("first-writer");
+  });
+
+  it("releases the lock when the store closes, so the next writer can open", () => {
+    const seeded = seedStoreDirectory(storeRoot(), {});
+    const first = openAtlasStore({ directory: seeded.root, mode: "read-write" });
+    expect(existsSync(writeLockPath(seeded.root))).toBe(true);
+    first.close();
+
+    expect(existsSync(writeLockPath(seeded.root))).toBe(false);
+    const second = openAtlasStore({ directory: seeded.root, mode: "read-write" });
+    stores.push(second);
+    expect(second.mode).toBe("read-write");
+  });
+
+  it("takes NO lock for a read-only open, so readers never block the writer", () => {
+    const seeded = seedStoreDirectory(storeRoot(), {});
+    const reader = openAtlasStore({ directory: seeded.root });
+    stores.push(reader);
+
+    expect(existsSync(writeLockPath(seeded.root))).toBe(false);
+  });
+
+  it("refuses a read-write open while another holder has the lock, naming who", () => {
+    // The real scenario: the live service is up, and an operator runs a
+    // maintenance runner (or a stdio consumer with STORE_MODE=read-write)
+    // against the same store.
+    const seeded = seedStoreDirectory(storeRoot(), {});
+    const incumbent = take(seeded.root, { holder: "atlas-http-service" });
+
+    expect(() => openAtlasStore({ directory: seeded.root, mode: "read-write" })).toThrow(
+      /already held read-write by pid .*atlas-http-service/
+    );
+    // And the incumbent's lock survives the refusal.
+    expect(existsSync(incumbent.path)).toBe(true);
+  });
+
+  it("does not leave a lock behind when the store fails to open", () => {
+    // `requireDirectory` throws before any writer is built; a lock left behind
+    // by a failed open would block the retry an operator makes next.
+    const root = storeRoot();
+    expect(() => openAtlasStore({ directory: root, mode: "read-write" })).toThrow();
+    expect(existsSync(writeLockPath(root))).toBe(false);
   });
 });
 

@@ -10,7 +10,6 @@ import {
 } from "../credential-directory.js";
 import { credentialResolver } from "../credentials.js";
 import { STORE_DIRECTORY_ENV, openStoreFromEnvironment, type AtlasStore } from "../store.js";
-import { acquireWriteLock, type WriteLock } from "../write-lock.js";
 import { serveAtlasHttp } from "./consumer.js";
 import { portFromEnv } from "./listener.js";
 
@@ -37,11 +36,13 @@ import { portFromEnv } from "./listener.js";
  * this entry surfaces that as a startup failure with a sentence rather than a
  * stack trace.
  *
- * ## Why it takes a cross-process lock
+ * ## The cross-process lock is not this entry's job
  *
- * `openAtlasStore` refuses a second read-write handle in ONE process. This entry
- * is long-lived, so the realistic second writer is a second PROCESS — a
- * maintenance runner, or this service started twice. See `write-lock.ts`.
+ * `openAtlasStore` refuses a second read-write handle in ONE process, and takes
+ * a lock file for the cross-PROCESS case — a maintenance runner, a read-write
+ * stdio client, or this service started twice. It lives at the store boundary
+ * rather than here on purpose: every read-write opener goes through that one
+ * function, so no entrypoint can forget. See `write-lock.ts`.
  *
  * ## Env contract
  *
@@ -104,41 +105,36 @@ async function main(): Promise<void> {
   const store: AtlasStore = opened;
 
   /**
-   * The lock, and ONLY when this process is actually a writer.
+   * The cross-process write lock is NOT taken here.
    *
-   * A read-only service takes no lock and blocks nobody: it opens no writer, so
-   * it cannot interleave anything. Taking the lock anyway would make a harmless
-   * reader keep the real writer out.
+   * `openAtlasStore` takes it for any read-write open and releases it in
+   * `close()`, so every entrypoint — this one, the stdio consumer, the operator
+   * plane, every `real-data:*` runner — is guarded by the single act of opening
+   * the store. It lived here once, which made it advisory: it stopped this
+   * service being started twice and did nothing about the service running beside
+   * a read-write stdio client, which is the case it was written for.
+   *
+   * A refused lock therefore surfaces as a throw from `openStoreFromEnvironment`
+   * above, with the holder's pid in the message.
    */
-  let lock: WriteLock | undefined;
-  if (store.mode === "read-write") {
-    const outcome = acquireWriteLock(storeDirectory, { holder: "atlas-http-service" });
-    if (!outcome.ok) {
-      store.close();
-      fail(`${outcome.message}\nRefusing to start a second writer.`);
-    }
-    lock = outcome.lock;
-    if (lock.reclaimedFrom !== undefined) {
-      // Loud on purpose: a stale lock is evidence that a previous writer died
-      // without releasing, which an operator should know about even though the
-      // reclaim is safe.
-      process.stderr.write(
-        `[atlas-http] reclaimed a stale write lock from pid ${lock.reclaimedFrom} — the previous ` +
-          "writer exited without releasing it. If that was a crash, verify the store's tail.\n"
-      );
-    }
+  if (store.reclaimedWriteLockFrom !== undefined) {
+    // Loud on purpose: a stale lock is evidence that a previous writer died
+    // without releasing, which an operator should know about even though the
+    // reclaim is safe.
+    process.stderr.write(
+      `[atlas-http] reclaimed a stale write lock from pid ${store.reclaimedWriteLockFrom} — the ` +
+        "previous writer exited without releasing it. If that was a crash, verify the store's tail.\n"
+    );
   }
 
   let loaded: LoadedCredentialDirectory | undefined;
   try {
     loaded = credentialDirectoryFromEnvironment(process.env);
   } catch (cause) {
-    lock?.release();
     store.close();
     fail(cause instanceof Error ? cause.message : String(cause));
   }
   if (loaded === undefined) {
-    lock?.release();
     store.close();
     fail(
       `${CREDENTIAL_DIRECTORY_ENV} is not set. Unlike the stdio entry, an HTTP listener has no ` +
@@ -192,7 +188,6 @@ async function main(): Promise<void> {
       await listener.close();
       store.close();
     } finally {
-      lock?.release();
     }
     process.exit(0);
   };
