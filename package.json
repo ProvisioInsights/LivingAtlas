@@ -91,7 +91,7 @@
     "real-data:migration-apply": "tsx packages/check/src/migration-apply.ts"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "4.20260621.1",
+    "@cloudflare/workers-types": "5.20260804.1",
     "@types/node": "26.1.1",
     "tsx": "4.23.0",
     "typescript": "7.0.2",
