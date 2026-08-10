@@ -69,6 +69,7 @@
     "canonical:cutover-report": "tsx packages/check/src/canonical-cutover-report-cli.ts",
     "atlas-mcp:consumer": "tsx packages/atlas-mcp/src/cli.ts",
     "atlas-mcp:operator": "tsx packages/atlas-mcp/src/operator/cli.ts",
+    "atlas-mcp:service": "tsx packages/atlas-mcp/src/http/cli.ts",
     "lint:repo-safety": "tsx packages/check/src/cli.ts",
     "preflight:synthetic": "npm run check && npm run local:deploy-synthetic && npm run stress:local && npm run cloudflare:wrangler-smoke && npm run infra:fmt && npm run infra:validate",
     "smoke:local": "npm run local:install-smoke && npm run cloudflare:local-smoke",

@@ -360,16 +360,29 @@ function openReadWrite(layout: AtlasStoreLayout, key: string): AtlasStore {
   }
 
   /**
-   * The searchable set, read back from the identity log rather than remembered.
+   * The searchable set, seeded from the identity log and kept CURRENT.
    *
    * `EntityRegistry` exposes no enumeration — an id is read or resolved, never
-   * listed — so the list comes from the log, after the durable registry has
-   * opened and repaired it. This plane registers no entities, so the list is
-   * stable for the life of the process; a plane that ever gains an entity-write
-   * tool has to revisit this, and would find `atlas.text.search.v1` reporting
-   * fewer plaintext candidates than the graph holds.
+   * listed — so the initial list comes from the log, after the durable registry
+   * has opened and repaired it.
+   *
+   * It used to be a frozen array, correct only while this plane registered
+   * nothing, with a comment saying a plane that ever gained an entity-write tool
+   * would have to revisit it or find `atlas.text.search.v1` reporting fewer
+   * plaintext candidates than the graph holds. 2026.08.3 is that plane, and that
+   * is exactly what happened: measured against the live service, an entity
+   * created through `atlas.entity.create.v1` was readable by id and invisible to
+   * search — present in the store, absent from the one tool used to FIND things,
+   * with `coverage.evaluated` under-reporting the graph.
+   *
+   * Keyed by id rather than appended, so a rename REPLACES the record instead of
+   * leaving the old name in the searchable set beside the new one — which would
+   * make an entity findable under a name it no longer has.
    */
-  const entities: readonly Entity[] = scanIdentityLog(layout.identity, { repair: false }).restored.entities;
+  const searchable = new Map<EntityId, Entity>();
+  for (const entity of scanIdentityLog(layout.identity, { repair: false }).restored.entities) {
+    searchable.set(entity.entity_id, entity);
+  }
 
   return buildStore({
     mode: "read-write",
@@ -380,7 +393,8 @@ function openReadWrite(layout: AtlasStoreLayout, key: string): AtlasStore {
     // every commit is on disk before the receipt returns.
     log: durableAssertions.log,
     registry: durableIdentity.registry,
-    entities: () => entities,
+    entities: () => [...searchable.values()],
+    rememberEntity: (entity) => searchable.set(entity.entity_id, entity),
     counts: {
       assertion_segments: durableAssertions.report.segments,
       identity_segments: durableIdentity.report.segments,
@@ -403,6 +417,11 @@ type BuildStoreInput = {
   log: AssertionLog;
   registry: EntityRegistry;
   entities: () => readonly Entity[];
+  /**
+   * Called with every entity this store writes, so the searchable set stays
+   * current. Absent on a read-only store, which writes none.
+   */
+  rememberEntity?: (entity: Entity) => void;
   counts: Pick<
     AtlasStoreStatus,
     | "assertion_segments"
@@ -431,8 +450,23 @@ function buildStore(input: BuildStoreInput): AtlasStore {
       // reach for a writer that was never wired.
       ...(input.mode === "read-write"
         ? {
-            register: (draft, context) => input.registry.register(draft, context),
-            rename: (entityId: EntityId, change, context) => input.registry.rename(entityId, change, context)
+            register: (draft, context) => {
+              const entity = input.registry.register(draft, context);
+              // Remembered before the caller sees the record: a created entity
+              // that is readable by id and invisible to `atlas.text.search.v1`
+              // is present in the store and absent from the tool used to FIND
+              // it. Measured against the live service before this line existed.
+              input.rememberEntity?.(entity);
+              return entity;
+            },
+            rename: (entityId: EntityId, change, context) => {
+              const result = input.registry.rename(entityId, change, context);
+              // Only on success, and it REPLACES: a failed rename must not touch
+              // the searchable set, and a successful one must not leave the old
+              // name in it beside the new.
+              if (result.ok) input.rememberEntity?.(result.entity);
+              return result;
+            }
           }
         : {})
     },

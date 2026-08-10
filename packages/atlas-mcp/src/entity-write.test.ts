@@ -322,6 +322,66 @@ describe("publishing an entity-write tool grants nobody anything", () => {
     expect(graph.entityList).toHaveLength(before);
   });
 
+  it("makes a durably-created entity findable by search, not only readable by id", async () => {
+    /**
+     * The regression this exists for, measured against the running service.
+     *
+     * `openReadWrite` used to compute the searchable set ONCE at open, with a
+     * comment saying a plane that ever gained an entity-write tool would find
+     * `atlas.text.search.v1` reporting fewer candidates than the graph holds.
+     * 2026.08.3 is that plane: the created entity was readable by id and
+     * invisible to search — in the store, absent from the tool used to find it.
+     */
+    const seeded = seedStoreDirectory(emptyRoot(), {});
+    const store = track(openAtlasStore({ directory: seeded.root, mode: "read-write" }));
+    const { client } = harness({ graph: store.graph });
+
+    client.send(
+      callTool({ id: 1, name: "atlas.entity.create.v1", args: { type: "place", display_name: "Findable Harbour" } })
+    );
+    await client.await(1);
+
+    client.send(callTool({ id: 2, name: "atlas.text.search.v1", args: { query: "Findable Harbour" } }));
+    const page = structured(await client.await(2));
+    const names = (page["results"] as { record: Record<string, unknown> }[]).map((hit) => hit.record["display_name"]);
+
+    expect(names).toContain("Findable Harbour");
+    // The count the coverage block reports has to move too, or the page says it
+    // evaluated fewer records than the store holds.
+    expect((page["coverage"] as Record<string, number>)["evaluated"]).toBeGreaterThan(0);
+  });
+
+  it("makes a rename findable under the NEW name and not the old one", async () => {
+    const seeded = seedStoreDirectory(emptyRoot(), {});
+    const store = track(openAtlasStore({ directory: seeded.root, mode: "read-write" }));
+    const before = store.graph.entities.read(seeded.subjectEntityId as never)?.display_name;
+    expect(before).toBeDefined();
+    const { client } = harness({ graph: store.graph });
+
+    client.send(
+      callTool({
+        id: 1,
+        name: "atlas.entity.rename.v1",
+        args: { entity_id: seeded.subjectEntityId, display_name: "Renamed For Search" }
+      })
+    );
+    await client.await(1);
+
+    client.send(callTool({ id: 2, name: "atlas.text.search.v1", args: { query: "Renamed For Search" } }));
+    const found = (structured(await client.await(2))["results"] as { record: Record<string, unknown> }[]).map(
+      (hit) => hit.record["display_name"]
+    );
+    expect(found).toContain("Renamed For Search");
+
+    // The old name must be GONE from the searchable set: an append would leave
+    // the entity findable under a name it no longer has.
+    client.send(callTool({ id: 3, name: "atlas.text.search.v1", args: { query: String(before) } }));
+    const stale = (structured(await client.await(3))["results"] as { record: Record<string, unknown> }[]).map(
+      (hit) => hit.record["display_name"]
+    );
+    expect(stale).not.toContain(before);
+  });
+
   it("succeeds over the same durable store opened read-write, and the record is durable", async () => {
     const seeded = seedStoreDirectory(emptyRoot(), {});
     const store = track(openAtlasStore({ directory: seeded.root, mode: "read-write" }));
