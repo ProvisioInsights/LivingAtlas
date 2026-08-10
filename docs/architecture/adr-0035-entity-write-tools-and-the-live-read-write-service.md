@@ -156,6 +156,53 @@ three candidates, none of which is taken here:
 3. **Wait for Desktop to negotiate 2026-07-28**, which is also the documented
    condition for retiring the stdio legacy era.
 
+### 4. What adversarial review changed, and what it left as a deploy constraint
+
+Two independent reviewers attacked this design. One finding was a real hole and
+is FIXED in code; the rest are constraints on a deployment that has not happened
+yet, recorded here rather than left in a runbook nobody re-reads.
+
+**FIXED — the lock was in the wrong layer.** It was acquired in the HTTP
+service's entrypoint alone, which stopped the service being started twice and
+did nothing about the service running beside a read-write *stdio* client or a
+`real-data:*` runner — the cases it was written for. Three entrypoints reach a
+read-write open. The lock now lives in `openAtlasStore` and is released by
+`store.close()`, so the guarantee is structural: every read-write opener is
+guarded by the single act of opening, and no future entrypoint has to remember.
+
+**CONSTRAINT — back up from a store at rest.** `real-data:store-backup` is a
+filesystem copy that takes no lock, and its own header scopes safe concurrency to
+a store that is *served read-only*. Taken while the service is mid-append it can
+capture a torn trailing record; the manifest's digests would then be perfectly
+self-consistent with a torn snapshot, which is worse than an obvious failure.
+**Stop the service (or run it read-only) before backing up.** The lock now makes
+the reverse mistake impossible — a maintenance runner cannot open read-write
+under a live service — but a *reading* backup is still the operator's discipline.
+
+**CONSTRAINT — least-privilege the writer credential.** The owner-writer grant
+must not be a superset of the owner read grant. Specifically it should NOT carry
+`atlas.sensitive.reveal.v1` or `reveal_available: true` (reveal is a read-side
+escalation and has nothing to do with create/rename/assert/retract), and
+`supersession_scope` stays `own-client-id` unless correcting migration-written
+edges is genuinely required — `grant.ts` documents `any` as "can rewrite
+attribution", which is strictly broader than the read grant. Otherwise the
+everyday, always-connected credential becomes the most powerful one on every
+axis and the read-only owner grant becomes vestigial.
+
+**CONSTRAINT — the write bearer is the highest-value secret in the system.** It
+can write the only cleartext copy of the graph, and a bearer must be presented
+verbatim by the client. It must never live in a non-`0600` file. A client that
+can only hold a static header in a world-readable config is a reason to front the
+service with a shim that injects the header, not a reason to accept the config.
+
+**RECORDED — a rename leaves no ledger row, deliberately.** `display_name` /
+`also_known_as` are therefore the one mutable property in an otherwise
+append-only graph. This is not a gap: the identity log is append-only, so the
+prior record — and every earlier name — remains readable, and the change feed
+carries `entity-renamed`. What a rename must NOT do is mint an id or write a
+redirect, because that would make correcting a spelling a re-identification. The
+distinction is the whole reason `rename` exists separately from `merge`.
+
 ## Consequences
 
 - The graph is editable in place by an authenticated owner writer: create,
