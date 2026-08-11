@@ -49,6 +49,47 @@ export const LineageActionSchema = z.enum([
   "other"
 ]);
 
+/**
+ * Whether a lineage action AFFIRMS the relationship it names, for a reader that
+ * has to decide "does this edge exist right now?".
+ *
+ * A traversal cannot answer that from `kind` alone, and assuming it can is a
+ * defect this repository shipped: `atlas.graph.neighbors.v1` filtered on
+ * `kind === "relationship"` and nothing else, so a RETRACTION — which is itself
+ * a relationship assertion carrying the same subject, predicate and target,
+ * because that is how supersession is expressed — was counted as an edge. The
+ * effect was that a retraction removed a claim from `atlas.assertion.query.v1`
+ * and left it standing in the traversal, with the audit trail and the graph
+ * disagreeing and nothing to indicate it. Measured against the real graph.
+ *
+ * A total `Record` rather than a predicate with a default: a seventh lineage
+ * action must fail to compile until somebody decides whether it asserts the
+ * relationship, instead of silently inheriting whichever answer the `else`
+ * branch happened to give.
+ *
+ *  - `assert`, `correct`, `reinstate` — the record IS the current claim.
+ *  - `invalidate` — the relationship was true and stopped being true. It stays
+ *    an edge because it carries the world-time interval in which it held, and
+ *    excluding it would delete real history from an `as_of_valid` read. A
+ *    caller asking about now is answered by valid-time filtering, not here.
+ *  - `retract` — a BELIEF error, "we should never have said this". Never an edge
+ *    at any world time, which is exactly what distinguishes it from
+ *    `invalidate`.
+ *  - `other` — the forward-compatibility escape hatch. Fail CLOSED: a reader
+ *    that does not understand a lineage action must not present it as a live
+ *    relationship, for the same reason `kind: "other"` exists — better to be
+ *    visibly ignorant than to silently misread. It remains readable through
+ *    `atlas.assertion.query.v1`, so nothing is hidden, only un-asserted.
+ */
+export const LINEAGE_ACTION_AFFIRMS_EDGE: Record<z.infer<typeof LineageActionSchema>, boolean> = {
+  assert: true,
+  correct: true,
+  reinstate: true,
+  invalidate: true,
+  retract: false,
+  other: false
+};
+
 export const ConfidenceBandSchema = z.enum(["high", "medium", "low", "other"]);
 
 /**

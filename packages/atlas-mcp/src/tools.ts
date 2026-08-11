@@ -9,6 +9,7 @@ import {
 } from "@living-atlas/atlas-contract";
 import {
   DEFAULT_ASSERTION_SENSITIVITY,
+  LINEAGE_ACTION_AFFIRMS_EDGE,
   canonicalRecordedAt,
   validTimeFidelity,
   type Assertion,
@@ -717,7 +718,18 @@ const walkNeighbors: ToolHandler = (args, context) => {
   });
   if (!page.ok) return historyFloorRefusal(context, asOfRecorded ?? "");
 
-  const relationships = page.hits.filter((hit) => hit.assertion.kind === "relationship" && hit.assertion.target_entity_id);
+  /**
+   * `kind` says the record IS a relationship; `lineage_action` says whether it
+   * AFFIRMS one. Filtering on the first alone counted a retraction as an edge,
+   * because a retraction carries the same subject, predicate and target as the
+   * claim it withdraws — see `LINEAGE_ACTION_AFFIRMS_EDGE`.
+   */
+  const relationships = page.hits.filter(
+    (hit) =>
+      hit.assertion.kind === "relationship" &&
+      hit.assertion.target_entity_id &&
+      LINEAGE_ACTION_AFFIRMS_EDGE[hit.assertion.lineage_action]
+  );
 
   const tally = emptyTally();
   tally.evaluated = page.coverage.evaluated;
