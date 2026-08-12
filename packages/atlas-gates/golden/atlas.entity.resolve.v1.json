@@ -1,12 +1,12 @@
 {
   "case": "atlas.entity.resolve.v1",
-  "contract_revision": "2026.08.3",
+  "contract_revision": "2026.08.4",
   "intent": "One resolvable id and one that was never minted, so both outcomes are recorded side by side.",
   "response": {
     "_meta": {
       "io.modelcontextprotocol/serverInfo": {
         "name": "living-atlas-consumer",
-        "version": "2026.08.3"
+        "version": "2026.08.4"
       }
     },
     "content": "<the text block is JSON.stringify(structuredContent)>",

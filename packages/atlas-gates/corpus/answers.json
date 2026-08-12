@@ -604,5 +604,5 @@
     }
   ],
   "contract": "These are answers, not fixtures. A difference here means the same question now has a different answer than it had when this file was recorded, which is a BREAKING change to the meaning of the data — regardless of how small the code change was. The remedy is a new contract revision under schema/, not a re-recorded file. Re-record only when the owner has decided the old answers were wrong, and say so in the commit message.",
-  "contract_revision": "2026.08.1"
+  "contract_revision": "2026.08.4"
 }

@@ -5,6 +5,7 @@ import {
   CONTRACT_PROTOCOL_VERSION,
   CONTRACT_REVISION,
   CONTRACT_TOOL_NAMES,
+  CONTRACT_URN_PREFIX,
   RECORD_SCHEMAS,
   type RecordSchemaName
 } from "./revision.js";
@@ -81,14 +82,17 @@ function recordDocument(name: RecordSchemaName): JsonSchema {
 export function generateContract(): GeneratedContract {
   const documents: ContractDocument[] = [];
 
+  const commons = {} as Record<Position, JsonSchema>;
   for (const position of ["input", "output"] as const) {
     const schema = commonDocument(position);
     assertStrictness(schema, position, `common.${position}.json`);
     if (position === "input") assertNoRecordRefs(schema, "common.input.json");
     documents.push({ path: `common.${position}.json`, schema });
+    commons[position] = schema;
   }
 
   const recordEntries: ManifestRecord[] = [];
+  const records: Partial<Record<RecordSchemaName, JsonSchema>> = {};
   for (const name of RECORD_SCHEMAS) {
     const path = `records/${recordFileStem(name)}.json`;
     const schema = recordDocument(name);
@@ -96,6 +100,7 @@ export function generateContract(): GeneratedContract {
     assertReservedOther(schema, path);
     documents.push({ path, schema });
     recordEntries.push({ name, schema: path, schema_id: recordUrn(name) });
+    records[name] = schema;
   }
 
   const tools: ManifestTool[] = [];
@@ -103,25 +108,35 @@ export function generateContract(): GeneratedContract {
     const inputPath = `tools/${tool.name}.input.json`;
     const outputPath = `tools/${tool.name}.output.json`;
 
-    const inputSchema: JsonSchema = {
-      $schema: DIALECT,
-      $id: toolUrn(tool.name, "input"),
-      title: `${tool.name} — arguments`,
-      description: tool.description,
-      ...render(tool.input, "input")
-    };
-    const outputSchema: JsonSchema = {
-      $schema: DIALECT,
-      $id: toolUrn(tool.name, "output"),
-      title: `${tool.name} — result`,
-      description: tool.description,
-      ...render(tool.output, "output")
-    };
+    const inputSchema: JsonSchema = bundle(
+      {
+        $schema: DIALECT,
+        $id: toolUrn(tool.name, "input"),
+        title: `${tool.name} — arguments`,
+        description: tool.description,
+        ...render(tool.input, "input")
+      },
+      commons,
+      records
+    );
+    const outputSchema: JsonSchema = bundle(
+      {
+        $schema: DIALECT,
+        $id: toolUrn(tool.name, "output"),
+        title: `${tool.name} — result`,
+        description: tool.description,
+        ...render(tool.output, "output")
+      },
+      commons,
+      records
+    );
 
     assertStrictness(inputSchema, "input", inputPath);
     assertNoRecordRefs(inputSchema, inputPath);
     assertStrictness(outputSchema, "output", outputPath);
     assertReservedOther(outputSchema, outputPath);
+    assertSelfContained(inputSchema, inputPath);
+    assertSelfContained(outputSchema, outputPath);
 
     documents.push({ path: inputPath, schema: inputSchema });
     documents.push({ path: outputPath, schema: outputSchema });
@@ -163,6 +178,101 @@ export function generateContract(): GeneratedContract {
   };
 
   return { manifest, documents };
+}
+
+// ---------------------------------------------------------------------------
+// bundling
+// ---------------------------------------------------------------------------
+
+/**
+ * Make one tool document resolvable with nothing but itself.
+ *
+ * The wire hands a consumer exactly one document per tool, and the MCP protocol
+ * (2026-07-28, "$ref Resolution") forbids that consumer from dereferencing
+ * anything outside it: a validator compiles each `tools/list` entry in
+ * isolation, and an unresolved external `$ref` is a rejection, not a skip. A
+ * cross-document `$ref` that is not carried inside the document is therefore
+ * unresolvable BY CONSTRUCTION for every conforming client — which is exactly
+ * how every consumer-plane call failed from the MCP SDK's own client while the
+ * server, holding all the documents, validated the same bytes happily.
+ *
+ * So the generator embeds each tool document's transitive closure — the shared
+ * definitions and record documents its `$ref`s reach — under the document's own
+ * `$defs`, each copy keeping its original `$id`. No `$ref` string changes:
+ * a `urn:` reference now resolves to the embedded schema resource, which is the
+ * standard JSON Schema 2020-12 bundling process, and the URN scheme keeps its
+ * security property (nothing here is fetchable over a network, embedded or
+ * not).
+ *
+ * Closure is computed per tool rather than embedding the whole common corpus,
+ * for the same reason `commonDocument` emits only what each side can reference:
+ * an embedded definition nothing reaches is published, reviewed by nobody, and
+ * reads as authoritative to whoever finds it.
+ */
+function bundle(
+  schema: JsonSchema,
+  commons: Record<Position, JsonSchema>,
+  records: Partial<Record<RecordSchemaName, JsonSchema>>
+): JsonSchema {
+  const neededDefs: Record<Position, Set<string>> = { input: new Set(), output: new Set() };
+  const neededRecords = new Set<RecordSchemaName>();
+
+  const commonDefs = (position: Position): Record<string, JsonSchema> =>
+    commons[position]["$defs"] as Record<string, JsonSchema>;
+
+  const visit = (node: JsonSchema): void => {
+    walk(node, (child) => {
+      const ref = child["$ref"];
+      if (typeof ref !== "string" || ref.startsWith("#")) return;
+      for (const position of ["input", "output"] as const) {
+        const prefix = `${commonUrn(position)}#/$defs/`;
+        if (!ref.startsWith(prefix)) continue;
+        const name = ref.slice(prefix.length);
+        if (neededDefs[position].has(name)) return;
+        const definition = commonDefs(position)[name];
+        if (!definition) throw new Error(`$ref ${ref} names no published shared definition`);
+        neededDefs[position].add(name);
+        visit(definition);
+        return;
+      }
+      const recordPrefix = `${CONTRACT_URN_PREFIX}:record:`;
+      if (ref.startsWith(recordPrefix)) {
+        const name = ref.slice(recordPrefix.length) as RecordSchemaName;
+        if (neededRecords.has(name)) return;
+        const document = records[name];
+        if (!document) throw new Error(`$ref ${ref} names no published record schema`);
+        neededRecords.add(name);
+        visit(document);
+        return;
+      }
+      throw new Error(`$ref ${ref} is neither a shared definition nor a record schema; nothing can bundle it`);
+    });
+  };
+
+  visit(schema);
+
+  const embedded: Record<string, JsonSchema> = {};
+  for (const position of ["input", "output"] as const) {
+    if (neededDefs[position].size === 0) continue;
+    const defs: Record<string, JsonSchema> = {};
+    for (const name of [...neededDefs[position]].sort()) {
+      const definition = commonDefs(position)[name];
+      if (definition) defs[name] = definition;
+    }
+    embedded[commonUrn(position)] = { $id: commonUrn(position), $defs: defs };
+  }
+  for (const name of RECORD_SCHEMAS) {
+    if (!neededRecords.has(name)) continue;
+    const document = records[name];
+    if (!document) continue;
+    // The embedded copy keeps its `$id` (that is what the `$ref`s resolve to)
+    // and drops `$schema`: an embedded resource with no dialect declaration
+    // inherits the root document's, which is the same one.
+    const { $schema: _dialect, ...body } = document;
+    embedded[recordUrn(name)] = body;
+  }
+
+  return Object.keys(embedded).length === 0 ? schema : { ...schema, $defs: embedded };
 }
 
 // ---------------------------------------------------------------------------
@@ -219,6 +329,45 @@ export function assertStrictness(schema: JsonSchema, position: Position, path: s
       throw new Error(
         `${path} ${pointer}: an output object must leave additionalProperties unconstrained, found ${JSON.stringify(additional)}`
       );
+    }
+  });
+}
+
+/**
+ * Every `$ref` in a published tool document resolves within that document:
+ * a same-document pointer, or a URN naming a resource embedded under the
+ * document's own `$defs` (and, for a pointer fragment, the named definition on
+ * that resource). Re-checked on the emitted JSON for the same reason
+ * `assertStrictness` is: `bundle()` applies the rule, and a rule checked only
+ * where it is applied has one point of failure.
+ */
+export function assertSelfContained(schema: JsonSchema, path: string): void {
+  const resources = new Map<string, JsonSchema>();
+  const rootId = schema["$id"];
+  if (typeof rootId === "string") resources.set(rootId, schema);
+  const defs = schema["$defs"];
+  if (isSchema(defs)) {
+    for (const embedded of Object.values(defs)) {
+      if (isSchema(embedded) && typeof embedded["$id"] === "string") {
+        resources.set(embedded["$id"], embedded);
+      }
+    }
+  }
+
+  walk(schema, (node, pointer) => {
+    const ref = node["$ref"];
+    if (typeof ref !== "string" || ref.startsWith("#")) return;
+    const [base = "", fragment = ""] = ref.split("#");
+    const resource = resources.get(base);
+    if (!resource) {
+      throw new Error(`${path} ${pointer}: $ref ${ref} resolves to no resource embedded in the document`);
+    }
+    if (fragment.startsWith("/$defs/")) {
+      const name = fragment.slice("/$defs/".length);
+      const embeddedDefs = resource["$defs"];
+      if (!isSchema(embeddedDefs) || !isSchema(embeddedDefs[name])) {
+        throw new Error(`${path} ${pointer}: $ref ${ref} names no definition on the embedded resource`);
+      }
     }
   });
 }

@@ -1,0 +1,130 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:living-atlas:contract:2026.08.4:tool:atlas.graph.neighbors.v1:input",
+  "title": "atlas.graph.neighbors.v1 — arguments",
+  "description": "Traverse relationship assertions outward from one entity, bounded by depth and pinned to both time axes. Nodes and edges are returned as self-describing records; anything this credential may not read arrives as a redaction stub so the shape of what was skipped is still visible.",
+  "type": "object",
+  "properties": {
+    "entity_id": {
+      "$ref": "urn:living-atlas:contract:2026.08.4:common:input#/$defs/entity_id"
+    },
+    "direction": {
+      "type": "string",
+      "enum": [
+        "outbound",
+        "inbound",
+        "both"
+      ]
+    },
+    "predicates": {
+      "type": "array",
+      "items": {
+        "$ref": "urn:living-atlas:contract:2026.08.4:common:input#/$defs/predicate"
+      },
+      "maxItems": 100
+    },
+    "max_depth": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 5,
+      "default": 1
+    },
+    "as_of_recorded": {
+      "$ref": "urn:living-atlas:contract:2026.08.4:common:input#/$defs/recorded_at",
+      "description": "BELIEF axis. Below the retained history floor this is refused, never answered from present state."
+    },
+    "as_of_valid": {
+      "$ref": "urn:living-atlas:contract:2026.08.4:common:input#/$defs/world_time_probe",
+      "description": "WORLD axis."
+    },
+    "page_size": {
+      "$ref": "urn:living-atlas:contract:2026.08.4:common:input#/$defs/page_size"
+    },
+    "cursor": {
+      "$ref": "urn:living-atlas:contract:2026.08.4:common:input#/$defs/page_cursor"
+    },
+    "snapshot": {
+      "$ref": "urn:living-atlas:contract:2026.08.4:common:input#/$defs/snapshot_token"
+    }
+  },
+  "required": [
+    "entity_id"
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "urn:living-atlas:contract:2026.08.4:common:input": {
+      "$id": "urn:living-atlas:contract:2026.08.4:common:input",
+      "$defs": {
+        "entity_id": {
+          "type": "string",
+          "pattern": "^la_entity_[0-9a-z]{26}$",
+          "description": "Minted once, never re-derived, and never reused. An id Atlas returned resolves forever."
+        },
+        "page_cursor": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Opaque. Echo what the prior page returned."
+        },
+        "page_size": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 200,
+          "default": 50,
+          "description": "Transport-invariant cap. A transport may not narrow it."
+        },
+        "predicate": {
+          "type": "string",
+          "description": "Open vocabulary. Cardinality and the functional key for each predicate are published by atlas.contract.describe.v1; validate against that, not against this hint.",
+          "minLength": 1,
+          "x-atlas-vocabulary": "predicate",
+          "x-atlas-known-values": [
+            "employed-by",
+            "member-of",
+            "part-of",
+            "contained-in",
+            "has-type",
+            "operated-by",
+            "based-in",
+            "occurred-at",
+            "participant-in",
+            "connects",
+            "owns",
+            "offered-by",
+            "sold-by",
+            "purchased",
+            "customer-of",
+            "founder-of",
+            "acquired-by",
+            "invests-in",
+            "about",
+            "parent-of",
+            "spouse-of",
+            "sibling-of",
+            "estranged-from",
+            "introduced-by",
+            "created",
+            "display-name",
+            "resolved-same-entity-as",
+            "resolved-split-into"
+          ],
+          "x-atlas-registry-tool": "atlas.contract.describe.v1"
+        },
+        "recorded_at": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+          "description": "Belief-time instant: RFC 3339, UTC, `Z`, exactly millisecond precision. Canonicalised so string order equals chronological order, because the change feed is ordered by string comparison. An offset-bearing timestamp sorts wrong even when it names the same instant, so offsets are not accepted."
+        },
+        "snapshot_token": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The pin returned with page 1. Pages 2..N MUST echo it. Without it a later page is computed against newer state, so the sequence silently skips and repeats rows."
+        },
+        "world_time_probe": {
+          "type": "string",
+          "pattern": "^\\d{4}(-\\d{2}(-\\d{2})?)?$",
+          "description": "A partial date on the WORLD axis. Matching is interval overlap, not point containment, so `2019` asks \"true at any point in 2019\"."
+        }
+      }
+    }
+  }
+}

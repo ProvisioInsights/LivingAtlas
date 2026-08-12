@@ -1,0 +1,246 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:living-atlas:contract:2026.08.4:tool:atlas.entity.create.v1:output",
+  "title": "atlas.entity.create.v1 — result",
+  "description": "Mint a new entity and return it. The id is minted by Atlas and never derived from the name, so renaming later cannot move it. This does NOT deduplicate: two calls make two entities, repairable by a merge, because guessing that two requests meant one thing is the conflation the identity model exists to prevent. Facts ABOUT the entity are separate assertions via atlas.assertion.propose.v1.",
+  "type": "object",
+  "properties": {
+    "entity": {
+      "$ref": "urn:living-atlas:contract:2026.08.4:record:atlas.entity:v1"
+    },
+    "horizon": {
+      "$ref": "urn:living-atlas:contract:2026.08.4:record:atlas.horizon:v1"
+    }
+  },
+  "required": [
+    "entity",
+    "horizon"
+  ],
+  "$defs": {
+    "urn:living-atlas:contract:2026.08.4:common:output": {
+      "$id": "urn:living-atlas:contract:2026.08.4:common:output",
+      "$defs": {
+        "entity_id": {
+          "type": "string",
+          "pattern": "^la_entity_[0-9a-z]{26}$",
+          "description": "Minted once, never re-derived, and never reused. An id Atlas returned resolves forever."
+        },
+        "provenance": {
+          "type": "object",
+          "properties": {
+            "client_id": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Set by Atlas from the authenticated credential. A consumer can neither supply nor spoof it. The prior server unconditionally replaced any caller credential with the daemon's own token, collapsing every consumer to one identity and making attribution impossible."
+            },
+            "origin": {
+              "type": "string",
+              "enum": [
+                "consumer-proposed",
+                "owner-authored",
+                "pre-contract-import",
+                "other"
+              ]
+            },
+            "recorded_at_fidelity": {
+              "type": "string",
+              "description": "authoritative: Atlas stamped recorded_at at commit, so belief-time ordering is meaningful. import-artifact: the value reflects when a file was processed, not when Atlas learned anything. Ordering across the two is meaningless permanently, not just below the history floor.",
+              "enum": [
+                "authoritative",
+                "import-artifact",
+                "other"
+              ]
+            },
+            "proposed_at": {
+              "type": "string",
+              "minLength": 1
+            },
+            "basis": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "required": [
+            "client_id",
+            "origin",
+            "recorded_at_fidelity"
+          ]
+        },
+        "recorded_at": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+          "description": "Belief-time instant: RFC 3339, UTC, `Z`, exactly millisecond precision. Canonicalised so string order equals chronological order, because the change feed is ordered by string comparison. An offset-bearing timestamp sorts wrong even when it names the same instant, so offsets are not accepted."
+        },
+        "sensitivity": {
+          "type": "object",
+          "properties": {
+            "tier": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Open string; a new tier in 2032 is additive."
+            },
+            "rank": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Compare this, never the tier name."
+            },
+            "withheld": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "tier",
+            "rank",
+            "withheld"
+          ]
+        },
+        "world_time_probe": {
+          "type": "string",
+          "pattern": "^\\d{4}(-\\d{2}(-\\d{2})?)?$",
+          "description": "A partial date on the WORLD axis. Matching is interval overlap, not point containment, so `2019` asks \"true at any point in 2019\"."
+        }
+      }
+    },
+    "urn:living-atlas:contract:2026.08.4:record:atlas.entity:v1": {
+      "$id": "urn:living-atlas:contract:2026.08.4:record:atlas.entity:v1",
+      "title": "atlas.entity:v1",
+      "type": "object",
+      "description": "A thing the graph makes claims about. There is no `merged` or `redirected` status field: a second place the redirect state is written is a second place that can disagree with the alias ledger. The ledger is the only redirect authority and atlas.entity.resolve.v1 is the only way to ask.",
+      "properties": {
+        "record_schema": {
+          "const": "atlas.entity:v1"
+        },
+        "entity_id": {
+          "$ref": "urn:living-atlas:contract:2026.08.4:common:output#/$defs/entity_id"
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "person",
+            "organization",
+            "place",
+            "concept",
+            "source-document",
+            "event",
+            "other"
+          ]
+        },
+        "type_label": {
+          "type": "string",
+          "description": "Required when type is `other`, forbidden otherwise. This is the open half of a two-layer typing scheme: a kind of thing added in 2031 reaches a 2026 consumer as type `other` plus a label it can display, never as a token it might branch on by accident.",
+          "minLength": 1,
+          "x-atlas-vocabulary": "entity_subtype",
+          "x-atlas-known-values": [
+            "project",
+            "offering",
+            "offering-item",
+            "topic",
+            "occurrence",
+            "source-block",
+            "evidence"
+          ],
+          "x-atlas-registry-tool": "atlas.contract.describe.v1"
+        },
+        "display_name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "also_known_as": {
+          "type": "array",
+          "description": "Nicknames, not aliases. In Atlas an alias is a row in the id ledger; letting one word mean both a nickname and an id redirect is how a rename becomes a re-identification. Renaming writes no ledger row and cannot move an id.",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "registered_at": {
+          "$ref": "urn:living-atlas:contract:2026.08.4:common:output#/$defs/recorded_at"
+        },
+        "updated_at": {
+          "$ref": "urn:living-atlas:contract:2026.08.4:common:output#/$defs/recorded_at"
+        },
+        "provenance": {
+          "$ref": "urn:living-atlas:contract:2026.08.4:common:output#/$defs/provenance"
+        },
+        "sensitivity": {
+          "$ref": "urn:living-atlas:contract:2026.08.4:common:output#/$defs/sensitivity"
+        }
+      },
+      "required": [
+        "record_schema",
+        "entity_id",
+        "type",
+        "display_name",
+        "also_known_as",
+        "registered_at",
+        "updated_at",
+        "provenance",
+        "sensitivity"
+      ]
+    },
+    "urn:living-atlas:contract:2026.08.4:record:atlas.horizon:v1": {
+      "$id": "urn:living-atlas:contract:2026.08.4:record:atlas.horizon:v1",
+      "title": "atlas.horizon:v1",
+      "type": "object",
+      "description": "What this answer can and cannot speak for. Present on every read result — the honesty block is not optional and not conditional on anything having gone wrong.",
+      "properties": {
+        "record_schema": {
+          "const": "atlas.horizon:v1"
+        },
+        "status": {
+          "type": "string",
+          "description": "complete: everything matching was evaluated. partial: something was not reachable and coverage says how much. unknowable: the question cannot be answered from retained history at all.",
+          "enum": [
+            "complete",
+            "partial",
+            "unknowable",
+            "other"
+          ]
+        },
+        "bitemporal_since": {
+          "$ref": "urn:living-atlas:contract:2026.08.4:common:output#/$defs/recorded_at",
+          "description": "The belief-time history floor. Reads before it are refused, not answered from present state. Atlas has no pre-cutover belief history and says so rather than implying one."
+        },
+        "feed_epoch": {
+          "type": "string",
+          "minLength": 1,
+          "description": "A change of epoch invalidates every cursor, loudly."
+        },
+        "seq_watermark": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "The highest seq this answer accounts for. With feed_epoch and as_of_recorded it is the snapshot pin."
+        },
+        "as_of_recorded": {
+          "$ref": "urn:living-atlas:contract:2026.08.4:common:output#/$defs/recorded_at",
+          "description": "The belief instant this answer was computed at — echoed even when the caller did not supply one."
+        },
+        "as_of_valid": {
+          "$ref": "urn:living-atlas:contract:2026.08.4:common:output#/$defs/world_time_probe"
+        },
+        "recorded_at_fidelity_mixed": {
+          "type": "boolean",
+          "description": "True when the answer mixes Atlas-stamped belief times with import artifacts. Belief-time ordering across that boundary is meaningless, so it is a property of the RESULT and not only of the query."
+        },
+        "retention_floor_seq": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Highest seq compaction has reclaimed. 0 when nothing ever was."
+        },
+        "migration_window_open": {
+          "type": "boolean",
+          "description": "True while an audited migration window has append-only immutability suspended. Surfaced in READ responses because an answer taken during one may not be reproducible afterwards."
+        }
+      },
+      "required": [
+        "record_schema",
+        "status",
+        "bitemporal_since",
+        "feed_epoch",
+        "seq_watermark",
+        "as_of_recorded",
+        "recorded_at_fidelity_mixed"
+      ]
+    }
+  }
+}

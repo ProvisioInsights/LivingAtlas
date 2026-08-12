@@ -1,12 +1,12 @@
 {
   "case": "atlas.entity.create.v1",
-  "contract_revision": "2026.08.3",
+  "contract_revision": "2026.08.4",
   "intent": "A minted entity with the id Atlas chose, its owner-authored provenance and its sensitivity block. Records that the id is NOT derived from the name.",
   "response": {
     "_meta": {
       "io.modelcontextprotocol/serverInfo": {
         "name": "living-atlas-consumer",
-        "version": "2026.08.3"
+        "version": "2026.08.4"
       }
     },
     "content": "<the text block is JSON.stringify(structuredContent)>",
