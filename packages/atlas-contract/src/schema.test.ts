@@ -12,7 +12,7 @@ import { loadContract, schemaDirectory } from "./manifest.js";
 import { recordUrn } from "./shape.js";
 import { CONTRACT_LIMITS, CONTRACT_REVISION, CONTRACT_TOOL_NAMES, RECORD_SCHEMAS } from "./revision.js";
 import { RECORD_SAMPLES, TOOL_INPUT_SAMPLES } from "./samples.js";
-import { createContractValidator } from "./validator.js";
+import { compileIsolated, createContractValidator } from "./validator.js";
 import { packageRoot } from "./write-schemas.js";
 import type { JsonSchema } from "./shape.js";
 
@@ -82,6 +82,52 @@ describe("published schema documents", () => {
       expect(ref.startsWith("urn:living-atlas:contract:")).toBe(true);
       expect(ref).not.toMatch(/^https?:/);
     }
+  });
+
+  it("publishes every tool document self-contained: it compiles with nothing else registered", () => {
+    // A conforming MCP client (protocol 2026-07-28, "$ref Resolution") compiles
+    // each tools/list entry in isolation and MUST NOT dereference anything
+    // outside it — an unresolved external $ref is a rejection, not a skip. So a
+    // tool document is usable exactly when it compiles with an empty registry.
+    // 2026.08.3 failed this for all fourteen tools: its cross-document URN refs
+    // made every consumer-plane call from the MCP SDK's own client fail with
+    // "can't resolve reference ... from id ..." before reaching the server.
+    for (const tool of contract.tools) {
+      expect(() => compileIsolated(tool.inputSchema, `${tool.name} input`)).not.toThrow();
+      expect(() => compileIsolated(tool.outputSchema, `${tool.name} output`)).not.toThrow();
+    }
+  });
+
+  it("embeds copies that are identical to the published standalone definitions", () => {
+    // Bundling duplicates bytes, and duplicated bytes can fork. Every resource
+    // embedded under a tool document's $defs must be exactly the published
+    // standalone document (records lose only their $schema line; shared
+    // definitions are the standalone document's own entries) — so a reader of
+    // either copy is reading the same reviewed artifact.
+    let embeddedResources = 0;
+    for (const tool of contract.tools) {
+      for (const document of [tool.inputSchema, tool.outputSchema]) {
+        const defs = (document["$defs"] ?? {}) as Record<string, JsonSchema>;
+        for (const [key, embedded] of Object.entries(defs)) {
+          embeddedResources += 1;
+          expect(embedded["$id"]).toBe(key);
+          const record = contract.manifest.record_schemas.find((entry) => entry.schema_id === key);
+          if (record) {
+            const { $schema: _dialect, ...standalone } = at(contract.records, key);
+            expect(embedded).toEqual(standalone);
+            continue;
+          }
+          const standalone = at(contract.common, key);
+          const standaloneDefs = standalone["$defs"] as Record<string, JsonSchema>;
+          const embeddedDefs = embedded["$defs"] as Record<string, JsonSchema>;
+          expect(Object.keys(embeddedDefs).length).toBeGreaterThan(0);
+          for (const [name, definition] of Object.entries(embeddedDefs)) {
+            expect(definition).toEqual(at(standaloneDefs, name));
+          }
+        }
+      }
+    }
+    expect(embeddedResources).toBeGreaterThan(20);
   });
 
   it("declares an outputSchema for every tool", () => {

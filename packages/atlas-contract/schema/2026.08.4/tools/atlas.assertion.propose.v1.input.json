@@ -1,0 +1,250 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:living-atlas:contract:2026.08.4:tool:atlas.assertion.propose.v1:input",
+  "title": "atlas.assertion.propose.v1 — arguments",
+  "description": "Commit one or more assertions under a single idempotency key. The submission is all-or-nothing: one submission is one durable commit group. A retry with the same (client_id, idempotency_key) returns the ORIGINAL receipt with the ORIGINAL ids; the same key with a different payload is a typed conflict, never a silent accept of either version.",
+  "type": "object",
+  "properties": {
+    "idempotency_key": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "description": "Identity is (client_id, idempotency_key) and never a content hash: an assertion's body carries a server-assigned recorded_at, so the same logical write can never hash the same twice. Content-addressed identity and server-assigned belief time are mutually exclusive, and belief time wins."
+    },
+    "proposals": {
+      "type": "array",
+      "items": {
+        "$ref": "urn:living-atlas:contract:2026.08.4:common:input#/$defs/assertion_draft"
+      },
+      "minItems": 1,
+      "maxItems": 100
+    },
+    "expected_feed_epoch": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Refuse the commit if the epoch has rolled since you last read. Optional; supply it when superseding."
+    }
+  },
+  "required": [
+    "idempotency_key",
+    "proposals"
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "urn:living-atlas:contract:2026.08.4:common:input": {
+      "$id": "urn:living-atlas:contract:2026.08.4:common:input",
+      "$defs": {
+        "assertion_draft": {
+          "type": "object",
+          "description": "Note what a caller cannot supply: assertion_id, seq, recorded_at, superseded_at, claim_digest, provenance.client_id. Everything that carries authority is minted by Atlas at commit.",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "fact",
+                "relationship",
+                "observation"
+              ]
+            },
+            "lineage_action": {
+              "type": "string",
+              "description": "assert: a new claim. correct: the prior claim was recorded wrongly, both stay readable. retract: a BELIEF error — we should never have said this, and world time is untouched because the world did not change. invalidate: a WORLD change — this was true and has stopped being true, typically also closing valid_to. reinstate: re-assert something retracted. Any action other than `assert` MUST name what it acts on in supersedes[].",
+              "enum": [
+                "assert",
+                "correct",
+                "retract",
+                "invalidate",
+                "reinstate"
+              ]
+            },
+            "subject_entity_id": {
+              "$ref": "urn:living-atlas:contract:2026.08.4:common:input#/$defs/entity_id"
+            },
+            "predicate": {
+              "$ref": "urn:living-atlas:contract:2026.08.4:common:input#/$defs/predicate"
+            },
+            "value": {
+              "description": "Whatever the predicate says it is. The one place input strictness does not reach, and deliberately so: typing it would require the contract to own the predicate vocabulary, which the graph owns. It is a value, never an envelope — nothing about the request's meaning hides inside it."
+            },
+            "target_entity_id": {
+              "$ref": "urn:living-atlas:contract:2026.08.4:common:input#/$defs/entity_id"
+            },
+            "valid_from": {
+              "$ref": "urn:living-atlas:contract:2026.08.4:common:input#/$defs/world_time_point"
+            },
+            "valid_to": {
+              "$ref": "urn:living-atlas:contract:2026.08.4:common:input#/$defs/world_time_point",
+              "description": "Half-open [from, to). Absent means ongoing."
+            },
+            "supersedes": {
+              "type": "array",
+              "items": {
+                "$ref": "urn:living-atlas:contract:2026.08.4:common:input#/$defs/assertion_id"
+              },
+              "maxItems": 100
+            },
+            "confidence": {
+              "$ref": "urn:living-atlas:contract:2026.08.4:common:input#/$defs/confidence"
+            },
+            "evidence_links": {
+              "type": "array",
+              "items": {
+                "$ref": "urn:living-atlas:contract:2026.08.4:common:input#/$defs/evidence_link"
+              },
+              "minItems": 1
+            },
+            "basis": {
+              "type": "string",
+              "minLength": 1
+            },
+            "proposed_at": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Advisory only, and NOT a time axis. Atlas stamps recorded_at itself at commit; a caller-supplied belief time would let a client backdate what Atlas knew."
+            }
+          },
+          "required": [
+            "kind",
+            "subject_entity_id",
+            "predicate",
+            "confidence",
+            "evidence_links"
+          ],
+          "additionalProperties": false
+        },
+        "assertion_id": {
+          "type": "string",
+          "pattern": "^la_assertion_[0-9a-z]{26}$",
+          "description": "Minted, never derived. Nothing about an assertion's content, position or encoding influences its id. Ids sort by mint time as an index convenience — never infer feed order (that is `seq`) or belief time (that is `recorded_at`) from one."
+        },
+        "confidence": {
+          "type": "object",
+          "properties": {
+            "band": {
+              "type": "string",
+              "enum": [
+                "high",
+                "medium",
+                "low"
+              ]
+            },
+            "rationale": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "required": [
+            "band"
+          ],
+          "additionalProperties": false
+        },
+        "entity_id": {
+          "type": "string",
+          "pattern": "^la_entity_[0-9a-z]{26}$",
+          "description": "Minted once, never re-derived, and never reused. An id Atlas returned resolves forever."
+        },
+        "evidence_link": {
+          "type": "object",
+          "properties": {
+            "evidence_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "stance": {
+              "type": "string",
+              "enum": [
+                "supports",
+                "contradicts",
+                "context"
+              ]
+            }
+          },
+          "required": [
+            "evidence_id",
+            "stance"
+          ],
+          "additionalProperties": false
+        },
+        "predicate": {
+          "type": "string",
+          "description": "Open vocabulary. Cardinality and the functional key for each predicate are published by atlas.contract.describe.v1; validate against that, not against this hint.",
+          "minLength": 1,
+          "x-atlas-vocabulary": "predicate",
+          "x-atlas-known-values": [
+            "employed-by",
+            "member-of",
+            "part-of",
+            "contained-in",
+            "has-type",
+            "operated-by",
+            "based-in",
+            "occurred-at",
+            "participant-in",
+            "connects",
+            "owns",
+            "offered-by",
+            "sold-by",
+            "purchased",
+            "customer-of",
+            "founder-of",
+            "acquired-by",
+            "invests-in",
+            "about",
+            "parent-of",
+            "spouse-of",
+            "sibling-of",
+            "estranged-from",
+            "introduced-by",
+            "created",
+            "display-name",
+            "resolved-same-entity-as",
+            "resolved-split-into"
+          ],
+          "x-atlas-registry-tool": "atlas.contract.describe.v1"
+        },
+        "world_time_point": {
+          "description": "A world-time endpoint. World time is when a thing was true; belief time is when Atlas learned it. The two axes are never interchangeable.",
+          "anyOf": [
+            {
+              "type": "object",
+              "description": "The world-time endpoint is not known. `unknown` never matches an as-of point, never sorts, and is not a large number: the prior store mapped it to the string \"9999\", so an unknown start silently satisfied every \"before X\" filter.",
+              "properties": {
+                "kind": {
+                  "const": "unknown"
+                }
+              },
+              "required": [
+                "kind"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "description": "`approximate` widens by one unit of its own precision and can only ever yield match_quality `possible`.",
+                  "enum": [
+                    "exact",
+                    "approximate"
+                  ],
+                  "x-atlas-frozen-reason": "Structural discriminator of a two-branch union: a third kind would be a new branch shape, not a new label, and a branch with no declared shape could never validate."
+                },
+                "value": {
+                  "type": "string",
+                  "pattern": "^\\d{4}(-\\d{2}(-\\d{2})?)?$",
+                  "description": "`2019`, `2019-03`, or `2019-03-15`. Precision is inferred from length."
+                }
+              },
+              "required": [
+                "kind",
+                "value"
+              ],
+              "additionalProperties": false
+            }
+          ]
+        }
+      }
+    }
+  }
+}

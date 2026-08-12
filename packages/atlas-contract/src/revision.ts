@@ -9,7 +9,7 @@
  */
 
 /** Calendar-versioned, not semver: a revision is a date, not a promise about compatibility. */
-export const CONTRACT_REVISION = "2026.08.3";
+export const CONTRACT_REVISION = "2026.08.4";
 
 /**
  * The one MCP revision this contract speaks. There is no legacy era and no

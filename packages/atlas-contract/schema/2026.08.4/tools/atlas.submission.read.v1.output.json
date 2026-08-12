@@ -1,0 +1,305 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:living-atlas:contract:2026.08.4:tool:atlas.submission.read.v1:output",
+  "title": "atlas.submission.read.v1 — result",
+  "description": "Look up a submission by id or by the idempotency key you used. This exists for the case that matters: your connection dropped after you sent a proposal and you do not know whether it committed. Retrying blind is only safe while the key is still within the published idempotency window.",
+  "type": "object",
+  "properties": {
+    "submission": {
+      "$ref": "urn:living-atlas:contract:2026.08.4:common:output#/$defs/submission_receipt"
+    },
+    "results": {
+      "type": "array",
+      "items": {
+        "$ref": "urn:living-atlas:contract:2026.08.4:common:output#/$defs/submission_item_result"
+      }
+    },
+    "idempotency_expires_at": {
+      "anyOf": [
+        {
+          "$ref": "urn:living-atlas:contract:2026.08.4:common:output#/$defs/recorded_at",
+          "description": "When this key stops being deduplicated. After it, an identical retry commits a SECOND copy. null means the receipt has already expired."
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "error": {
+      "$ref": "urn:living-atlas:contract:2026.08.4:record:atlas.error:v1"
+    },
+    "horizon": {
+      "$ref": "urn:living-atlas:contract:2026.08.4:record:atlas.horizon:v1"
+    }
+  },
+  "required": [
+    "horizon"
+  ],
+  "$defs": {
+    "urn:living-atlas:contract:2026.08.4:common:output": {
+      "$id": "urn:living-atlas:contract:2026.08.4:common:output",
+      "$defs": {
+        "assertion_id": {
+          "type": "string",
+          "pattern": "^la_assertion_[0-9a-z]{26}$",
+          "description": "Minted, never derived. Nothing about an assertion's content, position or encoding influences its id. Ids sort by mint time as an index convenience — never infer feed order (that is `seq`) or belief time (that is `recorded_at`) from one."
+        },
+        "claim_digest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$",
+          "description": "Covers the CLAIM CORE only — subject, predicate, value, valid_from, valid_to. A dedup hint and a contradiction key, NEVER an identity: two consumers asserting the same fact at different moments produce two assertions with one digest and two ids, and both are real learning events."
+        },
+        "recorded_at": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+          "description": "Belief-time instant: RFC 3339, UTC, `Z`, exactly millisecond precision. Canonicalised so string order equals chronological order, because the change feed is ordered by string comparison. An offset-bearing timestamp sorts wrong even when it names the same instant, so offsets are not accepted."
+        },
+        "submission_id": {
+          "type": "string",
+          "pattern": "^la_submission_[0-9a-z]{26}$"
+        },
+        "submission_item_result": {
+          "type": "object",
+          "description": "A submission is all-or-nothing: one submission is one durable commit group, so there is no state in which some items landed and others did not. Per-item results exist to say WHICH item caused a refusal, not to report partial success.",
+          "properties": {
+            "index": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Position in the request's proposals[]."
+            },
+            "outcome": {
+              "type": "string",
+              "enum": [
+                "committed",
+                "replayed",
+                "refused",
+                "other"
+              ]
+            },
+            "assertion_id": {
+              "$ref": "urn:living-atlas:contract:2026.08.4:common:output#/$defs/assertion_id"
+            },
+            "seq": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "claim_digest": {
+              "$ref": "urn:living-atlas:contract:2026.08.4:common:output#/$defs/claim_digest"
+            },
+            "error": {
+              "$ref": "urn:living-atlas:contract:2026.08.4:record:atlas.error:v1"
+            }
+          },
+          "required": [
+            "index",
+            "outcome"
+          ]
+        },
+        "submission_receipt": {
+          "type": "object",
+          "properties": {
+            "submission_id": {
+              "$ref": "urn:living-atlas:contract:2026.08.4:common:output#/$defs/submission_id"
+            },
+            "client_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "idempotency_key": {
+              "type": "string",
+              "minLength": 1
+            },
+            "committed_at": {
+              "$ref": "urn:living-atlas:contract:2026.08.4:common:output#/$defs/recorded_at"
+            },
+            "request_digest": {
+              "$ref": "urn:living-atlas:contract:2026.08.4:common:output#/$defs/claim_digest"
+            },
+            "assertion_ids": {
+              "type": "array",
+              "items": {
+                "$ref": "urn:living-atlas:contract:2026.08.4:common:output#/$defs/assertion_id"
+              }
+            },
+            "state": {
+              "type": "string",
+              "description": "replayed: this exact (client_id, idempotency_key) already committed and the ORIGINAL receipt with the ORIGINAL ids is returned — nothing is re-minted, re-stamped, or given a new seq. expired: the idempotency record aged out, so a retry would now commit a SECOND copy.",
+              "enum": [
+                "committed",
+                "replayed",
+                "refused",
+                "expired",
+                "other"
+              ]
+            }
+          },
+          "required": [
+            "submission_id",
+            "client_id",
+            "idempotency_key",
+            "committed_at",
+            "request_digest",
+            "assertion_ids",
+            "state"
+          ]
+        },
+        "world_time_probe": {
+          "type": "string",
+          "pattern": "^\\d{4}(-\\d{2}(-\\d{2})?)?$",
+          "description": "A partial date on the WORLD axis. Matching is interval overlap, not point containment, so `2019` asks \"true at any point in 2019\"."
+        }
+      }
+    },
+    "urn:living-atlas:contract:2026.08.4:record:atlas.error:v1": {
+      "$id": "urn:living-atlas:contract:2026.08.4:record:atlas.error:v1",
+      "title": "atlas.error:v1",
+      "type": "object",
+      "description": "A typed refusal. Atlas refuses rather than guessing: a confident wrong answer is worse than an admission that the question cannot be answered.",
+      "properties": {
+        "record_schema": {
+          "const": "atlas.error:v1"
+        },
+        "code": {
+          "type": "string",
+          "description": "OPEN vocabulary. A consumer MUST tolerate a code it has never seen: the alternative is a consumer that breaks when Atlas becomes more honest.",
+          "minLength": 1,
+          "x-atlas-vocabulary": "error_code",
+          "x-atlas-known-values": [
+            "as-of-before-history-floor",
+            "idempotency-key-conflict",
+            "history-floor-cannot-regress",
+            "cursor-before-retention-floor",
+            "snapshot-expired",
+            "assertion-reclaimed",
+            "unknown-id",
+            "ambiguous-split",
+            "redirect-cycle",
+            "redirect-chain-too-long",
+            "redirect-dangling",
+            "not-carried-forward",
+            "carried-as-assertion",
+            "identity-ambiguous",
+            "capability-required",
+            "unsupported-protocol-version",
+            "invalid-argument",
+            "sensitivity-withheld",
+            "supersession-not-permitted",
+            "reveal-declined",
+            "batch-limit-exceeded",
+            "revision-not-served",
+            "lineage-target-unknown"
+          ],
+          "x-atlas-registry-tool": "atlas.contract.describe.v1"
+        },
+        "message": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Human-readable. Never parse it; branch on `code`."
+        },
+        "retryable": {
+          "type": "boolean",
+          "description": "Whether the identical request could succeed later with nothing changed by the caller."
+        },
+        "jsonrpc_code": {
+          "type": "integer",
+          "description": "Present when the refusal also maps to a JSON-RPC error — e.g. -32021 for an undeclared capability, -32022 for an unsupported protocol revision, -32602 for arguments that failed the published input schema."
+        },
+        "required_capabilities": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "remedy": {
+          "type": "object",
+          "description": "Names the next call rather than describing it. A cursor below the retention floor names the re-scan entry point; an expired snapshot names the tool that restarts the read.",
+          "properties": {
+            "tool": {
+              "type": "string",
+              "minLength": 1
+            },
+            "arguments_hint": {},
+            "note": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "details": {
+          "description": "Code-specific. Its shape is part of the code's definition, published by atlas.contract.describe.v1."
+        }
+      },
+      "required": [
+        "record_schema",
+        "code",
+        "message",
+        "retryable"
+      ]
+    },
+    "urn:living-atlas:contract:2026.08.4:record:atlas.horizon:v1": {
+      "$id": "urn:living-atlas:contract:2026.08.4:record:atlas.horizon:v1",
+      "title": "atlas.horizon:v1",
+      "type": "object",
+      "description": "What this answer can and cannot speak for. Present on every read result — the honesty block is not optional and not conditional on anything having gone wrong.",
+      "properties": {
+        "record_schema": {
+          "const": "atlas.horizon:v1"
+        },
+        "status": {
+          "type": "string",
+          "description": "complete: everything matching was evaluated. partial: something was not reachable and coverage says how much. unknowable: the question cannot be answered from retained history at all.",
+          "enum": [
+            "complete",
+            "partial",
+            "unknowable",
+            "other"
+          ]
+        },
+        "bitemporal_since": {
+          "$ref": "urn:living-atlas:contract:2026.08.4:common:output#/$defs/recorded_at",
+          "description": "The belief-time history floor. Reads before it are refused, not answered from present state. Atlas has no pre-cutover belief history and says so rather than implying one."
+        },
+        "feed_epoch": {
+          "type": "string",
+          "minLength": 1,
+          "description": "A change of epoch invalidates every cursor, loudly."
+        },
+        "seq_watermark": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "The highest seq this answer accounts for. With feed_epoch and as_of_recorded it is the snapshot pin."
+        },
+        "as_of_recorded": {
+          "$ref": "urn:living-atlas:contract:2026.08.4:common:output#/$defs/recorded_at",
+          "description": "The belief instant this answer was computed at — echoed even when the caller did not supply one."
+        },
+        "as_of_valid": {
+          "$ref": "urn:living-atlas:contract:2026.08.4:common:output#/$defs/world_time_probe"
+        },
+        "recorded_at_fidelity_mixed": {
+          "type": "boolean",
+          "description": "True when the answer mixes Atlas-stamped belief times with import artifacts. Belief-time ordering across that boundary is meaningless, so it is a property of the RESULT and not only of the query."
+        },
+        "retention_floor_seq": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Highest seq compaction has reclaimed. 0 when nothing ever was."
+        },
+        "migration_window_open": {
+          "type": "boolean",
+          "description": "True while an audited migration window has append-only immutability suspended. Surfaced in READ responses because an answer taken during one may not be reproducible afterwards."
+        }
+      },
+      "required": [
+        "record_schema",
+        "status",
+        "bitemporal_since",
+        "feed_epoch",
+        "seq_watermark",
+        "as_of_recorded",
+        "recorded_at_fidelity_mixed"
+      ]
+    }
+  }
+}

@@ -1,0 +1,564 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:living-atlas:contract:2026.08.4:common:output",
+  "title": "Living Atlas contract 2026.08.4 — shared output definitions",
+  "$defs": {
+    "recorded_at": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+      "description": "Belief-time instant: RFC 3339, UTC, `Z`, exactly millisecond precision. Canonicalised so string order equals chronological order, because the change feed is ordered by string comparison. An offset-bearing timestamp sorts wrong even when it names the same instant, so offsets are not accepted."
+    },
+    "world_time_point": {
+      "description": "A world-time endpoint. World time is when a thing was true; belief time is when Atlas learned it. The two axes are never interchangeable.",
+      "anyOf": [
+        {
+          "type": "object",
+          "description": "The world-time endpoint is not known. `unknown` never matches an as-of point, never sorts, and is not a large number: the prior store mapped it to the string \"9999\", so an unknown start silently satisfied every \"before X\" filter.",
+          "properties": {
+            "kind": {
+              "const": "unknown"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "description": "`approximate` widens by one unit of its own precision and can only ever yield match_quality `possible`.",
+              "enum": [
+                "exact",
+                "approximate"
+              ],
+              "x-atlas-frozen-reason": "Structural discriminator of a two-branch union: a third kind would be a new branch shape, not a new label, and a branch with no declared shape could never validate."
+            },
+            "value": {
+              "type": "string",
+              "pattern": "^\\d{4}(-\\d{2}(-\\d{2})?)?$",
+              "description": "`2019`, `2019-03`, or `2019-03-15`. Precision is inferred from length."
+            }
+          },
+          "required": [
+            "kind",
+            "value"
+          ]
+        }
+      ]
+    },
+    "world_time_probe": {
+      "type": "string",
+      "pattern": "^\\d{4}(-\\d{2}(-\\d{2})?)?$",
+      "description": "A partial date on the WORLD axis. Matching is interval overlap, not point containment, so `2019` asks \"true at any point in 2019\"."
+    },
+    "assertion_id": {
+      "type": "string",
+      "pattern": "^la_assertion_[0-9a-z]{26}$",
+      "description": "Minted, never derived. Nothing about an assertion's content, position or encoding influences its id. Ids sort by mint time as an index convenience — never infer feed order (that is `seq`) or belief time (that is `recorded_at`) from one."
+    },
+    "entity_id": {
+      "type": "string",
+      "pattern": "^la_entity_[0-9a-z]{26}$",
+      "description": "Minted once, never re-derived, and never reused. An id Atlas returned resolves forever."
+    },
+    "submission_id": {
+      "type": "string",
+      "pattern": "^la_submission_[0-9a-z]{26}$"
+    },
+    "opaque_reference": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Any identifier a caller holds, including ids Atlas never minted. Legacy ids inherited at migration are exactly the ones that most need to keep resolving, so this is deliberately not pattern-constrained."
+    },
+    "predicate": {
+      "type": "string",
+      "description": "Open vocabulary. Cardinality and the functional key for each predicate are published by atlas.contract.describe.v1; validate against that, not against this hint.",
+      "minLength": 1,
+      "x-atlas-vocabulary": "predicate",
+      "x-atlas-known-values": [
+        "employed-by",
+        "member-of",
+        "part-of",
+        "contained-in",
+        "has-type",
+        "operated-by",
+        "based-in",
+        "occurred-at",
+        "participant-in",
+        "connects",
+        "owns",
+        "offered-by",
+        "sold-by",
+        "purchased",
+        "customer-of",
+        "founder-of",
+        "acquired-by",
+        "invests-in",
+        "about",
+        "parent-of",
+        "spouse-of",
+        "sibling-of",
+        "estranged-from",
+        "introduced-by",
+        "created",
+        "display-name",
+        "resolved-same-entity-as",
+        "resolved-split-into"
+      ],
+      "x-atlas-registry-tool": "atlas.contract.describe.v1"
+    },
+    "confidence": {
+      "type": "object",
+      "properties": {
+        "band": {
+          "type": "string",
+          "enum": [
+            "high",
+            "medium",
+            "low",
+            "other"
+          ]
+        },
+        "rationale": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "band"
+      ]
+    },
+    "evidence_link": {
+      "type": "object",
+      "properties": {
+        "evidence_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "stance": {
+          "type": "string",
+          "enum": [
+            "supports",
+            "contradicts",
+            "context",
+            "other"
+          ]
+        }
+      },
+      "required": [
+        "evidence_id",
+        "stance"
+      ]
+    },
+    "claim_digest": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$",
+      "description": "Covers the CLAIM CORE only — subject, predicate, value, valid_from, valid_to. A dedup hint and a contradiction key, NEVER an identity: two consumers asserting the same fact at different moments produce two assertions with one digest and two ids, and both are real learning events."
+    },
+    "sensitivity": {
+      "type": "object",
+      "properties": {
+        "tier": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Open string; a new tier in 2032 is additive."
+        },
+        "rank": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Compare this, never the tier name."
+        },
+        "withheld": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "tier",
+        "rank",
+        "withheld"
+      ]
+    },
+    "provenance": {
+      "type": "object",
+      "properties": {
+        "client_id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Set by Atlas from the authenticated credential. A consumer can neither supply nor spoof it. The prior server unconditionally replaced any caller credential with the daemon's own token, collapsing every consumer to one identity and making attribution impossible."
+        },
+        "origin": {
+          "type": "string",
+          "enum": [
+            "consumer-proposed",
+            "owner-authored",
+            "pre-contract-import",
+            "other"
+          ]
+        },
+        "recorded_at_fidelity": {
+          "type": "string",
+          "description": "authoritative: Atlas stamped recorded_at at commit, so belief-time ordering is meaningful. import-artifact: the value reflects when a file was processed, not when Atlas learned anything. Ordering across the two is meaningless permanently, not just below the history floor.",
+          "enum": [
+            "authoritative",
+            "import-artifact",
+            "other"
+          ]
+        },
+        "proposed_at": {
+          "type": "string",
+          "minLength": 1
+        },
+        "basis": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "client_id",
+        "origin",
+        "recorded_at_fidelity"
+      ]
+    },
+    "coverage": {
+      "type": "object",
+      "description": "Absence is REPORTED, never performed. The prior surface's search, traverse, timeline and edge_read each dropped rows the caller could not detect.",
+      "properties": {
+        "evaluated": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "matched": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "returned": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Rows on THIS page."
+        },
+        "withheld": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Records this credential may not read. They still occupy a row as an atlas.redaction:v1 stub, so counts reconcile and a partial graph is never indistinguishable from a complete one."
+        },
+        "with_valid_time": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "unknown_or_absent_valid_time": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "counts_basis": {
+          "type": "string",
+          "description": "Exact counts are themselves a disclosure channel: repeated filter bisection against an exact `withheld` localises a withheld record without ever reading it. Below the owner tier the counts may be bucketed, and a consumer is told which it is rather than left to assume exactness.",
+          "enum": [
+            "exact",
+            "bucketed",
+            "other"
+          ]
+        },
+        "bucket_width": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Present when counts_basis is `bucketed`."
+        }
+      },
+      "required": [
+        "evaluated",
+        "matched",
+        "returned",
+        "withheld",
+        "with_valid_time",
+        "unknown_or_absent_valid_time",
+        "counts_basis"
+      ]
+    },
+    "page": {
+      "type": "object",
+      "properties": {
+        "page_size": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 200
+        },
+        "has_more": {
+          "type": "boolean"
+        },
+        "cursor": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "snapshot": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Echo this on pages 2..N. Pins {as_of_recorded, seq_watermark, feed_epoch} so the sequence is one consistent answer."
+        },
+        "snapshot_expires_at": {
+          "$ref": "urn:living-atlas:contract:2026.08.4:common:output#/$defs/recorded_at"
+        },
+        "feed_handoff": {
+          "type": "object",
+          "description": "Present on the FINAL page of a full scan. Hands the caller to the change feed at the exact seq the scan covered, so bootstrap-then-follow has no gap and no overlap.",
+          "properties": {
+            "tool": {
+              "type": "string",
+              "minLength": 1
+            },
+            "cursor_seq": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          "required": [
+            "tool",
+            "cursor_seq"
+          ]
+        }
+      },
+      "required": [
+        "page_size",
+        "has_more"
+      ]
+    },
+    "cache": {
+      "type": "object",
+      "properties": {
+        "ttl_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "0 means: do not cache this result."
+        },
+        "cache_scope": {
+          "type": "string",
+          "description": "Every result in this revision is `private`. Results vary by credential because policy filtering varies by credential, so a shared cache would serve one consumer's permitted view to another.",
+          "enum": [
+            "private",
+            "public",
+            "other"
+          ]
+        }
+      },
+      "required": [
+        "ttl_ms",
+        "cache_scope"
+      ]
+    },
+    "valid_time_fidelity": {
+      "type": "string",
+      "description": "How much world time the record actually carries, so \"true in March 2019\" is distinguishable from \"we have no idea when\".",
+      "enum": [
+        "exact",
+        "approximate",
+        "unknown",
+        "absent",
+        "other"
+      ]
+    },
+    "match_quality": {
+      "type": "string",
+      "description": "`possible` whenever the match ran through a widened `approximate` bound. An approximate endpoint can never yield `certain`.",
+      "enum": [
+        "certain",
+        "possible",
+        "other"
+      ]
+    },
+    "contested_group": {
+      "type": "object",
+      "description": "Two live assertions on one FUNCTIONAL key are a contradiction: both are returned, neither is superseded, and Atlas does not pick. Two overlapping multi-valued assertions are two facts and never appear here.",
+      "properties": {
+        "subject_entity_id": {
+          "$ref": "urn:living-atlas:contract:2026.08.4:common:output#/$defs/entity_id"
+        },
+        "predicate": {
+          "$ref": "urn:living-atlas:contract:2026.08.4:common:output#/$defs/predicate"
+        },
+        "cardinality": {
+          "type": "string",
+          "enum": [
+            "functional",
+            "multi-valued",
+            "other"
+          ]
+        },
+        "functional_key": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "assertion_ids": {
+          "type": "array",
+          "items": {
+            "$ref": "urn:living-atlas:contract:2026.08.4:common:output#/$defs/assertion_id"
+          },
+          "minItems": 2
+        },
+        "claim_digests": {
+          "type": "array",
+          "items": {
+            "$ref": "urn:living-atlas:contract:2026.08.4:common:output#/$defs/claim_digest"
+          }
+        }
+      },
+      "required": [
+        "subject_entity_id",
+        "predicate",
+        "cardinality",
+        "assertion_ids"
+      ]
+    },
+    "reclamation_note": {
+      "type": "object",
+      "description": "What is left of an assertion compaction reclaimed. A reclaimed id resolves to this, never to a bare not-found: otherwise a dangling reference and a typo are indistinguishable.",
+      "properties": {
+        "seq": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "reclaimed_at": {
+          "$ref": "urn:living-atlas:contract:2026.08.4:common:output#/$defs/recorded_at"
+        },
+        "reclaimed_from_segment": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "seq",
+        "reclaimed_at",
+        "reclaimed_from_segment"
+      ]
+    },
+    "submission_receipt": {
+      "type": "object",
+      "properties": {
+        "submission_id": {
+          "$ref": "urn:living-atlas:contract:2026.08.4:common:output#/$defs/submission_id"
+        },
+        "client_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "idempotency_key": {
+          "type": "string",
+          "minLength": 1
+        },
+        "committed_at": {
+          "$ref": "urn:living-atlas:contract:2026.08.4:common:output#/$defs/recorded_at"
+        },
+        "request_digest": {
+          "$ref": "urn:living-atlas:contract:2026.08.4:common:output#/$defs/claim_digest"
+        },
+        "assertion_ids": {
+          "type": "array",
+          "items": {
+            "$ref": "urn:living-atlas:contract:2026.08.4:common:output#/$defs/assertion_id"
+          }
+        },
+        "state": {
+          "type": "string",
+          "description": "replayed: this exact (client_id, idempotency_key) already committed and the ORIGINAL receipt with the ORIGINAL ids is returned — nothing is re-minted, re-stamped, or given a new seq. expired: the idempotency record aged out, so a retry would now commit a SECOND copy.",
+          "enum": [
+            "committed",
+            "replayed",
+            "refused",
+            "expired",
+            "other"
+          ]
+        }
+      },
+      "required": [
+        "submission_id",
+        "client_id",
+        "idempotency_key",
+        "committed_at",
+        "request_digest",
+        "assertion_ids",
+        "state"
+      ]
+    },
+    "submission_item_result": {
+      "type": "object",
+      "description": "A submission is all-or-nothing: one submission is one durable commit group, so there is no state in which some items landed and others did not. Per-item results exist to say WHICH item caused a refusal, not to report partial success.",
+      "properties": {
+        "index": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Position in the request's proposals[]."
+        },
+        "outcome": {
+          "type": "string",
+          "enum": [
+            "committed",
+            "replayed",
+            "refused",
+            "other"
+          ]
+        },
+        "assertion_id": {
+          "$ref": "urn:living-atlas:contract:2026.08.4:common:output#/$defs/assertion_id"
+        },
+        "seq": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "claim_digest": {
+          "$ref": "urn:living-atlas:contract:2026.08.4:common:output#/$defs/claim_digest"
+        },
+        "error": {
+          "$ref": "urn:living-atlas:contract:2026.08.4:record:atlas.error:v1"
+        }
+      },
+      "required": [
+        "index",
+        "outcome"
+      ]
+    },
+    "reveal_input_request": {
+      "type": "object",
+      "properties": {
+        "request_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "request_state": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Opaque and integrity-protected. Bound to the principal resolved from the credential — never to self-reported client info — and to this method and arguments, so it cannot be replayed across principals or requests."
+        },
+        "expires_at": {
+          "$ref": "urn:living-atlas:contract:2026.08.4:common:output#/$defs/recorded_at"
+        },
+        "prompt": {
+          "type": "string",
+          "minLength": 1
+        },
+        "required_capabilities": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "required": [
+        "request_id",
+        "request_state",
+        "expires_at",
+        "prompt"
+      ]
+    }
+  }
+}

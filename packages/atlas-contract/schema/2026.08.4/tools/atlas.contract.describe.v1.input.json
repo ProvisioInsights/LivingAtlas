@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:living-atlas:contract:2026.08.4:tool:atlas.contract.describe.v1:input",
+  "title": "atlas.contract.describe.v1 — arguments",
+  "description": "Return the running contract: revision, protocol revision, record schemas, tool list, live vocabularies, transport-invariant limits, machine-readable deprecations, and the history block. Call this first. Validate against the vocabularies it returns, not against a copy captured when your client shipped.",
+  "type": "object",
+  "properties": {
+    "revision": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Ask for a specific revision. Absent means the current one. A revision this server does not serve is a typed refusal, never a silent substitution."
+    }
+  },
+  "additionalProperties": false
+}

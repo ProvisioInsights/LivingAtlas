@@ -50,13 +50,23 @@ export class ContractValidator {
     this.ajv.addVocabulary([...ATLAS_ANNOTATION_KEYWORDS]);
 
     // Common and record documents are added before anything is compiled,
-    // because a tool schema `$ref`s them and Ajv resolves at compile time.
+    // because a record schema `$ref`s the shared definitions and Ajv resolves
+    // at compile time.
     for (const schema of Object.values(contract.common)) this.ajv.addSchema(schema);
     for (const schema of Object.values(contract.records)) this.ajv.addSchema(schema);
 
+    // Tool documents are compiled each in a FRESH Ajv with nothing
+    // pre-registered — the exact resolution context a conforming MCP client
+    // has when it compiles one tools/list entry (protocol 2026-07-28 forbids
+    // it from dereferencing anything external). Compiling them against this
+    // instance's registry would prove only that the SERVER can resolve them,
+    // which is precisely the gap that let 2026.08.3 publish documents no
+    // client could compile. They cannot share the registry instance anyway:
+    // each tool document embeds resources whose `$id`s the registry already
+    // holds standalone.
     for (const tool of contract.tools) {
-      this.byToolInput.set(tool.name, this.ajv.compile(tool.inputSchema));
-      this.byToolOutput.set(tool.name, this.ajv.compile(tool.outputSchema));
+      this.byToolInput.set(tool.name, compileIsolated(tool.inputSchema, `${tool.name} input`));
+      this.byToolOutput.set(tool.name, compileIsolated(tool.outputSchema, `${tool.name} output`));
     }
     for (const entry of contract.manifest.record_schemas) {
       const compiled = this.ajv.getSchema(entry.schema_id);
@@ -114,6 +124,22 @@ export class ContractValidator {
     // hides behind a validation layer that reports success.
     if (!validate) return { valid: false, errors: [`no ${label} is published`] };
     return validate(value) ? { valid: true } : { valid: false, errors: describe(validate.errors) };
+  }
+}
+
+/**
+ * Compile one published document with no registry, no pre-added schemas and no
+ * network — a spec-conforming MCP client's entire resolution context. A
+ * document that does not compile HERE is a document no client can use, however
+ * happily a server holding the full corpus validates it.
+ */
+export function compileIsolated(schema: JsonSchema, label: string): ValidateFunction {
+  const ajv = new Ajv2020({ strict: true, allErrors: true, allowUnionTypes: true });
+  ajv.addVocabulary([...ATLAS_ANNOTATION_KEYWORDS]);
+  try {
+    return ajv.compile(schema);
+  } catch (error) {
+    throw new Error(`${label} does not compile in isolation: ${error instanceof Error ? error.message : String(error)}`);
   }
 }
 

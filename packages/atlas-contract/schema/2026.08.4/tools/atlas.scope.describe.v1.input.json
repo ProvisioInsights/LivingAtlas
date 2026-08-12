@@ -1,0 +1,9 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:living-atlas:contract:2026.08.4:tool:atlas.scope.describe.v1:input",
+  "title": "atlas.scope.describe.v1 — arguments",
+  "description": "Report the calling credential's own client_id and the capability grant behind it: the tools it may call, the sensitivity tiers it may read, the predicates and tiers it may write, the limits that apply to it, whether its coverage counts are exact, and whose assertions it may supersede. Ask here rather than inferring scope from a refusal — and never from which transport you connected over. Two deployments differ by grant, not by wire.",
+  "type": "object",
+  "properties": {},
+  "additionalProperties": false
+}

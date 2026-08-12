@@ -1,12 +1,12 @@
 {
   "case": "atlas.entity.rename.v1",
-  "contract_revision": "2026.08.3",
+  "contract_revision": "2026.08.4",
   "intent": "A rename of a fixture entity: same entity_id and same registered_at, changed display_name and a moved updated_at — the record that proves a rename is not a re-identification.",
   "response": {
     "_meta": {
       "io.modelcontextprotocol/serverInfo": {
         "name": "living-atlas-consumer",
-        "version": "2026.08.3"
+        "version": "2026.08.4"
       }
     },
     "content": "<the text block is JSON.stringify(structuredContent)>",

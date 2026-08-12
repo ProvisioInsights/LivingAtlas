@@ -1,12 +1,12 @@
 {
   "case": "atlas.sensitive.reveal.v1.escalation",
-  "contract_revision": "2026.08.3",
+  "contract_revision": "2026.08.4",
   "intent": "The in-band escalation: a complete result carrying outcome input-required and a signed request_state.",
   "response": {
     "_meta": {
       "io.modelcontextprotocol/serverInfo": {
         "name": "living-atlas-consumer",
-        "version": "2026.08.3"
+        "version": "2026.08.4"
       }
     },
     "content": "<the text block is JSON.stringify(structuredContent)>",
